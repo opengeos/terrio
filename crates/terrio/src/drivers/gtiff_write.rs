@@ -19,6 +19,7 @@
 //! layout: the IFDs first, then the image data from the smallest overview to the full resolution,
 //! with GDAL's structural metadata, block leaders and trailers.
 
+use super::area_matched::{self, AreaMatched, IntoRasterData};
 use super::common::{Rewrite, create_replacing};
 use super::gdal_overview::{self, Method};
 use crate::pixel::{Pixel, map_data, with_data};
@@ -421,6 +422,10 @@ pub(crate) struct TiffOptions {
     pub cog_resampling: Option<Method>,
     /// The resampling option as given, which GDAL's COG driver records.
     pub cog_resampling_name: Option<String>,
+    /// A COG's overviews keep the valid area of the full-resolution image (`OVERVIEW_RESAMPLING`
+    /// `area_matched` or `area_matched_mode`, terrio's; see [`area_matched`]) instead of being
+    /// resampled with [`TiffOptions::cog_resampling`].
+    pub cog_area_matched: Option<AreaMatched>,
     /// A GeoTIFF whose overviews (and their masks) a COG copies rather than computing its own,
     /// as GDAL's COG driver does with a source that has some (`OVERVIEWS=AUTO`).
     pub source_overviews: Option<String>,
@@ -449,7 +454,8 @@ pub(crate) struct TiffOptions {
     pub overviews: Vec<usize>,
     /// How the overviews of `overviews` are computed.
     pub overview_resampling: OverviewResampling,
-    /// The TIFF predictor: 1 (none), 2 (horizontal differencing) or 3 (floating point).
+    /// The TIFF predictor: 1 (none), 2 (horizontal differencing) or 3 (floating point), or
+    /// [`PREDICTOR_BY_TYPE`] for a COG's `PREDICTOR=YES`.
     pub predictor: u16,
     /// Write the pixel scale and tie point (`GEOREFERENCED=NO` leaves the file without a
     /// geotransform, as GDAL writes rasters whose geotransform is the identity).
@@ -560,6 +566,7 @@ impl Default for TiffOptions {
             nodata: None,
             cog_resampling: None,
             cog_resampling_name: None,
+            cog_area_matched: None,
             source_overviews: None,
             source_overview_level: None,
             overview_count: None,
@@ -591,16 +598,20 @@ impl Default for TiffOptions {
 }
 
 /// How the overviews given as factors are computed: as GDAL does, or terrio's minimum or
-/// maximum of the valid pixels.
+/// maximum of the valid pixels, or terrio's area-matched levels (see [`area_matched`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OverviewResampling {
     Gdal(Method),
     Min,
     Max,
+    AreaMatched(AreaMatched),
 }
 
 impl OverviewResampling {
     fn parse(s: &str) -> Result<Self> {
+        if let Some(m) = AreaMatched::parse(s) {
+            return Ok(Self::AreaMatched(m));
+        }
         Ok(match s.trim().to_ascii_lowercase().as_str() {
             "min" => Self::Min,
             "max" => Self::Max,
@@ -651,7 +662,7 @@ impl AddOverviewsResampling {
 
 fn unsupported_resampling(name: &str) -> Error {
     Error::Unsupported(format!(
-        "'{name}' overview resampling is not supported (nearest, average, rms, bilinear, cubic, cubicspline, lanczos, mode)"
+        "'{name}' overview resampling is not supported (nearest, average, rms, bilinear, cubic, cubicspline, lanczos, mode, area_matched, area_matched_mode)"
     ))
 }
 
@@ -661,6 +672,32 @@ pub(crate) const SPARSE_COG_WARNING: &str = "SPARSE_OK is not supported for COGs
 /// Whether a creation option value means yes.
 pub(crate) fn yes(v: &str) -> bool {
     matches!(v.to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1")
+}
+
+/// The [`TiffOptions::predictor`] of a COG's `PREDICTOR=YES`, which [`plan`] resolves from the
+/// data type.
+const PREDICTOR_BY_TYPE: u16 = 0;
+
+/// A `PREDICTOR` creation option. A COG reads it as GDAL 3.13's COG driver does (`GetPredictor`
+/// in `frmts/gtiff/cogdriver.cpp`): `YES`, `ON` or `TRUE` is 3 for floating-point data and 2
+/// otherwise ([`PREDICTOR_BY_TYPE`]), `STANDARD` is 2, `FLOATING_POINT` is 3, and `NO`, `FALSE`,
+/// `OFF` or `NONE` leave the predictor out. A GeoTIFF keeps its numbers and `YES`, `NO` and
+/// `NONE` (GDAL's GTiff driver takes only the numbers). Other values are refused, where GDAL's COG
+/// driver warns and writes no predictor.
+fn parse_predictor(value: &str, cog: bool) -> Result<u16> {
+    Ok(match value.trim().to_ascii_uppercase().as_str() {
+        "1" | "NO" | "NONE" => 1,
+        "FALSE" | "OFF" if cog => 1,
+        "YES" | "ON" | "TRUE" if cog => PREDICTOR_BY_TYPE,
+        "2" | "YES" => 2,
+        "STANDARD" if cog => 2,
+        "3" => 3,
+        "FLOATING_POINT" if cog => 3,
+        other if cog => {
+            return Err(Error::InvalidArgument(format!("invalid PREDICTOR '{other}' (NO, YES, STANDARD or 2, FLOATING_POINT or 3)")));
+        }
+        other => return Err(Error::InvalidArgument(format!("invalid PREDICTOR '{other}' (1, 2, 3)"))),
+    })
 }
 
 impl TiffOptions {
@@ -701,13 +738,21 @@ impl TiffOptions {
             // GDAL's COG driver reads OVERVIEW_RESAMPLING, then RESAMPLING; rasterio's
             // `overview_resampling` keyword is the first.
             if let Some(r) = co("OVERVIEW_RESAMPLING").or_else(|| co("RESAMPLING")).or(options.overview_resampling.as_deref()) {
-                o.cog_resampling = Some(Method::parse(r).ok_or_else(|| unsupported_resampling(r))?);
+                o.cog_area_matched = AreaMatched::parse(r);
+                if o.cog_area_matched.is_none() {
+                    o.cog_resampling = Some(Method::parse(r).ok_or_else(|| unsupported_resampling(r))?);
+                }
                 o.cog_resampling_name = Some(r.to_ascii_uppercase());
             }
             o.source_overviews = co("@COPY_SRC_OVERVIEWS").map(str::to_string);
             o.source_overview_level = co("@COPY_SRC_OVERVIEW_LEVEL")
                 .map(|value| value.parse().map_err(|_| Error::InvalidArgument(format!("invalid source overview level '{value}'"))))
                 .transpose()?;
+            if o.cog_area_matched.is_some() && o.source_overviews.is_some() {
+                return Err(Error::InvalidArgument(
+                    "area-matched overviews are computed, not copied from the source: remove @COPY_SRC_OVERVIEWS".into(),
+                ));
+            }
             o.mask_without_dataset = co("@MASK_WITHOUT_DATASET").is_some_and(yes);
             if let Some(n) = co("OVERVIEW_COUNT") {
                 let n: i64 = n.trim().parse().map_err(|_| Error::InvalidArgument(format!("invalid OVERVIEW_COUNT '{n}'")))?;
@@ -759,12 +804,7 @@ impl TiffOptions {
             options.creation_options.iter().filter(|(k, _)| k.eq_ignore_ascii_case("SRC_MDD")).map(|(_, v)| v.as_str()).collect();
         (o.domains, o.drop_default_items) = MetadataDomain::parse(co("@METADATA_DOMAINS"), cog, co("COPY_SRC_MDD"), &src_mdd)?;
         if let Some(p) = co("PREDICTOR") {
-            o.predictor = match p.trim().to_ascii_uppercase().as_str() {
-                "1" | "NO" | "NONE" => 1,
-                "2" | "YES" => 2,
-                "3" => 3,
-                other => return Err(Error::InvalidArgument(format!("invalid PREDICTOR '{other}' (1, 2, 3)"))),
-            };
+            o.predictor = parse_predictor(p, cog)?;
         }
         // The levels are checked whatever the compression, as the qualities are.
         if let Some(v) = co("ZLEVEL") {
@@ -1096,7 +1136,12 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
         }
     }
     // As GDAL, the predictor only applies to compressed files; 3 to floating-point samples.
-    let predictor = if opts.compression.takes_predictor() && !opts.complex { opts.predictor } else { 1 };
+    let wanted = match opts.predictor {
+        PREDICTOR_BY_TYPE if matches!(raster.data_type, DataType::F32 | DataType::F64) => 3,
+        PREDICTOR_BY_TYPE => 2,
+        p => p,
+    };
+    let predictor = if opts.compression.takes_predictor() && !opts.complex { wanted } else { 1 };
     if predictor == 3 && !matches!(raster.data_type, DataType::F32 | DataType::F64) {
         return Err(Error::InvalidArgument("PREDICTOR=3 is only supported for floating-point data".into()));
     }
@@ -1192,7 +1237,7 @@ pub(crate) fn georeferencing_tags(raster: &Raster, opts: &TiffOptions) -> Result
 }
 
 fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
-    let Plan { tile, layout, geo, color_map } = plan(raster, opts)?;
+    let Plan { tile, layout, mut geo, color_map } = plan(raster, opts)?;
     if let Some(m) = &opts.mask
         && m.len() != raster.cols * raster.rows
     {
@@ -1210,8 +1255,18 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
     // at `i - 1`): GDAL keeps them in a temporary Byte file, which the next level is computed
     // from (see [`mask_levels`]).
     let mut raw_masks: Vec<Vec<u8>> = Vec::new();
+    // Area-matched levels, and what each band's keep: written to the bands' metadata.
+    let mut reports = Vec::new();
     let (sizes, method) = match (opts.cog, tile) {
         (true, Some(_)) if opts.source_overviews.is_some() => (Vec::new(), None),
+        (true, Some((t, _))) if opts.cog_area_matched.is_some() => {
+            let sizes = gdal_overview::cog_sizes(raster.cols, raster.rows, t as usize, opts.overview_count);
+            let factors: Vec<u64> = (1..=sizes.len() as u32).map(|k| 1u64 << k.min(63)).collect();
+            if let Some(m) = opts.cog_area_matched {
+                reports = area_matched_levels(raster, opts, m, &sizes, &factors, &mut levels)?;
+            }
+            (Vec::new(), None)
+        }
         (true, Some((t, _))) => {
             (gdal_overview::cog_sizes(raster.cols, raster.rows, t as usize, opts.overview_count), Some(cog_method(opts)))
         }
@@ -1220,9 +1275,14 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
             let mut factors: Vec<usize> = opts.overviews.iter().copied().filter(|f| *f > 1).collect();
             factors.sort_unstable();
             factors.dedup();
-            let sizes = factors.iter().map(|f| (raster.cols.div_ceil(*f), raster.rows.div_ceil(*f))).collect();
+            let sizes: Vec<(usize, usize)> = factors.iter().map(|f| (raster.cols.div_ceil(*f), raster.rows.div_ceil(*f))).collect();
             match opts.overview_resampling {
                 OverviewResampling::Gdal(m) => (sizes, Some(m)),
+                OverviewResampling::AreaMatched(m) => {
+                    let factors: Vec<u64> = factors.iter().map(|f| *f as u64).collect();
+                    reports = area_matched_levels(raster, opts, m, &sizes, &factors, &mut levels)?;
+                    (Vec::new(), None)
+                }
                 other => {
                     for (w, h) in sizes {
                         // Each overview is computed from the previous (larger) one.
@@ -1237,6 +1297,23 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
     };
     if let (true, Some(_), Some(path)) = (opts.cog, tile, &opts.source_overviews) {
         copy_source_overviews(path, raster, opts, &mut levels, &mut masks)?;
+    }
+    if !reports.is_empty() {
+        // The full-resolution tags again, with each band's report in its metadata (replacing
+        // the items of an earlier report the source carried).
+        let mut with_reports = opts.clone();
+        if with_reports.drop_default_items.1 {
+            // Filter inherited items before adding reports produced by this write.
+            with_reports.band_metadata.iter_mut().for_each(|b| b.items.clear());
+            with_reports.drop_default_items.1 = false;
+        }
+        with_reports.band_metadata.resize(raster.bands.max(with_reports.band_metadata.len()), crate::BandMetadata::default());
+        for (b, report) in with_reports.band_metadata.iter_mut().zip(&reports) {
+            let items = report.items();
+            b.items.retain(|(k, _)| !items.iter().any(|(name, _)| k == name));
+            b.items.extend(items);
+        }
+        geo = plan(raster, &with_reports)?.geo;
     }
     if let Some(method) = method {
         let block = gdal_overview::ovr_block(opts.source_block);
@@ -1286,9 +1363,10 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
             img.tags.push((254, Value::Longs(vec![1])));
         }
         // Georeferencing on the full-resolution image; nodata on every image, as GDAL does, but
-        // not on the overviews of 64-bit integer rasters (see [`overview_nodata`]).
+        // not on GDAL-method overviews of 64-bit integer rasters (see [`overview_nodata`]).
+        // Area-matched levels must declare their invalid cells, including for integer nodata.
         for (tag, v) in &geo {
-            if i == 0 || (*tag == 42113 && overview_nodata(raster.data_type)) {
+            if i == 0 || (*tag == 42113 && (!reports.is_empty() || overview_nodata(raster.data_type))) {
                 img.tags.push((*tag, v.clone()));
             }
         }
@@ -1327,6 +1405,59 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
     let data_len: u64 = images.iter().flat_map(|i| i.chunks.iter()).map(|c| c.len() as u64 + 8).sum();
     let big = opts.bigtiff || data_len > (u32::MAX as u64) - (1 << 24);
     Ok(Prepared { images, big, cog: opts.cog })
+}
+
+/// Adds the area-matched overviews of `sizes` (with nominal decimation `factors`) to `levels`, each
+/// band on its own, and returns what each band's levels keep (see [`area_matched`]).
+fn area_matched_levels(
+    raster: &Raster,
+    opts: &TiffOptions,
+    method: AreaMatched,
+    sizes: &[(usize, usize)],
+    factors: &[u64],
+    levels: &mut Vec<Level<'_>>,
+) -> Result<Vec<area_matched::BandReport>> {
+    let Some(nodata) = opts.nodata else {
+        return Err(Error::InvalidArgument("area-matched overviews need a nodata value".into()));
+    };
+    let has_alpha = opts.alpha
+        || opts.band_metadata.iter().take(raster.bands).any(|b| b.color_interp.as_deref().is_some_and(|c| c.eq_ignore_ascii_case("alpha")));
+    if opts.mask.is_some() || opts.complex || has_alpha {
+        return Err(Error::Unsupported("area-matched overviews are written for nodata rasters without a mask or alpha band".into()));
+    }
+    if sizes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let integral = !matches!(raster.data_type, DataType::F32 | DataType::F64);
+    let replacement = gdal_overview::replacement_value(raster.data_type, nodata);
+    let (cols, rows, bands) = (raster.cols, raster.rows, raster.bands);
+    fn build<T: IntoRasterData>(
+        data: &[T],
+        (cols, rows, bands): (usize, usize, usize),
+        sizes: &[(usize, usize)],
+        factors: &[u64],
+        method: AreaMatched,
+        (nodata, replacement, integral): (f64, f64, bool),
+    ) -> Result<(Vec<RasterData>, Vec<area_matched::BandReport>)> {
+        let mut out: Vec<Vec<T>> = sizes.iter().map(|(w, h)| Vec::with_capacity(w * h * bands)).collect();
+        let mut reports = Vec::with_capacity(bands);
+        for b in 0..bands {
+            let band =
+                data.get(b * cols * rows..(b + 1) * cols * rows).ok_or_else(|| Error::InvalidData("a band is missing samples".into()))?;
+            let (band_levels, report) = area_matched::band(band, (cols, rows), sizes, factors, method, nodata, replacement, integral)?;
+            for (level, values) in out.iter_mut().zip(band_levels) {
+                level.extend(values);
+            }
+            reports.push(report);
+        }
+        Ok((out.into_iter().map(T::into_data).collect(), reports))
+    }
+    let (data, reports) =
+        with_data!(&raster.data, v => build(v, (cols, rows, bands), sizes, factors, method, (nodata, replacement, integral)))?;
+    for ((w, h), data) in sizes.iter().zip(data) {
+        levels.push(Level { cols: *w, rows: *h, bands, data: std::borrow::Cow::Owned(data) });
+    }
+    Ok(reports)
 }
 
 /// The resampling of a COG's overviews: the one asked for, else GDAL's default.
@@ -2232,7 +2363,7 @@ impl GeoTiffWriter {
     /// # Errors
     /// When the data is not of the raster's data type or does not hold `rows` rows of every band,
     /// rows go past the raster's height, the file has a mask and `mask` does not hold its rows, a
-    /// mask is given for a COG without one, or the file cannot be written. Once a block row failed
+    /// mask is given for a file without one, or the file cannot be written. Once a block row failed
     /// to be written, or a COG's row of tiles failed to be compressed or written or its overview
     /// rows failed to be computed, the writer refuses every later call with
     /// [`Error::InvalidData`] (the call that found the failure returns its error). A GeoTIFF other
@@ -2420,7 +2551,8 @@ impl TiffRows {
     /// # Errors
     /// When a block row failed to be written, or the data is not of the raster's data type; with
     /// `rows` not zero, when it does not hold `rows` rows of every band, rows go past the raster's
-    /// height, the file has a mask and `mask` does not hold its rows, or the file cannot be written.
+    /// height, the file has a mask and `mask` does not hold its rows, a mask is given for a file
+    /// without one, or the file cannot be written.
     pub fn write_rows(&mut self, data: &RasterData, rows: usize, mask: Option<&[u8]>) -> Result<()> {
         if self.failed {
             return Err(Error::InvalidData("a block row of the GeoTIFF failed to be written".into()));
@@ -2444,7 +2576,8 @@ impl TiffRows {
             )));
         }
         let mask = match (&self.mask, mask) {
-            (None, _) => None,
+            (None, None) => None,
+            (None, Some(_)) => return Err(Error::InvalidArgument("the file has no mask: give its rows without one".into())),
             (Some(_), None) => return Err(Error::InvalidArgument("the file has a mask: give its rows".into())),
             (Some(_), Some(m)) if m.len() != n => {
                 return Err(Error::InvalidArgument(format!("{} mask values for {rows} rows of {} columns", m.len(), self.cols)));
@@ -2950,6 +3083,9 @@ impl CogWriter {
     pub(crate) fn create(path: &str, raster: &Raster, opts: &TiffOptions) -> Result<Self> {
         if !opts.cog {
             return Err(Error::Unsupported("a COG row writer requires COG options".into()));
+        }
+        if opts.cog_area_matched.is_some() {
+            return Err(Error::Unsupported("COGs with area-matched overviews need the whole raster".into()));
         }
         let Plan { tile, layout, geo, color_map } = plan(raster, opts)?;
         let tile = tile.map_or(512, |(t, _)| t as usize);
@@ -4979,6 +5115,75 @@ mod tests {
         }
     }
 
+    /// A COG reads `PREDICTOR` as GDAL 3.13.3's COG driver does: `YES`, `ON` and `TRUE` are 3 for
+    /// floating-point data and 2 for integers, `STANDARD` is 2, `FLOATING_POINT` is 3, and `FALSE`
+    /// and `OFF` are none; every overview takes the image's predictor, as GDAL's do. A GeoTIFF
+    /// keeps `YES` as 2 and refuses the COG's words, and 3 stays refused for integers.
+    #[test]
+    fn cog_predictor_yes_follows_the_data_type_as_gdal_cog() {
+        let predictors = |bytes: Vec<u8>| {
+            let mut dec = tiff::decoder::Decoder::new(std::io::Cursor::new(bytes)).unwrap();
+            let mut found = Vec::new();
+            for i in 0.. {
+                if dec.seek_to_image(i).is_err() {
+                    break;
+                }
+                found.push(dec.find_tag_unsigned::<u16>(tiff::tags::Tag::Predictor).unwrap().unwrap_or(1));
+            }
+            found
+        };
+        let options = |driver_cog: bool, word: &str| {
+            let mut co = vec![("COMPRESS".to_string(), "DEFLATE".to_string()), ("PREDICTOR".to_string(), word.to_string())];
+            if driver_cog {
+                co.push(("BLOCKSIZE".into(), "16".into()));
+            }
+            let options = crate::RasterWriteOptions { creation_options: co, ..Default::default() };
+            TiffOptions::from_write_options(&options, driver_cog, Some(-1.0))
+        };
+        for (t, word, expected) in [
+            (DataType::F32, "YES", 3),
+            (DataType::F32, "on", 3),
+            (DataType::F32, "TRUE", 3),
+            (DataType::I16, "YES", 2),
+            (DataType::U8, "YES", 2),
+            (DataType::F32, "STANDARD", 2),
+            (DataType::I16, "STANDARD", 2),
+            (DataType::F32, "FLOATING_POINT", 3),
+            (DataType::F32, "2", 2),
+            (DataType::F32, "3", 3),
+            (DataType::F32, "FALSE", 1),
+            (DataType::I16, "OFF", 1),
+            (DataType::I16, "NO", 1),
+        ] {
+            let r = layouts_raster(1, t);
+            let dir = tempfile::tempdir().unwrap();
+            let p = dir.path().join("c.tif");
+            write(&r, p.to_str().unwrap(), &options(true, word).unwrap().unwrap()).unwrap();
+            let found = predictors(std::fs::read(&p).unwrap());
+            assert!(found.len() > 1, "the COG has overviews");
+            assert!(found.iter().all(|&p| p == expected), "{t:?} PREDICTOR={word}: {found:?}");
+            let back = crate::geotiff::read_geotiff(&p).unwrap();
+            let same = match (&back.raster.data, &r.data) {
+                (RasterData::I16(a), RasterData::I16(b)) => a == b,
+                (RasterData::F32(a), RasterData::F32(b)) => a == b,
+                (RasterData::U8(a), RasterData::U8(b)) => a == b,
+                _ => false,
+            };
+            assert!(same, "{t:?} PREDICTOR={word}");
+        }
+        for word in ["FLOATING_POINT", "3"] {
+            let err = encode(&layouts_raster(1, DataType::I16), &options(true, word).unwrap().unwrap()).unwrap_err();
+            assert!(err.to_string().contains("PREDICTOR=3"), "{word}: {err}");
+        }
+        assert!(options(true, "MAYBE").is_err());
+        // A GeoTIFF's YES stays 2; the words only GDAL's COG driver takes are refused.
+        let bytes = encode(&layouts_raster(1, DataType::F32), &options(false, "YES").unwrap().unwrap()).unwrap();
+        assert_eq!(predictors(bytes), [2]);
+        for word in ["STANDARD", "FLOATING_POINT", "TRUE", "OFF"] {
+            assert!(options(false, word).is_err(), "GTiff PREDICTOR={word}");
+        }
+    }
+
     /// `ZLEVEL` (1 to 9) sets the Deflate level of DEFLATE and LERC_DEFLATE chunks, in GeoTIFFs and
     /// COGs, written whole or streamed, 6 when it is not given, and `ZSTD_LEVEL` (1 to 22) the
     /// level of ZSTD and LERC_ZSTD chunks, which only the `libzstd` feature's encoder honours (9
@@ -6281,6 +6486,307 @@ mod tests {
     fn cog_rejects_unsupported_overview_resampling() {
         let options = crate::RasterWriteOptions { overview_resampling: Some("not-a-resampler".into()), ..Default::default() };
         assert!(TiffOptions::from_write_options(&options, true, None).is_err());
+    }
+
+    /// A thin, ragged Float32 band of 301 x 213 (odd sizes at every level), valid along a
+    /// meander about 9 pixels wide, nodata -9999 elsewhere; with `bands` bands, each shifted.
+    fn meander(bands: usize) -> Raster {
+        let (cols, rows) = (301usize, 213usize);
+        let data: Vec<f32> = (0..bands)
+            .flat_map(|b| {
+                (0..rows).flat_map(move |y| {
+                    (0..cols).map(move |x| {
+                        let centre = 100.0 + 60.0 * ((x as f64) / 37.0).sin() + 7.0 * ((x as f64) / 5.0).sin() + 3.0 * b as f64;
+                        let d = (y as f64 - centre).abs();
+                        if d < 4.5 { (4.5 - d) as f32 + b as f32 } else { -9999.0 }
+                    })
+                })
+            })
+            .collect();
+        let cfg = wbraster::RasterConfig { cols, rows, bands, nodata: -9999.0, data_type: DataType::F32, ..Default::default() };
+        Raster::from_data_native(cfg, RasterData::F32(data)).unwrap()
+    }
+
+    /// An overview read back: its size and samples.
+    type StoredLevel = ((usize, usize), Vec<f64>);
+
+    /// A GeoTIFF or COG read back: the full-resolution dataset, and the overviews' sizes and
+    /// samples.
+    fn stored_levels(bytes: Vec<u8>) -> (crate::RasterDataset, Vec<StoredLevel>) {
+        let mut lazy = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap();
+        let levels = lazy
+            .overviews()
+            .into_iter()
+            .enumerate()
+            .map(|(i, (w, h))| {
+                let read = lazy.read_window(crate::Window::full(w, h), &crate::WindowOptions { bands: vec![], overview: Some(i) }).unwrap();
+                ((w, h), read.raster.data.to_f64_vec())
+            })
+            .collect();
+        (lazy.read().unwrap(), levels)
+    }
+
+    fn band_item(ds: &crate::RasterDataset, band: usize, name: &str) -> Option<String> {
+        ds.band_metadata.get(band)?.items.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
+    }
+
+    /// Area-matched COG overviews have GDAL's sizes (those of `average`) and keep the valid area
+    /// at every level, where `average` grows it; the base image is the source's, the method is
+    /// recorded as GDAL's COG driver records one (`IMAGE_STRUCTURE`), and each band's metadata
+    /// holds the area each level keeps, recomputed here from the levels read back.
+    #[test]
+    fn cog_area_matched_overviews_keep_the_valid_area() {
+        let raster = meander(2);
+        let (cols, rows, nd) = (raster.cols, raster.rows, -9999.0);
+        let cog = |method: &str| {
+            let options = crate::RasterWriteOptions {
+                tile_size: Some(32),
+                compression: Some("DEFLATE".into()),
+                creation_options: vec![("OVERVIEW_RESAMPLING".into(), method.into())],
+                ..Default::default()
+            };
+            encode(&raster, &TiffOptions::from_write_options(&options, true, Some(nd)).unwrap().unwrap()).unwrap()
+        };
+        let am_bytes = cog("AREA_MATCHED");
+        assert!(
+            String::from_utf8_lossy(&am_bytes).contains(r#"<Item name="OVERVIEW_RESAMPLING" domain="IMAGE_STRUCTURE">AREA_MATCHED</Item>"#)
+        );
+        let (am, am_levels) = stored_levels(am_bytes);
+        let (_, avg_levels) = stored_levels(cog("AVERAGE"));
+        let sizes: Vec<(usize, usize)> = am_levels.iter().map(|l| l.0).collect();
+        assert_eq!(sizes, gdal_overview::cog_sizes(cols, rows, 32, None));
+        assert_eq!(sizes, avg_levels.iter().map(|l| l.0).collect::<Vec<_>>());
+        assert_eq!(sizes, [(150, 106), (75, 53), (37, 26), (18, 13)]);
+        let base = am.raster.data.to_f64_vec();
+        assert_eq!(base, raster.data.to_f64_vec());
+        for b in 0..2 {
+            let band = &base[b * cols * rows..(b + 1) * cols * rows];
+            let valid = band.iter().filter(|v| **v != nd).count();
+            let mut ratios = Vec::new();
+            for (((w, h), am), (_, avg)) in am_levels.iter().zip(&avg_levels) {
+                let n = w * h;
+                let kept = am[b * n..(b + 1) * n].iter().filter(|v| **v != nd).count();
+                let cell = (cols * rows) as f64 / n as f64;
+                let target = (valid as f64 * n as f64 / (cols * rows) as f64).round_ties_even() as usize;
+                assert_eq!(kept, target, "band {b}, {w}x{h}");
+                let grown = avg[b * n..(b + 1) * n].iter().filter(|v| **v != nd).count();
+                assert!(grown as f64 * cell > 1.2 * valid as f64, "average grows the area: {grown} cells of {cell} px over {valid} px");
+                ratios.push(kept as f64 * cell / valid as f64);
+            }
+            let stored = band_item(&am, b, area_matched::AREA_RATIOS_ITEM).unwrap();
+            let stored: Vec<f64> = stored.split(',').map(|r| r.parse().unwrap()).collect();
+            assert_eq!(stored.len(), ratios.len());
+            for (s, r) in stored.iter().zip(&ratios) {
+                assert!((s - r).abs() < 1e-12, "{stored:?} {ratios:?}");
+            }
+            assert_eq!(band_item(&am, b, area_matched::BASE_VALID_PIXELS_ITEM), Some(valid.to_string()));
+        }
+        // Means of the valid pixels: within the range of the source values.
+        assert!(am_levels.iter().all(|(_, v)| v.iter().all(|v| *v == nd || (0.0..=6.0).contains(v))));
+    }
+
+    /// `area_matched_mode` keeps class values: every kept cell holds a class of the source.
+    #[test]
+    fn cog_area_matched_mode_keeps_classes() {
+        let (cols, rows) = (130usize, 70usize);
+        let data: Vec<u8> =
+            (0..rows).flat_map(|y| (0..cols).map(move |x| if (x + 2 * y) % 23 < 6 { [3, 7, 11][(x / 9) % 3] } else { 0 })).collect();
+        let cfg = wbraster::RasterConfig { cols, rows, bands: 1, nodata: 0.0, data_type: DataType::U8, ..Default::default() };
+        let raster = Raster::from_data_native(cfg, RasterData::U8(data)).unwrap();
+        let options =
+            crate::RasterWriteOptions { tile_size: Some(16), overview_resampling: Some("area_matched_mode".into()), ..Default::default() };
+        let bytes = encode(&raster, &TiffOptions::from_write_options(&options, true, Some(0.0)).unwrap().unwrap()).unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains(">AREA_MATCHED_MODE</Item>"));
+        let (lazy, levels) = stored_levels(bytes);
+        assert_eq!(levels.len(), 3);
+        for ((w, h), v) in &levels {
+            assert!(v.iter().all(|v| [0.0, 3.0, 7.0, 11.0].contains(v)), "{w}x{h}");
+        }
+        assert!(band_item(&lazy, 0, area_matched::AREA_RATIOS_ITEM).is_some());
+    }
+
+    /// Native categorical values above f64 precision survive writing and reading an overview.
+    #[test]
+    fn geotiff_area_matched_mode_preserves_u64_classes() {
+        let class = (1_u64 << 53) + 1;
+        let cfg = wbraster::RasterConfig { cols: 2, rows: 2, bands: 1, nodata: 0.0, data_type: DataType::U64, ..Default::default() };
+        let raster = Raster::from_data_native(cfg, RasterData::U64(vec![class; 4])).unwrap();
+        let options =
+            crate::RasterWriteOptions { overviews: vec![2], overview_resampling: Some("area_matched_mode".into()), ..Default::default() };
+        let opts = TiffOptions::from_write_options(&options, false, Some(0.0)).unwrap().unwrap();
+        let mut lazy = crate::LazyRaster::from_tiff_bytes(encode(&raster, &opts).unwrap()).unwrap().unwrap();
+        let read = lazy.read_window(crate::Window::full(1, 1), &crate::WindowOptions { bands: vec![], overview: Some(0) }).unwrap();
+        let RasterData::U64(values) = read.raster.data else { panic!("the overview must retain its native type") };
+        assert_eq!(values, vec![class]);
+    }
+
+    /// Area-matched Int64/UInt64 levels declare nodata, unlike GDAL 3.12.1's ordinary integer
+    /// overviews: their invalid footprints must remain invalid and agree with the area report.
+    #[test]
+    fn area_matched_integer_overviews_declare_invalid_footprints() {
+        for data_type in [DataType::I64, DataType::U64] {
+            let values: Vec<i32> = (0..64 * 32).map(|i| if i % 64 < 32 { 13 } else { 0 }).collect();
+            let data = match data_type {
+                DataType::I64 => RasterData::I64(values.iter().map(|&v| i64::from(v)).collect()),
+                DataType::U64 => RasterData::U64(values.iter().map(|&v| v as u64).collect()),
+                _ => unreachable!(),
+            };
+            let cfg = wbraster::RasterConfig { cols: 64, rows: 32, bands: 1, nodata: 0.0, data_type, ..Default::default() };
+            let raster = Raster::from_data_native(cfg, data).unwrap();
+            for cog in [false, true] {
+                for method in ["area_matched", "area_matched_mode"] {
+                    let options = crate::RasterWriteOptions {
+                        tile_size: Some(16),
+                        overviews: if cog { vec![] } else { vec![2, 4] },
+                        overview_resampling: Some(method.into()),
+                        ..Default::default()
+                    };
+                    let opts = TiffOptions::from_write_options(&options, cog, Some(0.0)).unwrap().unwrap();
+                    let mut lazy = crate::LazyRaster::from_tiff_bytes(encode(&raster, &opts).unwrap()).unwrap().unwrap();
+                    let header = lazy.header();
+                    assert_eq!(band_item(&header, 0, area_matched::BASE_VALID_PIXELS_ITEM), Some("1024".into()));
+                    let ratios = band_item(&header, 0, area_matched::AREA_RATIOS_ITEM).unwrap();
+                    let ratios: Vec<f64> = ratios.split(',').map(|v| v.parse().unwrap()).collect();
+                    let sizes = lazy.overviews();
+                    assert_eq!(sizes.len(), 2);
+                    for (i, (w, h)) in sizes.into_iter().enumerate() {
+                        assert_eq!(lazy.level_band_nodata(&[1], Some(i)), vec![Some(0.0)]);
+                        let read = lazy
+                            .read_window(crate::Window::full(w, h), &crate::WindowOptions { bands: vec![], overview: Some(i) })
+                            .unwrap();
+                        assert_eq!(read.nodata(), Some(0.0));
+                        let valid = match &read.raster.data {
+                            RasterData::I64(v) => v.iter().filter(|&&v| v != 0).count(),
+                            RasterData::U64(v) => v.iter().filter(|&&v| v != 0).count(),
+                            _ => unreachable!(),
+                        };
+                        assert_eq!(valid, w * h / 2);
+                        assert_eq!(ratios[i], valid as f64 * (64 * 32) as f64 / (w * h * 1024) as f64);
+                    }
+                }
+            }
+        }
+    }
+
+    /// GeoTIFF overviews at factors take the method too, with `ceil(size / factor)` sizes.
+    #[test]
+    fn geotiff_area_matched_overviews_at_factors() {
+        let raster = meander(1);
+        let options =
+            crate::RasterWriteOptions { overviews: vec![4, 2, 8], overview_resampling: Some("area_matched".into()), ..Default::default() };
+        let opts = TiffOptions::from_write_options(&options, false, Some(-9999.0)).unwrap().unwrap();
+        let (lazy, levels) = stored_levels(encode(&raster, &opts).unwrap());
+        assert_eq!(levels.iter().map(|l| l.0).collect::<Vec<_>>(), [(151, 107), (76, 54), (38, 27)]);
+        let valid = raster.data.to_f64_vec().iter().filter(|v| **v != -9999.0).count();
+        let ratios = band_item(&lazy, 0, area_matched::AREA_RATIOS_ITEM).unwrap();
+        for (((w, h), v), r) in levels.iter().zip(ratios.split(',')) {
+            let kept = v.iter().filter(|v| **v != -9999.0).count();
+            let target = (valid as f64 * (w * h) as f64 / (301 * 213) as f64).round_ties_even() as usize;
+            assert_eq!(kept, target);
+            let expected = kept as f64 * (301 * 213) as f64 / (w * h) as f64 / valid as f64;
+            assert!((r.parse::<f64>().unwrap() - expected).abs() < 1e-12);
+        }
+    }
+
+    /// A report the source carried is replaced, the other band items kept; no levels (the raster
+    /// fits in a tile, `OVERVIEWS=NONE`) means no report; and what the method cannot honour is
+    /// refused rather than written otherwise.
+    #[test]
+    fn area_matched_dataset_writes_require_shared_band_nodata() {
+        let dir = tempfile::tempdir().unwrap();
+        for driver in [crate::formats::RasterDriver::GTiff, crate::formats::RasterDriver::Cog] {
+            for method in ["area_matched", "area_matched_mode"] {
+                let path = dir.path().join(format!("{driver:?}-{method}.tif"));
+                let options = crate::RasterWriteOptions {
+                    driver: Some(driver),
+                    tile_size: Some(32),
+                    overviews: vec![2],
+                    overview_resampling: Some(method.into()),
+                    ..Default::default()
+                };
+                for declarations in [vec![Some(-9999.0), Some(-9998.0)], vec![Some(-9999.0), None], vec![None, Some(-9998.0)]] {
+                    let mut dataset = crate::RasterDataset::new(meander(2), true);
+                    dataset.band_nodata = declarations;
+                    let error = crate::write_raster_dataset(&dataset, path.to_str().unwrap(), &options).unwrap_err();
+                    assert!(error.to_string().contains("one shared nodata value"), "{error}");
+                }
+                for nodata in [-9999.0, f64::NAN] {
+                    let mut dataset = crate::RasterDataset::new(meander(2), true);
+                    dataset.band_nodata = vec![Some(nodata); 2];
+                    crate::write_raster_dataset(&dataset, path.to_str().unwrap(), &options).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cog_area_matched_report_and_refusals() {
+        let raster = meander(1);
+        let stale = crate::BandMetadata {
+            items: vec![("KEEP".into(), "me".into()), (area_matched::AREA_RATIOS_ITEM.into(), "9".into())],
+            ..Default::default()
+        };
+        let options = |extra: Vec<(&str, &str)>| crate::RasterWriteOptions {
+            tile_size: Some(32),
+            band_metadata: vec![stale.clone()],
+            creation_options: [("OVERVIEW_RESAMPLING", "AREA_MATCHED")]
+                .into_iter()
+                .chain(extra)
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+            ..Default::default()
+        };
+        let write = |o: &crate::RasterWriteOptions, nodata: Option<f64>| {
+            TiffOptions::from_write_options(o, true, nodata).and_then(|t| encode(&raster, &t.unwrap()))
+        };
+        let (lazy, _) = stored_levels(write(&options(vec![]), Some(-9999.0)).unwrap());
+        let items = &lazy.band_metadata[0].items;
+        assert_eq!(items.iter().filter(|(k, _)| k == area_matched::AREA_RATIOS_ITEM).count(), 1);
+        assert_ne!(band_item(&lazy, 0, area_matched::AREA_RATIOS_ITEM).as_deref(), Some("9"));
+        assert_eq!(band_item(&lazy, 0, "KEEP").as_deref(), Some("me"));
+        let (filtered, _) = stored_levels(write(&options(vec![("COPY_SRC_MDD", "YES")]), Some(-9999.0)).unwrap());
+        assert!(band_item(&filtered, 0, "KEEP").is_none());
+        assert_eq!(band_item(&filtered, 0, area_matched::AREA_RATIOS_ITEM), band_item(&lazy, 0, area_matched::AREA_RATIOS_ITEM));
+        assert_eq!(
+            band_item(&filtered, 0, area_matched::BASE_VALID_PIXELS_ITEM),
+            band_item(&lazy, 0, area_matched::BASE_VALID_PIXELS_ITEM)
+        );
+        for extra in [vec![("OVERVIEWS", "NONE")], vec![("BLOCKSIZE", "512")]] {
+            let without_levels = options(extra);
+            let (lazy, levels) = stored_levels(write(&without_levels, Some(-9999.0)).unwrap());
+            assert!(levels.is_empty());
+            assert_eq!(band_item(&lazy, 0, area_matched::AREA_RATIOS_ITEM).as_deref(), Some("9"), "left as given");
+            assert!(write(&without_levels, None).unwrap_err().to_string().contains("nodata"));
+            let masked = crate::RasterWriteOptions { mask: Some(vec![1; 301 * 213]), ..without_levels.clone() };
+            assert!(write(&masked, Some(-9999.0)).unwrap_err().to_string().contains("without a mask or alpha band"));
+            let alpha = crate::RasterWriteOptions {
+                band_metadata: vec![crate::BandMetadata { color_interp: Some("Alpha".into()), ..Default::default() }],
+                ..without_levels
+            };
+            assert!(write(&alpha, Some(-9999.0)).unwrap_err().to_string().contains("without a mask or alpha band"));
+        }
+        // No nodata; a mask; an alpha band; a source's overviews to copy.
+        assert!(write(&options(vec![]), None).is_err());
+        let masked = crate::RasterWriteOptions { mask: Some(vec![1; 301 * 213]), ..options(vec![]) };
+        assert!(write(&masked, Some(-9999.0)).is_err());
+        let alpha = crate::RasterWriteOptions {
+            band_metadata: vec![crate::BandMetadata { color_interp: Some("Alpha".into()), ..Default::default() }],
+            ..options(vec![])
+        };
+        assert!(write(&alpha, Some(-9999.0)).is_err());
+        for (bands, index) in [(2, 0), (3, 1)] {
+            let mut alpha = options(vec![]);
+            alpha.band_metadata = vec![crate::BandMetadata::default(); bands];
+            alpha.band_metadata[index].color_interp = Some("Alpha".into());
+            let opts = TiffOptions::from_write_options(&alpha, true, Some(-9999.0)).unwrap().unwrap();
+            let error = encode(&meander(bands), &opts).unwrap_err();
+            assert!(error.to_string().contains("without a mask or alpha band"), "{error}");
+        }
+        assert!(write(&options(vec![("@COPY_SRC_OVERVIEWS", "src.tif")]), Some(-9999.0)).is_err());
+        // The row-streaming COG writer needs the whole raster for them.
+        let dir = tempfile::tempdir().unwrap();
+        let opts = TiffOptions::from_write_options(&options(vec![]), true, Some(-9999.0)).unwrap().unwrap();
+        assert!(CogWriter::create(dir.path().join("rows.tif").to_str().unwrap(), &raster, &opts).is_err());
     }
 
     #[test]

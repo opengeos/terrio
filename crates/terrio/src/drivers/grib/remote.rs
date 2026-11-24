@@ -15,7 +15,7 @@
 //! ignores ranges is read only if the file came whole with the first request (a small file):
 //! the rest of the reads are then served from it.
 
-use super::{Band, Source, Store, be, grib1, header, header_needs, message_bands, normalize_units, try_vec};
+use super::{Band, Source, Store, be, complete_head, grib1, header, message_bands, normalize_units, try_vec};
 use crate::http::{ByteRange, HttpOptions, ObjectFetcher, RangeReader, Remote};
 use crate::{Error, Result};
 use std::io::{Read, Seek, SeekFrom};
@@ -105,60 +105,6 @@ fn get(fetcher: &ObjectFetcher, remote: &Remote, at: usize, n: usize) -> Result<
     Ok(data)
 }
 
-/// The next part of a message's header to read, given the `head` at hand: `(offset, length)`
-/// from the message's start, the offset past the head when a GRIB1 bitmap's body is skipped.
-/// `None` when the head holds the header. GRIB2 headers are read whole ([`header_needs`]).
-fn next_part(head: &[u8], len: usize) -> Option<(usize, usize)> {
-    if head.len() >= 16 && head[7] == 1 {
-        return grib1_next_part(head, len);
-    }
-    header_needs(head, len).filter(|&n| n > head.len()).map(|n| (head.len(), n - head.len()))
-}
-
-/// [`next_part`] for GRIB1: the sections up to the bitmap's first 6 octets, then the data
-/// section's first 11 octets, past the bitmap's body. A header [`grib1::Message::parse`] would
-/// refuse ends here: parsing reports it.
-fn grib1_next_part(head: &[u8], len: usize) -> Option<(usize, usize)> {
-    // Contiguous bytes up to `n`.
-    let to = |n: usize| {
-        let n = n.min(len);
-        (n > head.len()).then(|| (head.len(), n - head.len()))
-    };
-    let u = |o: usize| be(&head[o..o + 3]) as usize;
-    if head.len() < 11 {
-        return to(11);
-    }
-    let pds_len = u(8);
-    if pds_len < 28 {
-        return None;
-    }
-    // Past the product definition section: the grid definition section's length.
-    let mut cur = 8 + pds_len;
-    if head.len() < cur + 6 {
-        return to(cur + 6);
-    }
-    let gds_len = u(cur);
-    if gds_len < 6 {
-        return None;
-    }
-    cur += gds_len;
-    if head[15] & 0x40 != 0 {
-        // The bitmap section's length, then the data section's first octets past its body.
-        if head.len() < cur + 6 {
-            return to(cur + 6);
-        }
-        let bds = cur.saturating_add(u(cur).max(6));
-        if bds.saturating_add(11) > len || head.len() >= bds + 11 {
-            return None;
-        }
-        if head.len() > bds {
-            return to(bds + 11);
-        }
-        return Some((bds, 11));
-    }
-    to(cur + 11)
-}
-
 /// Opens a remote GRIB file to be read band by band.
 pub(crate) fn open(remote: &Remote) -> Result<crate::LazyRaster> {
     let normalize = normalize_units();
@@ -207,15 +153,7 @@ pub(crate) fn open(remote: &Remote) -> Result<crate::LazyRaster> {
             carry = head.split_off(len);
         }
         // The rest of the header; a skipped GRIB1 bitmap body stays zeros, past the prefix.
-        let mut prefix = None;
-        while let Some((at, n)) = next_part(&head, len).filter(|&(at, n)| n > 0 && at >= head.len() && at + n <= len) {
-            if at > head.len() {
-                prefix.get_or_insert(head.len());
-                head.resize(at, 0);
-            }
-            head.extend_from_slice(&fetch.get(start + at, n)?);
-        }
-        let prefix = prefix.unwrap_or(head.len());
+        let prefix = complete_head(&mut head, len, |at, n| fetch.get(start + at, n))?;
         // The next message's header is likely the size of this one's (GRIB2), or short (GRIB1,
         // whose bitmap is skipped).
         guess = if head[7] == 2 { prefix.clamp(HEAD_MIN, BLOCK) } else { HEAD_MIN };
@@ -246,7 +184,6 @@ pub(crate) fn open(remote: &Remote) -> Result<crate::LazyRaster> {
     }
     let (ds, split) = header(&all, file_len)?;
     drop(all);
-    let (cols, rows) = (ds.raster.cols, ds.raster.rows);
     let store = Store::Remote(Box::new(Messages { fetch, file_len, messages, bands }));
-    Ok(crate::LazyRaster::from_source(ds, Box::new(Source { store, cols, rows, split, normalize, cache: Vec::new() })))
+    Ok(Source::lazy(Source::new(ds, split, normalize, store, crate::block_cache::Handle::new())))
 }

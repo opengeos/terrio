@@ -11,7 +11,9 @@
 Usage: python scripts/compare_vector_geom_with_gdal.py ../terrio-data --terrio target/release/terrio
 
 Commands: simplify, segmentize, swap-xy and set-geom-type against ``gdal vector`` (GDAL 3.12
-has them); convex-hull and concave-hull against OGR's ``ConvexHull``/``ConcaveHull`` and GEOS's
+has them); ``simplify --method douglas-peucker`` against OGR's ``Simplify`` (GEOS's
+``DouglasPeuckerSimplifier``), leaving out features where GEOS repairs an invalid result;
+convex-hull and concave-hull against OGR's ``ConvexHull``/``ConcaveHull`` and GEOS's
 ``GEOSConcaveHullOfPolygons_r`` (through ctypes), the functions GDAL 3.13's commands call;
 combine and sort, which GDAL 3.12 lacks, against reference implementations of GDAL 3.13's
 algorithms: grouping in Python with OGR geometries, Hilbert codes ported from GDAL's
@@ -237,6 +239,35 @@ class Runner:
             identical=same,
             invalid_terrio=invalid[0],
             invalid_reference=invalid[1],
+        )
+
+    def compare_unrepaired(self, name, actual, expected):
+        """Compares results of a simplification without a repair step with a repaired one.
+
+        GEOS rebuilds an invalid polygonal Douglas-Peucker result with a zero-width buffer;
+        terrio returns it as simplified. Features where either result is invalid are counted
+        and left out; the others must be identical coordinate by coordinate.
+
+        Args:
+            name: The case name.
+            actual: terrio's features.
+            expected: The reference features.
+        """
+        assert len(actual) == len(expected), f"{name}: {len(actual)} != {len(expected)} features"
+        same = repaired = 0
+        for (ga, aa), (gb, ab) in zip(actual, expected):
+            assert aa == ab, f"{name}: attributes differ: {aa} != {ab}"
+            if (ga is not None and not ga.IsValid()) or (gb is not None and not gb.IsValid()):
+                repaired += 1
+            elif canonical(ga) == canonical(gb):
+                same += 1
+        compared = len(actual) - repaired
+        self.record(
+            name,
+            "not compared" if actual and compared == 0 else IDENTICAL if same == compared else DIFFERS,
+            features=len(actual),
+            identical=same,
+            left_out_invalid=repaired,
         )
 
     def compare_hulls(self, name, actual, expected, tolerance):
@@ -679,6 +710,20 @@ def main():
         subprocess.run([args.terrio, "convert", str(paths[src]), str(out_t), "--" + option[1:], value], check=True)
         gdal.VectorTranslate(str(out_g), str(paths[src]), options=[option, value])
         r.compare_features(name, load(out_t), load(out_g))
+
+    # Douglas-Peucker: OGR's Simplify (GEOS's DouglasPeuckerSimplifier), whose collapsed rings
+    # are removed as `--collapse drop` removes them.
+    for name, src, tolerance in [
+        ("simplify-dp-tn-500m", "tn", "500"),
+        ("simplify-dp-tn-5km", "tn", "5000"),
+        ("simplify-dp-us-0.01deg", "us", "0.01"),
+        ("simplify-dp-roads-5m", "roads", "5"),
+        ("simplify-dp-ne-1deg", "ne", "1"),
+    ]:
+        options = ["--tolerance", tolerance, "--method", "douglas-peucker", "--collapse", "drop"]
+        out = r.terrio_run(["simplify", paths[src], *options], name)
+        expected = [(g.Simplify(float(tolerance)) if g else None, a) for g, a in load(paths[src])]
+        r.compare_unrepaired(name, load(out), expected)
 
     # Convex hulls: OGR's ConvexHull, which gdal vector convex-hull runs.
     for src in ["tn", "us", "roads", "ne"]:

@@ -49,21 +49,33 @@ fn run(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>, op: Geomet
     Ok(PyLayer::from(inner))
 }
 
-/// Simplifies geometries, preserving their topology, as `gdal vector simplify` (GEOS's
-/// TopologyPreservingSimplifier) does.
+/// Simplifies geometries, preserving their topology, as `gdal vector simplify` (JTS's
+/// TopologyPreservingSimplifier) does, or with Douglas-Peucker.
 ///
 /// Args:
 ///     src: Vector data: a path, a `Layer`, a GeoDataFrame, GeoJSON, WKT, Shapely geometries...
 ///         (see "Vector inputs" in the Python guide).
 ///     tolerance: The distance tolerance, in CRS units (degrees for geographic CRSs).
 ///     layer: The layer to use, when the input has several.
+///     method: `"preserve-topology"` (default) or `"douglas-peucker"` (JTS's
+///         DouglasPeuckerSimplifier without its repair step, as `simplify_wkb`: faster, but
+///         rings may self-intersect at large tolerances).
+///     collapse: With Douglas-Peucker, rings left with fewer than four points: `"keep"` their
+///         vertices (default) or `"drop"` them as JTS does.
 ///
 /// Returns:
 ///     Layer: The simplified features. Z is kept and M dropped, as GDAL does.
 #[pyfunction]
-#[pyo3(signature = (src, tolerance, *, layer=None))]
-fn simplify(py: Python<'_>, src: &Bound<'_, PyAny>, tolerance: f64, layer: Option<String>) -> PyResult<PyLayer> {
-    run(py, src, layer, GeometryOp::Simplify { tolerance })
+#[pyo3(signature = (src, tolerance, *, layer=None, method="preserve-topology", collapse="keep"))]
+fn simplify(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    tolerance: f64,
+    layer: Option<String>,
+    method: &str,
+    collapse: &str,
+) -> PyResult<PyLayer> {
+    run(py, src, layer, GeometryOp::simplify(tolerance, method, collapse).py()?)
 }
 
 /// Adds vertices so that no segment is longer than `max_length`, as `gdal vector segmentize`.

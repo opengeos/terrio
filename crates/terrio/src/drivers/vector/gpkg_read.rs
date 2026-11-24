@@ -338,7 +338,7 @@ pub(crate) fn rtree_candidates(db: &impl Tables, rtree: &str, bbox: Rect) -> Res
             _ => return Err(bad(format!("R-tree '{rtree}' node is not a blob"))),
         })
     };
-    let (x0, y0, x1, y1) = bbox;
+    let (x0, y0, x1, y1) = super::corners_extent(bbox);
     let mut out = Vec::new();
     // Node 1 is the root; its first two bytes give the depth of the tree.
     let Some(root_node) = node(1)?.filter(|n| n.len() >= 4) else { return Ok(None) };
@@ -372,7 +372,8 @@ pub(crate) fn rtree_candidates(db: &impl Tables, rtree: &str, bbox: Rect) -> Res
 }
 
 /// Whether a geometry's bounding box intersects a rectangle.
-pub(crate) fn bbox_intersects(g: &Geometry, (x0, y0, x1, y1): Rect) -> bool {
+pub(crate) fn bbox_intersects(g: &Geometry, rect: Rect) -> bool {
+    let (x0, y0, x1, y1) = super::corners_extent(rect);
     g.bbox().is_some_and(|b| b.min_x <= x1 && b.max_x >= x0 && b.min_y <= y1 && b.max_y >= y0)
 }
 
