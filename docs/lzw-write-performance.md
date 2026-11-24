@@ -15,7 +15,12 @@ needed, the encoder uses 36 KiB of heap storage.
 
 ## Reproduce the synthetic writer workload
 
-Build the example separately in the baseline and candidate checkouts:
+First copy the candidate's unchanged
+`crates/terrio/examples/lzw_write_benchmark.rs` into the same path in the baseline
+checkout. Cargo discovers this example automatically. This preparation adds only
+the workload; retain each checkout's own library sources and Cargo manifest.
+
+Then build the example separately in the baseline and candidate checkouts:
 
 ```sh
 cargo build -p terrio --release --no-default-features --features geotiff \
