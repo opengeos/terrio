@@ -3711,7 +3711,7 @@ impl WarpContext<'_> {
                 y1 = y1.max(ys[i]);
             }
             // The columns of the samples that `cut` looks at, for the arc they span across the cut
-            // (see `kernel_span` below).
+            // (see `arc` below).
             let columns: Vec<f64> = if turn.is_some() && self.arc_turn().is_some() {
                 (0..xs.len())
                     .filter(|&i| ok[i] && regular.as_ref().is_none_or(|points| points[i]) && xs[i].is_finite() && ys[i].is_finite())
@@ -3918,7 +3918,8 @@ impl WarpContext<'_> {
             .filter(|_| self.global_longitude_turn().is_none())
             .map(|(low, high)| self.wrap_source_bounds(low, high))
             .map(|(low, high)| (round_close(low), round_close(high)))
-            // Rounding can collapse a small positive arc. Keep the continuous bounds then.
+            // Near-coincident endpoints of a whole-turn footprint can leave a tiny arc.
+            // If rounding collapses it, fall back to the sampled bounds to keep that full span.
             .filter(|(low, high)| high > low);
         (x0, x1) = self.wrap_source_bounds(x0, x1);
         if x0 > sw || x1 < 0.0 || y0 > sh || y1 < 0.0 {
