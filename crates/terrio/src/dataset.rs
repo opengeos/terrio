@@ -1762,6 +1762,20 @@ pub struct RasterWriteOptions {
     pub color_table: Vec<[u8; 4]>,
     /// GeoTIFF overviews to build, as decimation factors such as `[2, 4, 8]`.
     pub overviews: Vec<usize>,
+    /// GeoTIFF or COG overviews written as they are, from the largest: as GDAL's COG driver writes
+    /// a source's existing overviews (`OVERVIEWS=AUTO` or `FORCE_USE_EXISTING`), and its GTiff
+    /// driver with `COPY_SRC_OVERVIEWS=YES`, without a source file to hold them. Only their
+    /// pixels are read: each has the raster's bands and data type, and is smaller than the level
+    /// before it (no larger in either dimension), as `gdaladdo`'s `ceil(n / factor)` sizes and
+    /// the COG driver's halved ones are. Neither overview factors ([`Self::overviews`]) nor a
+    /// resampling apply to them; a COG with `OVERVIEWS=IGNORE_EXISTING` or `NONE` refuses them.
+    /// They are written whole, not in rows, and only by the GeoTIFF and COG writers.
+    pub overview_data: Vec<std::sync::Arc<Raster>>,
+    /// Dataset metadata items (GDAL's default domain) set over the raster's own, as
+    /// `gdal_translate -mo` sets them: GeoTIFF and COG store them in the `GDAL_METADATA` tag (an
+    /// `AREA_OR_POINT` item sets the raster type). For duplicate keys, the last explicit value
+    /// wins. Other formats refuse them.
+    pub metadata: Vec<(String, String)>,
     /// The overview resampling, as GDAL names it: `nearest`, `average`, `rms`, `bilinear`,
     /// `cubic`, `cubicspline`, `lanczos` or `mode` (and terrio's `min` and `max` for GeoTIFF
     /// overviews). GeoTIFF overviews default to `nearest`; COGs to GDAL's COG driver's default,
@@ -1984,6 +1998,11 @@ fn write_raster_with_nodata(
                 if !options.gcps.is_empty() || options.mask.is_some() || !options.rpc.is_empty() {
                     return Err(Error::Unsupported(format!("GCPs, masks and RPCs are not written through GDAL's {d} driver")));
                 }
+                if !options.overview_data.is_empty() || !options.metadata.is_empty() {
+                    return Err(Error::Unsupported(format!(
+                        "supplied overviews and metadata items are not written through GDAL's {d} driver"
+                    )));
+                }
                 let mut co = options.creation_options.clone();
                 if let Some(c) = &options.compression
                     && !co.iter().any(|(k, _)| k.eq_ignore_ascii_case("COMPRESS"))
@@ -2039,6 +2058,7 @@ fn write_raster_with_nodata(
             }
         }
     }
+    options.check_written_by_tiff_writer(driver)?;
     // Complex samples: GeoTIFFs written above, and GDAL's HFA driver below.
     if complex && !(cfg!(feature = "gdal") && driver == RasterDriver::HFA) {
         return Err(Error::Unsupported(format!(
@@ -2395,6 +2415,25 @@ impl RasterWriteOptions {
             ..self.clone()
         }
     }
+    /// Refuses supplied overviews and metadata items for a write that terrio's GeoTIFF and COG
+    /// writer does not make (another format, or a compression only wbraster encodes), which would
+    /// leave them out.
+    pub(crate) fn check_written_by_tiff_writer(&self, driver: RasterDriver) -> Result<()> {
+        if !self.overview_data.is_empty() {
+            return Err(Error::Unsupported(format!(
+                "supplied overviews are written by the GeoTIFF and COG writer (in a compression it encodes), not the {} one",
+                driver.name()
+            )));
+        }
+        if !self.metadata.is_empty() {
+            return Err(Error::Unsupported(format!(
+                "metadata items are written to GeoTIFF and COG files (in a compression terrio encodes), not by the {} writer",
+                driver.name()
+            )));
+        }
+        Ok(())
+    }
+
     pub(crate) fn inherited_gcps(&self, ds: &RasterDataset, driver: Option<RasterDriver>) -> Vec<Gcp> {
         if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog))
             && self.gcps.is_empty()

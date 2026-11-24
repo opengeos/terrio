@@ -1454,6 +1454,9 @@ impl LazyRaster {
         context.check()?;
         let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
         self.refuse_masked_tile_archive(driver, options)?;
+        if let Some(d) = driver.filter(|d| !matches!(d, RasterDriver::GTiff | RasterDriver::Cog)) {
+            options.check_written_by_tiff_writer(d)?;
+        }
         let source_mask = options.mask.is_none() && self.has_mask() && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
         // Tile archives are built a tile row at a time (see `crate::tiles`). A source that cannot
         // list the files it reads, or an output replacing one of them, is read whole, as before.

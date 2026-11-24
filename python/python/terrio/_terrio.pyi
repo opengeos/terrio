@@ -443,11 +443,12 @@ class Raster:
         *,
         band_metadata: Sequence[Mapping[str, Any]] | None = None,
         colormap: Sequence[tuple[int, int, int, int]] | None = None,
-        overviews: Sequence[int] | None = None,
+        overviews: Sequence[int] | Sequence[Raster | NDArray[Any]] | None = None,
         overview_resampling: str | None = None,
         gcps: Sequence[tuple[float, float, float, float, float]] | None = None,
         mask: NDArray[Any] | None = None,
         rpc: Sequence[float] | None = None,
+        metadata: Mapping[str, Any] | Sequence[tuple[Any, Any]] | None = None,
     ) -> None: ...
     def to_bytes(
         self,
