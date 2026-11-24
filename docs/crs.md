@@ -53,7 +53,12 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   when terrio identifies it, the shift alone; into one on the source CRS's own datum, no shift,
   whatever the target; to a CRS without transformations, the source CRS's own, else PROJ's
   ballpark); such a shift wins over the EPSG code of a source CRS terrio identifies, and over the
-  `TOWGS84` of a WKT 1 source CRS (GDAL's `GEOGCS` or `PROJCS` in `SOURCECRS`). Their PROJ
+  `TOWGS84` of a WKT 1 source CRS (GDAL's `GEOGCS` or `PROJCS` in `SOURCECRS`). A target that is
+  bound itself (a `BOUNDCRS`) is not chained through, as PROJ does not chain through it, nor
+  through a WKT 1 target with its own `TOWGS84`; PROJ links such CRSs by its ballpark. When a
+  `BOUNDCRS`'s transformation is not applied (that case, a WKT 1 target, which terrio does not
+  read where PROJ does, or a grid's transformation), each transformer using the CRS warns
+  (`take_warnings`), and its points are placed by the ballpark. Their PROJ
   string leaves out a shift to a CRS other than WGS 84, as PROJ's does. Their scale difference is a
   ratio in unity (`1.0000067`, as PROJ writes it) or in the unit given (parts per million, where
   PROJ 9.9.0 misreads 6.7 ppm as the ratio 6.7, which terrio does not follow); without a unit, a

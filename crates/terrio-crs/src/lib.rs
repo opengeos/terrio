@@ -2248,6 +2248,8 @@ pub struct Transformer {
     dst_geoid_grids: std::sync::OnceLock<Vec<std::sync::Arc<datum::Op>>>,
     emitted_diagnostics: std::sync::atomic::AtomicU8,
     diagnostics: std::sync::atomic::AtomicU8,
+    /// Why a `BOUNDCRS`'s transformation is not applied, of the source or target CRS: a warning.
+    unapplied: Vec<String>,
     warning_handler: fn(String),
     /// The time of time-dependent transformations, as GDAL sets it from the coordinate epochs.
     time: Option<f64>,
@@ -2532,6 +2534,8 @@ impl Transformer {
     pub fn with_options(src: &SpatialRef, dst: &SpatialRef, opts: &TransformOptions) -> Result<Self> {
         let (mut s, mut d) = (Def::new(src)?, Def::new(dst)?);
         s.compatible_body(&d)?;
+        // Why a `BOUNDCRS`'s transformation is not applied, for the warning (#1012 item 12).
+        let unapplied: Vec<String> = [s.unapplied(), d.unapplied()].into_iter().flatten().map(str::to_string).collect();
         if opts.promote_to_3d {
             s.promote_to_3d();
             d.promote_to_3d();
@@ -2611,7 +2615,8 @@ impl Transformer {
             src_geoid_grids: std::sync::OnceLock::new(),
             dst_geoid_grids: std::sync::OnceLock::new(),
             emitted_diagnostics: std::sync::atomic::AtomicU8::new(0),
-            diagnostics: std::sync::atomic::AtomicU8::new(0),
+            diagnostics: std::sync::atomic::AtomicU8::new(if unapplied.is_empty() { 0 } else { 16 }),
+            unapplied,
             warning_handler: warnings::warn,
         })
     }
@@ -2787,6 +2792,11 @@ impl Transformer {
         ] {
             if flags & bit != 0 {
                 (self.warning_handler)(message.into());
+            }
+        }
+        if flags & 16 != 0 {
+            for message in &self.unapplied {
+                (self.warning_handler)(message.clone());
             }
         }
     }

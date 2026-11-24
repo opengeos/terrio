@@ -135,6 +135,11 @@ pub(crate) fn convert_root(input: &Wkt2Root, root: &Node) -> Result<Converted> {
     // terrio cannot convert is left out, as terrio did before it read those.
     // The exact or evaluation-point step only with the target it is to: not to WGS 84 when
     // the target is left out.
+    // A shift left out is reported by the transformers using the CRS (#1012 item 12): its points
+    // are then placed as if it had none, by the ballpark.
+    let name = root.child("ABRIDGEDTRANSFORMATION").and_then(Node::name).unwrap_or("").to_string();
+    let mut unapplied = None;
+    let mut not_applied = |why: String| unapplied = Some(format!("the BOUNDCRS transformation \"{name}\" is not applied: {why}"));
     match helmert_shift(&b.transformation, b.to_wgs84)? {
         Some((t, true, helmert)) => {
             c.proj = format!("{} +towgs84={}", c.proj, t.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
@@ -143,13 +148,30 @@ pub(crate) fn convert_root(input: &Wkt2Root, root: &Node) -> Result<Converted> {
         // To another CRS (ED50): the shift to it, then its own transformations to WGS 84, as
         // PROJ chains them.
         Some((t, false, helmert)) => {
-            let target = root.child("TARGETCRS").and_then(first_node);
-            if let Some(target) = b.target.as_ref().zip(target).and_then(|(input, node)| convert_root(input, node).ok()) {
-                c.bound = Some(Box::new(BoundTo { target, shift: t }));
-                c.helmert = helmert;
+            let node = root.child("TARGETCRS").and_then(first_node);
+            // A `BOUNDCRS` target is named by its source CRS.
+            let named = node.map(|n| n.child("SOURCECRS").and_then(first_node).unwrap_or(n));
+            let target_name = named.and_then(Node::name).unwrap_or("");
+            match b.target.as_ref().zip(node) {
+                // A target bound itself (a `BOUNDCRS`): PROJ 9.9.0 does not chain through it and
+                // links the CRSs by its ballpark.
+                Some((Wkt2Root::Bound(_), _)) => not_applied(format!(
+                    "its target CRS \"{target_name}\" is bound to another CRS itself, which PROJ does not chain through either"
+                )),
+                Some((input, node)) => match convert_root(input, node) {
+                    Ok(target) => {
+                        c.bound = Some(Box::new(BoundTo { target, shift: t }));
+                        c.helmert = helmert;
+                    }
+                    Err(_) => not_applied(format!("its target CRS \"{target_name}\" is not read")),
+                },
+                None => not_applied(format!("its target CRS \"{target_name}\" is not read")),
             }
         }
-        None => {}
+        None => not_applied(format!("terrio applies Helmert transformations only, not \"{}\"", b.transformation.method)),
+    }
+    if unapplied.is_some() {
+        c.unapplied = unapplied;
     }
     Ok(c)
 }
@@ -939,7 +961,7 @@ impl Geodetic {
             rf: self.rf,
             pm: self.pm,
         };
-        Converted { proj, geogcs: self.node.clone(), geog: self.geog, datum: Some(datum), bound: None, helmert: None }
+        Converted { proj, geogcs: self.node.clone(), geog: self.geog, datum: Some(datum), bound: None, helmert: None, unapplied: None }
     }
 }
 
