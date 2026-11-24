@@ -354,7 +354,7 @@ pub use float_read::FloatReadOptions;
 #[cfg(feature = "ndarray")]
 #[cfg_attr(docsrs, doc(cfg(feature = "ndarray")))]
 pub use ndarray;
-pub use resampled_read::ResampledReadOptions;
+pub use resampled_read::{ResampledReadOptions, WindowSampling};
 // Raster pixels as `ndarray` arrays, without copying them.
 #[cfg(feature = "ndarray")]
 #[cfg_attr(docsrs, doc(cfg(feature = "ndarray")))]
