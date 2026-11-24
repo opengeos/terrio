@@ -232,8 +232,9 @@ fn integer_window_nearest_reads_are_gdal_reads() {
             assert_eq!(shared_masks, masks, "{label}");
         }
 
+        let legacy = raster.read_resampled(o).unwrap();
+        assert_eq!(read.geo_transform(), legacy.geo_transform(), "{label}");
         if let Some(fractional) = reference["fractional_data"].as_str() {
-            let legacy = raster.read_resampled(o).unwrap();
             let fractional = values(&hex(fractional), &case.dtype);
             let differences = match o.size {
                 (17, 23) => 314,
@@ -243,7 +244,6 @@ fn integer_window_nearest_reads_are_gdal_reads() {
             };
             assert_eq!(read_values(&legacy.raster.data), fractional, "{label}");
             assert_eq!(fractional.iter().zip(expected).filter(|(a, b)| **a != *b).count(), differences, "{label}");
-            assert_eq!(read.geo_transform(), legacy.geo_transform(), "{label}");
         }
 
         // A positive offset selects the same first image and must read it alone, too.

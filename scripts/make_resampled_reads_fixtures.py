@@ -483,7 +483,7 @@ def write_mask_control(gdal: Any) -> None:
 def write_integer_windows(gdal: Any) -> None:
     """Recreate #1219's rasters and freeze the results of integer-window RasterIO."""
     expected = []
-    rasterio = RasterIO(gdal)
+    rasterio_like = RasterIO(gdal)
     nearest = gdal.GRIORA_NearestNeighbour
 
     def case(name, window, size, bands=(1,), overview="AUTO", level_window=None, compare_fractional=False):
@@ -501,7 +501,7 @@ def write_integer_windows(gdal: Any) -> None:
                 Returns:
                     Array of samples at the requested output size.
                 """
-                return rasterio.read_integer_band(band, level_window or source_window, size, overview != "AUTO")
+                return rasterio_like.read_integer_band(band, level_window or source_window, size, overview != "AUTO")
 
             data = np.stack([read(b) for b in source_bands])
             masks = np.stack([read(b.GetMaskBand()) for b in source_bands])
@@ -509,7 +509,7 @@ def write_integer_windows(gdal: Any) -> None:
                           size=size, bands=bands, overview=overview, resampling="nearest",
                           dtype=data.dtype.name, data=hexa(data), masks=hexa(masks), gdal_version=gdal.__version__)
             if compare_fractional:
-                result["fractional_data"] = hexa(rasterio.read(ds, list(bands), source_window, size, nearest))
+                result["fractional_data"] = hexa(rasterio_like.read(ds, list(bands), source_window, size, nearest))
             expected.append(result)
 
     pixels = np.arange(97 * 83, dtype=np.float32).reshape(83, 97)
