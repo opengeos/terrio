@@ -301,6 +301,7 @@ impl Table {
                     geocentric: flags.contains('g'),
                     priority: flags.contains('p'),
                     keeps_height: flags.contains('z'),
+                    keeps_wgs84_leg_height: false,
                     steps,
                     name,
                 }))

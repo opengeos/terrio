@@ -32,10 +32,10 @@ fn codes(v: &Value) -> Vec<u32> {
     v.as_array().unwrap().iter().map(|c| c.as_u64().unwrap() as u32).collect()
 }
 
-/// Deprecated geographic 3D and geocentric CRSs PROJ transforms by other operations than terrio
-/// (NAD83(CSRS) 3D and geocentric, RGNC 1991 geocentric): left for the geocentric CRSs of
+/// Deprecated geocentric CRSs PROJ transforms by other operations than terrio (RGNC 1991
+/// geocentric). NAD83(CSRS) 3D and geocentric are placed as PROJ places them since
 /// opengeos/terrio#1012, item 8.
-const PENDING: &[u32] = &[4359, 4360, 4382, 4968];
+const PENDING: &[u32] = &[4382, 4968];
 
 /// Every deprecated code PROJ transforms is placed as PROJ places it, by its own definition.
 #[test]

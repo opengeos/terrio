@@ -179,6 +179,10 @@ terms.
 The test data crates/terrio-crs/tests/data/helmert_to_wgs84.tsv (PROJ 9.9.0's datum
 transformations to WGS 84 of EPSG geographic CRSs, by scripts/gen_helmert_to_wgs84.py) is derived
 from the same dataset, under the same terms.
+The EPSG codes and areas of use in the height reference data
+crates/terrio-crs/tests/data/compound_heights.tsv and geodetic_3d.tsv (PROJ 9.9.0's placements,
+by scripts/gen_compound_heights.py and scripts/gen_geodetic_3d.py) derive from the same dataset,
+under the same terms.
 
 -------------------------------------------------------------------------------
 Esri projection engine data

@@ -2572,11 +2572,26 @@ impl Transformer {
         }
         let cartesian_src = s.is_geocentric().then(|| s.clone());
         let cartesian_dst = d.is_geocentric().then(|| d.clone());
+        let (src_3d, dst_3d, src_heights, dst_heights) = (s.geodetic_3d(), d.geodetic_3d(), s.has_height(), d.has_height());
         if cartesian_src.is_some() {
             s = s.geographic_endpoint();
         }
         if cartesian_dst.is_some() {
             d = d.geographic_endpoint();
+        }
+        // From or into a CRS without heights (WGS 84 (2D)), PROJ keeps the height through the
+        // datum shift (#1012 item 8).
+        if src_3d && !dst_heights {
+            s.beside_2d(cartesian_src.is_some());
+        }
+        if dst_3d && !src_heights {
+            d.beside_2d(cartesian_dst.is_some());
+        }
+        if cartesian_src.is_some() && !dst_heights {
+            d.beside_geocentric();
+        }
+        if cartesian_dst.is_some() && !src_heights {
+            s.beside_geocentric();
         }
         let time = match (s.is_dynamic(), d.is_dynamic(), opts.source_coordinate_epoch, opts.target_coordinate_epoch) {
             (true, false, Some(e), _) => Some(e),
@@ -2599,7 +2614,7 @@ impl Transformer {
         // different references, with a vertical CRS on either side and none with a geoid model it
         // can use (one side's model would run first), and no transformation between the vertical
         // CRSs that can be used.
-        let has_heights = (s.has_height() && d.has_height()) || cartesian_src.is_some() || cartesian_dst.is_some();
+        let has_heights = s.has_height() && d.has_height();
         let modelled = |def: &Def| {
             def.vertical()
                 .is_some_and(|v| !v.ballpark || v.models.iter().any(|(_, ops)| ops.iter().any(|o| o.available() && is_geoid_model(o))))
@@ -3519,22 +3534,24 @@ mod tests {
     /// GDAL 3.13.3 uses the same horizontal datum shift for this compound CRS.
     #[test]
     fn ballpark_height_warning_uses_destination_coordinates() {
-        let src = SpatialRef::from_epsg(4979).unwrap();
-        let dst = SpatialRef::from_epsg(7405).unwrap();
-        for covers_destination in [true, false] {
-            let t = Transformer::new(&src, &dst).unwrap();
-            assert!(t.ballpark_heights);
-            let (x, y, _) = t.transform_2d(-2.0, 54.0, 100.0, None).unwrap();
-            let (lon, lat) = t.dst.unproject(x, y).unwrap();
-            let destination = (lon.to_degrees(), lat.to_degrees());
-            assert!((destination.0 + 2.0).abs() > 1e-5);
-            let center = if covers_destination { destination } else { (-2.0, 54.0) };
-            let mut model = datum::Op::world(Vec::new());
-            model.bounds = [center.0 - 1e-7, center.1 - 1e-7, center.0 + 1e-7, center.1 + 1e-7];
-            assert!(t.dst_geoid_grids.set(vec![std::sync::Arc::new(model)]).is_ok());
-            t.transform_3d(-2.0, 54.0, 100.0).unwrap();
-            assert_eq!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed) & 8 != 0, covers_destination);
-        }
+        grid::without_grids(|| {
+            let src = SpatialRef::from_epsg(4979).unwrap();
+            let dst = SpatialRef::from_epsg(7405).unwrap();
+            for covers_destination in [true, false] {
+                let t = Transformer::new(&src, &dst).unwrap();
+                assert!(t.ballpark_heights);
+                let (x, y, _) = t.transform_2d(-2.0, 54.0, 100.0, None).unwrap();
+                let (lon, lat) = t.dst.unproject(x, y).unwrap();
+                let destination = (lon.to_degrees(), lat.to_degrees());
+                assert!((destination.0 + 2.0).abs() > 1e-5);
+                let center = if covers_destination { destination } else { (-2.0, 54.0) };
+                let mut model = datum::Op::world(Vec::new());
+                model.bounds = [center.0 - 1e-7, center.1 - 1e-7, center.0 + 1e-7, center.1 + 1e-7];
+                assert!(t.dst_geoid_grids.set(vec![std::sync::Arc::new(model)]).is_ok());
+                t.transform_3d(-2.0, 54.0, 100.0).unwrap();
+                assert_eq!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed) & 8 != 0, covers_destination);
+            }
+        });
     }
 
     /// Polar bounds from GDAL 3.12.1 include an interior pole and every longitude.

@@ -175,6 +175,10 @@ pub(crate) struct Op {
     pub priority: bool,
     /// Whether the pipeline keeps heights between 2D CRSs (PROJ's `push v_3` and `pop v_3`).
     pub keeps_height: bool,
+    /// Whether it keeps heights only across its leg at the WGS 84 end, from its last conversion
+    /// to geocentric coordinates on: a geocentric CRS's transformation beside a CRS without
+    /// heights, whose legs between geocentric CRSs PROJ runs after `pop v_3` (#1012 item 8).
+    pub keeps_wgs84_leg_height: bool,
     pub steps: Vec<Step>,
     /// PROJ's name for it, the names of its steps joined by ` + ` (empty for ballparks), by which
     /// PROJ breaks the last ties when it sorts the chains it makes.
@@ -624,6 +628,7 @@ impl Op {
             geocentric: false,
             priority: false,
             keeps_height: true,
+            keeps_wgs84_leg_height: false,
             steps,
             name: String::new(),
         }
@@ -744,7 +749,30 @@ pub(crate) fn run(steps: &[Step], p: Point, reverse: bool, heights: bool) -> Opt
 
 /// Runs an op on a point: its heights change unless it keeps them between 2D CRSs.
 pub(crate) fn run_op(op: &Op, p: Point, reverse: bool, three_d: bool) -> Option<Point> {
+    if op.keeps_wgs84_leg_height && !three_d {
+        // The leg at the WGS 84 end (the steps' end), after the last geographic point between
+        // two legs, keeps the height; the legs before it, on geocentric coordinates, move it. A
+        // transformation of one leg keeps it unless it runs between geocentric CRSs.
+        let k = wgs84_leg_boundary(op);
+        let (rest, leg) = op.steps.split_at(k);
+        return if reverse {
+            let q = run(leg, p, true, false)?;
+            run(rest, q, true, true)
+        } else {
+            let q = run(rest, p, false, true)?;
+            run(leg, q, false, false)
+        };
+    }
     run(&op.steps, p, reverse, three_d || !op.keeps_height)
+}
+
+/// The start of an operation's WGS 84 leg, after its last intermediate geographic point.
+pub(crate) fn wgs84_leg_boundary(op: &Op) -> usize {
+    match op.steps.windows(2).rposition(|w| matches!(w, [Step::Cart { inv: true, .. }, Step::Cart { inv: false, .. }])) {
+        Some(i) => i + 1,
+        None if op.geocentric => op.steps.len(),
+        None => 0,
+    }
 }
 
 /// Whether `op` ranks before `best` for a point both hold, as PROJ's
