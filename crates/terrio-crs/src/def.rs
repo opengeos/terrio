@@ -1811,6 +1811,11 @@ impl Def {
         out
     }
 
+    /// The explicit all-grid list, or the registered list `with_all_operations` would select.
+    fn adjustable_all_ops(&self) -> Option<Vec<Arc<Op>>> {
+        self.all_ops.clone().or_else(|| self.geog.and_then(epsg::get).filter(|e| !e.grid_ops.is_empty()).map(|e| e.grid_ops.clone()))
+    }
+
     /// The parameters of the PROJ string the definition was read from.
     pub fn params(&self) -> Option<&crate::ProjParams> {
         self.params.as_deref()
@@ -1880,7 +1885,7 @@ impl Def {
         }
         self.three_d = false;
         self.ops = keep_wgs84_leg_height(&self.ops, was_geocentric);
-        self.all_ops = self.all_ops.as_deref().map(|ops| keep_wgs84_leg_height(ops, was_geocentric));
+        self.all_ops = self.adjustable_all_ops().as_deref().map(|ops| keep_wgs84_leg_height(ops, was_geocentric));
     }
 
     /// A CRS without heights beside a geocentric CRS: its own `+towgs84` (an operation without a
@@ -1891,7 +1896,7 @@ impl Def {
             ops.iter().map(|o| if o.name.is_empty() { Arc::new(Op { keeps_height: false, ..(**o).clone() }) } else { o.clone() }).collect()
         }
         self.ops = move_own_shift_height(&self.ops);
-        self.all_ops = self.all_ops.as_deref().map(move_own_shift_height);
+        self.all_ops = self.adjustable_all_ops().as_deref().map(move_own_shift_height);
     }
 
     /// Whether it is a geographic 3D or a geocentric CRS.
@@ -2679,6 +2684,45 @@ mod resolution_tests {
         assert_eq!(resolution(&wgs84_3d, Some(4979)).map(|r| r.0), Some(true));
         let renamed_3d = wgs84_3d.replacen(r#"GEOGCRS["WGS 84""#, r#"GEOGCRS["Local""#, 1);
         assert_eq!(resolution(&renamed_3d, Some(4979)), Some((false, None, false)));
+    }
+}
+
+#[cfg(test)]
+mod endpoint_height_policy_tests {
+    use super::*;
+
+    #[test]
+    fn height_policy_survives_expanding_registered_operations() {
+        let base = Def::new(&SpatialRef::from_epsg(5332).unwrap()).unwrap().geographic_endpoint();
+        assert!(base.all_ops.is_none());
+        let mut adjusted_first = base.clone();
+        adjusted_first.beside_2d(true);
+        let adjusted_first = adjusted_first.with_all_operations();
+        let mut expanded_first = base.with_all_operations();
+        expanded_first.beside_2d(true);
+        assert_eq!(adjusted_first.ops.len(), expanded_first.ops.len());
+        let point = datum::Point { lon: 134f64.to_radians(), lat: -25f64.to_radians(), h: 100.0, t: Some(2000.0) };
+        let mut checked = 0;
+        let mut moved_height = false;
+        for (got, want) in adjusted_first.ops.iter().zip(&expanded_first.ops) {
+            assert_eq!(got.name, want.name);
+            if !want.name.contains("GDA94") || !want.available() {
+                continue;
+            }
+            for reverse in [false, true] {
+                let actual = datum::run_op(got, point, reverse, false).unwrap();
+                let expected = datum::run_op(want, point, reverse, false).unwrap();
+                assert_eq!(
+                    (actual.lon, actual.lat, actual.h),
+                    (expected.lon, expected.lat, expected.h),
+                    "{}; reverse={reverse}",
+                    want.name
+                );
+                moved_height |= (expected.h - point.h).abs() > 1e-6;
+                checked += 1;
+            }
+        }
+        assert!(checked > 0 && moved_height, "exercise a geocentric leg that changes height");
     }
 }
 
