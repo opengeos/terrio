@@ -525,15 +525,51 @@ def test_supplied_overviews_follow_gdal_overviews_option(tmp_path):
         {"options": {"OVERVIEWS": "NONE"}},
         {"options": {"OVERVIEWS": "IGNORE_EXISTING"}},
         {"overview_resampling": "average"},
+        {"options": {"OVERVIEW_RESAMPLING": "AVERAGE"}},
+        # GDAL's COG driver falls back to RESAMPLING, and ignores both with existing overviews.
+        {"options": {"RESAMPLING": "AVERAGE"}},
+        {"options": {"OVERVIEWS": "FORCE_USE_EXISTING", "RESAMPLING": "AVERAGE"}},
     ):
         with pytest.raises(terrio.TerrioError):
             r.write(str(tmp_path / "x.tif"), driver="COG", overviews=[ov], **kwargs)
+    # The raster being written is already borrowed: an error, not a PanicException.
+    with pytest.raises(terrio.TerrioError, match="its own overview"):
+        r.write(str(tmp_path / "x.tif"), driver="COG", overviews=[r])
     with pytest.raises(terrio.TerrioError):
         r.write(str(tmp_path / "x.tif"), driver="COG", overviews=[ov, 4])
     with pytest.raises(terrio.TerrioError):
         r.write(str(tmp_path / "x.tif"), driver="COG", overviews=[a])
     with pytest.raises(terrio.TerrioError):
         r.write(str(tmp_path / "x.asc"), metadata={"A": "1"})
+
+
+def test_supplied_overviews_keep_complex_identity(tmp_path):
+    """A complex band is two Float32 component bands, so a one-band complex64 level matches a
+    two-band float32 raster's band count and type: refused either way round, as an array or a
+    Raster, while a complex level of a complex raster is written."""
+    t = [0, 1, 0, 48, 0, -1]
+    real = np.arange(2 * 48 * 64, dtype="float32").reshape(2, 48, 64)
+    cplx = (real[0] + 1j * real[1]).astype("complex64")[None]
+    real_r = terrio.Raster.from_array(real, t, "EPSG:32615")
+    cplx_r = terrio.Raster.from_array(cplx, t, "EPSG:32615")
+    real_ov, cplx_ov = real[:, ::2, ::2].copy(), cplx[:, ::2, ::2].copy()
+    for raster, level in (
+        (real_r, cplx_ov),
+        (real_r, terrio.Raster.from_array(cplx_ov, t, "EPSG:32615")),
+        (cplx_r, real_ov),
+        (cplx_r, terrio.Raster.from_array(real_ov, t, "EPSG:32615")),
+    ):
+        with pytest.raises(terrio.TerrioError, match="complex"):
+            raster.write(
+                str(tmp_path / "x.tif"), driver="COG", compress="DEFLATE", overviews=[level]
+            )
+    out = tmp_path / "complex.tif"
+    cplx_r.write(str(out), driver="COG", compress="DEFLATE", tile_size=16, overviews=[cplx_ov])
+    with rasterio.open(out) as ds:
+        assert ds.dtypes[0] == "complex64"
+        assert ds.overviews(1) == [2]
+        np.testing.assert_array_equal(ds.read(1, out_shape=(24, 32)), cplx_ov[0])
+    real_r.write(str(tmp_path / "real.tif"), driver="COG", compress="DEFLATE", overviews=[real_ov])
 
 
 def test_cog_writes_stream(tmp_path, monkeypatch):

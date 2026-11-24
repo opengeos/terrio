@@ -1192,7 +1192,8 @@ impl PyRaster {
         if factors.iter().all(Option::is_some) {
             options_.overviews = factors.into_iter().flatten().collect();
         } else if factors.iter().all(Option::is_none) {
-            options_.overview_data = overviews.iter().map(overview_raster).collect::<PyResult<_>>()?;
+            let complex = self.is_complex();
+            options_.overview_data = overviews.iter().map(|o| overview_raster(o, complex)).collect::<PyResult<_>>()?;
         } else {
             return Err(invalid("overviews are all factors (ints) or all levels (Rasters or arrays)"));
         }
@@ -1270,10 +1271,23 @@ impl PyRaster {
 
 /// A supplied overview: a `Raster` (read whole), or a `(rows, cols)` or `(bands, rows, cols)`
 /// array (complex dtypes as for `Raster.from_array`). Only its pixels are written, so an array
-/// needs no georeferencing.
-fn overview_raster(obj: &Bound<'_, PyAny>) -> PyResult<std::sync::Arc<terrio::Raster>> {
+/// needs no georeferencing. A level's bands are complex exactly when the raster's are (`complex`):
+/// each complex band is two component bands, so a level of the other kind can match their count
+/// and type and would otherwise be written as the wrong samples.
+fn overview_raster(obj: &Bound<'_, PyAny>, complex: bool) -> PyResult<std::sync::Arc<terrio::Raster>> {
+    let kind = |c: bool| if c { "complex" } else { "real" };
+    let check = |level: bool| {
+        if level == complex {
+            Ok(())
+        } else {
+            Err(invalid(format!("an overview's bands are {}, the raster's {}", kind(level), kind(complex))))
+        }
+    };
     if let Ok(r) = obj.cast::<PyRaster>() {
-        let raster = r.borrow_mut().with_dataset(|ds| Ok(ds.raster.clone())).py()?;
+        // `write` already holds this raster's borrow when it is its own overview.
+        let mut r = r.try_borrow_mut().map_err(|_| invalid("a raster cannot be its own overview"))?;
+        let (raster, level) = r.with_dataset(|ds| Ok((ds.raster.clone(), ds.complex))).py()?;
+        check(level)?;
         return Ok(std::sync::Arc::new(raster));
     }
     let array = obj.cast::<PyUntypedArray>().map_err(|_| invalid("an overview is a Raster or a NumPy array (or every one a factor)"))?;
@@ -1282,9 +1296,10 @@ fn overview_raster(obj: &Bound<'_, PyAny>) -> PyResult<std::sync::Arc<terrio::Ra
         [b, r, c] => (b, r, c),
         _ => return Err(invalid("an overview array is 2-D (rows, cols) or 3-D (bands, rows, cols)")),
     };
-    let (data, complex) = raster_array_data(array, None)?;
+    let (data, level) = raster_array_data(array, None)?;
+    check(level)?;
     let cfg =
-        terrio::RasterConfig { cols, rows, bands: bands * if complex { 2 } else { 1 }, data_type: data.data_type(), ..Default::default() };
+        terrio::RasterConfig { cols, rows, bands: bands * if level { 2 } else { 1 }, data_type: data.data_type(), ..Default::default() };
     Ok(std::sync::Arc::new(terrio::raster_from_data(cfg, data).py()?))
 }
 

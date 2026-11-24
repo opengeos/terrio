@@ -89,6 +89,11 @@ def compare(name, case, directory):
     tolerance = float(co.get("MAX_Z_ERROR", 0))
     worst = worst_gdal = 0.0
     sizes = []
+    # Every band has exactly the supplied levels: an extra one would go unexamined below.
+    for b in range(bands):
+        counts = (t.GetRasterBand(b + 1).GetOverviewCount(), g.GetRasterBand(b + 1).GetOverviewCount())
+        if counts != (len(levels), len(levels)):
+            raise ValueError(f"band {b + 1}: terrio {counts[0]} overviews, GDAL {counts[1]}, {len(levels)} supplied")
     for i in range(len(levels) + 1):
         gb = [g.GetRasterBand(b + 1) if i == 0 else g.GetRasterBand(b + 1).GetOverview(i - 1) for b in range(bands)]
         tb = [t.GetRasterBand(b + 1) if i == 0 else t.GetRasterBand(b + 1).GetOverview(i - 1) for b in range(bands)]
@@ -111,6 +116,10 @@ def compare(name, case, directory):
                 bound = tolerance + np.spacing(np.abs(expected[b][valid]).astype("float32")).astype("float64")
                 for who, values in (("terrio", ours), ("GDAL", theirs)):
                     d = np.abs(values[valid].astype("float64") - e)
+                    # A NaN difference compares false with the bound below; the supplied valid
+                    # samples are finite, so a non-finite difference is a wrong decoded sample.
+                    if not np.isfinite(d).all():
+                        raise ValueError(f"level {i} band {b + 1}: {who} decodes a non-finite valid sample")
                     if who == "terrio":
                         worst = max(worst, float(d.max()))
                     else:

@@ -753,7 +753,9 @@ impl TiffOptions {
             if o.source_overviews.is_some() {
                 return Err(Error::InvalidArgument("overviews are either supplied or copied from a source, not both".into()));
             }
-            if options.overview_resampling.is_some() || (cog && co("OVERVIEW_RESAMPLING").is_some()) {
+            // GDAL 3.13.3 ignores OVERVIEW_RESAMPLING and RESAMPLING alike when it writes existing
+            // overviews; `cog_resampling_name` holds whichever of the three spellings was given.
+            if options.overview_resampling.is_some() || o.cog_resampling_name.is_some() {
                 return Err(Error::InvalidArgument("supplied overviews are written as they are: no overview resampling applies".into()));
             }
             o.supplied_overviews = options.overview_data.clone();
@@ -5047,11 +5049,19 @@ mod tests {
             ("factors", write(GTiff, &[], good(), |o| o.overviews = vec![2])),
             ("resampling", write(Cog, &[], good(), |o| o.overview_resampling = Some("average".into()))),
             ("OVERVIEW_RESAMPLING", write(Cog, &[("OVERVIEW_RESAMPLING", "NEAREST")], good(), |_| {})),
+            ("RESAMPLING", write(Cog, &[("RESAMPLING", "AVERAGE")], good(), |_| {})),
+            (
+                "RESAMPLING with FORCE_USE_EXISTING",
+                write(Cog, &[("OVERVIEWS", "FORCE_USE_EXISTING"), ("RESAMPLING", "AVERAGE")], good(), |_| {}),
+            ),
             ("NONE", write(Cog, &[("OVERVIEWS", "NONE")], good(), |_| {})),
             ("IGNORE_EXISTING", write(Cog, &[("OVERVIEWS", "ignore_existing")], good(), |_| {})),
             ("AAIGrid", write(AAIGrid, &[], good(), |_| {})),
         ] {
             assert!(result.is_err(), "{what}");
+            if what.contains("RESAMPLING") || what == "resampling" {
+                assert!(result.unwrap_err().contains("no overview resampling applies"), "{what}");
+            }
         }
         let header = crate::RasterDataset::new(r.clone(), true);
         let dir = tempfile::tempdir().unwrap();
