@@ -689,12 +689,11 @@ fn select_rows<T: parquet::file::reader::ChunkReader + 'static>(
     let mut keep: Vec<bool> = Vec::new();
     for batch in reader {
         let batch = batch.map_err(|e| err(&e))?;
-        let f64s = |a: &ArrayRef| -> Vec<f64> { (0..a.len()).map(|i| json_value(a.as_ref(), i).as_f64().unwrap_or(f64::NAN)).collect() };
         if leaves.is_some() {
             let s = batch.column(0).as_struct();
             let cov = covering.unwrap_or_default();
             let DataType::Struct(members) = schema.field(cov[0].0).data_type() else { continue };
-            let col = |m: usize| s.column_by_name(members[m].name()).map(f64s).unwrap_or_default();
+            let col = |m: usize| s.column_by_name(members[m].name()).map(|a| f64_values(a.as_ref())).unwrap_or_default();
             let (x0, y0, x1, y1) = (col(cov[0].1), col(cov[1].1), col(cov[2].1), col(cov[3].1));
             for i in 0..batch.num_rows() {
                 let null = s.is_null(i);
@@ -900,7 +899,7 @@ pub(super) fn geometry(a: &dyn Array, row: usize, encoding: &str) -> Option<Geom
     }
     match encoding {
         "wkb" => super::wkb::from_wkb(blob(a, row)?),
-        "point" => coords(a).into_iter().nth(row).map(Geometry::Point),
+        "point" => coords(a.slice(row, 1).as_ref()).into_iter().next().map(Geometry::Point),
         "linestring" => Some(Geometry::LineString(coords(list_item(a, row)?.as_ref()))),
         "multipoint" => Some(Geometry::MultiPoint(coords(list_item(a, row)?.as_ref()))),
         "polygon" => {
@@ -940,9 +939,21 @@ fn polygon(rings: &dyn Array) -> Option<(Ring, Vec<Ring>)> {
     Some((exterior, rs.collect()))
 }
 
+/// The values of a number array as `f64`, nulls as NaN. GeoArrow coordinates are Float64 and
+/// covering bbox columns Float32 or Float64: read directly; other types through their JSON value.
+fn f64_values(a: &dyn Array) -> Vec<f64> {
+    if let Some(p) = a.as_primitive_opt::<Float64Type>() {
+        return if p.null_count() == 0 { p.values().to_vec() } else { p.iter().map(|v| v.unwrap_or(f64::NAN)).collect() };
+    }
+    if let Some(p) = a.as_primitive_opt::<Float32Type>() {
+        return p.iter().map(|v| v.map_or(f64::NAN, f64::from)).collect();
+    }
+    (0..a.len()).map(|i| json_value(a, i).as_f64().unwrap_or(f64::NAN)).collect()
+}
+
 /// GeoArrow coordinates: a struct of `x`, `y` (and `z`) arrays, or interleaved fixed-size lists.
 fn coords(a: &dyn Array) -> Vec<Coord> {
-    let f64s = |a: &ArrayRef| -> Vec<f64> { (0..a.len()).map(|i| json_value(a.as_ref(), i).as_f64().unwrap_or(f64::NAN)).collect() };
+    let f64s = |a: &ArrayRef| f64_values(a.as_ref());
     match a.data_type() {
         DataType::Struct(fields) => {
             let s = a.as_struct();
@@ -1385,6 +1396,41 @@ impl Kind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each row of a GeoArrow point column decodes to its own point, from that row alone: decoding
+    /// row after row of 20000 takes milliseconds (it took minutes when each row decoded the column).
+    /// A sliced column and null coordinates keep their positions.
+    #[test]
+    fn geoarrow_points_decode_row_by_row() {
+        let n = 20_000;
+        let xs: Vec<Option<f64>> = (0..n).map(|i| (i != 7).then_some(i as f64)).collect();
+        let ys: Vec<f64> = (0..n).map(|i| -(i as f64) / 2.0).collect();
+        let points = StructArray::from(vec![
+            (Arc::new(Field::new("x", DataType::Float64, true)), Arc::new(Float64Array::from(xs)) as ArrayRef),
+            (Arc::new(Field::new("y", DataType::Float64, false)), Arc::new(Float64Array::from(ys)) as ArrayRef),
+        ]);
+        let start = std::time::Instant::now();
+        for i in 0..n {
+            let Some(Geometry::Point(c)) = geometry(&points, i, "point") else { panic!("row {i}") };
+            assert_eq!(c.y, -(i as f64) / 2.0);
+            assert!(if i == 7 { c.x.is_nan() } else { c.x == i as f64 }, "row {i}: {}", c.x);
+        }
+        assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
+        let tail = points.slice(100, 5);
+        let Some(Geometry::Point(c)) = geometry(&tail, 2, "point") else { panic!() };
+        assert_eq!((c.x, c.y), (102.0, -51.0));
+    }
+
+    /// Float32 covering columns and other number types read as `f64`, nulls as NaN.
+    #[test]
+    fn number_arrays_read_as_f64() {
+        let f32s = arrow_array::Float32Array::from(vec![Some(1.5), None, Some(-2.25)]);
+        let got = f64_values(&f32s);
+        assert_eq!((got[0], got[2]), (1.5, -2.25));
+        assert!(got[1].is_nan());
+        assert_eq!(f64_values(&Int32Array::from(vec![3, -4])), vec![3.0, -4.0]);
+        assert_eq!(f64_values(&Float64Array::from(vec![1.0, 2.0]).slice(1, 1)), vec![2.0]);
+    }
 
     /// A GeoParquet `crs` given as PROJJSON with a NUL (`\u0000`) in its name (EPSG:32631's PROJ
     /// 9.8.1 PROJJSON without its code) is read as without it: the WKT built from it has the name cut at the NUL.
