@@ -2637,6 +2637,58 @@ fn checked_for_their_peaks(
     write(Some(&peaks));
 }
 
+/// Streaming LZW rows admit every concurrent encoder before taking rows, and a refusal can be retried.
+#[test]
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+fn streaming_lzw_admits_each_concurrent_encoder() {
+    const CHILD: &str = "TERRIO_TEST_STREAMING_LZW_SCRATCH_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "streaming_lzw_admits_each_concurrent_encoder"])
+            .env(CHILD, "1")
+            .env("RAYON_NUM_THREADS", "32")
+            .env_remove("TERRIO_MAX_DECLARED_BYTES")
+            .env_remove("TERRIO_MAX_BANDS")
+            .output()
+            .unwrap();
+        assert!(child.status.success(), "{}\n{}", String::from_utf8_lossy(&child.stdout), String::from_utf8_lossy(&child.stderr));
+        return;
+    }
+    let _serial = serial();
+    let directory = tempfile::tempdir().unwrap();
+    // Admission skips small allocations below 16 MiB. Thirty-two encoders exceed that
+    // threshold even though this tiny input slab fits comfortably within the limit.
+    for (across, bands, rows, planar, refuse) in
+        [(1, 1, 16, false, false), (32, 1, 16, false, true), (1, 32, 16, true, true), (1, 32, 16, false, false), (1, 1, 512, false, false)]
+    {
+        let options = RasterWriteOptions {
+            tile_size: Some(16),
+            compression: Some("LZW".into()),
+            creation_options: vec![("INTERLEAVE".into(), if planar { "BAND" } else { "PIXEL" }.into())],
+            ..Default::default()
+        };
+        let cols = 16 * across;
+        let path = directory.path().join(format!("{across}-{bands}-{rows}-{planar}.tif"));
+        let mut writer = terrio::GeoTiffWriter::create(path.to_str().unwrap(), &header(cols, rows, bands), &options).unwrap();
+        let data = RasterData::U8(vec![7; cols * rows * bands]);
+        rss_limit(Some(16 << 20));
+        let result = writer.write_rows(&data, rows, None);
+        rss_limit(None);
+        if refuse {
+            assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))), "{result:?}");
+            assert_eq!(writer.rows_written(), 0);
+            writer.write_rows(&data, rows, None).unwrap();
+        } else {
+            result.unwrap();
+        }
+        assert_eq!(writer.rows_written(), rows);
+        writer.finish().unwrap();
+        let read = terrio::open_raster(path.to_str().unwrap()).unwrap();
+        let RasterData::U8(values) = read.raster.data else { panic!("expected UInt8 output") };
+        assert_eq!(values, vec![7; cols * rows * bands]);
+    }
+}
+
 /// Sets this process's resident-set limit, which [`terrio::usable_memory`] reads (Linux does not
 /// enforce it), to `bytes`, or back to its hard limit.
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]

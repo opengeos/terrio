@@ -2765,7 +2765,7 @@ impl TiffRows {
         Ok(())
     }
 
-    /// Admit the retained input, one block row's scratch and the index arrays (GDAL 3.13.3).
+    /// Admit the retained input, one block row's scratch, concurrent LZW encoders and the index arrays (GDAL 3.13.3).
     fn check_row_working_set(&self, data: &RasterData, rows: usize, mask: Option<&[u8]>) -> Result<()> {
         let size = self.data_type.size_bytes();
         let pixels = self.cols.checked_mul(self.block_rows.min(self.rows));
@@ -2791,6 +2791,14 @@ impl TiffRows {
         } else {
             Some(0)
         };
+        let lzw_scratch = if self.compression == Compression::Lzw {
+            let planes = if self.layout.planar { self.bands.checked_div(self.layout.parts) } else { Some(1) };
+            planes
+                .and_then(|planes| self.across.checked_mul(planes))
+                .and_then(|chunks| chunks.min(crate::par::threads()).checked_mul(super::tiff_lzw::Encoder::SCRATCH_BYTES))
+        } else {
+            Some(0)
+        };
         let bytes = [
             data.len().checked_mul(size),
             self.pending.len().checked_mul(size),
@@ -2798,6 +2806,7 @@ impl TiffRows {
             image.and_then(|n| n.checked_mul(2)),
             image_indices,
             mask_work,
+            lzw_scratch,
             Some(1 << 20),
         ]
         .into_iter()

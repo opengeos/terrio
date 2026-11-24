@@ -48,7 +48,7 @@ in [lzw-write-performance.md](lzw-write-performance.md).
 
 ## Performance qualification
 
-Contributor measurements are recorded in the [pull request](https://github.com/opengeos/terrio/pull/1288).
+Contributor measurements are recorded in the [original contribution, #1285](https://github.com/opengeos/terrio/pull/1285).
 They predate collision-budget fallback and do not establish its performance.
 Use the public synthetic workload in [lzw-write-performance.md](lzw-write-performance.md)
 to compare current checkouts. Dense workloads, COGs, WASM runtime performance and
