@@ -2561,11 +2561,26 @@ impl Transformer {
         }
         let cartesian_src = s.is_geocentric().then(|| s.clone());
         let cartesian_dst = d.is_geocentric().then(|| d.clone());
+        let (src_3d, dst_3d, src_heights, dst_heights) = (s.geodetic_3d(), d.geodetic_3d(), s.has_height(), d.has_height());
         if cartesian_src.is_some() {
             s = s.geographic_endpoint();
         }
         if cartesian_dst.is_some() {
             d = d.geographic_endpoint();
+        }
+        // From or into a CRS without heights (WGS 84 (2D)), PROJ keeps the height through the
+        // datum shift (#1012 item 8).
+        if src_3d && !dst_heights {
+            s.beside_2d(cartesian_src.is_some());
+        }
+        if dst_3d && !src_heights {
+            d.beside_2d(cartesian_dst.is_some());
+        }
+        if cartesian_src.is_some() && !dst_heights {
+            d.beside_geocentric();
+        }
+        if cartesian_dst.is_some() && !src_heights {
+            s.beside_geocentric();
         }
         let time = match (s.is_dynamic(), d.is_dynamic(), opts.source_coordinate_epoch, opts.target_coordinate_epoch) {
             (true, false, Some(e), _) => Some(e),
@@ -2586,7 +2601,7 @@ impl Transformer {
             }
             _ => None,
         };
-        let heights = ((s.has_height() && d.has_height()) || cartesian_src.is_some() || cartesian_dst.is_some()).then(|| {
+        let heights = (s.has_height() && d.has_height()).then(|| {
             Box::new(Heights {
                 src: Side::new(&s, true),
                 dst: Side::new(&d, false),

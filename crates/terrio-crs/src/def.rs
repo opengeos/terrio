@@ -1859,6 +1859,41 @@ impl Def {
         }
     }
 
+    /// A geographic 3D CRS, or a geocentric CRS's [`Def::geographic_endpoint`], beside a CRS
+    /// without heights (WGS 84 (2D)): 2D, as PROJ runs the datum shift then.
+    ///
+    /// Its transformations are those PROJ runs between 3D CRSs, which move heights. Beside a CRS
+    /// without heights PROJ keeps them across the leg at the WGS 84 end (`push v_3` and `pop v_3`
+    /// around it), and runs the legs between geocentric CRSs before it on geocentric coordinates
+    /// (PZ-90 to PZ-90.11 (1) for PZ-90.11), converted on the CRS's own ellipsoid (#1012 item 8).
+    /// A geocentric CRS's own `+towgs84` (an operation without a name) still runs on geocentric
+    /// coordinates, as GDAL runs it (PROJ 9.9.0 ignores it on `+proj=geocent`).
+    pub fn beside_2d(&mut self, geocentric: bool) {
+        fn keep(ops: &[Arc<Op>], geocentric: bool) -> Vec<Arc<Op>> {
+            ops.iter()
+                .map(|o| match o.name.is_empty() {
+                    false => Arc::new(Op { keeps_height: false, keeps_wgs84_leg_height: true, ..(**o).clone() }),
+                    true if geocentric => Arc::new(Op { keeps_height: false, ..(**o).clone() }),
+                    true => o.clone(),
+                })
+                .collect()
+        }
+        self.three_d = false;
+        self.ops = keep(&self.ops, geocentric);
+        self.all_ops = self.all_ops.as_deref().map(|ops| keep(ops, geocentric));
+    }
+
+    /// A CRS without heights beside a geocentric CRS: its own `+towgs84` (an operation without a
+    /// name) runs into WGS 84 (geocentric) on geocentric coordinates and moves heights, as PROJ
+    /// 9.9.0 and GDAL run it.
+    pub fn beside_geocentric(&mut self) {
+        fn moving(ops: &[Arc<Op>]) -> Vec<Arc<Op>> {
+            ops.iter().map(|o| if o.name.is_empty() { Arc::new(Op { keeps_height: false, ..(**o).clone() }) } else { o.clone() }).collect()
+        }
+        self.ops = moving(&self.ops);
+        self.all_ops = self.all_ops.as_deref().map(moving);
+    }
+
     /// Whether it is a geographic 3D or a geocentric CRS.
     pub fn geodetic_3d(&self) -> bool {
         self.three_d || self.geocentric

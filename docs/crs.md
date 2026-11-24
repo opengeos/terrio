@@ -858,7 +858,12 @@ without geoid models of its own uses those of the vertical CRSs of its datum, as
 NAVD88 height (ftUS) (`EPSG:6360`), NAVD88 height (ft) (`EPSG:8228`) and NAVD88 depth go
 through NAVD88 height's GEOID18. When no geoid model applies, heights are kept, as PROJ's
 ballpark vertical transformation does. Between 2D CRSs, heights are kept as GDAL keeps them (or
-transformed, for the pipelines PROJ runs on heights).
+transformed, for the pipelines PROJ runs on heights). Between a 2D CRS and a geographic 3D or
+geocentric CRS, the height is kept through the datum shift too, as PROJ keeps it (`push v_3` and
+`pop v_3`), and converted to or from geocentric coordinates on the geocentric CRS's own
+ellipsoid: WGS 84 (2D) at (0°, 0°, 0 m) is X = 6378136 m in PZ-90 (geocentric) (`EPSG:4922`),
+on PZ-90's ellipsoid, and 6378137 m from WGS 84 (3D). Transformations PROJ runs between
+geocentric CRSs (PZ-90 to PZ-90.11 (1)) still move it.
 With `TransformOptions { promote_to_3d: true, .. }` (Rust), the heights of 2D CRSs are ellipsoidal
 heights that datum transformations change, as GDAL gives them after `PromoteTo3D`: EPSG:28992
 (85000, 447000, 0) is 43.576 m above the WGS 84 ellipsoid in EPSG:4979, where it stays 0 by default. Vector layer

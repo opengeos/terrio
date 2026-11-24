@@ -1143,6 +1143,7 @@ fn ranked(reg: &epsg::Registry, found: Vec<Found>, ctx: &OperationContext) -> Ve
             geocentric: o1.geocentric || o2.geocentric,
             priority: o1.priority || o2.priority || datum::is_priority(&name),
             keeps_height: o1.keeps_height && o2.keeps_height,
+            keeps_wgs84_leg_height: false,
             steps: o1.steps.iter().chain(&o2.steps).cloned().collect(),
             name,
         };
