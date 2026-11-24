@@ -11,7 +11,7 @@ LICENSE-THIRD-PARTY.md`, from `about.toml`.
 ## Overview
 
 - Apache License 2.0 (265)
-- MIT License (73)
+- MIT License (74)
 - ISC License (20)
 - BSD 3-Clause "New" or "Revised" License (15)
 - BSD 2-Clause "Simplified" License (9)
@@ -9484,6 +9484,7 @@ Used by:
 - terrio-js (terrio's own crate)
 - terrio-js-cog (terrio's own crate)
 - terrio-js-fetch (terrio's own crate)
+- terrio-js-geoparquet (terrio's own crate)
 - terrio-js-zarr (terrio's own crate)
 - [gdal-sys 0.12.0](https://github.com/georust/gdal)
 - [gdal 0.19.0](https://github.com/georust/gdal)

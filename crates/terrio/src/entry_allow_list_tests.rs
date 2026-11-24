@@ -293,7 +293,7 @@ fn caller_fetched_vector_files_are_read_only_with_their_driver_allowed() {
     let layer = points();
     let fgb = sparse(&crate::memory::write_vector_bytes(std::slice::from_ref(&layer), "x.fgb", &Default::default()).unwrap());
     let parquet = sparse(&crate::memory::write_vector_bytes(std::slice::from_ref(&layer), "x.parquet", &Default::default()).unwrap());
-    let reads: [(&str, &str, &str, Opener); 4] = [
+    let reads: [(&str, &str, &str, Opener); 5] = [
         ("read_flatgeobuf_sparse", "x.fgb", "FlatGeobuf", &|| outcome(crate::vector::read_flatgeobuf_sparse(&fgb, "x.fgb", None))),
         ("read_flatgeobuf_header_sparse", "x.fgb", "FlatGeobuf", &|| outcome(crate::vector::read_flatgeobuf_header_sparse(&fgb, "x.fgb"))),
         ("geoparquet_row_groups_sparse", "a remote GeoParquet file", "Parquet", &|| {
@@ -301,6 +301,9 @@ fn caller_fetched_vector_files_are_read_only_with_their_driver_allowed() {
         }),
         ("read_geoparquet_sparse", "x.parquet", "Parquet", &|| {
             outcome(crate::vector::read_geoparquet_sparse(&parquet, "x.parquet", None, None, None))
+        }),
+        ("read_geoparquet_sparse_epsg_only", "x.parquet", "Parquet", &|| {
+            outcome(crate::vector::read_geoparquet_sparse_epsg_only(&parquet, "x.parquet", None, None, None))
         }),
     ];
     for (name, shown, driver, read) in reads {
