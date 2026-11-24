@@ -529,6 +529,30 @@ def test_ingestion_call_copies_source_overviews(tmp_path, kind):
     _assert_same_masked(gdal, ours, kind)
 
 
+def test_force_use_existing_writes_a_vrt_source_overviews(tmp_path):
+    """OVERVIEWS=FORCE_USE_EXISTING from a source terrio does not copy overviews from (a VRT):
+    its overviews are read and written as they are, as GDAL's COG driver writes them, not
+    dropped."""
+    tif = _source(tmp_path / "src.tif", 1001, 999, 1, "uint16", 0, tiled=True)
+    with rasterio.open(tif, "r+") as ds:
+        ds.build_overviews([2, 4], RR.average)
+    vrt = str(tmp_path / "src.vrt")
+    rasterio.shutil.copy(tif, vrt, driver="VRT")
+    for name, mod in (("gdal", rasterio), ("terrio", trio)):
+        mod.shutil.copy(
+            vrt,
+            str(tmp_path / f"{name}.tif"),
+            driver="COG",
+            compress="deflate",
+            overviews="FORCE_USE_EXISTING",
+        )
+    gdal, ours = str(tmp_path / "gdal.tif"), str(tmp_path / "terrio.tif")
+    with rasterio.open(gdal) as g, rasterio.open(ours) as t:
+        assert t.overviews(1) == g.overviews(1) == [2, 4]
+    for ours_level, gdal_level in zip(_levels(ours), _levels(gdal), strict=True):
+        np.testing.assert_array_equal(ours_level, gdal_level)
+
+
 @pytest.mark.parametrize("as_rasters", [False, True], ids=["arrays", "rasters"])
 def test_supplied_overviews_round_trip(tmp_path, as_rasters):
     """Overviews supplied to `Raster.write` are written as GDAL's COG driver writes a source's
@@ -590,6 +614,9 @@ def test_supplied_overviews_follow_gdal_overviews_option(tmp_path):
         # GDAL's COG driver falls back to RESAMPLING, and ignores both with existing overviews.
         {"options": {"RESAMPLING": "AVERAGE"}},
         {"options": {"OVERVIEWS": "FORCE_USE_EXISTING", "RESAMPLING": "AVERAGE"}},
+        # Area-matched overviews are computed as well: they are not combined with supplied ones.
+        {"options": {"OVERVIEW_RESAMPLING": "AREA_MATCHED"}},
+        {"overview_resampling": "area_matched"},
     ):
         with pytest.raises(terrio.TerrioError):
             r.write(str(tmp_path / "x.tif"), driver="COG", overviews=[ov], **kwargs)

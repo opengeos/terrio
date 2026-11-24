@@ -211,7 +211,7 @@ test("supplied COG overviews are written as they are, with metadata items", () =
   assert.equal(Object.fromEntries(back.info().metadata).SOURCE, "supplied");
   // Each level smaller than the one before it, of the raster's type; not with factors.
   assert.throws(() => base.toBytes("s.tif", { format: "COG", overviewData: [{ width: 70, height: 50, data: new Float32Array(3500) }] }), /smaller/);
-  assert.throws(() => base.toBytes("s.tif", { format: "COG", overviewData: [{ width: 35, height: 25, data: new Uint8Array(875) }] }), /bands/);
+  assert.throws(() => base.toBytes("s.tif", { format: "COG", overviewData: [{ width: 35, height: 25, data: new Uint8Array(875) }] }), /bands and data type/);
   assert.throws(() => base.toBytes("s.tif", { overviews: [2], overviewData }), /factors/);
   // Dimensions whose product overflows (65536 * 65536 on wasm32), past the exact integers or
   // with no pixels are refused with an ordinary Error, and the module still works afterwards.

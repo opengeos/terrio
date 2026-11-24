@@ -260,8 +260,9 @@ fn overview_data(options: &JsValue) -> Result<Vec<std::sync::Arc<terrio::Raster>
             let (width, height) = (size("width")?, size("height")?);
             let pixels =
                 width.checked_mul(height).ok_or_else(|| JsError::new(&format!("overviewData[{i}]: width * height is too large")))?;
-            let data = raster_data(&field("data").unwrap_or(JsValue::UNDEFINED))
-                .map_err(|_| JsError::new(&format!("overviewData[{i}].data: a typed array of the raster's type")))?;
+            let data = raster_data(&field("data").unwrap_or(JsValue::UNDEFINED)).map_err(|_| {
+                JsError::new(&format!("overviewData[{i}].data: not a typed array (Uint8Array, Int16Array, Float32Array...)"))
+            })?;
             let bands = data.len() / pixels;
             if bands == 0 || data.len() % pixels != 0 {
                 return Err(JsError::new(&format!("overviewData[{i}]: the array length is not a positive multiple of width * height")));

@@ -768,8 +768,8 @@ impl TiffOptions {
                 Some("NONE") => o.overview_count = Some(0),
                 Some("FORCE_USE_EXISTING") if !supplied && o.source_overviews.is_none() => {
                     crate::warnings::warn(
-                        "OVERVIEWS=FORCE_USE_EXISTING with no existing overviews (none supplied, none copied from a source): the COG has none, \
-                         as GDAL's COG driver writes none"
+                        "OVERVIEWS=FORCE_USE_EXISTING with no existing overviews (none supplied, none copied from a source): the COG has \
+                         none, as GDAL's COG driver writes none"
                             .into(),
                     );
                     o.overview_count = Some(0);
@@ -1508,7 +1508,7 @@ fn supplied_overviews<'a>(raster: &Raster, opts: &'a TiffOptions, levels: &mut V
     for (i, ov) in opts.supplied_overviews.iter().enumerate() {
         if ov.bands != raster.bands || ov.data_type != raster.data_type {
             return Err(Error::InvalidArgument(format!(
-                "overview {i} has {} {:?} bands, the raster {} {:?} bands",
+                "overview {i} has {} bands of {:?} and the raster {} bands of {:?}: each overview has the raster's bands and data type",
                 ov.bands, ov.data_type, raster.bands, raster.data_type
             )));
         }
@@ -5205,6 +5205,9 @@ mod tests {
                 "RESAMPLING with FORCE_USE_EXISTING",
                 write(Cog, &[("OVERVIEWS", "FORCE_USE_EXISTING"), ("RESAMPLING", "AVERAGE")], good(), |_| {}),
             ),
+            // Area-matched overviews are computed too: they and supplied ones are not combined.
+            ("OVERVIEW_RESAMPLING=AREA_MATCHED", write(Cog, &[("OVERVIEW_RESAMPLING", "AREA_MATCHED")], good(), |_| {})),
+            ("GTiff RESAMPLING keyword area_matched", write(GTiff, &[], good(), |o| o.overview_resampling = Some("area_matched".into()))),
             ("NONE", write(Cog, &[("OVERVIEWS", "NONE")], good(), |_| {})),
             ("IGNORE_EXISTING", write(Cog, &[("OVERVIEWS", "ignore_existing")], good(), |_| {})),
             ("AAIGrid", write(AAIGrid, &[], good(), |_| {})),

@@ -163,11 +163,6 @@ the second round of option and output depth, [#288](https://github.com/opengeos/
 is complete.
 Command-group progress:
 
-- [ ] Expose explicit GeoTIFF/COG dataset metadata overrides in CLI/MCP
-      (`gdal_translate -mo` equivalent). Rust, Python and JavaScript expose
-      these overrides with supplied overviews in
-      [#1268](https://github.com/opengeos/terrio/pull/1268).
-
 - [x] Palette conversion: RGB median cut, supplied palettes, RGB/RGBA expansion and
       attachment across Rust, CLI/MCP, Python and JavaScript; real Landsat/OPERA
       GDAL 3.13.3 comparisons registered as `palette`. Landed in
@@ -691,6 +686,10 @@ WebAssembly (the `terrio-js` npm package):
       and copied by GDAL 3.13.3 on real rasters (the `cog-area-matched` conformance suite) and
       by GDAL 3.12.2 through rasterio (`python/tests/test_cog_area_matched.py`).
 - [ ] Streamed and bounded-memory writing of area-matched overviews.
+- [ ] Dataset metadata items on raster writes in the CLI and MCP, as `gdal_translate -mo` sets
+      them. Rust (`RasterWriteOptions::metadata`), Python (`Raster.write(metadata=)`) and
+      JavaScript (`toBytes`'s `metadata`) take them since
+      [#1268](https://github.com/opengeos/terrio/pull/1268).
 - [x] CRS: datum shift grids (NTv2, GeoTIFF grids), vertical datums, time-dependent transformations
       between dynamic datums (coordinate epochs). Done: PROJ's GeoTIFF grids (PROJ-data), NTv2 and GTX
       read in pure Rust and interpolated as PROJ does (`hgridshift`, `vgridshift`, NADCON5's
