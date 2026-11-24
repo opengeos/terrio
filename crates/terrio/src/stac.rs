@@ -1556,8 +1556,8 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
     if let Some((name, id)) = unplaced.first() {
         let n = unplaced.len();
         crate::warnings::warn(format!(
-            "STAC: {n} asset{} without the proj metadata that places {} (a CRS, and two of proj:shape, proj:transform \
-             and proj:bbox), such as '{name}' of item '{id}': left out of the mosaic",
+            "STAC: {n} asset{} without usable proj metadata to place {} (a CRS, and two of proj:shape, a north-up \
+             proj:transform and proj:bbox, which agree), such as '{name}' of item '{id}': left out of the mosaic",
             if n == 1 { "" } else { "s" },
             if n == 1 { "it" } else { "them" },
         ));
@@ -1960,7 +1960,7 @@ fn mosaic_band(bands: &Value, raster_bands: &Value, i: usize, count: usize, item
         Some(item) => item.1 = text(v),
         None => b.items.push((k, text(v))),
     };
-    for (k, v) in nth(raster_bands).into_iter().flatten() {
+    for (k, v) in nth(raster_bands).into_iter().flatten().filter(|(_, v)| !v.is_null()) {
         let raster = matches!(k.as_str(), "scale" | "offset" | "bits_per_sample" | "spatial_resolution" | "sampling" | "histogram");
         set(if raster { format!("raster:{k}") } else { k }, &v);
     }
@@ -2589,6 +2589,8 @@ mod tests {
             item("no-crs", json!({"proj:shape": [4, 8], "proj:transform": [10.0, 0.0, 0.0, 0.0, -10.0, 40.0]})),
             item("no-transform", json!({"proj:epsg": 32613, "proj:shape": [4, 8]})),
             item("empty", json!({"proj:epsg": 32613, "proj:shape": [0, 8], "proj:transform": [10.0, 0.0, 0.0, 0.0, -10.0, 40.0]})),
+            // Present but rejected: a south-up transform.
+            item("south-up", json!({"proj:epsg": 32613, "proj:shape": [4, 8], "proj:transform": [10.0, 0.0, 0.0, 0.0, 10.0, 0.0]})),
             // Left out by the crs= filter, not for its metadata.
             item("other-crs", json!({"proj:epsg": 4326, "proj:shape": [4, 8]})),
         ];
@@ -2597,7 +2599,7 @@ mod tests {
         assert_eq!(groups[""]["data"].by_crs["EPSG:32613"].len(), 1);
         let warnings = crate::warnings::take();
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].starts_with("STAC: 3 assets without the proj metadata"), "{}", warnings[0]);
+        assert!(warnings[0].starts_with("STAC: 4 assets without usable proj metadata"), "{}", warnings[0]);
         assert!(warnings[0].contains("'data' of item 'no-crs'"), "{}", warnings[0]);
         // All placed: no warning.
         group_assets(&items[..1], &Filters::default());
@@ -2608,7 +2610,7 @@ mod tests {
     #[test]
     fn mosaic_bands_read_bands_and_raster_bands() {
         let bands = json!([{"name": "B04", "common_name": "red", "center_wavelength": 0.665}, {"name": "B08", "eo:common_name": "nir08"}]);
-        let raster = json!([{"scale": 0.0001, "offset": -0.1, "unit": "m", "nodata": 0}, {"data_type": "uint16"}]);
+        let raster = json!([{"scale": 0.0001, "offset": -0.1, "unit": "m", "nodata": 0}, {"data_type": "uint16", "nodata": null}]);
         let b = mosaic_band(&bands, &raster, 0, 2, "Undefined");
         assert_eq!(b.description.as_deref(), Some("B04"));
         assert_eq!(b.color_interp.as_deref(), Some("Red"));
@@ -2621,6 +2623,8 @@ mod tests {
         );
         let b = mosaic_band(&bands, &raster, 1, 2, "Gray");
         assert_eq!((b.description.as_deref(), b.color_interp.as_deref()), (Some("B08"), Some("NIR")));
+        // A null member is not an item.
+        assert_eq!(b.items, [("data_type".to_string(), "uint16".to_string())]);
         // Bands that do not number the item's: only the item's colour interpretation.
         let b = mosaic_band(&bands, &raster, 0, 3, "Gray");
         assert_eq!(b, crate::BandMetadata { color_interp: Some("Gray".into()), ..Default::default() });
