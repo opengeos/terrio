@@ -211,7 +211,8 @@ pub(super) fn covering_leaves(meta: &parquet::file::metadata::ParquetMetaData, g
 }
 
 /// The bounding box `[min_x, min_y, max_x, max_y]` of each row group, from the statistics of the
-/// covering column's `leaves`, or native geospatial statistics on the primary geometry column.
+/// covering column's `leaves`, native geospatial statistics on the primary geometry column, or
+/// the statistics of a GeoArrow geometry's `x` and `y` coordinate columns (as GDAL reads them).
 /// Missing, non-finite and wrapped bounds cannot justify pruning and return `None`.
 pub(super) fn group_bboxes(meta: &parquet::file::metadata::ParquetMetaData, leaves: Option<[usize; 4]>) -> Vec<Option<[f64; 4]>> {
     use parquet::file::statistics::Statistics as S;
@@ -219,6 +220,19 @@ pub(super) fn group_bboxes(meta: &parquet::file::metadata::ParquetMetaData, leav
     let primary = geo["primary_column"].as_str().unwrap_or("geometry");
     let descr = meta.file_metadata().schema_descr();
     let geometry = (0..descr.num_columns()).find(|&i| descr.column(i).path().parts() == [primary]);
+    // A GeoArrow geometry stored as separate coordinates: its `x` and `y` leaves, at any depth of
+    // its lists. Interleaved coordinates (one leaf of x, y pairs) give no bounds.
+    let geoarrow = !geo["columns"][primary]["encoding"].as_str().unwrap_or("WKB").eq_ignore_ascii_case("wkb");
+    let coordinate = |name: &str| -> Vec<usize> {
+        (0..descr.num_columns())
+            .filter(|&i| {
+                let column = descr.column(i);
+                let parts = column.path().parts();
+                geoarrow && parts.len() > 1 && parts[0] == primary && parts.last().is_some_and(|p| p == name)
+            })
+            .collect()
+    };
+    let (xs, ys) = (coordinate("x"), coordinate("y"));
     let usable = |b: &[f64; 4]| b.iter().all(|v| v.is_finite()) && b[0] <= b[2] && b[1] <= b[3];
     meta.row_groups()
         .iter()
@@ -231,11 +245,23 @@ pub(super) fn group_bboxes(meta: &parquet::file::metadata::ParquetMetaData, leav
                 }
             };
             let covering = leaves.and_then(|l| Some([stat(l[0], false)?, stat(l[1], false)?, stat(l[2], true)?, stat(l[3], true)?]));
+            // The extent of the coordinate leaves `ls`: every one needs statistics.
+            let extent = |ls: &[usize]| -> Option<(f64, f64)> {
+                let (lo, hi) = ls
+                    .iter()
+                    .try_fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &l| Some((lo.min(stat(l, false)?), hi.max(stat(l, true)?))))?;
+                (!ls.is_empty()).then_some((lo, hi))
+            };
             covering
                 .filter(usable)
                 .or_else(|| {
                     let bbox = rg.column(geometry?).geo_statistics()?.bounding_box()?;
                     Some([bbox.get_xmin(), bbox.get_ymin(), bbox.get_xmax(), bbox.get_ymax()])
+                })
+                .filter(usable)
+                .or_else(|| {
+                    let ((x0, x1), (y0, y1)) = (extent(&xs)?, extent(&ys)?);
+                    Some([x0, y0, x1, y1])
                 })
                 .filter(usable)
         })
@@ -1459,6 +1485,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn geoarrow_coordinate_statistics_supply_group_bounds() {
+        use parquet::file::metadata::KeyValue;
+        use parquet::file::properties::WriterProperties;
+        // A GeoArrow column, in row groups of two rows, read back for its groups' bounds.
+        let bounds = |encoding: &str, geometry: ArrayRef| {
+            let schema = Arc::new(Schema::new(vec![Field::new("geometry", geometry.data_type().clone(), true)]));
+            let batch = RecordBatch::try_new(schema.clone(), vec![geometry]).unwrap();
+            let geo = format!(r#"{{"version":"1.1.0","primary_column":"geometry","columns":{{"geometry":{{"encoding":"{encoding}"}}}}}}"#);
+            let props = WriterProperties::builder()
+                .set_max_row_group_row_count(Some(2))
+                .set_key_value_metadata(Some(vec![KeyValue::new("geo".into(), geo)]))
+                .build();
+            let mut bytes = Vec::new();
+            let mut writer = ArrowWriter::try_new(&mut bytes, schema, Some(props)).unwrap();
+            writer.write(&batch).unwrap();
+            writer.close().unwrap();
+            let builder = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes)).unwrap();
+            group_bboxes(builder.metadata(), None)
+        };
+        let xy = |xs: Vec<f64>, ys: Vec<f64>| {
+            StructArray::from(vec![
+                (Arc::new(Field::new("x", DataType::Float64, false)), Arc::new(Float64Array::from(xs)) as ArrayRef),
+                (Arc::new(Field::new("y", DataType::Float64, false)), Arc::new(Float64Array::from(ys)) as ArrayRef),
+            ])
+        };
+        let points = xy(vec![0.0, 1.0, 100.0, 103.0], vec![5.0, 4.0, 200.0, 201.0]);
+        assert_eq!(bounds("point", Arc::new(points.clone())), vec![Some([0.0, 4.0, 1.0, 5.0]), Some([100.0, 200.0, 103.0, 201.0])]);
+        // Coordinates in lists (a linestring a row): the leaves' statistics cover them all.
+        let field = Arc::new(Field::new("xy", points.data_type().clone(), false));
+        let offsets = arrow_buffer::OffsetBuffer::new(vec![0, 1, 2, 3, 4].into());
+        let lines = arrow_array::ListArray::new(field, offsets, Arc::new(points.clone()), None);
+        assert_eq!(bounds("linestring", Arc::new(lines)), vec![Some([0.0, 4.0, 1.0, 5.0]), Some([100.0, 200.0, 103.0, 201.0])]);
+        // A WKB file's struct column named like coordinates is not a GeoArrow geometry.
+        assert_eq!(bounds("WKB", Arc::new(points)), vec![None, None]);
     }
 
     #[test]
