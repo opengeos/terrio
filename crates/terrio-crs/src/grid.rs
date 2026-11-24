@@ -1135,6 +1135,13 @@ fn cdn_name(name: &str) -> Option<&str> {
     catalog().opened_by(name).filter(|k| k.url.is_none() && k.name.ends_with(".tif")).map(|k| k.name)
 }
 
+/// Whether a grid can be had: `null`, which needs no file (as [`available`]), found locally, or
+/// listed for direct download in PROJ's grid catalog (whether or not the network is enabled).
+/// This includes non-CDN URLs and does not assume an unlisted `.tif` exists on the CDN.
+pub(crate) fn obtainable(name: &str) -> bool {
+    name == "null" || present_locally(name) || catalog().opened_by(name).is_some_and(|grid| grid.direct_download)
+}
+
 /// Whether a grid name is a single ordinary file component on this platform.
 fn single_file_name(name: &str) -> bool {
     let mut parts = std::path::Path::new(name).components();
@@ -2645,5 +2652,10 @@ mod tests {
         }
         #[cfg(unix)]
         assert!(single_file_name("C:grid.tif"));
+    }
+
+    #[test]
+    fn null_grid_is_obtainable_without_a_file() {
+        assert!(obtainable("null"));
     }
 }

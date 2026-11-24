@@ -2969,6 +2969,36 @@ impl Transformer {
         self.transform_at(x, y, z, Some(t))
     }
 
+    /// Whether PROJ 9.9.0's candidate operations between the two CRSs (`proj_create_operations`)
+    /// include a non-ballpark transformation whose area meets both CRSs' extents. No particular
+    /// point is selected. False when only PROJ's ballpark ("Ballpark geographic offset") links
+    /// their datums; true between CRSs of one datum, which need no transformation.
+    ///
+    /// Missing grids count when PROJ's grid catalog lists a direct-download URL, regardless of
+    /// whether networking is enabled. Locally available grids count too. The check covers the
+    /// horizontal datum, including geocentric, geographic 3D and compound CRSs; it does not
+    /// check vertical datum transformations or geoid models.
+    ///
+    /// ```
+    /// use terrio_crs::{SpatialRef, Transformer};
+    /// let wgs84 = SpatialRef::from_epsg(4326)?;
+    /// assert!(Transformer::new(&SpatialRef::from_epsg(4230)?, &wgs84)?.has_non_ballpark_operation());
+    /// let bessel = SpatialRef::parse("+proj=longlat +ellps=bessel")?;
+    /// assert!(!Transformer::new(&bessel, &wgs84)?.has_non_ballpark_operation());
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn has_non_ballpark_operation(&self) -> bool {
+        let route = route::Route::all(&self.src, &self.dst);
+        // Route::all restores registry operations with missing grids before comparing datums;
+        // the comparison is not necessarily between the original definitions' `ops` lists.
+        // CRSs terrio takes as of one datum without knowing it (defined by their ellipsoids):
+        // PROJ's null transformation on one ellipsoid, else its ballpark.
+        if route.same_datum() && (self.src.datum_code().is_none() || self.dst.datum_code().is_none()) {
+            return fits::same_ellipsoid(&self.src.ell, &self.dst.ell);
+        }
+        route.has_transformation()
+    }
+
     /// The coordinate operation [`Transformer::transform_3d`] uses for a point: the
     /// transformations between datums and vertical CRSs it runs, as PROJ's
     /// `proj_trans_get_last_used_operation` gives them after transforming the point. `None` when

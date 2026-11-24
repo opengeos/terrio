@@ -151,6 +151,9 @@ pub(crate) struct Route {
     /// The target's transformations to WGS 84, for `Hub`.
     dst_ops: Vec<Arc<Op>>,
     src_ops: Vec<Arc<Op>>,
+    /// Candidate-area constraints for the hub availability query; point execution keeps its
+    /// existing per-point operation selection.
+    hub_areas: [Option<[f64; 4]>; 3],
 }
 
 fn legs(ops: &[Arc<Op>], reverse: bool) -> Vec<Leg> {
@@ -374,7 +377,14 @@ impl Route {
                 _ => shifted(src, dst, all).unwrap_or(Kind::Hub),
             }
         };
-        Self { kind, boxes: OnceLock::new(), hub_boxes: OnceLock::new(), dst_ops: dst.ops().to_vec(), src_ops: src.ops().to_vec() }
+        Self {
+            kind,
+            boxes: OnceLock::new(),
+            hub_boxes: OnceLock::new(),
+            dst_ops: dst.ops().to_vec(),
+            src_ops: src.ops().to_vec(),
+            hub_areas: [extent(src), extent(dst), aoi],
+        }
     }
 
     /// Refuse ballpark alternatives while retaining usable accurate operations.
@@ -440,6 +450,24 @@ impl Route {
                 Some(if three_d || !c.rank.keeps_height { q } else { Point { h: p.h, ..q } })
             }
             _ => self.apply(src, x, y, p, three_d),
+        }
+    }
+
+    /// Whether any retained candidate is not a ballpark: a transformation between the
+    /// datums whose grids can be had (see [`Op::obtainable`]), or none needed (one datum). False
+    /// when only PROJ's ballpark links the CRSs (or the shift into a hub CRS with it, which PROJ
+    /// counts as one). Candidates have already been filtered by the CRSs' extents and area of
+    /// interest; this does not select a particular point within those areas.
+    pub fn has_transformation(&self) -> bool {
+        let usable = |op: &Op| !op.ballpark && op.obtainable();
+        match &self.kind {
+            Kind::Same => true,
+            Kind::List(list) => list.iter().any(|l| usable(&l.op)),
+            Kind::Chains { chains, .. } => chains.iter().any(|c| c.legs.iter().all(|l| usable(&l.op))),
+            // Through WGS 84: a transformation on each side.
+            Kind::Hub => [&self.src_ops, &self.dst_ops]
+                .iter()
+                .all(|ops| ops.iter().any(|op| usable(op) && self.hub_areas.iter().flatten().all(|area| intersects(&op.bounds, area)))),
         }
     }
 
@@ -1559,6 +1587,35 @@ mod tests {
     use crate::{SpatialRef, Transformer};
 
     #[test]
+    fn hub_availability_excludes_operations_outside_the_crs_extents() {
+        let src = Def::new(&SpatialRef::from_epsg(27700).unwrap()).unwrap();
+        let dst = Def::new(&SpatialRef::from_epsg(2154).unwrap()).unwrap();
+        let mut route = Route::new(&src, &dst);
+        route.kind = Kind::Hub;
+        let world = Arc::new(Op::world(Vec::new()));
+        route.src_ops = vec![world.clone()];
+        route.dst_ops = vec![world.clone()];
+        assert!(route.has_transformation());
+        let outside = Arc::new(Op { bounds: [120., 20., 121., 21.], ..Op::world(Vec::new()) });
+        route.src_ops = vec![outside.clone()];
+        assert!(!route.has_transformation());
+        route.src_ops = vec![world];
+        route.dst_ops = vec![outside];
+        assert!(!route.has_transformation());
+    }
+
+    #[test]
+    fn ballpark_legs_are_excluded_from_list_and_chain_availability() {
+        for ballpark in [false, true] {
+            let leg = Leg { op: Arc::new(Op { ballpark, ..Op::world(Vec::new()) }), reverse: false };
+            let list = route_of(Kind::List(vec![leg.clone()]));
+            let chain = route_of(Kind::Chains { chains: vec![direct_chain(&leg, None).1], ballpark: None });
+            assert_eq!(list.has_transformation(), !ballpark);
+            assert_eq!(chain.has_transformation(), !ballpark);
+        }
+    }
+
+    #[test]
     fn recording_cleans_up_after_unwind() {
         assert!(
             std::panic::catch_unwind(|| recording(|| {
@@ -1605,6 +1662,7 @@ mod tests {
             hub_boxes: OnceLock::new(),
             src_ops: Vec::new(),
             dst_ops: Vec::new(),
+            hub_areas: [None; 3],
         };
         let p = Point { lon: 110_f64.to_radians(), lat: 35_f64.to_radians(), h: 0.0, t: None };
         let used_ballpark = std::cell::Cell::new(false);
@@ -1614,7 +1672,7 @@ mod tests {
 
     /// A route of one kind, for tests.
     fn route_of(kind: Kind) -> Route {
-        Route { kind, boxes: OnceLock::new(), hub_boxes: OnceLock::new(), src_ops: Vec::new(), dst_ops: Vec::new() }
+        Route { kind, boxes: OnceLock::new(), hub_boxes: OnceLock::new(), src_ops: Vec::new(), dst_ops: Vec::new(), hub_areas: [None; 3] }
     }
 
     #[test]
