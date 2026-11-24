@@ -572,6 +572,24 @@ fn wkb_extend(b: &[u8], at: &mut usize, bb: &mut [f64; 4], depth: u32) -> Option
 
 #[cfg(test)]
 mod tests {
+    /// A missing bound cannot match a rectangle through the Arrow covering filter (GDAL
+    /// 3.13.3 reference); a complete covering of the same rectangle still matches.
+    #[test]
+    fn null_covering_members_do_not_match_a_rectangle() {
+        use super::*;
+        use arrow_array::{Float64Array, StructArray};
+        let bounds = StructArray::from(vec![
+            (Arc::new(Field::new("xmin", DataType::Float64, true)), Arc::new(Float64Array::from(vec![Some(0.), None])) as ArrayRef),
+            (Arc::new(Field::new("ymin", DataType::Float64, false)), Arc::new(Float64Array::from(vec![0., 0.])) as ArrayRef),
+            (Arc::new(Field::new("xmax", DataType::Float64, false)), Arc::new(Float64Array::from(vec![1., 1.])) as ArrayRef),
+            (Arc::new(Field::new("ymax", DataType::Float64, false)), Arc::new(Float64Array::from(vec![1., 1.])) as ArrayRef),
+        ]);
+        let batch = RecordBatch::try_from_iter(vec![("bbox", Arc::new(bounds) as ArrayRef)]).unwrap();
+        let filter = Filter::Covering("bbox".into(), ["xmin", "ymin", "xmax", "ymax"].map(String::from));
+        let keep = filter.rows(&batch, (0., 0., 1., 1.), "point").unwrap();
+        assert_eq!(keep.values().iter().collect::<Vec<_>>(), vec![true, false]);
+    }
+
     use super::wkb_bbox;
     use wbvector::{Coord, Geometry, Ring};
 
