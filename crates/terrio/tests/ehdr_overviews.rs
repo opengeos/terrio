@@ -346,3 +346,36 @@ fn an_overview_without_nodata_inherits_the_base_header() {
     let read = base.read_window(Window::full(5, 4), &WindowOptions { bands: vec![1], overview: Some(0) }).unwrap();
     assert_eq!(read.nodata(), Some(f64::from(-0.1_f32)));
 }
+
+/// Preserve an unset base-band nodata even when the overview TIFF has a shared sentinel.
+/// GDAL 3.12.1 reports that shared sentinel for both bands; Terrio keeps band 2's valid values.
+#[test]
+fn an_unset_base_band_nodata_remains_unset_on_the_overview() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("unset.flt");
+    std::fs::write(path.with_extension("hdr"), "NCOLS 2\nNROWS 2\nNBANDS 2\nNBITS 32\nPIXELTYPE FLOAT\nBYTEORDER I\nLAYOUT BIL\n").unwrap();
+    let bands = [[-9999_f32, 2., 2., 2.], [-9999_f32; 4]];
+    let mut bytes = Vec::new();
+    for row in 0..2 {
+        for band in &bands {
+            for value in &band[row * 2..row * 2 + 2] {
+                bytes.extend(value.to_le_bytes());
+            }
+        }
+    }
+    std::fs::write(&path, bytes).unwrap();
+    std::fs::write(
+        format!("{}.aux.xml", path.display()),
+        "<PAMDataset><PAMRasterBand band=\"1\"><NoDataValue>-9999</NoDataValue></PAMRasterBand></PAMDataset>",
+    )
+    .unwrap();
+    let name = path.to_str().unwrap();
+    add_overviews(name, &OverviewOptions { levels: vec![2], ..options() }).unwrap();
+    let overview = LazyRaster::open(&format!("{name}.ovr")).unwrap();
+    assert_eq!(overview.band_nodata(2), Some(-9999.));
+    let mut source = LazyRaster::open(name).unwrap();
+    assert_eq!(source.level_band_nodata(&[1, 2], Some(0)), vec![Some(-9999.), None]);
+    let read = source.read_window(Window::full(1, 1), &WindowOptions { bands: vec![1, 2], overview: Some(0) }).unwrap();
+    assert_eq!(read.raster.data.to_f64_vec(), vec![2., -9999.]);
+    assert_eq!(read.band_nodata(2), None);
+}

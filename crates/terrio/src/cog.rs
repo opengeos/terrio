@@ -1704,9 +1704,10 @@ impl LazyRaster {
         }
     }
 
-    /// Explicit TIFF-sidecar band nodata wins; otherwise distinct base-band values win over a
-    /// shared TIFF tag. A scalar base sentinel is used when the sidecar has no nodata. GDAL 3.12.1
-    /// exposes the TIFF's shared value for all overview bands; this preserves the base metadata.
+    /// Explicit TIFF-sidecar band nodata wins; otherwise per-band base metadata wins over a
+    /// shared TIFF tag, including an unset value for a band. A scalar base sentinel is used when
+    /// the sidecar has no nodata. GDAL 3.12.1 exposes the TIFF's shared value for all overview
+    /// bands; this deliberately preserves the base's per-band metadata instead.
     pub(crate) fn level_band_nodata_inheriting(&self, bands: &[usize], overview: Option<usize>, base: &RasterDataset) -> Vec<Option<f64>> {
         let mut values = self.level_band_nodata(bands, overview);
         if let Inner::Tiff(t) = &self.inner {
