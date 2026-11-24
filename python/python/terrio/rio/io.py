@@ -3493,8 +3493,12 @@ class DatasetWriter(DatasetReader):
         if file_backed is None:
             file_backed = isinstance(self._data, np.memmap) or self._copy_of is not None
         cog = self._out_driver == "COG"
+        overview_method = str(
+            self._options.get("OVERVIEW_RESAMPLING", self._options.get("RESAMPLING", ""))
+        ).lower()
         return (
             (file_backed or cog)
+            and overview_method not in ("area_matched", "area_matched_mode")
             and (
                 self._out_driver == "GTiff"
                 or (cog and self._mask is None and "@COPY_SRC_OVERVIEWS" not in self._options)

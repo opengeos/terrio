@@ -303,8 +303,9 @@ impl Tiff {
         }
         // Compressions only wbraster encodes are written whole.
         let Some(mut opts) = TiffOptions::from_write_options(options, cog, crate::dataset::tiff_nodata(header))? else { return Ok(None) };
-        // Copying a source's overviews needs the whole raster, as `cog_rows` requires.
-        if cog && opts.source_overviews.is_some() {
+        // Copying a source's overviews, or area-matched overviews, need the whole raster, as
+        // `cog_rows` requires.
+        if cog && (opts.source_overviews.is_some() || opts.cog_area_matched.is_some()) {
             return Ok(None);
         }
         crate::dataset::ensure_writable_location(path)?;
@@ -786,6 +787,34 @@ mod tests {
         };
         assert!(Tiff::create(&header(DataType::U8), "out.tif", &options, false).unwrap().is_none());
         assert!(Tiff::create(&header(DataType::U8), "out.tif", &options, true).unwrap().is_none());
+    }
+
+    /// A COG with area-matched overviews is gathered and written whole, the file that
+    /// `write_raster_dataset` writes; the row-streaming COG writer refuses it.
+    #[test]
+    fn cogs_with_area_matched_overviews_are_written_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
+        let ds = utm_raster();
+        let cog = RasterWriteOptions {
+            driver: Some(RasterDriver::Cog),
+            compression: Some("DEFLATE".into()),
+            tile_size: Some(64),
+            creation_options: vec![("OVERVIEW_RESAMPLING".into(), "AREA_MATCHED".into())],
+            ..Default::default()
+        };
+        assert!(Tiff::create(&ds, &path("x.tif"), &cog, false).unwrap().is_none());
+        assert!(crate::GeoTiffWriter::create(&path("x.tif"), &ds, &cog).is_err());
+        crate::write_raster_dataset(&ds, &path("whole.tif"), &cog).unwrap();
+        let mut header = ds.clone();
+        header.raster.data = RasterData::new_filled(DataType::F32, 0, 0.0);
+        let mut w = StripWriter::create(&header, &path("strips.tif"), &cog).unwrap();
+        for y in (0..200).step_by(37) {
+            let h = 37.min(200 - y);
+            w.write(crate::cog::cut(&ds.raster, crate::Window::new(0, y, 300, h), &[1]), h).unwrap();
+        }
+        w.finish().unwrap();
+        assert!(std::fs::read(path("strips.tif")).unwrap() == std::fs::read(path("whole.tif")).unwrap());
     }
 
     /// A raster of 300 x 200 Float32 values with nodata and metadata, in UTM.

@@ -26,6 +26,8 @@ Suites:
     overviews         source overview selection and HTTP COG bytes vs gdalwarp -ovr
     warp-grid         aligned warp tiles and windows on real terrain
     sum-overviews     extensive sum estimates and exact NONE controls vs GDAL
+    cog-area-matched  area-matched COG overviews read and validated by GDAL, beside GDAL's
+                      average and nearest (compare_cog_area_matched_with_gdal.py)
     translate-overviews  resized reads from overviews and HTTP COG bytes vs gdal_translate
                       -outsize/-ovr (compare_translate_overviews_with_gdal.py)
     dem-calc          dem, calc, proximity, sieve vs GDAL's tools (compare_dem_calc_with_gdal.py)
@@ -1633,6 +1635,37 @@ def suite_cog_validate(ctx):
         suite.cases.append(Case("COG validation", result["name"], IDENTICAL if result["status"] == "identical" else DIFFERS, result["detail"]))
     if len(results) != 44:
         suite.cases.append(Case("COG validation", "case count", DIFFERS, f"expected 44 results, got {len(results)}"))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
+def suite_cog_area_matched(ctx):
+    """Area-matched COG overviews written by terrio, read, validated and copied by GDAL."""
+    suite = Suite("cog-area-matched", "Area-matched COG overviews", "GDAL's COG driver (sizes, reading, validation, copy)",
+                  "Real Float32 (NaN and -inf nodata), Float64 and paletted Byte rasters: overview sizes, the "
+                  "full-resolution band and the valid cells of each level (round(valid x level area / image "
+                  "area)) exact as GDAL reads them; band items OVERVIEW_AREA_RATIOS (to 1e-12) and "
+                  "OVERVIEW_BASE_VALID_PIXELS equal to those recomputed; no COG validator error; items kept by "
+                  "GDAL's COG CreateCopy. Within tolerance: the ratios agree to 1e-12, and the overview pixels differ "
+                  "from those of every GDAL method by design. The detail gives the area each level keeps with GDAL's "
+                  "average and nearest.")
+    missing = missing_modules("osgeo", "numpy")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    from osgeo import gdal
+
+    suite.reference = f"GDAL {gdal.VersionInfo('RELEASE_NAME')}'s COG driver (sizes, reading, validation, copy)"
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_cog_area_matched_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        status = {"agrees": TOLERANCE, "not compared": NOT_COMPARED}.get(result["status"], DIFFERS)
+        suite.cases.append(Case("Area-matched overviews", result["name"], status, result["detail"]))
     if code and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or out)
     return suite
@@ -4416,6 +4449,7 @@ SUITES = OrderedDict(
         ("retile", suite_retile),
         ("tile-publication", suite_tile_publication),
         ("cog-validate", suite_cog_validate),
+        ("cog-area-matched", suite_cog_area_matched),
         ("identify", suite_identify),
         ("dataset-files", suite_dataset_files),
         ("parquet-metadata", suite_parquet_metadata),

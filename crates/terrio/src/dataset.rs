@@ -1767,6 +1767,17 @@ pub struct RasterWriteOptions {
     /// overviews). GeoTIFF overviews default to `nearest`; COGs to GDAL's COG driver's default,
     /// `cubic` (`nearest` for paletted rasters), and also take the `OVERVIEW_RESAMPLING` and
     /// `RESAMPLING` creation options, which come first.
+    ///
+    /// terrio's `area_matched` (and `area_matched_mode` for categorical rasters), which GDAL
+    /// 3.12 and 3.13 do not have, builds GeoTIFF and COG overviews of GDAL's sizes whose valid
+    /// cells cover the valid area of the full-resolution image (to the nearest cell) rather than
+    /// growing it at every level as `average` does: the cells covering the most valid pixels
+    /// are kept and hold their mean (or mode). It needs one shared nodata value across all bands;
+    /// per-dataset masks, alpha and complex bands, distinct per-band nodata, copied source
+    /// overviews and row-streamed COG writes are refused. Each band's metadata records:
+    /// `OVERVIEW_AREA_RATIOS` (per level, nominal area kept over the valid full-resolution area,
+    /// comma-separated) and `OVERVIEW_BASE_VALID_PIXELS` (the valid full-resolution pixels),
+    /// default-domain items that GDAL's COG and GTiff drivers copy along with the band.
     pub overview_resampling: Option<String>,
     /// The geotransform to write in place of the raster's own: a rotated or south-up one, which
     /// GeoTIFFs store in a `ModelTransformationTag`, as GDAL writes them.
@@ -1841,7 +1852,7 @@ pub fn read_gcps(path: &str) -> Result<Vec<Gcp>> {
 
 /// Writes a raster, declaring its nodata value.
 pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -> Result<()> {
-    write_raster_with_nodata(raster, Some(raster.nodata), false, path, options)
+    write_raster_with_nodata(raster, Some(raster.nodata), &[], false, path, options)
 }
 
 /// Writes a raster dataset, declaring a nodata value only when the dataset has one.
@@ -1881,7 +1892,7 @@ pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWrit
     let options = options.inherited_from(ds, driver);
     let pam = needs_nodata_pam(ds) && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
     let tag = if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) { tiff_nodata(ds) } else { ds.nodata() };
-    write_raster_with_nodata(&ds.raster, tag, ds.complex, path, &options)?;
+    write_raster_with_nodata(&ds.raster, tag, &ds.band_nodata, ds.complex, path, &options)?;
     if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
         let mut aux = std::ffi::OsString::from(path);
         aux.push(".aux.xml");
@@ -1951,7 +1962,14 @@ pub(crate) fn color_options(ds: &RasterDataset, path: &str, options: &RasterWrit
     })
 }
 
-fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool, path: &str, options: &RasterWriteOptions) -> Result<()> {
+fn write_raster_with_nodata(
+    raster: &Raster,
+    nodata: Option<f64>,
+    band_nodata: &[Option<f64>],
+    complex: bool,
+    path: &str,
+    options: &RasterWriteOptions,
+) -> Result<()> {
     ensure_writable_location(path)?;
     let driver = match options.driver.or_else(|| RasterDriver::for_extension(path)) {
         Some(d) => d,
@@ -1982,6 +2000,22 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool,
         // terrio's writer handles the compressions it encodes; wbraster the others.
         if let Some(mut opts) = crate::drivers::gtiff_write::TiffOptions::from_write_options(options, driver == RasterDriver::Cog, nodata)?
         {
+            let area_matched = if opts.cog {
+                opts.cog_area_matched.is_some()
+            } else {
+                matches!(opts.overview_resampling, crate::drivers::gtiff_write::OverviewResampling::AreaMatched(_))
+            };
+            // These overview images declare TIFF's one shared sentinel. Per-band PAM describes
+            // the base image only, so accepting distinct sentinels would misclassify their cells.
+            if area_matched
+                && band_nodata.iter().take(raster.bands).any(|value| match (*value, nodata) {
+                    (Some(a), Some(b)) => a != b && !(a.is_nan() && b.is_nan()),
+                    (None, None) => false,
+                    _ => true,
+                })
+            {
+                return Err(Error::Unsupported("area-matched overviews require one shared nodata value across all bands".into()));
+            }
             // Complex bands as complex samples, as GDAL writes CInt16... CFloat64 GeoTIFFs.
             opts.complex = complex;
             return crate::drivers::gtiff_write::write(raster, path, &opts);

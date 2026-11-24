@@ -304,6 +304,49 @@ it where it is longer than the matches its hash chains (and, at levels 6–9, it
 candidates) find, so rows that repeat the row above, as in rasters of uniform blocks such as land
 cover maps, classifications and masks, are coded as copies of whole rows.
 
+### Overviews that keep the valid area
+
+GDAL's `average` makes an overview pixel valid when any of its source pixels is, so the valid
+area of a thin or ragged raster (a flood-depth grid, a river or burn mask) grows at every level,
+and more at each coarser one. `nearest` keeps it on average, but drops or adds isolated pixels
+along the margin. terrio's `OVERVIEW_RESAMPLING=AREA_MATCHED` (`overview_resampling`
+`area_matched`), for GeoTIFF overviews at factors and COG overviews, keeps the area instead:
+
+- Each level has GDAL's size, and each of its cells covers the source pixels whose centres fall in
+  its footprint. A level keeps as many valid cells as cover the valid full-resolution area,
+  rounded to the nearest cell: those covering the most valid pixels, ties going to the cells with
+  the most kept neighbours, then to a deterministic hash of the cell. This favours connectivity
+  without guaranteeing a connected margin, and two writes give the same file. A level is refused
+  if too few footprints contain valid pixels to meet the rounded target without inventing values.
+- A kept cell holds the mean of its valid pixels (rounded half to even for integer types), and
+  others hold nodata. Means accumulate in `f64`, following the ported NumPy algorithm; Int64
+  and UInt64 means can lose low bits, for example a constant `2^60 + 1` becomes `2^60`.
+  `AREA_MATCHED_MODE` holds the most frequent class instead (of the cells of the level below,
+  the lowest on ties), retaining native integer class values for categorical rasters.
+  A kept cell with an undefined mean, such as opposite infinities, is refused rather than
+  stored as NaN while counted as valid.
+- The raster needs one shared nodata value across all bands (NaN is never valid). Distinct
+  per-band declarations, per-dataset masks, alpha bands and complex bands are refused. A COG
+  with these overviews is written whole, not a strip at a time.
+- Each overview declares nodata, including Int64 and UInt64 levels, so readers mask cells
+  excluded from the reported valid area.
+- Each band's metadata records what its levels keep, as default-domain items that GDAL's COG and
+  GTiff drivers copy with the band: `OVERVIEW_AREA_RATIOS`, the nominal area each level keeps
+  over the valid full-resolution area (comma-separated, `1` when it is kept exactly), and
+  `OVERVIEW_BASE_VALID_PIXELS`. A COG records the method as GDAL's COG driver records one,
+  `IMAGE_STRUCTURE`'s `OVERVIEW_RESAMPLING=AREA_MATCHED`.
+  Nominal area is the kept-cell count times the uniform overview-grid cell area (base pixel
+  count divided by overview cell count), rather than the sum of selected source-footprint
+  weights, which can differ on odd-sized grids.
+
+```sh
+terrio convert depth.tif depth_cog.tif -f COG --co COMPRESS=DEFLATE --co OVERVIEW_RESAMPLING=AREA_MATCHED
+terrio info depth_cog.tif
+```
+
+The overview pixels differ from those of every GDAL method by design; the full-resolution image is
+written as with any other method.
+
 JPEG 2000 is decoded and encoded with the Rust port of OpenJPEG, the codec of GDAL's JP2OpenJPEG
 driver, so pixels are GDAL's (Sentinel-2 L1C and L2A bands included). Georeferencing comes from
 the GeoJP2 box or the GMLJP2 box (Sentinel-2's), a 1-bit alpha channel is promoted to 0 and 255 as

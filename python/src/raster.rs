@@ -1128,6 +1128,10 @@ impl PyRaster {
     ///         `"min"` and `"max"` for GeoTIFF overviews). GeoTIFF overviews default to
     ///         `"nearest"`; COGs to GDAL's COG driver's `"cubic"` (`"nearest"` when paletted).
     ///         The `OVERVIEW_RESAMPLING` and `RESAMPLING` creation options come first.
+    ///         terrio's `"area_matched"` (`"area_matched_mode"` for classes) builds GeoTIFF and
+    ///         COG overviews that keep the valid area of a raster with nodata, and records the
+    ///         area each level keeps in the band metadata items `OVERVIEW_AREA_RATIOS` and
+    ///         `OVERVIEW_BASE_VALID_PIXELS`.
     ///     gcps: GeoTIFF ground control points, in the raster's CRS: `(pixel, line, x, y, z)`
     ///         tuples, written as tie points instead of the geotransform.
     ///     mask: A per-dataset validity mask, a 2-D uint8 array (0 for invalid pixels), written

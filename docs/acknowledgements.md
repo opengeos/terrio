@@ -166,6 +166,13 @@ therefore differ from libdeflate's; decoded raster values and metadata are check
 with GDAL 3.13.3. At every level, the searches over a GeoTIFF or COG chunk's rows also examine the
 position one row back.
 
+## ras2cng
+
+terrio's area-matched overviews (`OVERVIEW_RESAMPLING=AREA_MATCHED`,
+`crates/terrio/src/drivers/area_matched.rs`) are translated from
+[ras2cng](https://github.com/gpt-cmdr/ras2cng)'s `build_area_matched_overviews`
+(copyright 2024 William M. Katzenmeyer, P.E., C.F.M. / CLB Engineering, MIT).
+
 ## fdlibm
 
 terrio's vectorized aspect, and with the default (GDAL 3.12) kernel its slope in degrees and its
