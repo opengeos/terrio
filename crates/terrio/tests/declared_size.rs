@@ -2291,6 +2291,7 @@ fn checked_for_their_peaks(
                 peaks.push(peak);
             }
             let (values, mask) = slab(y0, y1);
+            assert_eq!(mask.is_some(), options.mask.is_some(), "the slab mask must match the COG configuration");
             let w = writer.as_mut().unwrap();
             w.write_rows(&none, 0, no_rows).unwrap();
             let mut admitted = false;

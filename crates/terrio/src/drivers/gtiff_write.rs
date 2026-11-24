@@ -2768,10 +2768,10 @@ const COG_BLOCK_ROWS_IN_FLIGHT: usize = 1;
 
 /// The bytes a row of tiles being compressed takes besides its rows and its chunks' bytes, as
 /// [`CogWriter::call_bytes`] counts it: the job compressing it, the channel its tiles come back
-/// in, and their tags and list of chunks, per band (measured: about 1 KiB for a band).
+/// in, and their tags and list of chunks, per band (measured at about 1 KiB; 4 KiB reserved for margin).
 const COG_JOB_BYTES: usize = 4 << 10;
 
-/// A row of tiles a COG's call may have being compressed, as [`CogWriter::call_bytes`] counts it:
+/// A row of tiles a COG call may be compressing, as [`CogWriter::call_bytes`] counts it:
 /// the bytes it holds (its rows, unless counted elsewhere, and its compressed chunks), and the
 /// image's chunks and the mask's tiles compressed for it.
 #[derive(Clone, Copy, Default)]
