@@ -1,6 +1,8 @@
 """Vector layers read as streams: `open_stream`, `iter_features`, Arrow streams and streamed
 `convert`, compared with whole reads and with GDAL."""
 
+from pathlib import Path
+
 import pytest
 
 import terrio
@@ -157,7 +159,7 @@ def test_a_geoparquet_stream_with_a_bbox_chooses_its_rows_when_read(tmp_path):
     Args:
         tmp_path: Isolated vector fixture directory.
     """
-    io = pytest.importorskip("pathlib").Path("/proc/self/io")
+    io = Path("/proc/self/io")
     if not io.exists():
         pytest.skip("bytes read are counted from Linux's /proc/self/io")
 
@@ -218,6 +220,26 @@ def test_geoparquet_streams_read_files_in_archives(tmp_path):
     table = pa.table(terrio.open_stream(f"/vsizip/{z}/s.parquet"))
     assert table.num_rows == 1000
     assert table["i"].to_pylist() == list(range(1000))
+
+
+def test_a_filtered_archive_stream_retains_its_eager_fallback(tmp_path):
+    """Keep the filtered whole-file fallback instead of reopening its archive.
+
+    Args:
+        tmp_path: Isolated GeoParquet source and ZIP archive directory.
+    """
+    import zipfile
+
+    path = tmp_path / "s.parquet"
+    squares(1000).write(str(path))
+    box = (-100.0, -80.0, -90.0, -70.0)
+    expected = len(terrio.open_vector(str(path), bbox=box)[0])
+    archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.write(path, "s.parquet")
+    stream = terrio.open_stream(f"/vsizip/{archive}/s.parquet", bbox=box)
+    archive.rename(tmp_path / "moved.zip")
+    assert len(stream.read_all()) == expected > 0
 
 
 def test_geoparquet_streams_give_a_geodataframe_in_crs84(tmp_path):

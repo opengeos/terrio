@@ -130,7 +130,11 @@ fn open_stream(
     let options = VectorOpenOptions { spatial_filter: bbox, ..Default::default() };
     // A GeoParquet file's bbox filter reads its geometries when the reader opens: here only the
     // layer is needed, from a reader without the filter.
-    let deferred = bbox.is_some() && is_geoparquet(path);
+    let location = terrio::vfs::Location::parse(path);
+    let native = (location.is_local() && std::path::Path::new(path).is_file())
+        || matches!(location, terrio::vfs::Location::Url(_) | terrio::vfs::Location::S3 { .. });
+    // Whole-read fallbacks, including archives, must retain their filtered features.
+    let deferred = bbox.is_some() && is_geoparquet(path) && native;
     let probe = if deferred { VectorOpenOptions::default() } else { options.clone() };
     let reader = crate::with_warnings(py, || open_reader(path, &probe, layer, columns.as_deref(), batch_size))?;
     let layer = reader.layer().clone();
