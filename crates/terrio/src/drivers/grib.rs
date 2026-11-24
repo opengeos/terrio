@@ -804,7 +804,7 @@ fn find_messages<'a>(
 }
 
 /// The bands of one message of a file of `file_len` bytes. `msg` is the message, or the start
-/// of a message of `full_len` bytes holding the headers of all its sections (a remote file's).
+/// of a GRIB1 message of `full_len` bytes holding the headers of all its sections.
 fn message_bands(msg: &[u8], full_len: usize, file_len: usize, normalize: bool) -> Result<Vec<Band<'_>>> {
     if msg.get(7) == Some(&1) {
         let mut m = grib1::Message::parse(msg, file_len)?;
@@ -820,26 +820,48 @@ fn message_bands(msg: &[u8], full_len: usize, file_len: usize, normalize: bool) 
 /// past the bytes at hand. When only the start of the message is at hand (`msg` shorter than
 /// `full_len`), its last section may be cut short: a bitmap or data section, not read.
 fn message_fields<'a>(msg: &'a [u8], full_len: usize, normalize: bool, out: &mut Vec<Field<'a>>) -> Result<usize> {
-    let discipline = msg[6];
+    message_fields_in(&[(0, msg)], full_len, normalize, out)
+}
+
+/// The bytes at `pos` of a message of which `runs` are at hand, `(offset, bytes)` in order and
+/// apart: to the end of the run that holds them, none when no run does.
+fn at_hand<'a>(runs: &[(usize, &'a [u8])], pos: usize) -> &'a [u8] {
+    let i = runs.partition_point(|&(start, _)| start <= pos);
+    match i.checked_sub(1).map(|i| runs[i]) {
+        Some((start, bytes)) if pos - start <= bytes.len() => &bytes[pos - start..],
+        _ => &[],
+    }
+}
+
+/// [`message_fields`] of the runs of a message at hand: the whole message as one run, or the
+/// header read at open ([`Head`]), in which the local use, bitmap and data sections are cut short,
+/// their first octets at hand and the next section where their lengths put it.
+fn message_fields_in<'a>(runs: &[(usize, &'a [u8])], full_len: usize, normalize: bool, out: &mut Vec<Field<'a>>) -> Result<usize> {
+    let whole = matches!(runs, [(0, msg)] if msg.len() >= full_len);
+    let discipline = at_hand(runs, 0)[6];
     let mut pos = 16;
     let empty: &[u8] = &[];
     let (mut s1, mut s3, mut s4, mut s5, mut s6) = (empty, empty, empty, empty, empty);
     let mut last_bitmap: Option<&[u8]> = None;
-    while pos + 4 <= msg.len() && &msg[pos..pos + 4] != b"7777" {
+    loop {
+        let here = at_hand(runs, pos);
+        if here.len() < 4 || &here[..4] == b"7777" {
+            break;
+        }
         let bad = || bad_section(pos);
-        if pos + 5 > msg.len() {
+        if here.len() < 5 {
             return Err(bad());
         }
-        let len = be(&msg[pos..pos + 4]) as usize;
-        let sect = match msg.get(pos..pos + len) {
+        let len = be(&here[..4]) as usize;
+        let sect = match here.get(..len) {
             Some(s) if len >= 5 => s,
-            // The start of a bitmap or data section past what was read of a message.
-            None if full_len > msg.len()
-                && pos + len <= full_len
-                && matches!(msg[pos + 4], 2 | 6 | 7)
-                && msg.len() >= pos + if msg[pos + 4] == 6 { 6 } else { 5 } =>
+            // The start of a bitmap or data section of which no more was read.
+            None if !whole
+                && pos.checked_add(len).is_some_and(|end| end <= full_len)
+                && matches!(here[4], 2 | 6 | 7)
+                && here.len() >= if here[4] == 6 { 6 } else { 5 } =>
             {
-                &msg[pos..]
+                here
             }
             _ => return Err(bad()),
         };
@@ -881,45 +903,126 @@ fn bad_section(pos: usize) -> Error {
     Error::InvalidData(format!("invalid GRIB2 section at offset {pos} of a message"))
 }
 
-/// How much of the start of a GRIB message of `full_len` bytes its header needs (every section's
-/// header, the definitions whole, a bitmap's indicator), given the `head` at hand: `None` when
-/// the head holds it, else at least how many bytes.
-fn header_needs(head: &[u8], full_len: usize) -> Option<usize> {
-    if head.len() < 16 {
-        return Some(16.min(full_len));
+/// The header of a message read at open ([`read_head`]), from which its bands are described: a
+/// GRIB1 message's start, the body of its bitmap, which is skipped, left as zeros past its first
+/// bytes in a row (the second item); or runs of a GRIB2 message's bytes, `(offset, bytes)` in
+/// order and apart, which hold each section's first octets and the definitions whole, but not the
+/// bodies of its local use, bitmap and data sections, and where the bytes it needed end (the
+/// second item; the first read's end when it goes further). Only the remote reader reads the
+/// second items.
+#[cfg_attr(not(remote), allow(dead_code))]
+pub(crate) enum Head {
+    Grib1(Vec<u8>, usize),
+    Grib2(Vec<(usize, Vec<u8>)>, usize),
+}
+
+impl Head {
+    /// The bytes of the message read in a row from its start, the rest of the header dropped.
+    #[cfg(remote)]
+    pub(crate) fn into_first(self) -> Vec<u8> {
+        match self {
+            Head::Grib1(mut bytes, prefix) => {
+                bytes.truncate(prefix);
+                bytes.shrink_to_fit();
+                bytes
+            }
+            Head::Grib2(mut runs, _) => runs.swap_remove(0).1,
+        }
     }
-    if head[7] == 1 {
-        return grib1::Message::header_needs(head).filter(|&n| n > head.len()).map(|n| n.min(full_len));
+
+    /// The bands of the message of `len` bytes, of a file of `file_len`, whose header this is, and
+    /// the offset of a GRIB2 message's end marker when the walk of its sections ends there and the
+    /// header does not hold it.
+    pub(crate) fn bands(&self, len: usize, file_len: usize, normalize: bool) -> Result<(Vec<Band<'_>>, Option<usize>)> {
+        let runs: Vec<(usize, &[u8])> = match self {
+            Head::Grib1(bytes, _) => return Ok((message_bands(bytes, len, file_len, normalize)?, None)),
+            Head::Grib2(runs, _) => runs.iter().map(|(at, bytes)| (*at, bytes.as_slice())).collect(),
+        };
+        let mut fields = Vec::new();
+        let end = message_fields_in(&runs, len, normalize, &mut fields)?;
+        let marker = (at_hand(&runs, end).len() < 4 && end.checked_add(4) == Some(len)).then_some(end);
+        Ok((fields.into_iter().map(Band::Grib2).collect(), marker))
+    }
+}
+
+/// The header of a message of `len` bytes whose first bytes, at least 16, are `first`, the parts
+/// it needs read by `read(at, n)`: `n` bytes at `at` from the message's start, or more. Each part
+/// of a GRIB2 header is read with at least `min_read` bytes, so that the definitions of a field
+/// that follow a skipped data section come in one read, short of the message's last 4 bytes: the
+/// end marker is in the header only where the first bytes or a needed part hold it, so that a
+/// damaged marker fails the parsing of a header as it did when its parts were read one by one.
+pub(crate) fn read_head(
+    first: Vec<u8>,
+    len: usize,
+    min_read: usize,
+    mut read: impl FnMut(usize, usize) -> Result<Vec<u8>>,
+) -> Result<Head> {
+    if first[7] == 1 {
+        let mut head = first;
+        let prefix = complete_head(&mut head, len, read)?;
+        return Ok(Head::Grib1(head, prefix));
+    }
+    let mut needed = first.len();
+    let mut runs = vec![(0, first)];
+    loop {
+        // The parts are read in order, each past the runs at hand.
+        let end = runs.last().map_or(0, |(at, run)| at + run.len());
+        let next = grib2_next_part(&runs.iter().map(|(at, run)| (*at, run.as_slice())).collect::<Vec<_>>(), len);
+        let Some((at, n)) = next.filter(|&(at, n)| n > 0 && at >= end) else { break };
+        needed = needed.max(at + n);
+        let bytes = read(at, n.max(min_read.min((len - 4).saturating_sub(at))))?;
+        match runs.last_mut() {
+            Some((start, run)) if at == end => {
+                run.try_reserve_exact(bytes.len()).map_err(|_| out_of_memory(at + bytes.len() - *start))?;
+                run.extend_from_slice(&bytes);
+            }
+            _ => runs.push((at, bytes)),
+        }
+    }
+    Ok(Head::Grib2(runs, needed))
+}
+
+/// The next part of a GRIB2 message of `len` bytes to read for its header, given the `runs` at
+/// hand: `(offset, length)` from the message's start, `None` when they hold the header. The header
+/// is the first octets of each section and the definitions whole (every section but the local use,
+/// bitmap and data ones), each section where the length of the one before puts it: the bodies of
+/// those three are skipped, the bitmap's indicator read.
+fn grib2_next_part(runs: &[(usize, &[u8])], len: usize) -> Option<(usize, usize)> {
+    let first = at_hand(runs, 0).len();
+    if first < 16 {
+        return Some((first, 16 - first));
     }
     let mut pos = 16;
-    while pos + 4 < full_len {
-        if pos + 5 > head.len() {
-            return Some(pos + 5);
+    while pos < len.saturating_sub(4) {
+        let here = at_hand(runs, pos);
+        if here.len() < 5 {
+            return Some((pos + here.len(), 5 - here.len()));
         }
-        let len = be(&head[pos..pos + 4]) as usize;
-        let need = match head[pos + 4] {
-            2 | 7 => pos + 5,
-            6 => pos + 6,
-            _ => pos.saturating_add(len),
-        };
-        if need > head.len() {
-            return Some(need.min(full_len));
+        let n = be(&here[..4]) as usize;
+        let need = match here[4] {
+            2 | 7 => 5,
+            6 => 6,
+            _ => n,
         }
-        if len < 5 {
+        .min(len - pos);
+        if need > here.len() {
+            return Some((pos + here.len(), need - here.len()));
+        }
+        if n < 5 {
             return None;
         }
-        pos += len;
+        pos = len.min(pos.saturating_add(n));
     }
     None
 }
 
-/// Completes `head`, the first bytes of a message of `len` bytes, with the parts its header needs
-/// ([`next_part`]), each read by `read(at, n)`: `n` bytes at `at` from the message's start. A
-/// GRIB1 bitmap's body, which is skipped, is left as zeros: where they start, or the head's length
-/// when there are none.
+/// Completes `head`, the first bytes of a GRIB1 message of `len` bytes, with the parts its header
+/// needs ([`grib1_next_part`]), each read by `read(at, n)`: `n` bytes at `at` from the message's
+/// start. The body of a bitmap, which is skipped, is left as zeros: where they start, or the
+/// head's length when there are none.
 fn complete_head(head: &mut Vec<u8>, len: usize, mut read: impl FnMut(usize, usize) -> Result<Vec<u8>>) -> Result<usize> {
     let mut prefix = None;
-    while let Some((at, n)) = next_part(head, len).filter(|&(at, n)| n > 0 && at >= head.len() && at + n <= len) {
+    while let Some((at, n)) = grib1_next_part(head, len).filter(|&(at, n)| n > 0 && at >= head.len() && at + n <= len) {
         if at > head.len() {
             prefix.get_or_insert(head.len());
         }
@@ -935,19 +1038,11 @@ fn out_of_memory(n: usize) -> Error {
     Error::Io(std::io::Error::new(std::io::ErrorKind::OutOfMemory, format!("GRIB: cannot allocate {n} bytes")))
 }
 
-/// The next part of a message's header to read, given the `head` at hand: `(offset, length)`
-/// from the message's start, the offset past the head when a GRIB1 bitmap's body is skipped.
-/// `None` when the head holds the header. GRIB2 headers are read whole ([`header_needs`]).
-fn next_part(head: &[u8], len: usize) -> Option<(usize, usize)> {
-    if head.len() >= 16 && head[7] == 1 {
-        return grib1_next_part(head, len);
-    }
-    header_needs(head, len).filter(|&n| n > head.len()).map(|n| (head.len(), n - head.len()))
-}
-
-/// [`next_part`] for GRIB1: the sections up to the bitmap's first 6 octets, then the data
-/// section's first 11 octets, past the bitmap's body. A header [`grib1::Message::parse`] would
-/// refuse ends here: parsing reports it.
+/// The next part of a GRIB1 message's header to read, given the `head` at hand: the sections up to
+/// the bitmap's first 6 octets, then the data section's first 11 octets, past the bitmap's body.
+/// `(offset, length)` from the message's start, the offset past the head when the bitmap's body is
+/// skipped; `None` when the head holds the header. A header [`grib1::Message::parse`] would refuse
+/// ends here: parsing reports it.
 fn grib1_next_part(head: &[u8], len: usize) -> Option<(usize, usize)> {
     // Contiguous bytes up to `n`.
     let to = |n: usize| {

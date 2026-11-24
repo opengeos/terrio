@@ -231,6 +231,48 @@ fn kmz_resources(options: &JsValue) -> Result<Vec<(String, Vec<u8>)>, JsError> {
         .collect()
 }
 
+/// The levels of an `overviewData` option, `[{ width, height, data }]` from the largest, `data` a
+/// typed array of the raster's type holding every band, band after band, row after row.
+fn overview_data(options: &JsValue) -> Result<Vec<std::sync::Arc<terrio::Raster>>, JsError> {
+    use wasm_bindgen::JsCast;
+    if !options.is_object() {
+        return Ok(Vec::new());
+    }
+    let levels = js_sys::Reflect::get(options, &JsValue::from_str("overviewData")).map_err(|_| JsError::new("invalid options"))?;
+    if levels.is_undefined() || levels.is_null() {
+        return Ok(Vec::new());
+    }
+    let levels = levels.dyn_into::<js_sys::Array>().map_err(|_| JsError::new("overviewData: an array of { width, height, data }"))?;
+    levels
+        .iter()
+        .enumerate()
+        .map(|(i, level)| {
+            let field = |name: &str| js_sys::Reflect::get(&level, &JsValue::from_str(name)).ok().filter(|v| !v.is_undefined());
+            // A whole number from 1 to the largest exact JavaScript integer, which `usize` holds
+            // (on wasm32, up to 2^32 - 1), rather than saturated by `as usize`.
+            let size = |name: &str| {
+                field(name)
+                    .and_then(|v| v.as_f64())
+                    .filter(|v| v.is_finite() && v.fract() == 0.0 && (1.0..=9_007_199_254_740_991.0).contains(v))
+                    .and_then(|v| usize::try_from(v as u64).ok())
+                    .ok_or_else(|| JsError::new(&format!("overviewData[{i}].{name}: a positive integer")))
+            };
+            let (width, height) = (size("width")?, size("height")?);
+            let pixels =
+                width.checked_mul(height).ok_or_else(|| JsError::new(&format!("overviewData[{i}]: width * height is too large")))?;
+            let data = raster_data(&field("data").unwrap_or(JsValue::UNDEFINED)).map_err(|_| {
+                JsError::new(&format!("overviewData[{i}].data: not a typed array (Uint8Array, Int16Array, Float32Array...)"))
+            })?;
+            let bands = data.len() / pixels;
+            if bands == 0 || data.len() % pixels != 0 {
+                return Err(JsError::new(&format!("overviewData[{i}]: the array length is not a positive multiple of width * height")));
+            }
+            let cfg = terrio::RasterConfig { cols: width, rows: height, bands, data_type: data.data_type(), ..Default::default() };
+            Ok(std::sync::Arc::new(terrio::raster_from_data(cfg, data).map_err(js_err)?))
+        })
+        .collect()
+}
+
 /// Pixels as a typed array of their own type.
 fn typed_array(data: RasterData) -> JsValue {
     match data {
@@ -278,6 +320,8 @@ pub(crate) fn raster_data(array: &JsValue) -> Result<RasterData, JsError> {
 struct WriteOptions {
     /// GPKG: retain the declared layer geometry type, including Unknown.
     preserve_declared_geometry_type: bool,
+    /// GPKG: use parsed feature IDs, including reader-generated IDs, as the primary key.
+    preserve_fid: bool,
     /// CityJSON output version: "1.1" or "2.0" (default).
     cityjson_version: Option<String>,
     citygml_version: Option<String>,
@@ -313,6 +357,8 @@ struct WriteOptions {
     /// Overview resampling: nearest, average, min, max, mode, or area_matched and
     /// area_matched_mode (overviews that keep the valid area).
     overview_resampling: Option<String>,
+    /// GeoTIFF/COG: dataset metadata items set over the raster's own.
+    metadata: Option<std::collections::BTreeMap<String, String>>,
     /// PMTiles, MBTiles: the lowest zoom level written.
     minzoom: Option<u8>,
     /// PMTiles, MBTiles: the highest zoom level written.
@@ -906,7 +952,11 @@ impl Dataset {
     /// (GeoTIFF/COG: `NONE`, `LZW`, `DEFLATE`, `PACKBITS`, `ZSTD`, `LERC`, `LERC_DEFLATE`,
     /// `LERC_ZSTD`, `JXL`, `JPEG`), `tileSize` and `creationOptions` (GDAL's: `MAX_Z_ERROR`,
     /// `JPEG_QUALITY`, `PREDICTOR`, `FORMAT=NC4` for netCDF, `FORMAT=ZARR_V3` for Zarr...),
-    /// `overviews` (GeoTIFF factors such as `[2,4,8]`) and `overviewResampling`. Zarr
+    /// `overviews` (GeoTIFF factors such as `[2,4,8]`) and `overviewResampling`, or
+    /// `overviewData` (GeoTIFF/COG overviews written as they are, from the largest:
+    /// `[{ width, height, data }]`, `data` a typed array of the raster's type with every band,
+    /// each level smaller than the one before; as GDAL's COG driver writes a source's existing
+    /// overviews), and `metadata` (GeoTIFF/COG dataset items set over the raster's own). Zarr
     /// stores come back as a zip archive of their files. Shapefile output requires
     /// `roads.shp.zip` (MIME `application/zip`); `.shp` alone is refused. The ZIP holds
     /// `.shp`, `.shx`, `.dbf`, `.cpg` and, when a CRS is present, `.prj`.
@@ -920,8 +970,9 @@ impl Dataset {
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self, filename: &str, options: JsValue) -> Result<Vec<u8>, JsError> {
         let resources = kmz_resources(&options)?;
-        // Without the resource bytes, which JSON would write one entry per byte.
-        let o: WriteOptions = parse_options(&without_key(&options, "kmzResources")?)?;
+        let supplied = overview_data(&options)?;
+        // Without the resource bytes and overview pixels, which JSON would write one entry per value.
+        let o: WriteOptions = parse_options(&without_key(&without_key(&options, "kmzResources")?, "overviewData")?)?;
         let transform_options = TransformOptions {
             allow_ballpark: o.allow_ballpark,
             only_best: o.only_best,
@@ -937,12 +988,13 @@ impl Dataset {
                     || o.limit.is_some()
                     || !resources.is_empty()
                     || o.preserve_declared_geometry_type
+                    || o.preserve_fid
                     || o.cityjson_version.is_some()
                     || o.citygml_version.is_some()
                     || o.citygml_lod0_surface.is_some()
                 {
                     return Err(JsError::new(
-                        "layers, where, select, limit, kmzResources, cityjsonVersion, citygmlVersion and preserveDeclaredGeometryType apply to vector datasets",
+                        "layers, where, select, limit, kmzResources, cityjsonVersion, citygmlVersion, preserveDeclaredGeometryType and preserveFid apply to vector datasets",
                     ));
                 }
                 let driver = o
@@ -966,6 +1018,9 @@ impl Dataset {
                 r.prepare_output_mask(filename, &mut mask_options, window, o.overview).map_err(js_err)?;
                 let mask = mask_options.mask;
                 let mut ds = r.read_window(window, &opts).map_err(js_err)?;
+                if t_srs.is_none() && opts.overview.is_none() && opts.bands.is_empty() && window == Window::full(r.width(), r.height()) {
+                    ds.raster.metadata = r.metadata();
+                }
                 if let Some(dst) = t_srs {
                     let o = terrio::ops::warp::WarpOptions {
                         dst_srs: Some(dst),
@@ -990,6 +1045,8 @@ impl Dataset {
                     creation_options,
                     overviews: o.overviews,
                     overview_resampling: o.overview_resampling,
+                    overview_data: supplied,
+                    metadata: o.metadata.unwrap_or_default().into_iter().collect(),
                     ..Default::default()
                 };
                 terrio::memory::write_raster_bytes(&ds, filename, &options).map_err(js_err)
@@ -1006,8 +1063,12 @@ impl Dataset {
                     || o.compress.is_some()
                     || o.tile_size.is_some()
                     || o.creation_options.is_some()
+                    || !supplied.is_empty()
+                    || o.metadata.is_some()
                 {
-                    return Err(JsError::new("srcwin, overview, bands, compress, tileSize and creationOptions apply to rasters"));
+                    return Err(JsError::new(
+                        "srcwin, overview, bands, compress, tileSize, creationOptions, overviewData and metadata apply to rasters",
+                    ));
                 }
                 let chosen: Vec<Layer> = match &o.layers {
                     Some(names) => layers.iter().filter(|l| names.contains(&l.name)).cloned().collect(),
@@ -1022,8 +1083,12 @@ impl Dataset {
                     ..Default::default()
                 };
                 let out = terrio::ops::vector_filter::translate(&chosen, &translate).map_err(js_err)?;
-                let mut options =
-                    VectorWriteOptions { driver, preserve_declared_geometry_type: o.preserve_declared_geometry_type, ..Default::default() };
+                let mut options = VectorWriteOptions {
+                    driver,
+                    preserve_declared_geometry_type: o.preserve_declared_geometry_type,
+                    preserve_fid: o.preserve_fid,
+                    ..Default::default()
+                };
                 options.tiles.min_zoom = o.minzoom;
                 options.tiles.max_zoom = o.maxzoom;
                 options.cityjson_version = o.cityjson_version.as_deref().map(str::parse).transpose().map_err(js_err)?;

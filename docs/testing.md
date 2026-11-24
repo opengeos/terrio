@@ -43,6 +43,15 @@ handled as follows; none is changed to agree with the older database:
 
 Moving all of terrio's GDAL reference to GDAL 3.13.3 on PROJ 9.9.0 is a separate, later decision.
 
+## GeoPackage feature ID preservation
+
+`cargo test -p terrio --test merged geopackage::` includes the #1220 GeoJSON
+fixture, default and opt-in readback, signed 64-bit IDs, spatial filtering,
+separate layers, buffered writes and atomic refusal of conflicting IDs.
+`python -m pytest python/tests/test_gpkg_preserve_fid.py` verifies the primary-key
+declaration, rowid aliases and R-tree integrity with SQLite. The `gpkg` conformance
+suite compares explicit feature IDs on create and append with `ogr2ogr -preserve_fid`.
+
 ## Grid confinement and diagnostics
 
 `python -m pytest python/tests/test_grid_policy.py` checks the Python confinement
@@ -330,6 +339,18 @@ columns but only the necessary latitude rows. More columns are read in the
 affected chunks to retain their meridian side. These are coverage and I/O checks,
 not a numerical GDAL parity claim; regional and multi-turn placement rules remain
 separate.
+
+## Supplied COG overviews
+
+`python scripts/conformance.py DATA --only supplied-overviews --strict` runs
+`scripts/compare_supplied_overviews_with_gdal.py` (osgeo, GDAL 3.13.3). Each of its four
+cases writes a GeoTIFF whose overview bands GDAL created at `gdaladdo`'s ceil sizes and the
+script then filled by hand. GDAL copies it to a COG with `OVERVIEWS=FORCE_USE_EXISTING`, and
+terrio writes the same levels supplied as arrays (`Raster.write(overviews=[...])`). Level
+sizes, nodata and a metadata item must be GDAL's. Samples must be exact for DEFLATE, ZSTD and
+LZW. LERC levels must lie within `MAX_Z_ERROR` plus one Float32 spacing of the supplied
+values (the decoded sample's rounding; GDAL's own levels need the same allowance), with nodata
+pixels exact; the two LERC encoders' bytes are not compared.
 
 ## TIFF block metadata
 
@@ -2945,6 +2966,22 @@ python scripts/conformance.py ../terrio-data --only raster-manage --strict
 pytest python/tests/test_raster_manage.py
 cargo test -p terrio-cli --test raster_manage
 ```
+
+### External EHdr overviews (#1221)
+
+`cargo test -p terrio --test ehdr_overviews` checks native creation beside read-only
+`.flt` and `.hdr` files, explicit overview windows, and monotonic progress with
+byte-for-byte sidecar preservation on cancellation. The overview window also
+succeeds with the full-resolution data file temporarily moved aside.
+
+Run `cargo test -p terrio --test ehdr_overviews -- --ignored` with `gdaladdo`,
+`gdalinfo` and `gdal_translate` to cross-read both builders' sidecars. The
+`raster-manage` conformance suite includes this comparison. Odd-sized Float32 and
+Int16 grids exercise nearest and average, uncompressed and DEFLATE sidecars, and
+mixed-validity and all-nodata cells. Dimensions, type, nodata, validity and
+integer samples must agree exactly. Float32 averages from independent builds
+have a 4e-6 absolute tolerance. Reading the same sidecar through both readers
+requires exact samples. The reference is GDAL 3.13.2.
 
 ## Raster blending (#289)
 

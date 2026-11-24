@@ -2619,6 +2619,9 @@ class DatasetWriter(DatasetReader):
     # A copy's source (`shutil.copy`), whose pixels the file is written from as it is written,
     # when it is written in rows: they are then not held (see `_streams_on_flush`).
     _copy_of: Any = None
+    # A copy's overviews read from a source terrio cannot copy them from (`shutil.copy`), written
+    # as they are (`Raster.write(overviews=[arrays])`), as GDAL's COG driver writes a source's.
+    _overview_data: list[Any] = []
     # The temporary file that holds the pixels, above the in-memory limit.
     _data_spill: _Spill | None = None
 
@@ -2679,6 +2682,7 @@ class DatasetWriter(DatasetReader):
         rpcs = kwargs.pop("rpcs", None)
         copy_of = kwargs.pop("_copy_of", None)
         copy_mask = bool(kwargs.pop("_copy_mask", False))
+        self._overview_data = list(kwargs.pop("_overview_data", None) or [])
         complex_sample = kwargs.pop("_complex_dtype", None)
         if mode in ("w", "w+"):
             if not isinstance(driver, str):
@@ -3504,6 +3508,7 @@ class DatasetWriter(DatasetReader):
                 or (cog and self._mask is None and "@COPY_SRC_OVERVIEWS" not in self._options)
             )
             and not self._overview_factors
+            and not self._overview_data
             and str(self._options.get("COMPRESS", "NONE")).upper()
             in ("NONE", "LZW", "DEFLATE", "ZIP", "ZSTD", "PACKBITS")
         )
@@ -3677,7 +3682,7 @@ class DatasetWriter(DatasetReader):
                 options=opts,
                 band_metadata=band_md if any(band_md) else None,
                 colormap=colormap,
-                overviews=self._overview_factors or None,
+                overviews=self._overview_data or self._overview_factors or None,
                 overview_resampling=self._overview_resampling,
                 **extra,
             )

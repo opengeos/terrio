@@ -157,6 +157,10 @@ pub(crate) struct Op {
     pub unknown_area: bool,
     /// Whether this is PROJ's "ballpark" transformation (no datum shift, as a last resort).
     pub ballpark: bool,
+    /// Whether PROJ frames it with its ballpark, from or into a CRS on a renamed datum (see
+    /// `route::OperationContext::framed`): a concatenation with a ballpark step, which PROJ
+    /// refuses with the ballpark.
+    pub framed: bool,
     /// Whether it chains several transformations through intermediate datums.
     pub concatenated: bool,
     /// Whether PROJ's database registers it between geographic 3D CRSs, which PROJ does not
@@ -613,6 +617,7 @@ impl Op {
             offshore: false,
             unknown_area: false,
             ballpark: false,
+            framed: false,
             concatenated: false,
             between_3d: false,
             geocentric: false,
@@ -628,6 +633,12 @@ impl Op {
     pub fn as_concatenated(&self) -> Self {
         let priority = self.priority || is_priority(&self.name);
         Self { accuracy: self.chain_accuracy, bounds: self.chain_bounds, priority, ..self.clone() }
+    }
+
+    /// Whether PROJ takes it for a ballpark when it refuses those (`ALLOW_BALLPARK=NO`): its
+    /// ballpark, or one framed by it.
+    pub fn has_ballpark(&self) -> bool {
+        self.ballpark || self.framed
     }
 
     /// PROJ's measure of the size of the area, for ranking transformations of equal accuracy.

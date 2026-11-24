@@ -268,6 +268,10 @@ name = "declared_size"
 path = "tests/declared_size.rs"
 
 [[test]]
+name = "ehdr_overviews"
+path = "tests/ehdr_overviews.rs"
+
+[[test]]
 name = "entry_allow_list"
 path = "tests/entry_allow_list.rs"
 

@@ -11,6 +11,7 @@
 use crate::crs::SpatialRef;
 use crate::{Error, RasterDataset, Result};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use wbraster::raster::RasterData;
 use wbraster::{CrsInfo, DataType, Raster, RasterConfig};
 
@@ -165,6 +166,13 @@ struct RawWindow {
     stored_bands: Option<Vec<usize>>,
     /// The local files the raster is read from: its header and data files.
     inputs: Vec<String>,
+    overviews: Option<Arc<RawOverviews>>,
+}
+
+struct RawOverviews {
+    reader: Mutex<crate::LazyRaster>,
+    /// Sizes in descending order and their level in the TIFF (`None` for its first image).
+    levels: Vec<((usize, usize), Option<usize>)>,
 }
 
 /// The most bytes read at once: rows next to each other are read together up to this size (a row
@@ -191,14 +199,17 @@ impl RawRaster {
             std::iter::once(data).chain(inputs.iter().copied()).map(|p| p.to_string_lossy().into_owned()).collect();
         files.dedup();
         let source = RawSource::File(data.to_path_buf());
-        Ok(Self { header, window: RawWindow { source, layout, stored_bands: None, inputs: files } })
+        Ok(Self { header, window: RawWindow { source, layout, stored_bands: None, inputs: files, overviews: None } })
     }
 
     /// A raw raster whose samples are in a remote file, read with range requests.
     #[cfg(remote)]
     pub(crate) fn open_remote(header: RasterDataset, reader: crate::http::RangeReader, layout: Layout) -> Result<Self> {
         check_len(&layout, reader.len())?;
-        Ok(Self { header, window: RawWindow { source: RawSource::Http(reader), layout, stored_bands: None, inputs: Vec::new() } })
+        Ok(Self {
+            header,
+            window: RawWindow { source: RawSource::Http(reader), layout, stored_bands: None, inputs: Vec::new(), overviews: None },
+        })
     }
 
     /// The band stored for each band of the dataset, numbered from 0.
@@ -221,6 +232,31 @@ impl RawRaster {
     /// The raster to be read by window.
     pub(crate) fn into_lazy(self) -> crate::LazyRaster {
         crate::LazyRaster::from_source(self.header, Box::new(self.window))
+    }
+
+    /// Attaches a local TIFF pyramid to a raw raster opened for window reads.
+    pub(crate) fn attach_ovr(&mut self, path: &Path) -> Result<()> {
+        if crate::config::sidecars_disabled() {
+            return Ok(());
+        }
+        let ovr = crate::cog::ovr_path(path);
+        if crate::formats::check_driver_allowed("GTiff", &ovr.to_string_lossy(), crate::formats::Kind::Raster).is_err() {
+            return Ok(());
+        }
+        crate::declared::check_dataset(&self.header)?;
+        let layout = &self.window.layout;
+        if let Some(mut reader) = crate::cog::open_ovr(&ovr, (layout.bands, layout.data_type, false), crate::TiffReadLimits::from_config)? {
+            reader.find_sidecar_mask(&ovr.to_string_lossy())?;
+            self.window.inputs.extend(reader.file_list()?);
+            let mut levels: Vec<_> = std::iter::once((reader.width(), reader.height()))
+                .chain(reader.overviews())
+                .enumerate()
+                .map(|(i, size)| (size, i.checked_sub(1)))
+                .collect();
+            levels.sort_by_key(|(size, _)| std::cmp::Reverse(*size));
+            self.window.overviews = Some(Arc::new(RawOverviews { reader: Mutex::new(reader), levels }));
+        }
+        Ok(())
     }
 }
 
@@ -359,7 +395,7 @@ trait ReadSeek: std::io::Read + std::io::Seek {}
 impl<T: std::io::Read + std::io::Seek> ReadSeek for T {}
 
 impl crate::cog::WindowSource for RawWindow {
-    /// Reads open the file anew: handles share nothing but the remote block cache.
+    /// Raw reads open the file anew. Overview reads share the TIFF reader.
     fn shared_clone(&self) -> Option<Box<dyn crate::cog::WindowSource>> {
         Some(Box::new(self.clone()))
     }
@@ -369,7 +405,41 @@ impl crate::cog::WindowSource for RawWindow {
     }
 
     fn overviews(&self) -> Vec<(usize, usize)> {
-        Vec::new()
+        self.overviews.as_ref().map_or_else(Vec::new, |ovr| ovr.levels.iter().map(|(size, _)| *size).collect())
+    }
+
+    fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
+        let ovr = self.overviews.as_ref()?;
+        ovr.reader.lock().ok()?.level_sample_bits(ovr.levels.get(overview?)?.1)
+    }
+
+    fn overview_band_nodata(&self, overview: usize, bands: &[usize], base: &crate::RasterDataset) -> Option<Vec<Option<f64>>> {
+        let ovr = self.overviews.as_ref()?;
+        Some(ovr.reader.lock().ok()?.level_band_nodata_inheriting(bands, ovr.levels.get(overview)?.1, base))
+    }
+
+    fn level_has_own_mask(&self, level: usize) -> bool {
+        let Some((ovr, index)) =
+            self.overviews.as_ref().and_then(|ovr| ovr.levels.get(level.checked_sub(1)?).map(|&(_, index)| (ovr, index)))
+        else {
+            return false;
+        };
+        ovr.reader.lock().is_ok_and(|reader| index.map_or_else(|| reader.has_mask(), |i| reader.level_has_own_mask(i)))
+    }
+
+    fn level_keeps_mask_flags(&self, level: usize) -> bool {
+        level == 0
+    }
+
+    fn read_mask(&mut self, level: usize, window: crate::Window) -> Result<Option<Vec<u8>>> {
+        let Some(i) = level.checked_sub(1) else { return Ok(None) };
+        let (ovr, overview) = self
+            .overviews
+            .as_ref()
+            .and_then(|ovr| ovr.levels.get(i).map(|&(_, index)| (ovr, index)))
+            .ok_or_else(|| Error::InvalidArgument(format!("no overview {i}")))?;
+        let mut reader = ovr.reader.lock().map_err(|_| Error::InvalidData("overview reader lock poisoned".into()))?;
+        reader.read_level_mask(window, overview)
     }
 
     /// A row, as GDAL's raw drivers' blocks.
@@ -385,7 +455,16 @@ impl crate::cog::WindowSource for RawWindow {
         Some(self)
     }
 
-    fn read(&mut self, _level: usize, window: crate::Window, bands: &[usize]) -> Result<RasterData> {
+    fn read(&mut self, level: usize, window: crate::Window, bands: &[usize]) -> Result<RasterData> {
+        if let Some(i) = level.checked_sub(1) {
+            let (ovr, overview) = self
+                .overviews
+                .as_ref()
+                .and_then(|ovr| ovr.levels.get(i).map(|&(_, index)| (ovr, index)))
+                .ok_or_else(|| Error::InvalidArgument(format!("no overview {i}")))?;
+            let mut reader = ovr.reader.lock().map_err(|_| Error::InvalidData("overview reader lock poisoned".into()))?;
+            return reader.read_geotiff_samples(window, &crate::WindowOptions { bands: bands.to_vec(), overview });
+        }
         self.read_window(window, bands)
     }
 }
@@ -1164,6 +1243,7 @@ mod tests {
             },
             stored_bands: None,
             inputs: Vec::new(),
+            overviews: None,
         };
         let data = window.read_window(crate::Window { x: 0, y: 0, width: 0, height: usize::MAX / 2 }, &[1]).unwrap();
         assert!(matches!(&data, RasterData::U8(samples) if samples.is_empty()));

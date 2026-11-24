@@ -24,6 +24,8 @@ Suites:
     vrt               serialized warped/derived/kernel VRTs, masks and lazy windows
     jp2-colors        JPEG 2000 component roles and masks on real Landsat data
     overviews         source overview selection and HTTP COG bytes vs gdalwarp -ovr
+    supplied-overviews  COG overviews supplied as arrays vs GDAL's OVERVIEWS=FORCE_USE_EXISTING copy
+                      (compare_supplied_overviews_with_gdal.py)
     warp-grid         aligned warp tiles and windows on real terrain
     sum-overviews     extensive sum estimates and exact NONE controls vs GDAL
     cog-area-matched  area-matched COG overviews read and validated by GDAL, beside GDAL's
@@ -613,6 +615,31 @@ def suite_deflate(ctx):
     return suite
 
 
+def suite_supplied_overviews(ctx):
+    """COG overviews supplied as arrays against GDAL's FORCE_USE_EXISTING copy of the same levels."""
+    suite = Suite("supplied-overviews", "Supplied COG overviews", "GDAL COG driver, OVERVIEWS=FORCE_USE_EXISTING",
+                  "Hand-written GeoTIFF overview bands at gdaladdo's ceil sizes, copied by GDAL and supplied as arrays to "
+                  "terrio: level sizes exact; samples exact for DEFLATE, ZSTD and LZW; LERC levels within MAX_Z_ERROR plus "
+                  "one Float32 spacing of the supplied values, as GDAL's are, with nodata exact (LERC encoders' bytes are "
+                  "not compared); nodata and metadata items.")
+    missing = missing_modules("terrio", "numpy", "osgeo")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_supplied_overviews_with_gdal.py"), "--json"])
+    try:
+        rows = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    statuses = {"identical": IDENTICAL, "within tolerance": TOLERANCE}
+    for row in rows:
+        suite.cases.append(Case("Supplied overviews", row["name"], statuses.get(row["status"], DIFFERS), row["detail"]))
+    if len(rows) < 4 or code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out) or "incomplete supplied-overview comparisons"
+    return suite
+
+
 def suite_shapefile_archives(ctx):
     """Filesystem-free Shapefile ZIPs cross-read with GDAL on real public geometry."""
     suite = Suite("shapefile-archives", "Shapefile ZIP archives", "GDAL/OGR",
@@ -703,7 +730,7 @@ def suite_indexes(ctx):
 
 
 def suite_raster_manage(ctx):
-    """Real DEM raster management, cross-read and compared by GDAL."""
+    """Raster management, cross-read and compared by GDAL."""
     suite = Suite("raster-manage", "Raster management", "GDAL 3.13.3",
                   "Creation types/bands, metadata escaping, nodata, internal overview add/delete and external "
                   "overview add/delete beside read-only GeoTIFFs (left unchanged), "
@@ -715,7 +742,8 @@ def suite_raster_manage(ctx):
                   "internal mask overviews added, refreshed (whole and over an extent) and added again over "
                   "gdaladdo's, and real DEM subset updates: masks, mask blocks, type, nodata, CRS and "
                   "geotransform exact; "
-                  "pixel values exact or within 2e-7 relative and 1e-6 absolute tolerance.")
+                  "pixel values exact or within 2e-7 relative and 1e-6 absolute tolerance. "
+                  "EHdr external overview round trips with exact nodata and a 4e-6 Float32 value tolerance.")
     missing = missing_modules("osgeo", "numpy")
     if missing:
         suite.skipped = "needs the Python modules " + ", ".join(missing)
@@ -736,6 +764,14 @@ def suite_raster_manage(ctx):
         suite.cases.append(Case("raster management", result["name"], status, result["detail"]))
     if not results or (code and not any(case.status == DIFFERS for case in suite.cases)):
         suite.error = tail(err or out) or f"comparison exited {code} without complete results"
+    if all(shutil.which(t) for t in ("cargo", "gdaladdo", "gdalinfo", "gdal_translate")):
+        code, out, err = run(["cargo", "test", "--release", "-p", "terrio", "--test", "ehdr_overviews", "--", "--ignored"])
+        suite.cases.append(Case("raster management", "EHdr external overview round trips", TOLERANCE if code == 0 else DIFFERS,
+                                "Exact dimensions, data types, nodata, validity and integer samples; Float32 absolute tolerance 4e-6"
+                                if code == 0 else tail(out or err)))
+    else:
+        suite.cases.append(Case("raster management", "EHdr external overview round trips", NOT_COMPARED,
+                                "Needs cargo, gdaladdo, gdalinfo and gdal_translate"))
     return suite
 
 
@@ -3011,12 +3047,16 @@ PROJ_CASES = {
     },
     "wkt_unresolved": {
         "wkts_proj_does_not_resolve_are_placed_as_proj_does": (
-            "WKTs PROJ does not resolve to their EPSG CRS: ESRI, renamed, WKT 2 without IDs (1,100 cases)", IDENTICAL,
+            "WKTs PROJ does not resolve to their EPSG CRS: ESRI, renamed, on a renamed datum, WKT 2 without IDs (1,120 cases)", IDENTICAL,
             "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
         ),
-        "renamed_datums_and_the_datum_pivot_into_them_are_placed_by_the_code": (
-            "WKTs PROJ places through a renamed datum, or by its datum pivot into a CRS it cannot find by name", NOT_COMPARED,
-            "known difference, placed by the code until terrio follows those steps (opengeos/terrio#1012, item 7 step 2)",
+        "a_crs_with_an_unknown_authority_is_placed_by_the_code": (
+            "ONGD14 renamed with an ID of an authority PROJ does not know (AUTHORITY[\"LOCAL\",\"1\"])", NOT_COMPARED,
+            "known difference, placed by the code until terrio follows PROJ's datum pivot for it (opengeos/terrio#1012, item 7)",
+        ),
+        "transformations_framed_by_the_ballpark_are_refused_with_it": (
+            "renamed Monte Mario (Rome), Tokyo 1892 and Georgia Geodetic Datum with ALLOW_BALLPARK=NO", IDENTICAL,
+            "PROJ 9.9.0 (pyproj, no grids, allow_ballpark=False): within 1 mm, and no operation for the Georgia datum",
         ),
     },
     "null_transformations": {
@@ -3226,7 +3266,8 @@ def suite_gpkg(ctx):
         "file changed in place), `--spat` through the R-tree compared with `ogr2ogr -spat`, appends "
         "to a file of 200,000 points compared with `ogr2ogr -append`, and terrio killed while it "
         "commits an append (SQLite must then find the file intact, with all or none of the new "
-        "features).",
+        "features). `--preserve-fid` compared with `ogr2ogr -preserve_fid`, including "
+        "the SQLite primary keys from the #1220 fixture.",
     )
     _code, out, err = run(
         [sys.executable, str(SCRIPTS / "compare_gpkg_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--points", "200000"]
@@ -4433,6 +4474,7 @@ SUITES = OrderedDict(
         ("lerc-writer", suite_lerc_writer),
         ("webp-writer", suite_webp_writer),
         ("deflate", suite_deflate),
+        ("supplied-overviews", suite_supplied_overviews),
         ("windows", suite_windows),
         ("ops", suite_ops),
         ("raster-masks", suite_raster_masks),

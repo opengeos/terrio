@@ -263,6 +263,10 @@ pub(crate) trait WindowSource: Send + Sync {
     fn level_sample_bits(&self, _overview: Option<usize>) -> Option<u16> {
         None
     }
+    /// A selected overview dataset's nodata, when it carries its own band metadata.
+    fn overview_band_nodata(&self, _overview: usize, _bands: &[usize], _base: &RasterDataset) -> Option<Vec<Option<f64>>> {
+        None
+    }
     /// Native TIFF overview identity: whether external, and the original IFD index (GDAL 3.13.3).
     fn tiff_overview_ifd(&self, _overview: usize) -> Option<(bool, usize)> {
         None
@@ -420,6 +424,9 @@ impl WindowSource for SharedRaster {
     }
     fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
         self.lock().ok()?.level_sample_bits(overview)
+    }
+    fn overview_band_nodata(&self, overview: usize, bands: &[usize], _base: &RasterDataset) -> Option<Vec<Option<f64>>> {
+        Some(self.lock().ok()?.level_band_nodata(bands, Some(overview)))
     }
     fn tiff_overview_ifd(&self, overview: usize) -> Option<(bool, usize)> {
         self.lock().ok()?.tiff_overview_ifd(overview)
@@ -654,7 +661,7 @@ impl LazyRaster {
     /// no internal mask and the sidecar is a per-dataset mask of its size. Then, only without
     /// that sidecar, the `.ovr.msk` of an `.ovr` whose mask was left to look for: GDAL never looks
     /// for it when the base has a `.msk` (GDAL 3.13.2, `GDALDefaultOverviews::HaveMaskFile`).
-    fn find_sidecar_mask(&mut self, path: &str) -> Result<()> {
+    pub(crate) fn find_sidecar_mask(&mut self, path: &str) -> Result<()> {
         self.find_base_sidecar_mask(path)?;
         if self.sidecar_mask.is_none()
             && let Inner::Tiff(t) = &mut self.inner
@@ -1454,6 +1461,9 @@ impl LazyRaster {
         context.check()?;
         let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
         self.refuse_masked_tile_archive(driver, options)?;
+        if let Some(d) = driver.filter(|d| !matches!(d, RasterDriver::GTiff | RasterDriver::Cog)) {
+            options.check_written_by_tiff_writer(d)?;
+        }
         let source_mask = options.mask.is_none() && self.has_mask() && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
         // Tile archives are built a tile row at a time (see `crate::tiles`). A source that cannot
         // list the files it reads, or an output replacing one of them, is read whole, as before.
@@ -1728,8 +1738,36 @@ impl LazyRaster {
             let tags = t.tags_at_level(overview.map_or(0, |i| i + 1));
             bands.iter().map(|b| tags.band_nodata.iter().find(|(i, _)| i == b).map(|(_, v)| *v).or(tags.nodata)).collect()
         } else {
+            if let (Inner::Source(base, source), Some(i)) = (&self.inner, overview)
+                && let Some(nodata) = source.overview_band_nodata(i, bands, base)
+            {
+                return nodata;
+            }
             bands.iter().map(|b| self.band_nodata(*b)).collect()
         }
+    }
+
+    /// Explicit TIFF-sidecar band nodata wins; otherwise per-band base metadata wins over a
+    /// shared TIFF tag, including an unset value for a band. A scalar base sentinel is used when
+    /// the sidecar has no nodata. GDAL 3.12.1 exposes the TIFF's shared value for all overview
+    /// bands; this deliberately preserves the base's per-band metadata instead.
+    pub(crate) fn level_band_nodata_inheriting(&self, bands: &[usize], overview: Option<usize>, base: &RasterDataset) -> Vec<Option<f64>> {
+        let mut values = self.level_band_nodata(bands, overview);
+        if let Inner::Tiff(t) = &self.inner {
+            let tags = t.tags_at_level(overview.map_or(0, |i| i + 1));
+            for (&band, value) in bands.iter().zip(&mut values) {
+                if !tags.band_nodata.iter().any(|(b, _)| *b == band) {
+                    let inherited = base.band_nodata(band);
+                    if !base.band_nodata.is_empty() || value.is_none() {
+                        *value = inherited;
+                    }
+                }
+                if self.data_type() == DataType::F32 {
+                    *value = value.map(|v| f64::from(v as f32));
+                }
+            }
+        }
+        values
     }
 
     /// The dataset of a read of some bands (numbered from 1): their pixels `data` on a grid of
@@ -1949,6 +1987,12 @@ impl LazyRaster {
             }
             return read_tiff_mask(t, window, level);
         }
+        if let Inner::Source(_, source) = &mut self.inner
+            && let Some(i) = overview
+            && !source.level_keeps_mask_flags(i + 1)
+        {
+            return source.read_mask(i + 1, window);
+        }
         if let Some(m) = self.sidecar_mask.as_mut() {
             return read_sidecar_mask(m, window, (lw, lh)).map(Some);
         }
@@ -1987,6 +2031,11 @@ impl LazyRaster {
             }
             return read_tiff_own_mask(t, window, i + 1);
         }
+        if let Inner::Source(_, source) = &mut self.inner
+            && !source.level_keeps_mask_flags(i + 1)
+        {
+            return source.read_own_mask(i + 1, window);
+        }
         if let Some(m) = self.sidecar_mask.as_mut() {
             return read_sidecar_own_mask(m, window, (lw, lh));
         }
@@ -2002,6 +2051,11 @@ impl LazyRaster {
     /// [`LazyRaster::read_level_mask`] reads, rather than none.
     pub fn level_has_own_mask(&self, overview: usize) -> bool {
         let Some(&size) = self.overviews().get(overview) else { return false };
+        if let Inner::Source(_, source) = &self.inner
+            && !source.level_keeps_mask_flags(overview + 1)
+        {
+            return source.level_has_own_mask(overview + 1);
+        }
         if let Inner::Tiff(t) = &self.inner
             && let Some(i) = t.levels[overview + 1].external
         {
@@ -2654,6 +2708,42 @@ fn tiff_err(e: tiff::TiffError) -> Error {
     }
 }
 
+/// The external TIFF pyramid of a local raster (`dem.flt.ovr`, `dem.tif.ovr`).
+pub(crate) fn ovr_path(file: &std::path::Path) -> std::path::PathBuf {
+    let mut path = file.as_os_str().to_owned();
+    path.push(".ovr");
+    path.into()
+}
+
+/// Opens a matching TIFF overview sidecar without looking for another pyramid beside it.
+pub(crate) fn open_ovr(
+    path: &std::path::Path,
+    samples: (usize, DataType, bool),
+    limits: impl FnOnce() -> Result<TiffReadLimits>,
+) -> Result<Option<LazyRaster>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let Ok(file) = std::fs::File::open(path) else { return Ok(None) };
+    let source = Source::File(crate::vfs::NearSeek::new(crate::geotiff::FileCursor::new(file)));
+    let mut ovr = match TiffRaster::new::<true>(source, None, limits()?) {
+        Ok(ovr) => ovr,
+        Err(error) if error.is_resource_refusal() => return Err(error),
+        Err(_) => return Ok(None),
+    };
+    if (ovr.bands, ovr.data_type, ovr.complex) != samples {
+        return Ok(None);
+    }
+    let first = &ovr.levels[0];
+    crate::declared::check(first.width, first.height, ovr.bands, ovr.data_type, ovr.complex)?;
+    ovr.file = Some(path.to_path_buf());
+    ovr.files.push(path.to_string_lossy().into_owned());
+    if ovr.tags.apply_sidecar_crs(path) {
+        ovr.files.push(format!("{}.aux.xml", path.display()));
+    }
+    Ok(Some(LazyRaster { inner: Inner::Tiff(Box::new(ovr)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() }))
+}
+
 impl TiffRaster {
     /// Opens a TIFF; without the CRS engine (`ENGINE` false), its CRS is only the EPSG code its
     /// GeoKeys name.
@@ -2788,22 +2878,9 @@ impl TiffRaster {
         if self.levels.len() > 1 || !path.is_file() {
             return Ok(());
         }
-        let Ok(file) = std::fs::File::open(path) else { return Ok(()) };
-        let mut ovr = match TiffRaster::new::<true>(
-            Source::File(crate::vfs::NearSeek::new(crate::geotiff::FileCursor::new(file))),
-            None,
-            self.limits,
-        ) {
-            Ok(ovr) => ovr,
-            Err(error) if error.is_resource_refusal() => return Err(error),
-            Err(_) => return Ok(()),
-        };
-        if ovr.bands != self.bands || ovr.data_type != self.data_type || ovr.complex != self.complex {
-            return Ok(());
-        }
-        let first = &ovr.levels[0];
-        crate::declared::check(first.width, first.height, ovr.bands, ovr.data_type, ovr.complex)?;
-        ovr.file = Some(path.to_path_buf());
+        let Some(view) = open_ovr(path, (self.bands, self.data_type, self.complex), || Ok(self.limits))? else { return Ok(()) };
+        let files = view.file_list().unwrap_or_else(|_| vec![path.to_string_lossy().into_owned()]);
+        let Inner::Tiff(ovr) = view.inner else { unreachable!() };
         for (i, l) in ovr.levels.iter().enumerate() {
             // GDAL accepts all matching-band/type images, including irregular,
             // equal-sized and larger images; there is no reduction-factor gate.
@@ -2823,12 +2900,10 @@ impl TiffRaster {
             });
         }
         self.levels[1..].sort_by_key(|l| std::cmp::Reverse((l.width, l.height)));
-        let name = path.to_string_lossy().into_owned();
-        ovr.files.push(name.clone());
         // Listed after the TIFF, as GDAL lists it.
         let at = self.files.len().min(1);
-        self.files.insert(at, name);
-        self.ovr = Some(Box::new(ovr));
+        self.files.splice(at..at, files);
+        self.ovr = Some(ovr);
         self.ovr_mask_pending = true;
         if probe_mask {
             self.attach_ovr_mask()?;

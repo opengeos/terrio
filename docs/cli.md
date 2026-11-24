@@ -595,6 +595,7 @@ COG conversion that streams strips uses [temporary tile spools](#mosaic) beside 
 | `--simplify TOL`, `--segmentize MAX_LEN` | vectors | Simplify geometries or bound segment lengths before reprojection |
 | `--s-srs`, `--a-srs` | vectors | Override or assign the CRS |
 | `--append`, `--overwrite` | vectors, rasters (`--append`) | Add to or replace layers of an existing GeoPackage or vector tile archive; add a raster to a PMTiles or MBTiles archive of image tiles |
+| `--preserve-fid` | GeoPackage vectors | Use parsed feature IDs, including reader-generated IDs, as primary keys |
 | `--oo KEY=VALUE` | vectors | Open options (`X_POSSIBLE_NAMES=...` for CSV/XLSX; `HEADERS`, `FIELD_TYPES`, `HEADER_ROWS`, `FIRST_ROW`, `RANGE` for XLSX; `ZOOM_LEVEL`, `CLIP` for tiles; `WFS_*`; `DATETIME`, `CRS`, `PAGE_SIZE`, `IGNORE_SCHEMA` and `OAPIF_*` limits for OAPIF...) |
 | `--lco KEY=VALUE` | vectors | Layer creation options (`RFC7946=YES` for GeoJSON; `GEOMETRY=AS_WKT\|AS_XY` for CSV; `GEOMETRY=AS_XY\|AS_WKT\|NONE`, `HEADER_STYLE=BOLD`, `FREEZE_HEADER=YES`, `AUTOFILTER=YES`, `COLUMN_WIDTH=AUTO\|<n>`, `DATE_FORMAT`, `DATETIME_FORMAT`, `CREATION_TIME` for XLSX...) |
 | `--co KEY=VALUE` | rasters | Creation options (GeoTIFF and COG: `ZLEVEL`, `ZSTD_LEVEL`...; PNG: `ZLEVEL`; Zarr; netCDF: `FORMAT=NC4`, `COMPRESS=DEFLATE`, `ZLEVEL`, `CHUNKING`; PMTiles and MBTiles: `TILE_FORMAT=WEBP`...) |
@@ -602,6 +603,15 @@ COG conversion that streams strips uses [temporary tile spools](#mosaic) beside 
 | `--kmz-resource PATH[=FILE]` | vectors | Pack an icon or companion file into a KMZ archive |
 | `--cityjson-version 1.1\|2.0` | vectors | CityJSON output version (default `2.0`) |
 | `--citygml-version 2.0\|3.0`, `--citygml-lod0-surface footprint\|roof-edge` | vectors | CityGML output version (default `3.0`) and 2.0 LoD 0 building surface |
+
+`terrio convert points.geojson points.gpkg --preserve-fid` uses the IDs read into
+the features, including reader-generated IDs. GeoJSON features with missing, negative or non-integer IDs
+receive zero-based positions; if any ID is a string, the reader uses positions for the entire
+collection. These cases can differ from `ogr2ogr -preserve_fid` and can collide with explicit
+numeric IDs. Original string and negative GeoJSON IDs are not recovered by the writer.
+IDs must be unique. A conflicting `fid` attribute or an ID already
+present during `--append` causes an error. See the [GeoPackage write options](rust.md#writing)
+for the key rules and how readers handle absent source IDs.
 
 CityJSON output defaults to 2.0. Select 1.1 with `--cityjson-version 1.1`; use
 `.city.json`/`.cityjson` or `--format CityJSON`. See [CityJSON](formats.md#cityjson)
@@ -641,14 +651,15 @@ layer of points, with `--bounds`, `--z-range`, `--class`, `--returns`, `--max-le
 Vector layers convert as streams, a chunk of features at a time, when the input is a local
 GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq, CSV or OpenStreetMap PBF
 file, the output a GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq or CSV
-file other than the input, neither `--sql`, `--append` nor `--overwrite` is given, and `--lco`
+file other than the input, none of `--sql`, `--append`, `--overwrite` or `--preserve-fid` is given, and `--lco`
 gives only CSV and GeoJSON options: memory stays bounded whatever the size of the layer (a
 15-million-polygon, 3.8 GB GeoPackage converts to GeoParquet in 192 MB, as `ogr2ogr` does in
 169 MB). Several layers go to a GeoPackage one after another; the other formats hold one layer,
 chosen with `-l`. OpenStreetMap PBF files stream when sorted by type then id, as osmium,
 Geofabrik and the planet files are: only the nodes (about 6 bytes each) and the ways relations
 use are kept (Colorado's 385 MB extract converts to a GeoPackage in 19 s and 1.5 GB, where
-`ogr2ogr` takes 44 s and 0.45 GB). The other conversions read the layers whole. See
+`ogr2ogr` takes 44 s and 0.45 GB). The other conversions read the layers whole.
+`--preserve-fid` buffers features for layer-wide ID validation and sorting. See
 [Formats](formats.md#vectors).
 
 The `--where` language supports comparisons, `AND`/`OR`/`NOT`, parentheses, `IN`, `LIKE`/`ILIKE`,
@@ -4277,7 +4288,7 @@ for one command and its descendants. Required dataset arguments may be omitted;
 metadata requests open no datasets or output files. The Python package supports
 identical requests with `python -m terrio`.
 
-The payload has `schema_version: "0.1.13"`, `unstable: true`, the program/version,
+The payload has `schema_version: "0.1.14"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,
