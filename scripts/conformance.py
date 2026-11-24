@@ -3036,6 +3036,10 @@ PROJ_CASES = {
             "EPSG:7405 and EPSG:5707 from WGS 84 (3D) with ALLOW_BALLPARK=NO and ONLY_BEST=YES", IDENTICAL,
             "PROJ 9.9.0 (pyproj, no grids): no operation, and no point",
         ),
+        "a_compound_crs_on_a_datum_without_code_is_placed_by_the_ballpark": (
+            "British National Grid's projection on a datum without code, with ODN heights, from WGS 84 (3D) and (2D)", IDENTICAL,
+            "PROJ 9.9.0 (pyproj, no grids): within 1 mm, PROJ's ballparks",
+        ),
         "registered_no_step_geoid_models_report_their_accuracy": (
             "Saba's registered no-step geoid model reports its declared accuracy with and without ALLOW_BALLPARK=NO", IDENTICAL,
             "EPSG operation 4679: 0.2 m accuracy, not ballpark; independently checked with PROJ 9.7.1",

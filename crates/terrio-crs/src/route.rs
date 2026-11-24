@@ -308,8 +308,10 @@ struct OperationContext<'a> {
     dst: &'a Def,
     aoi: Option<[f64; 4]>,
     all: bool,
-    /// Whether PROJ reaches the CRSs of a datum by its ballpark, of unknown accuracy, from either
-    /// CRS: one on a renamed datum (see [`Def::unresolved`]).
+    /// Whether the transformations PROJ makes between the CRSs are framed by a ballpark, of
+    /// unknown accuracy: into the CRSs of a renamed datum, from either CRS (see
+    /// [`Def::unresolved`]), or chained with PROJ's ballpark vertical transformation
+    /// (`ballpark_heights`).
     framed: bool,
     /// Whether every transformation is chained with PROJ's ballpark vertical transformation,
     /// which makes it of unknown accuracy (see [`Route::with_ballpark_heights`]).

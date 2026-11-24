@@ -13,8 +13,9 @@ places (-2°, 54°) by OSGB36 to WGS 84 (3), 5.2 m from (6), the most accurate.
 Cases, each a source CRS, a target CRS, a point and the point in the target by
 ``Transformer.from_crs(src, dst, always_xy=True).transform``:
 
-- every EPSG compound CRS that is not deprecated, from WGS 84 (3D) (EPSG:4979) at the centre of its
-  area at 100 m, and back from where PROJ places that point;
+- every EPSG compound CRS that is not deprecated and has an area of use, from WGS 84 (3D)
+  (EPSG:4979) at the centre of its area at 100 m, and back from where PROJ places that point (the
+  codes left out, without an area or a placement, are printed);
 - for every tenth, the same point from WGS 84 (geocentric) (EPSG:4978) and from WGS 84 (2D)
   (EPSG:4326, which has no heights, so no vertical transformation), and in 2D (no height column:
   ``transform(x, y)``);
@@ -118,11 +119,9 @@ def main():
     found = installed_grids()
     assert not found, found
     warnings.filterwarnings("ignore")
-    infos = [
-        i
-        for i in query_crs_info("EPSG", PJType.COMPOUND_CRS, allow_deprecated=False)
-        if i.area_of_use is not None
-    ]
+    every = query_crs_info("EPSG", PJType.COMPOUND_CRS, allow_deprecated=False)
+    infos = [i for i in every if i.area_of_use is not None]
+    skipped = sorted(int(i.code) for i in every if i.area_of_use is None)
     infos.sort(key=lambda i: int(i.code))
     lines = []
     by_horizontal = defaultdict(list)
@@ -132,12 +131,14 @@ def main():
         start = (lon, lat, HEIGHT)
         placed = place("EPSG:4979", code, start)
         if placed is None:
+            skipped.append(int(info.code))
             continue
         lines.append(row("EPSG:4979", code, start))
         lines.append(row(code, "EPSG:4979", placed))
         if n % SAMPLE_EVERY == 0:
             geocentric = place("EPSG:4979", "EPSG:4978", start)
-            lines.append(row("EPSG:4978", code, geocentric))
+            if geocentric is not None:
+                lines.append(row("EPSG:4978", code, geocentric))
             lines.append(row("EPSG:4326", code, start))
             lines.append(row("EPSG:4979", code, start[:2]))
             lines.append(row(code, "EPSG:4979", placed[:2]))
@@ -156,6 +157,7 @@ def main():
     lines = [line for line in lines if line is not None]
     OUT.write_text("\n".join(lines) + "\n")
     print(f"{len(lines)} cases -> {OUT}")
+    print(f"{len(skipped)} codes left out: {', '.join(map(str, sorted(skipped)))}")
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
 //! Points between EPSG compound CRSs and ellipsoidal heights, without grids, are placed as PROJ
 //! 9.9.0 places them (#1012 item 47).
 //!
@@ -9,7 +11,8 @@
 //! has no heights, there is no vertical transformation, and (6) is used.
 //!
 //! `data/compound_heights.tsv` (`scripts/gen_compound_heights.py`, PROJ 9.9.0, no grids,
-//! `PROJ_NETWORK=OFF`): every EPSG compound CRS that is not deprecated, from WGS 84 (3D) at the
+//! `PROJ_NETWORK=OFF`): every EPSG compound CRS that is not deprecated and has an area of use
+//! (and that PROJ places), from WGS 84 (3D) at the
 //! centre of its area at 100 m and back; for a sample, from WGS 84 (geocentric) and WGS 84 (2D),
 //! and in 2D; and between compound CRSs of one horizontal CRS. Each case is a point and where
 //! `Transformer.from_crs(src, dst, always_xy=True).transform` places it. Tolerance: 1 mm.
@@ -132,5 +135,29 @@ fn only_best_keeps_ballpark_height_operation_order() {
         assert!((x - 400097.94481535204).abs() < 1e-3 && (y - 455991.2596765667).abs() < 1e-3 && z == 100.0, "{only_best}: {x} {y} {z}");
         let op = t.operation_at(-2.0, 54.0, 100.0).unwrap().unwrap();
         assert!(op.ballpark && op.accuracy.is_none(), "{only_best}: {op:?}");
+    }
+}
+
+#[test]
+fn a_compound_crs_on_a_datum_without_code_is_placed_by_the_ballpark() {
+    offline();
+    // British National Grid's projection on a datum PROJ 9.9.0 does not know, with ODN heights:
+    // no transformation, so PROJ's ballparks, from WGS 84 (3D) and (2D) alike.
+    let wkt = concat!(
+        r#"COMPD_CS["Local + ODN",PROJCS["Local grid",GEOGCS["Local",DATUM["Local_datum","#,
+        r#"SPHEROID["Airy 1830",6377563.396,299.3249646]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],"#,
+        r#"PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",49],PARAMETER["central_meridian",-2],"#,
+        r#"PARAMETER["scale_factor",0.9996012717],PARAMETER["false_easting",400000],PARAMETER["false_northing",-100000],"#,
+        r#"UNIT["metre",1],AXIS["Easting",EAST],AXIS["Northing",NORTH]],VERT_CS["ODN height","#,
+        r#"VERT_DATUM["Ordnance Datum Newlyn",2005,AUTHORITY["EPSG","5101"]],UNIT["metre",1,AUTHORITY["EPSG","9001"]],"#,
+        r#"AXIS["Gravity-related height",UP],AUTHORITY["EPSG","5701"]]]"#
+    );
+    let dst = SpatialRef::from_wkt(wkt);
+    for src in [4979, 4326] {
+        let t = Transformer::new(&SpatialRef::from_epsg(src).unwrap(), &dst).unwrap();
+        let (x, y, z) = t.transform_3d(-1.0, 51.5, 100.0).unwrap();
+        assert!((x - 469405.28816918284).abs() < 1e-3 && (y - 178423.54064973217).abs() < 1e-3 && z == 100.0, "{src}: {x} {y} {z}");
+        let op = t.operation_at(-1.0, 51.5, 100.0).unwrap().unwrap();
+        assert!(op.ballpark && op.accuracy.is_none(), "{src}: {op:?}");
     }
 }
