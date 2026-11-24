@@ -1417,6 +1417,7 @@ impl AssetItem {
 #[derive(Debug, Default)]
 struct AssetGroup {
     bands: Value,
+    raster_bands: Value,
     by_crs: BTreeMap<String, Vec<AssetItem>>,
 }
 
@@ -1449,6 +1450,8 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
     let mut groups: Groups = BTreeMap::new();
     let sign = f.sign.unwrap_or_else(SignMode::from_env);
     let crs_filter = f.crs.as_deref().map(sanitize_crs);
+    // The assets without the proj metadata that places them: (asset, item id).
+    let mut unplaced: Vec<(&str, &str)> = Vec::new();
     for (item, base) in items {
         let has_proj = item["stac_extensions"]
             .as_array()
@@ -1495,6 +1498,7 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
             } else if get("proj:projjson").is_object() {
                 get("proj:projjson").to_string()
             } else {
+                unplaced.push((name, item["id"].as_str().unwrap_or_default()));
                 continue;
             };
             if crs_filter.as_ref().is_some_and(|c| *c != sanitize_crs(&crs)) {
@@ -1504,32 +1508,24 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
             let bbox = nums("proj:bbox").filter(|b| b.len() == 4);
             let shape = nums("proj:shape").filter(|s| s.len() == 2);
             let transform = nums("proj:transform").filter(|t| t.len() == 6 || t.len() == 9);
-            if let Some(t) = &transform
-                && (t[0] <= 0.0
-                    || t[1] != 0.0
-                    || t[3] != 0.0
-                    || t[4] >= 0.0
-                    || (t.len() == 9 && (t[6] != 0.0 || t[7] != 0.0 || t[8] != 1.0)))
-            {
-                continue;
-            }
-            let (width, height, bounds) = match (&bbox, &shape, &transform) {
-                (Some(b), Some(s), _) => (s[1] as i64, s[0] as i64, [b[0], b[1], b[2], b[3]]),
-                (Some(b), None, Some(t)) => {
-                    if b[0] != t[2] || b[3] != t[5] {
-                        continue;
-                    }
-                    (((b[2] - b[0]) / t[0]) as i64, ((b[3] - b[1]) / -t[4]) as i64, [b[0], b[1], b[2], b[3]])
-                }
+            let north_up = |t: &Vec<f64>| {
+                t[0] > 0.0 && t[1] == 0.0 && t[3] == 0.0 && t[4] < 0.0 && (t.len() == 6 || (t[6] == 0.0 && t[7] == 0.0 && t[8] == 1.0))
+            };
+            let placed = match (&bbox, &shape, &transform) {
+                (_, _, Some(t)) if !north_up(t) => None,
+                (Some(b), Some(s), _) => Some((s[1] as i64, s[0] as i64, [b[0], b[1], b[2], b[3]])),
+                (Some(b), None, Some(t)) => (b[0] == t[2] && b[3] == t[5])
+                    .then(|| (((b[2] - b[0]) / t[0]) as i64, ((b[3] - b[1]) / -t[4]) as i64, [b[0], b[1], b[2], b[3]])),
                 (None, Some(s), Some(t)) => {
                     let (w, h) = (s[1] as i64, s[0] as i64);
-                    (w, h, [t[2], t[5] + h as f64 * t[4], t[2] + w as f64 * t[0], t[5]])
+                    Some((w, h, [t[2], t[5] + h as f64 * t[4], t[2] + w as f64 * t[0], t[5]]))
                 }
-                _ => continue,
+                _ => None,
             };
-            if width <= 0 || height <= 0 {
+            let Some((width, height, bounds)) = placed.filter(|(w, h, _)| *w > 0 && *h > 0) else {
+                unplaced.push((name, item["id"].as_str().unwrap_or_default()));
                 continue;
-            }
+            };
             let href = resolve_href(base, href);
             // A remote item does not name local files; such an asset is left out of the mosaic
             // (before its group is made, so that no empty group is left).
@@ -1542,6 +1538,7 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
             }
             let entry = groups.entry(collection.clone()).or_default().entry(name.clone()).or_insert_with(|| AssetGroup {
                 bands: if asset["bands"].is_array() { asset["bands"].clone() } else { asset["eo:bands"].clone() },
+                raster_bands: asset["raster:bands"].clone(),
                 by_crs: BTreeMap::new(),
             });
             entry.by_crs.entry(crs).or_default().push(AssetItem {
@@ -1554,6 +1551,16 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
                 bounds,
             });
         }
+    }
+    // GDAL leaves these out silently; a count tells that the mosaic is missing items.
+    if let Some((name, id)) = unplaced.first() {
+        let n = unplaced.len();
+        crate::warnings::warn(format!(
+            "STAC: {n} asset{} without the proj metadata that places {} (a CRS, and two of proj:shape, proj:transform \
+             and proj:bbox), such as '{name}' of item '{id}': left out of the mosaic",
+            if n == 1 { "" } else { "s" },
+            if n == 1 { "it" } else { "them" },
+        ));
     }
     groups
 }
@@ -1938,6 +1945,55 @@ impl WindowSource for Mosaic {
     }
 }
 
+/// A mosaic band's description, colour interpretation and metadata items, as GDAL's STACIT
+/// driver gives them (reference GDAL 3.10): the first item's colour interpretation, then, when
+/// the asset's `bands` (or `eo:bands`) number the item's bands, the band's `name` as its
+/// description, a colour interpretation from its common name and its other members as items.
+/// A STAC 1.0 asset's `raster:bands` (which GDAL does not read) add their members as items too,
+/// named as STAC 1.1 `bands` name them (`raster:scale`...), and give the band its `unit`. Their
+/// scale and offset are not the band's: readers applying them would differ from GDAL.
+fn mosaic_band(bands: &Value, raster_bands: &Value, i: usize, count: usize, item_interp: &str) -> crate::BandMetadata {
+    let text = |v: &Value| v.as_str().map_or_else(|| v.to_string(), str::to_string);
+    let nth = |v: &Value| v.as_array().filter(|a| a.len() == count).and_then(|a| a[i].as_object().cloned());
+    let mut b = crate::BandMetadata { color_interp: (item_interp != "Undefined").then(|| item_interp.to_string()), ..Default::default() };
+    let mut set = |k: String, v: &Value| match b.items.iter_mut().find(|(n, _)| *n == k) {
+        Some(item) => item.1 = text(v),
+        None => b.items.push((k, text(v))),
+    };
+    for (k, v) in nth(raster_bands).into_iter().flatten() {
+        let raster = matches!(k.as_str(), "scale" | "offset" | "bits_per_sample" | "spatial_resolution" | "sampling" | "histogram");
+        set(if raster { format!("raster:{k}") } else { k }, &v);
+    }
+    if let Some(band) = nth(bands) {
+        for (k, v) in &band {
+            if !matches!(k.as_str(), "name" | "common_name" | "eo:common_name") {
+                set(k.clone(), v);
+            }
+        }
+        b.description = band.get("name").map(text).filter(|n| !n.is_empty());
+        let common = [band.get("eo:common_name"), band.get("common_name")].into_iter().flatten().map(text).find(|c| !c.is_empty());
+        // GDAL's `GDALGetColorInterpFromSTACCommonName()`.
+        let interp = match common.unwrap_or_default().to_ascii_lowercase().as_str() {
+            "pan" => "Pan",
+            "coastal" => "Coastal",
+            "blue" => "Blue",
+            "green" | "green05" => "Green",
+            "yellow" => "Yellow",
+            "red" => "Red",
+            "rededge" | "rededge071" | "rededge075" | "rededge078" => "RedEdge",
+            "nir" | "nir08" | "nir09" | "cirrus" => "NIR",
+            "swir16" | "swir22" => "SWIR",
+            "lwir" | "lwir11" | "lwir12" => "LWIR",
+            _ => "",
+        };
+        if !interp.is_empty() {
+            b.color_interp = Some(interp.to_string());
+        }
+    }
+    b.unit = b.items.iter().find(|(k, _)| k == "unit").map(|(_, v)| v.clone());
+    b
+}
+
 /// Opens the one mosaic of grouped assets (GDAL's `STACITDataset::SetupDataset()`).
 fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>, kept: &str) -> Result<LazyRaster> {
     let group_count: usize = groups.values().flat_map(|a| a.values()).map(|g| g.by_crs.len()).sum();
@@ -1992,6 +2048,9 @@ fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>, kept: &st
     let first_href = items[0].href.clone();
     let first = items[0].open()?;
     let (bands, data_type, nodata) = (first.band_count(), first.data_type(), first.nodata());
+    let first_header = first.header();
+    let band_metadata =
+        (0..bands).map(|i| mosaic_band(&group.bands, &group.raster_bands, i, bands, first_header.band_color_interp(i + 1))).collect();
     // Ascending datetime: later items are drawn over earlier ones.
     items.sort_by(|a, b| a.datetime.cmp(&b.datetime));
     let srs = crs_of(&crs);
@@ -2015,7 +2074,8 @@ fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>, kept: &st
         metadata,
         data: RasterData::new_filled(data_type, 0, 0.0),
     };
-    let header = RasterDataset::with_driver(raster, RasterDriver::STACIT, nodata.is_some());
+    let mut header = RasterDataset::with_driver(raster, RasterDriver::STACIT, nodata.is_some());
+    header.band_metadata = band_metadata;
     let mut items: Vec<(AssetItem, Option<LazyRaster>)> = items.into_iter().map(|i| (i, None)).collect();
     if let Some(slot) = items.iter_mut().find(|(i, _)| i.href == first_href) {
         slot.1 = Some(first);
@@ -2510,6 +2570,60 @@ mod tests {
         // Fewer files kept open than items: the least recently read close, and the mosaic is the same.
         assert_eq!(read_kept_open(1, 2), one);
         assert_eq!(read_kept_open(3, 2), one);
+    }
+
+    /// Assets without the proj metadata that places them are left out with one warning that
+    /// counts them; GDAL leaves them out silently.
+    #[test]
+    fn unplaced_assets_are_counted_in_a_warning() {
+        let item = |id: &str, props: Value| {
+            let mut props = props;
+            props["datetime"] = json!("2023-07-01T00:00:00Z");
+            let item = json!({"type": "Feature", "id": id, "stac_extensions": ["proj"], "properties": props,
+                              "assets": {"data": {"href": format!("{id}.tif")}}});
+            (item, "/data/items.json".to_string())
+        };
+        let placed = json!({"proj:epsg": 32613, "proj:shape": [4, 8], "proj:transform": [10.0, 0.0, 0.0, 0.0, -10.0, 40.0]});
+        let items = [
+            item("placed", placed.clone()),
+            item("no-crs", json!({"proj:shape": [4, 8], "proj:transform": [10.0, 0.0, 0.0, 0.0, -10.0, 40.0]})),
+            item("no-transform", json!({"proj:epsg": 32613, "proj:shape": [4, 8]})),
+            item("empty", json!({"proj:epsg": 32613, "proj:shape": [0, 8], "proj:transform": [10.0, 0.0, 0.0, 0.0, -10.0, 40.0]})),
+            // Left out by the crs= filter, not for its metadata.
+            item("other-crs", json!({"proj:epsg": 4326, "proj:shape": [4, 8]})),
+        ];
+        let _ = crate::warnings::take();
+        let groups = group_assets(&items, &Filters { crs: Some("EPSG:32613".into()), ..Filters::default() });
+        assert_eq!(groups[""]["data"].by_crs["EPSG:32613"].len(), 1);
+        let warnings = crate::warnings::take();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].starts_with("STAC: 3 assets without the proj metadata"), "{}", warnings[0]);
+        assert!(warnings[0].contains("'data' of item 'no-crs'"), "{}", warnings[0]);
+        // All placed: no warning.
+        group_assets(&items[..1], &Filters::default());
+        assert!(crate::warnings::take().is_empty());
+    }
+
+    /// A band's metadata from the asset's bands, as GDAL's STACIT gives it, and its raster:bands.
+    #[test]
+    fn mosaic_bands_read_bands_and_raster_bands() {
+        let bands = json!([{"name": "B04", "common_name": "red", "center_wavelength": 0.665}, {"name": "B08", "eo:common_name": "nir08"}]);
+        let raster = json!([{"scale": 0.0001, "offset": -0.1, "unit": "m", "nodata": 0}, {"data_type": "uint16"}]);
+        let b = mosaic_band(&bands, &raster, 0, 2, "Undefined");
+        assert_eq!(b.description.as_deref(), Some("B04"));
+        assert_eq!(b.color_interp.as_deref(), Some("Red"));
+        assert_eq!(b.unit.as_deref(), Some("m"));
+        assert_eq!((b.scale, b.offset), (None, None));
+        let items: Vec<(&str, &str)> = b.items.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        assert_eq!(
+            items,
+            [("raster:scale", "0.0001"), ("raster:offset", "-0.1"), ("unit", "m"), ("nodata", "0"), ("center_wavelength", "0.665")]
+        );
+        let b = mosaic_band(&bands, &raster, 1, 2, "Gray");
+        assert_eq!((b.description.as_deref(), b.color_interp.as_deref()), (Some("B08"), Some("NIR")));
+        // Bands that do not number the item's: only the item's colour interpretation.
+        let b = mosaic_band(&bands, &raster, 0, 3, "Gray");
+        assert_eq!(b, crate::BandMetadata { color_interp: Some("Gray".into()), ..Default::default() });
     }
 
     /// Cached native clients retain credentials; changing current configuration cannot revoke
