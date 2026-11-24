@@ -54,6 +54,43 @@ pub fn query(layers: &[Layer], statement: &str) -> Result<Layer> {
     Ok(layer)
 }
 
+/// [`query`] on the layers of the vector dataset at `path`. A single-layer query on a local
+/// GeoParquet file passes its WHERE clause to the reader, which skips the row groups whose column
+/// statistics exclude it and decodes the other columns of matching rows only; feature IDs stay
+/// the file's. Other queries, remote files and other formats read their layers whole, as
+/// [`crate::open_vector`] does.
+pub fn query_path(path: &str, statement: &str, options: &crate::VectorOpenOptions) -> Result<Layer> {
+    #[cfg(feature = "parquet")]
+    if let Some(layer) = filtered_parquet_layer(path, statement, options)? {
+        return query(&[layer], statement);
+    }
+    query(&crate::open_vector(path, options)?.into_resolved_layers(), statement)
+}
+
+/// The layer a single-layer query with a WHERE clause reads from a GeoParquet file, its rows
+/// already filtered; `None` when the query or the file is not one, or the reader cannot evaluate
+/// the clause (spatial functions, unknown fields), which then applies to the layer read whole.
+#[cfg(feature = "parquet")]
+fn filtered_parquet_layer(path: &str, statement: &str, options: &crate::VectorOpenOptions) -> Result<Option<Layer>> {
+    let Ok(select) = Select::parse(statement) else { return Ok(None) };
+    let Some(filter) = select.filter.as_ref().filter(|_| select.joins.is_empty()) else { return Ok(None) };
+    // ponytail: local only. Remotely, the predicate pass fetches each row group's filter columns
+    // in its own round trip (27 rounds against 8 for a whole read): batch them to extend it.
+    if crate::formats::VectorDriver::for_extension(path) != Some(crate::formats::VectorDriver::Parquet)
+        || !std::path::Path::new(path).is_file()
+    {
+        return Ok(None);
+    }
+    let readers = crate::stream::open_layers(path, options, crate::stream::DEFAULT_CHUNK)?;
+    let Some(mut reader) = readers.into_iter().find(|r| r.layer().name.eq_ignore_ascii_case(&select.from)) else {
+        return Ok(None);
+    };
+    if reader.filter_attributes(filter).is_err() {
+        return Ok(None);
+    }
+    reader.read_all().map(Some)
+}
+
 /// A parsed expression, not yet bound to a layer's fields.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expression(Expr);
@@ -299,6 +336,7 @@ impl BoundExpression {
                 Expr::Between { expr, low, high, negated: false } => {
                     comparison(BinOp::Ge, expr, low, range) && comparison(BinOp::Le, expr, high, range)
                 }
+                Expr::In { expr, list, negated: false } => list.iter().any(|v| comparison(BinOp::Eq, expr, v, range)),
                 _ => true,
             }
         }

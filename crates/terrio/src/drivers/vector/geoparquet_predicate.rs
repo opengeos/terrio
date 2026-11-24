@@ -150,6 +150,62 @@ mod tests {
         assert_eq!(remaining.features.iter().map(|f| f.fid).collect::<Vec<_>>(), (4..20).collect::<Vec<_>>());
     }
 
+    /// A query on a GeoParquet path filters its rows in the reader and gives what the same
+    /// query gives on the layer read whole, also when the reader cannot evaluate the clause.
+    #[test]
+    fn sql_on_a_path_matches_the_query_on_the_whole_layer() {
+        let mut layer = Layer::new("t");
+        layer.add_field(FieldDef::new("id", FieldType::Integer));
+        layer.add_field(FieldDef::new("name", FieldType::Text));
+        for i in 0..50 {
+            layer.push(Feature {
+                fid: i,
+                geometry: None,
+                attributes: vec![FieldValue::Integer(i as i64), FieldValue::Text(format!("n{i}"))],
+            });
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.parquet");
+        let path = path.to_str().unwrap();
+        super::super::write(&layer, path).unwrap();
+        let whole = crate::open_vector(path, &Default::default()).unwrap().into_resolved_layers();
+        for statement in [
+            "SELECT * FROM t WHERE id < 7",
+            "SELECT name FROM t WHERE id IN (3, 40, 99) ORDER BY id DESC",
+            "SELECT * FROM t WHERE id BETWEEN 10 AND 12 OR name = 'n45' LIMIT 2",
+            "SELECT * FROM t WHERE FID >= 47",
+            "SELECT COUNT(*) FROM t WHERE id > 20",
+            "SELECT * FROM t WHERE missing > 1 OR id = 1",
+            "SELECT * FROM t",
+        ] {
+            let expected = crate::ops::sql::query(&whole, statement);
+            let got = crate::ops::sql::query_path(path, statement, &Default::default());
+            match (got, expected) {
+                (Ok(got), Ok(expected)) => {
+                    let rows = |l: &Layer| l.features.iter().map(|f| (f.fid, f.attributes.clone())).collect::<Vec<_>>();
+                    assert_eq!(rows(&got), rows(&expected), "{statement}");
+                }
+                (got, expected) => assert_eq!(got.map(|_| ()).unwrap_err().to_string(), expected.map(|_| ()).unwrap_err().to_string()),
+            }
+        }
+    }
+
+    /// `IN` keeps a row group when one of its values may be in the group's range.
+    #[test]
+    fn in_lists_prune_by_ranges() {
+        let mut layer = Layer::new("t");
+        layer.add_field(FieldDef::new("v", FieldType::Integer));
+        let may = |text: &str| {
+            let e = Expression::parse(text).unwrap().bind(&layer.schema).unwrap();
+            e.may_match_ranges(|_| Some((FieldValue::Integer(10), FieldValue::Integer(20))))
+        };
+        assert!(!may("v IN (1, 25)"));
+        assert!(may("v IN (1, 15)"));
+        assert!(may("v NOT IN (1, 25)"));
+        assert!(may("v IN (1, v)"));
+        assert!(!may("v IN (1, 2) AND v > 0"));
+    }
+
     #[test]
     fn duplicate_physical_paths_cannot_prune_the_wrong_column() {
         use arrow_array::{Int64Array, RecordBatch};
