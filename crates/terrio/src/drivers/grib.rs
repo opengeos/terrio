@@ -345,6 +345,7 @@ fn bytes_source(bytes: Vec<u8>) -> Result<(RasterDataset, Source)> {
 const DECODE_BYTES: usize = 256 << 20;
 
 /// The chunk of the block cache that holds a band, or the part of it a read keeps.
+/// GRIB uses the cache's image/IFD slot for the band number; its handles are file-version specific.
 const BAND_CHUNK: u32 = 0;
 
 /// Where a band of a file is, and the points of its grid.

@@ -169,7 +169,11 @@ pub(super) fn open(local: crate::vfs::LocalPath) -> Result<crate::LazyRaster> {
 
 /// The dataset of a local GRIB file, and the source that reads its bands: see [`open`].
 fn source(local: crate::vfs::LocalPath) -> Result<(crate::RasterDataset, Source)> {
+    // Only Unix file versions can share cached bands; other targets need no clock.
+    #[cfg(unix)]
     let opened = std::time::SystemTime::now();
+    #[cfg(not(unix))]
+    let opened = std::time::UNIX_EPOCH;
     let mut file = std::fs::File::open(local.path())?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() == 0 {
@@ -656,6 +660,7 @@ mod tests {
     /// and messages behind other bytes (more than a block of them).
     #[test]
     fn a_file_is_read_by_position_as_in_memory() {
+        let _serial = cache_test_guard(64 << 20);
         let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/grib");
         let dir = tempfile::tempdir().unwrap();
         let mut files: Vec<Vec<u8>> = ["subgrids_reuse_bitmap.grib2", "Sample_QuikSCAT.grb", "complex_sd2_nodata.grib2", "bitmap254.grib2"]
