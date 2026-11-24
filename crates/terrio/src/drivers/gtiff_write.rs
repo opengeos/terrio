@@ -449,7 +449,8 @@ pub(crate) struct TiffOptions {
     pub overviews: Vec<usize>,
     /// How the overviews of `overviews` are computed.
     pub overview_resampling: OverviewResampling,
-    /// The TIFF predictor: 1 (none), 2 (horizontal differencing) or 3 (floating point).
+    /// The TIFF predictor: 1 (none), 2 (horizontal differencing) or 3 (floating point), or
+    /// [`PREDICTOR_BY_TYPE`] for a COG's `PREDICTOR=YES`.
     pub predictor: u16,
     /// Write the pixel scale and tie point (`GEOREFERENCED=NO` leaves the file without a
     /// geotransform, as GDAL writes rasters whose geotransform is the identity).
@@ -652,6 +653,32 @@ fn yes(v: &str) -> bool {
     matches!(v.to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1")
 }
 
+/// The [`TiffOptions::predictor`] of a COG's `PREDICTOR=YES`, which [`plan`] resolves from the
+/// data type.
+const PREDICTOR_BY_TYPE: u16 = 0;
+
+/// A `PREDICTOR` creation option. A COG reads it as GDAL 3.13's COG driver does (`GetPredictor`
+/// in `frmts/gtiff/cogdriver.cpp`): `YES`, `ON` or `TRUE` is 3 for floating-point data and 2
+/// otherwise ([`PREDICTOR_BY_TYPE`]), `STANDARD` is 2, `FLOATING_POINT` is 3, and `NO`, `FALSE`,
+/// `OFF` or `NONE` leave the predictor out. A GeoTIFF keeps its numbers and `YES`, `NO` and
+/// `NONE` (GDAL's GTiff driver takes only the numbers). Other values are refused, where GDAL's COG
+/// driver warns and writes no predictor.
+fn parse_predictor(value: &str, cog: bool) -> Result<u16> {
+    Ok(match value.trim().to_ascii_uppercase().as_str() {
+        "1" | "NO" | "NONE" => 1,
+        "FALSE" | "OFF" if cog => 1,
+        "YES" | "ON" | "TRUE" if cog => PREDICTOR_BY_TYPE,
+        "2" | "YES" => 2,
+        "STANDARD" if cog => 2,
+        "3" => 3,
+        "FLOATING_POINT" if cog => 3,
+        other if cog => {
+            return Err(Error::InvalidArgument(format!("invalid PREDICTOR '{other}' (NO, YES, STANDARD or 2, FLOATING_POINT or 3)")));
+        }
+        other => return Err(Error::InvalidArgument(format!("invalid PREDICTOR '{other}' (1, 2, 3)"))),
+    })
+}
+
 impl TiffOptions {
     /// The options for writing a GeoTIFF (or a COG) with `options`, its creation options read as
     /// GDAL's. `None` when the compression is one this writer does not handle (a lossy one).
@@ -744,12 +771,7 @@ impl TiffOptions {
             options.creation_options.iter().filter(|(k, _)| k.eq_ignore_ascii_case("SRC_MDD")).map(|(_, v)| v.as_str()).collect();
         (o.domains, o.drop_default_items) = MetadataDomain::parse(co("@METADATA_DOMAINS"), cog, co("COPY_SRC_MDD"), &src_mdd)?;
         if let Some(p) = co("PREDICTOR") {
-            o.predictor = match p.trim().to_ascii_uppercase().as_str() {
-                "1" | "NO" | "NONE" => 1,
-                "2" | "YES" => 2,
-                "3" => 3,
-                other => return Err(Error::InvalidArgument(format!("invalid PREDICTOR '{other}' (1, 2, 3)"))),
-            };
+            o.predictor = parse_predictor(p, cog)?;
         }
         // The levels are checked whatever the compression, as the qualities are.
         if let Some(v) = co("ZLEVEL") {
@@ -1022,7 +1044,12 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
         }
     }
     // As GDAL, the predictor only applies to compressed files; 3 to floating-point samples.
-    let predictor = if opts.compression.takes_predictor() && !opts.complex { opts.predictor } else { 1 };
+    let wanted = match opts.predictor {
+        PREDICTOR_BY_TYPE if matches!(raster.data_type, DataType::F32 | DataType::F64) => 3,
+        PREDICTOR_BY_TYPE => 2,
+        p => p,
+    };
+    let predictor = if opts.compression.takes_predictor() && !opts.complex { wanted } else { 1 };
     if predictor == 3 && !matches!(raster.data_type, DataType::F32 | DataType::F64) {
         return Err(Error::InvalidArgument("PREDICTOR=3 is only supported for floating-point data".into()));
     }
@@ -4806,6 +4833,75 @@ mod tests {
                 _ => false,
             };
             assert!(same, "{co:?}");
+        }
+    }
+
+    /// A COG reads `PREDICTOR` as GDAL 3.13.3's COG driver does: `YES`, `ON` and `TRUE` are 3 for
+    /// floating-point data and 2 for integers, `STANDARD` is 2, `FLOATING_POINT` is 3, and `FALSE`
+    /// and `OFF` are none; every overview takes the image's predictor, as GDAL's do. A GeoTIFF
+    /// keeps `YES` as 2 and refuses the COG's words, and 3 stays refused for integers.
+    #[test]
+    fn cog_predictor_yes_follows_the_data_type_as_gdal_cog() {
+        let predictors = |bytes: Vec<u8>| {
+            let mut dec = tiff::decoder::Decoder::new(std::io::Cursor::new(bytes)).unwrap();
+            let mut found = Vec::new();
+            for i in 0.. {
+                if dec.seek_to_image(i).is_err() {
+                    break;
+                }
+                found.push(dec.find_tag_unsigned::<u16>(tiff::tags::Tag::Predictor).unwrap().unwrap_or(1));
+            }
+            found
+        };
+        let options = |driver_cog: bool, word: &str| {
+            let mut co = vec![("COMPRESS".to_string(), "DEFLATE".to_string()), ("PREDICTOR".to_string(), word.to_string())];
+            if driver_cog {
+                co.push(("BLOCKSIZE".into(), "16".into()));
+            }
+            let options = crate::RasterWriteOptions { creation_options: co, ..Default::default() };
+            TiffOptions::from_write_options(&options, driver_cog, Some(-1.0))
+        };
+        for (t, word, expected) in [
+            (DataType::F32, "YES", 3),
+            (DataType::F32, "on", 3),
+            (DataType::F32, "TRUE", 3),
+            (DataType::I16, "YES", 2),
+            (DataType::U8, "YES", 2),
+            (DataType::F32, "STANDARD", 2),
+            (DataType::I16, "STANDARD", 2),
+            (DataType::F32, "FLOATING_POINT", 3),
+            (DataType::F32, "2", 2),
+            (DataType::F32, "3", 3),
+            (DataType::F32, "FALSE", 1),
+            (DataType::I16, "OFF", 1),
+            (DataType::I16, "NO", 1),
+        ] {
+            let r = layouts_raster(1, t);
+            let dir = tempfile::tempdir().unwrap();
+            let p = dir.path().join("c.tif");
+            write(&r, p.to_str().unwrap(), &options(true, word).unwrap().unwrap()).unwrap();
+            let found = predictors(std::fs::read(&p).unwrap());
+            assert!(found.len() > 1, "the COG has overviews");
+            assert!(found.iter().all(|&p| p == expected), "{t:?} PREDICTOR={word}: {found:?}");
+            let back = crate::geotiff::read_geotiff(&p).unwrap();
+            let same = match (&back.raster.data, &r.data) {
+                (RasterData::I16(a), RasterData::I16(b)) => a == b,
+                (RasterData::F32(a), RasterData::F32(b)) => a == b,
+                (RasterData::U8(a), RasterData::U8(b)) => a == b,
+                _ => false,
+            };
+            assert!(same, "{t:?} PREDICTOR={word}");
+        }
+        for word in ["FLOATING_POINT", "3"] {
+            let err = encode(&layouts_raster(1, DataType::I16), &options(true, word).unwrap().unwrap()).unwrap_err();
+            assert!(err.to_string().contains("PREDICTOR=3"), "{word}: {err}");
+        }
+        assert!(options(true, "MAYBE").is_err());
+        // A GeoTIFF's YES stays 2; the words only GDAL's COG driver takes are refused.
+        let bytes = encode(&layouts_raster(1, DataType::F32), &options(false, "YES").unwrap().unwrap()).unwrap();
+        assert_eq!(predictors(bytes), [2]);
+        for word in ["STANDARD", "FLOATING_POINT", "TRUE", "OFF"] {
+            assert!(options(false, word).is_err(), "GTiff PREDICTOR={word}");
         }
     }
 

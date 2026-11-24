@@ -150,6 +150,45 @@ def test_default_resampling_is_gdals_cubic(tmp_path, path):
     _assert_same(gdal, ours, path)
 
 
+@pytest.mark.parametrize("word", ["YES", "TRUE", "STANDARD", "FLOATING_POINT", "2", "FALSE", "NO"])
+@pytest.mark.parametrize("dtype", ["float32", "int16", "uint8"])
+def test_cog_predictor_words_are_gdals(tmp_path, dtype, word):
+    """GDAL's COG driver resolves PREDICTOR=YES by data type (3 for floats, 2 otherwise) and
+    takes STANDARD and FLOATING_POINT: terrio writes the predictor GDAL writes, reports it while
+    writing as GDAL reports it afterwards, and the same pixels at every level."""
+    src = _source(tmp_path / "src.tif", 1001, 999, 1, dtype, None)
+    if word == "FLOATING_POINT" and dtype != "float32":
+        # GDAL refuses the floating-point predictor for integers, and so does terrio.
+        with pytest.raises(Exception, match="PREDICTOR=3"):
+            _gdal_cog(src, tmp_path / "gdal.tif", predictor=word)
+        with pytest.raises(terrio.TerrioError, match="PREDICTOR=3"):
+            terrio.convert(
+                src,
+                str(tmp_path / "x.tif"),
+                format="COG",
+                compress="DEFLATE",
+                options={"PREDICTOR": word},
+            )
+        return
+    gdal = _gdal_cog(src, tmp_path / "gdal.tif", predictor=word)
+    with rasterio.open(gdal) as ds:
+        expected = ds.tags(ns="IMAGE_STRUCTURE").get("PREDICTOR")
+    ours = str(tmp_path / "terrio.tif")
+    terrio.convert(src, ours, format="COG", compress="DEFLATE", options={"PREDICTOR": word})
+    with rasterio.open(ours) as ds:
+        assert ds.tags(ns="IMAGE_STRUCTURE").get("PREDICTOR") == expected
+    _assert_same(gdal, ours, f"PREDICTOR={word}")
+    with trio.open(src) as ds:
+        profile, data = ds.profile.copy(), ds.read()
+    profile.update(driver="COG", compress="deflate", predictor=word)
+    written = str(tmp_path / "written.tif")
+    with trio.open(written, "w", **profile) as dst:
+        assert dst.tags(ns="IMAGE_STRUCTURE").get("PREDICTOR") == expected
+        dst.write(data)
+    with rasterio.open(written) as ds:
+        assert ds.tags(ns="IMAGE_STRUCTURE").get("PREDICTOR") == expected
+
+
 @pytest.mark.parametrize("key", ["overview_resampling", "resampling"])
 def test_resampling_keywords_on_rio_paths(tmp_path, key):
     """rasterio's `overview_resampling` and GDAL's `RESAMPLING` creation option."""
