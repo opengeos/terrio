@@ -85,9 +85,13 @@ keep it so:
   better: `ruzstd` writes at its fastest level, about zstd's level 1, whatever level is asked for.
 - HTTPS uses `rustls` with `rustls-graviola`, whose cryptography is Rust and assembly and needs no
   C compiler. It requires `aes`, `pclmulqdq`, `ssse3`, `avx`, `avx2`, `adx`, `bmi1` and `bmi2` on
-  x86-64 (most CPUs since about 2014), and `aes`, `sha2`, `pmull` and `neon` on AArch64: without the
-  ones it checks, an HTTPS request panics, naming the missing feature. Other
-  architectures, for which no release is built, use `ring`, which needs a C compiler.
+  x86-64 (most CPUs since about 2014), and `aes`, `sha2`, `pmull` and `neon` on AArch64. terrio
+  checks them once per process, before the first HTTPS request: on a CPU without them (an Intel
+  before Haswell or Broadwell, an AMD before Zen, many Atom, Celeron and Pentium parts, or a
+  virtual machine that hides the flags), HTTPS requests fail with an error naming the missing
+  features, where graviola itself would panic, and plain HTTP works. The opt-in `ring-fallback`
+  feature uses `ring` on those CPUs instead, at the cost of a C compiler. Other architectures, for
+  which no release is built, use `ring`, which needs a C compiler.
 - GeoParquet is written with Snappy, which needs no C. Reading also takes Zstandard, gzip, LZ4 and
   Brotli.
 
