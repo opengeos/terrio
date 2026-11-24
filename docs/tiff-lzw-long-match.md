@@ -40,8 +40,11 @@ asserts bytes against weezl. Full-file writer fixtures check assembly separately
 The deterministic writer example accepts an optional `dense` argument to remove
 NoData from its synthetic Float32 raster for performance qualification.
 
-Measured results and the standalone real-strip/adversarial harness are retained
-in the task evidence, separate from source and generated raster files.
+The measurements below were supplied with the
+[original contribution, #1285](https://github.com/opengeos/terrio/pull/1285).
+The standalone real-strip/adversarial harness and raw measurement packet are not
+included in this repository. The public synthetic writer workload is documented
+in [lzw-write-performance.md](lzw-write-performance.md).
 
 ## Local qualification and tradeoff
 
@@ -59,9 +62,8 @@ CPU is process user plus kernel. These are local results, not fleet qualificatio
 
 The dense CPU no-regression target was not met. This must be weighed before
 adopting the change. Wall-time conditions changed substantially within the batch;
-raw ranges and paired differences are retained in the separate evidence packet,
-not discarded to select a faster epoch. Peak process working sets are recorded
-there as well. Dense uses 33,554,432 deterministic valid Float32 samples and no
+the contributor's raw ranges, paired differences and peak process working sets
+are not included here. Dense uses 33,554,432 deterministic valid Float32 samples and no
 NoData; its artificial grid is explicitly declared in the measurement setup.
 
 Encoder-only, all 28,624 frozen strips (6,232,131,776 raw bytes),

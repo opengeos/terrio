@@ -64,9 +64,6 @@ scoped read policies and read-budget checks are unchanged. State belongs to a
 Rayon work piece or one serial call, not a worker thread or a source raster, and
 each chunk resets the dictionary.
 
-The performance numbers above describe the earlier 0.8.0 experiments; they are
-not evidence for the current writer.
-
 The crate disables automatic integration-test discovery. The LZW writer golden
 suite is an explicit `[[test]]` target, retaining its fresh-process one/three-thread
 checks rather than becoming a silently unbuilt test file.
@@ -79,8 +76,8 @@ NoData border or isolated periodic island no longer enables it. False negatives
 only affect speed; sampling and all dictionary decisions depend only on bytes.
 
 Witness arrays allocate on the first selected chunk and remain reusable. Heap
-state excluding output and Vec headers is initially 36 KiB on both targets,
-previously 84 KiB on 64-bit or 68 KiB on 32-bit/wasm32. First skip use adds
+state excluding output and Vec headers is initially 36 KiB on both targets.
+First skip use adds
 48 KiB (64-bit) or 32 KiB (32-bit). Rayon `map_init` initializes per split
 leaf, not strictly once per thread, so savings apply to each unused leaf.
 
@@ -90,10 +87,13 @@ The fixed multiplicative hash and linear probing are not collision-resistant.
 At most 3838 occupied entries exist before a dictionary clear; a lookup can
 inspect up to 3839 slots including its terminating empty slot. Thus lookup work
 is bounded O(n) with a large constant, not an expected-time guarantee for
-untrusted input. The review's repeating 4386-byte hash-cluster epoch measured
+untrusted input. The [original contribution's review](https://github.com/opengeos/terrio/pull/1285)
+used a repeating 4386-byte hash-cluster epoch and measured
 roughly 1620 probes per byte and 60 to 80 times slower encoding than weezl.
 This change documents that exposure without adding a hot-loop probe counter,
 salted layout, or fallback. No adversarial-throughput mitigation is claimed.
+CLI and MCP callers can supply raster values to this writer, including untrusted
+values. Services must account for this documented worst case when budgeting work.
 
 `lzw_reused_streams_match_fresh_tiff_size_switch` compares reused specialized
 scratch with a fresh weezl encoder. Both specialized paths also assert their

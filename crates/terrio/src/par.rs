@@ -936,6 +936,7 @@ mod tests {
             (i, s.get())
         });
         assert_eq!(one, [(0, 1)]);
+        assert_eq!(init_count.load(std::sync::atomic::Ordering::Relaxed), 2, "one initialization per serial call");
         let results = map_range_init_coarse(1000, init, |s, i| {
             s.set(s.get() + 1);
             if i % 7 == 0 { Err(i) } else { Ok(i) }
