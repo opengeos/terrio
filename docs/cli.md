@@ -1586,6 +1586,12 @@ also matching those probes. Average updates between identical affine pixel grids
 their origin offsets are integer to within 1e-7 pixels; fractional offsets retain
 area-based resampling.
 Min/max overview methods are Terrio extensions; GDAL 3.13.3 gdaladdo refuses them.
+Complex bands (`CInt16`, `CInt32`, `CFloat32`, `CFloat64`) take nearest and average
+overviews, internal or external, uncompressed or LZW, DEFLATE, PACKBITS or ZSTD. As in
+GDAL 3.13 (`GDALResampleChunkC32R`), the average takes each part (real and imaginary) on
+its own: unweighted windows, no nodata or mask, computed in `CFloat32` (so `CFloat64` and
+`CInt32` parts round through `Float32`), and integer parts rounded half away from zero.
+Min, max and mode, and partial refreshes (`--bbox`), are refused for complex bands.
 
 Raster in-place edits copy the whole TIFF, including for metadata-only changes, and
 need free disk space for that copy. Symlink targets and mode bits are preserved;
