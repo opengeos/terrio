@@ -324,6 +324,8 @@ along the margin. terrio's `OVERVIEW_RESAMPLING=AREA_MATCHED` (`overview_resampl
 - The raster needs one shared nodata value across all bands (NaN is never valid). Distinct
   per-band declarations, per-dataset masks, alpha bands and complex bands are refused. A COG
   with these overviews is written whole, not a strip at a time.
+- Each overview declares nodata, including Int64 and UInt64 levels, so readers mask cells
+  excluded from the reported valid area.
 - Each band's metadata records what its levels keep, as default-domain items that GDAL's COG and
   GTiff drivers copy with the band: `OVERVIEW_AREA_RATIOS`, the area each level keeps over the
   valid full-resolution area (comma-separated, `1` when it is kept exactly), and

@@ -1260,9 +1260,10 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
             img.tags.push((254, Value::Longs(vec![1])));
         }
         // Georeferencing on the full-resolution image; nodata on every image, as GDAL does, but
-        // not on the overviews of 64-bit integer rasters (see [`overview_nodata`]).
+        // not on GDAL-method overviews of 64-bit integer rasters (see [`overview_nodata`]).
+        // Area-matched levels must declare their invalid cells, including for integer nodata.
         for (tag, v) in &geo {
-            if i == 0 || (*tag == 42113 && overview_nodata(raster.data_type)) {
+            if i == 0 || (*tag == 42113 && (!reports.is_empty() || overview_nodata(raster.data_type))) {
                 img.tags.push((*tag, v.clone()));
             }
         }
@@ -6347,6 +6348,54 @@ mod tests {
         let read = lazy.read_window(crate::Window::full(1, 1), &crate::WindowOptions { bands: vec![], overview: Some(0) }).unwrap();
         let RasterData::U64(values) = read.raster.data else { panic!("the overview must retain its native type") };
         assert_eq!(values, vec![class]);
+    }
+
+    /// Area-matched Int64/UInt64 levels declare nodata, unlike GDAL 3.12.1's ordinary integer
+    /// overviews: their invalid footprints must remain invalid and agree with the area report.
+    #[test]
+    fn area_matched_integer_overviews_declare_invalid_footprints() {
+        for data_type in [DataType::I64, DataType::U64] {
+            let values: Vec<i32> = (0..64 * 32).map(|i| if i % 64 < 32 { 13 } else { 0 }).collect();
+            let data = match data_type {
+                DataType::I64 => RasterData::I64(values.iter().map(|&v| i64::from(v)).collect()),
+                DataType::U64 => RasterData::U64(values.iter().map(|&v| v as u64).collect()),
+                _ => unreachable!(),
+            };
+            let cfg = wbraster::RasterConfig { cols: 64, rows: 32, bands: 1, nodata: 0.0, data_type, ..Default::default() };
+            let raster = Raster::from_data_native(cfg, data).unwrap();
+            for cog in [false, true] {
+                for method in ["area_matched", "area_matched_mode"] {
+                    let options = crate::RasterWriteOptions {
+                        tile_size: Some(16),
+                        overviews: if cog { vec![] } else { vec![2, 4] },
+                        overview_resampling: Some(method.into()),
+                        ..Default::default()
+                    };
+                    let opts = TiffOptions::from_write_options(&options, cog, Some(0.0)).unwrap().unwrap();
+                    let mut lazy = crate::LazyRaster::from_tiff_bytes(encode(&raster, &opts).unwrap()).unwrap().unwrap();
+                    let header = lazy.header();
+                    assert_eq!(band_item(&header, 0, area_matched::BASE_VALID_PIXELS_ITEM), Some("1024".into()));
+                    let ratios = band_item(&header, 0, area_matched::AREA_RATIOS_ITEM).unwrap();
+                    let ratios: Vec<f64> = ratios.split(',').map(|v| v.parse().unwrap()).collect();
+                    let sizes = lazy.overviews();
+                    assert_eq!(sizes.len(), 2);
+                    for (i, (w, h)) in sizes.into_iter().enumerate() {
+                        assert_eq!(lazy.level_band_nodata(&[1], Some(i)), vec![Some(0.0)]);
+                        let read = lazy
+                            .read_window(crate::Window::full(w, h), &crate::WindowOptions { bands: vec![], overview: Some(i) })
+                            .unwrap();
+                        assert_eq!(read.nodata(), Some(0.0));
+                        let valid = match &read.raster.data {
+                            RasterData::I64(v) => v.iter().filter(|&&v| v != 0).count(),
+                            RasterData::U64(v) => v.iter().filter(|&&v| v != 0).count(),
+                            _ => unreachable!(),
+                        };
+                        assert_eq!(valid, w * h / 2);
+                        assert_eq!(ratios[i], valid as f64 * (64 * 32) as f64 / (w * h * 1024) as f64);
+                    }
+                }
+            }
+        }
     }
 
     /// GeoTIFF overviews at factors take the method too, with `ceil(size / factor)` sizes.
