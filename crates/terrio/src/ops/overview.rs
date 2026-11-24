@@ -304,9 +304,9 @@ fn add_overviews_reporting(path: &str, options: &OverviewOptions, report: &mut R
         };
         // Open the same publication temporary before computing the pyramid: an unwritable
         // directory must fail before expensive work, without a separate preflight file. The
-        // mask's overviews are computed after the data's, as GDAL computes them, and the
-        // `.msk.ovr` is published once the `.ovr` is written, just before it: a failure or a
-        // cancellation leaves both as they were.
+        // mask's overviews are computed after the data's, as GDAL computes them. Both sidecars
+        // are staged, then renamed into place together (the `.msk.ovr` first, put back should
+        // the `.ovr` fail): a failure or a cancellation leaves both as they were.
         let build = |previous: Option<&[Directory]>| {
             let levels =
                 build_new_levels(&mut src, main_dir, &sizes, method, compression, options.compression.is_some(), previous, &mut |f| {
@@ -324,17 +324,19 @@ fn add_overviews_reporting(path: &str, options: &OverviewOptions, report: &mut R
         };
         if let Some(existing) = existing {
             all_sizes.extend(existing.dirs.iter().filter(|d| d.is_overview() && !d.is_mask()).map(Directory::size));
-            gtiff_update::update_file(&ovr, |f| {
+            let (mask, staged) = gtiff_update::stage_update(&ovr, |f, _| {
                 let (levels, mask) = build(Some(&existing.dirs))?;
                 append_ovr(f, existing, levels, main_dir)?;
-                mask.map_or(Ok(()), |(m, images)| m.publish(images))
+                mask.map(|(m, images)| m.stage(images)).transpose()
             })?;
+            publish_sidecars(staged, mask)?;
         } else {
-            gtiff_update::replace_file(&ovr, |f| {
+            let (mask, staged) = gtiff_update::stage_replace(&ovr, |f| {
                 let (levels, mask) = build(None)?;
                 write_ovr(f, levels, main_dir)?;
-                mask.map_or(Ok(()), |(m, images)| m.publish(images))
+                mask.map(|(m, images)| m.stage(images)).transpose()
             })?;
+            publish_sidecars(staged, mask)?;
         }
         return Ok(sorted_sizes(all_sizes));
     }
@@ -1653,7 +1655,8 @@ impl MaskSidecar {
             })
             .collect::<Result<_>>()?;
         // Scheduled as a band without a mask of its own, which cascades.
-        let (data, _) = schedules((src.width(), src.height()), base_block(src), &sizes, &blocks, method, DataType::U8, multiband, false);
+        let (data, _) =
+            schedules((src.width(), src.height()), base_block(src), &sizes, &blocks, method, DataType::U8, false, multiband, false);
         let levels: Vec<WholeLevel> = sizes.iter().zip(data).map(|(&size, data)| WholeLevel { size, method, data, mask: None }).collect();
         let metadata = mask_metadata(like, method);
         // The band's nonzero pixels are its valid ones, as an alpha band's.
@@ -1677,14 +1680,24 @@ impl MaskSidecar {
         Ok(out)
     }
 
-    /// Writes the mask's overview images to the `.msk.ovr`: a new file, or a copy of the existing
-    /// one, renamed over it.
-    fn publish(self, images: Vec<gw::Image>) -> Result<()> {
+    /// Writes the mask's overview images to a staged `.msk.ovr`: a new file, or a copy of the
+    /// existing one, to rename over it.
+    fn stage(self, images: Vec<gw::Image>) -> Result<gtiff_update::Staged> {
         let like = &self.dir;
-        match self.existing {
-            Some(existing) => gtiff_update::update_file(&self.ovr, |f| append_ovr(f, existing, images, like)),
-            None => gtiff_update::replace_file(&self.ovr, |f| write_ovr(f, images, like)),
-        }
+        let ((), staged) = match self.existing {
+            Some(existing) => gtiff_update::stage_update(&self.ovr, |f, _| append_ovr(f, existing, images, like))?,
+            None => gtiff_update::stage_replace(&self.ovr, |f| write_ovr(f, images, like))?,
+        };
+        Ok(staged)
+    }
+}
+
+/// Renames the staged `.ovr` into place, with the staged `.msk.ovr` when there is one: both or
+/// neither.
+fn publish_sidecars(ovr: gtiff_update::Staged, mask: Option<gtiff_update::Staged>) -> Result<()> {
+    match mask {
+        Some(mask) => gtiff_update::persist_both(mask, ovr),
+        None => ovr.persist(),
     }
 }
 
@@ -1695,7 +1708,8 @@ fn mask_metadata(msk: &Directory, method: OverviewResampling) -> String {
     let own = msk.get(42112).and_then(Entry::ascii).unwrap_or_default();
     for item in gw::gdal_metadata_items(&own) {
         if let Some(name) = item.attr("name").filter(|n| n.starts_with("INTERNAL_MASK_FLAGS_")) {
-            xml.push_str(&format!("<Item name=\"{name}\">{}</Item>", item.text.trim()));
+            let (name, value) = (crate::drivers::common::xml_escape(name), crate::drivers::common::xml_escape(item.text.trim()));
+            xml.push_str(&format!("<Item name=\"{name}\">{value}</Item>"));
         }
     }
     xml.push_str("</GDALMetadata>");
