@@ -17,6 +17,7 @@
 //! Binary. Copyright (c) 2016 Vivid Solutions. EDL-1.0; see NOTICE and docs/jts-provenance.md.
 //! GEOS (shapely's `simplify(..., preserve_topology=False)`) is only a behavioral oracle in the
 //! tests.
+//! Reference: GDAL 3.13.3 with GEOS 3.14.1 (`OGR Simplify`), on valid unrepaired results.
 //!
 //! [`simplify_wkb`] and [`simplify_wkb_many`] (in parallel over features) simplify WKB without
 //! decoding it into geometry objects:
@@ -45,9 +46,10 @@
 //!   ([`crate::ops::simplify::simplify_preserve_topology`]) where that matters.
 //!
 //! Every output vertex is an input vertex, copied with its Z and M. Each (sub)geometry keeps its
-//! byte order and type code (ISO or extended WKB, with an SRID). Points and empty geometries pass
-//! through. A feature with a non-finite X or Y passes through unchanged and is counted
-//! ([`SimplifyStats::non_finite`]).
+//! byte order and type code (ISO or extended WKB, with an SRID). Points and entirely empty input
+//! geometries pass through, including their empty collection members, as JTS's `getResultGeometry`
+//! does before applying the collapse policy. A feature with a non-finite X or Y passes through
+//! unchanged and is counted ([`SimplifyStats::non_finite`]).
 //!
 //! The sections are simplified from an explicit work stack instead of JTS's recursion, so that a
 //! ring of millions of vertices cannot exhaust the call stack; each section is decided from its
@@ -417,7 +419,7 @@ impl Run<'_> {
     }
 
     /// Copies a geometry to `out`, simplified.
-    fn geometry(&mut self, r: &mut Reader, out: &mut Vec<u8>) -> Result<Outcome> {
+    fn geometry(&mut self, r: &mut Reader, out: &mut Vec<u8>, depth: usize) -> Result<Outcome> {
         let h = r.header()?;
         out.extend_from_slice(&r.b[h.start..h.end]);
         let stride = 8 * h.dims;
@@ -473,13 +475,17 @@ impl Run<'_> {
             _ => {
                 // Multi geometries and collections: each part is a WKB geometry. As JTS, empty
                 // parts are removed when collapses are dropped.
+                // Match the WKB reader's limit, including empty collections at this depth.
+                if depth == 64 {
+                    return Err(wkb_error(r.pos, "collection nesting exceeds 64 levels"));
+                }
                 let parts = r.count(h.le, 9)?;
                 let count_at = out.len();
                 put_u32(out, 0, h.le);
                 let mut written = 0u32;
                 for _ in 0..parts {
                     let at = out.len();
-                    if self.geometry(r, out)? == Outcome::Empty && self.collapse == RingCollapse::Drop {
+                    if self.geometry(r, out, depth + 1)? == Outcome::Empty && self.collapse == RingCollapse::Drop {
                         out.truncate(at);
                     } else {
                         written += 1;
@@ -496,7 +502,7 @@ fn simplify_one(wkb: &[u8], options: &SimplifyOptions, s: &mut Scratch) -> Resul
     let mut run = Run { tolerance: options.tolerance, collapse: options.collapse, s, stats: SimplifyStats::default(), non_finite: false };
     let mut r = Reader { b: wkb, pos: 0 };
     let mut out = Vec::with_capacity(wkb.len());
-    let outcome = run.geometry(&mut r, &mut out)?;
+    let outcome = run.geometry(&mut r, &mut out, 0)?;
     if r.pos != wkb.len() {
         return Err(wkb_error(r.pos, "trailing bytes after the geometry"));
     }
@@ -516,8 +522,8 @@ fn simplify_one(wkb: &[u8], options: &SimplifyOptions, s: &mut Scratch) -> Resul
 /// Simplifies one WKB geometry (see the module documentation).
 ///
 /// # Errors
-/// An invalid tolerance, or WKB that is malformed, has trailing bytes or holds a type other
-/// than the seven simple feature types.
+/// An invalid tolerance, or WKB that is malformed, has trailing bytes, exceeds 64 collection
+/// nesting levels or holds a type other than the seven simple feature types.
 pub fn simplify_wkb(wkb: &[u8], options: &SimplifyOptions) -> Result<(Vec<u8>, SimplifyStats)> {
     options.validate()?;
     simplify_one(wkb, options, &mut Scratch::default())
@@ -793,6 +799,44 @@ mod tests {
         let nan = le_line(2, &[(0.0, 0.0), (5.0, f64::NAN), (10.0, 0.0)]);
         let (out, s) = run(&nan, 100.0, RingCollapse::Keep);
         assert_eq!((out, s.non_finite), (nan, 1));
+    }
+
+    #[test]
+    fn entirely_empty_multi_geometries_pass_through_as_in_jts() {
+        let mut wkb = vec![1, 6, 0, 0, 0, 1, 0, 0, 0];
+        wkb.extend_from_slice(&[1, 3, 0, 0, 0, 0, 0, 0, 0]);
+        for collapse in [RingCollapse::Keep, RingCollapse::Drop] {
+            assert_eq!(run(&wkb, 1.0, collapse).0, wkb);
+        }
+    }
+
+    #[test]
+    fn deeply_nested_collections_are_refused_without_aborting() {
+        let scenario = || {
+            let options = SimplifyOptions::new(1.0);
+            for depth in [32, 63, 64, 50_000] {
+                let mut wkb = Vec::with_capacity(depth * 9 + 9);
+                for _ in 0..depth {
+                    wkb.extend_from_slice(&[1, 7, 0, 0, 0, 1, 0, 0, 0]);
+                }
+                wkb.extend_from_slice(&[1, 7, 0, 0, 0, 0, 0, 0, 0]);
+                match simplify_wkb(&wkb, &options) {
+                    Ok((out, _)) => {
+                        assert!(depth < 64);
+                        assert_eq!(out, wkb);
+                    }
+                    Err(error) => {
+                        assert!(depth >= 64);
+                        assert!(error.to_string().contains("nesting exceeds 64"), "{error}");
+                    }
+                }
+            }
+            true
+        };
+        #[cfg(unix)]
+        crate::par::alone(20, scenario);
+        #[cfg(not(unix))]
+        assert!(scenario());
     }
 
     #[test]
