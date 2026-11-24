@@ -65,6 +65,12 @@ mod native {
     static POOL: AtomicPtr<Started> = AtomicPtr::new(std::ptr::null_mut());
     /// The forks this process descends from, counted in each child by `child` (Unix).
     static FORKS: AtomicU64 = AtomicU64::new(0);
+
+    /// The generation of guards belonging to this process, advanced in the child after a fork.
+    #[cfg(threads)]
+    pub(super) fn fork_generation() -> u64 {
+        FORKS.load(Ordering::Acquire)
+    }
     /// Whether [`prepare`], [`parent`] and [`child`] are registered.
     #[cfg(unix)]
     static HANDLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -365,7 +371,7 @@ mod native {
         release_locks();
         HELD_BACK.store(std::ptr::null_mut(), Ordering::SeqCst);
         GATE.store(0, Ordering::SeqCst);
-        // Other threads' guards are gone in the child; a surviving caller guard saturates on drop.
+        // Other threads' guards are gone; surviving caller guards belong to the old generation.
         super::OUTSIDE_WORK.store(0, Ordering::SeqCst);
         FORKS.fetch_add(1, Ordering::AcqRel);
     }
@@ -441,7 +447,7 @@ struct Pool(&'static rayon::ThreadPool);
 
 /// Calls from threads outside the pool whose parallel work is in flight, serial ones included.
 /// When one is, another outside call runs serially instead of queueing on the pool (see
-/// [`Pool::enter`]). A fork resets the count; a surviving guard must not underflow it.
+/// [`Pool::enter`]). A fork resets the count; surviving guards must not change the child's count.
 #[cfg(all(threads, not(target_family = "wasm")))]
 static OUTSIDE_WORK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -457,12 +463,18 @@ enum Enter {
 /// Counts one outside thread's work as in flight while it lives; does nothing in WebAssembly.
 #[cfg(threads)]
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
-struct OutsideGuard;
+struct OutsideGuard {
+    #[cfg(not(target_family = "wasm"))]
+    forks: u64,
+}
 
 #[cfg(all(threads, not(target_family = "wasm")))]
 impl Drop for OutsideGuard {
     fn drop(&mut self) {
-        // The forking thread can itself hold a guard when the child resets the count.
+        // The forking thread can retain a guard while new child work increments its own count.
+        if self.forks != native::fork_generation() {
+            return;
+        }
         let mut count = OUTSIDE_WORK.load(std::sync::atomic::Ordering::Relaxed);
         while count > 0 {
             match OUTSIDE_WORK.compare_exchange_weak(
@@ -503,10 +515,11 @@ impl Pool {
         #[cfg(not(target_family = "wasm"))]
         {
             if self.0.current_thread_index().is_none() {
+                let guard = OutsideGuard { forks: native::fork_generation() };
                 return if OUTSIDE_WORK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) > 0 {
-                    Enter::Serial(OutsideGuard)
+                    Enter::Serial(guard)
                 } else {
-                    Enter::Pool(Some(OutsideGuard))
+                    Enter::Pool(Some(guard))
                 };
             }
             Enter::Pool(None)
@@ -1019,8 +1032,15 @@ mod tests {
             let serial = Pool(native::pool()).enter();
             assert!(matches!(serial, Enter::Serial(_)));
             in_child(10, || {
+                let current = Pool(native::pool()).enter();
+                assert!(matches!(current, Enter::Pool(_)));
                 drop(serial);
                 drop(first);
+                assert_eq!(OUTSIDE_WORK.load(std::sync::atomic::Ordering::Relaxed), 1);
+                let overlap = Pool(native::pool()).enter();
+                assert!(matches!(overlap, Enter::Serial(_)));
+                drop(overlap);
+                drop(current);
                 OUTSIDE_WORK.load(std::sync::atomic::Ordering::Relaxed) == 0 && matches!(Pool(native::pool()).enter(), Enter::Pool(_))
             }) == Some(0)
         });
