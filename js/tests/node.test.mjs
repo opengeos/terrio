@@ -3495,6 +3495,23 @@ test("vector geometry operations: simplify, segmentize, hulls, swap-xy, set-geom
   const simple = terrio.simplify(line, 1).toGeoJSON();
   assert.deepEqual(simple.features[0].geometry.coordinates, [[0, 0], [10, 0]]);
   assert.equal(simple.features[2].geometry, null);
+  const dp = terrio.simplify(line, 1, { method: "douglas-peucker", collapse: "drop" }).toGeoJSON();
+  assert.deepEqual(dp.features[0].geometry.coordinates, [[0, 0], [10, 0]]);
+  assert.throws(() => terrio.simplify(line, 1, { method: "visvalingam" }), /method/);
+  assert.throws(() => terrio.simplify(line, 1, { method: "douglas-peucker", collapse: "maybe" }), /collapse/);
+  // LINESTRING (0 0, 5 0.05, 10 0) as WKB, simplified directly; null stays null.
+  const wkb = new Uint8Array(9 + 48);
+  const view = new DataView(wkb.buffer);
+  view.setUint8(0, 1);
+  view.setUint32(1, 2, true);
+  view.setUint32(5, 3, true);
+  [0, 0, 5, 0.05, 10, 0].forEach((v, i) => view.setFloat64(9 + 8 * i, v, true));
+  const [out, none] = terrio.simplifyWkb([wkb, null], 0.1);
+  assert.equal(out.length, 9 + 32);
+  assert.deepEqual(Array.from(out.slice(9 + 16)), Array.from(wkb.slice(9 + 32)));
+  assert.equal(none, null);
+  assert.throws(() => terrio.simplifyWkb([wkb.slice(0, 20)], 0.1), /WKB/);
+  assert.throws(() => terrio.simplifyWkb([wkb], 0.1, { method: "preserve-topology" }), /method/);
   const dense = terrio.segmentize(line, 3).toGeoJSON();
   assert.equal(dense.features[0].geometry.coordinates.length, 5);
   assert.equal(terrio.convexHull(line).toGeoJSON().features[1].geometry.type, "Point");

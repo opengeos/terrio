@@ -14,7 +14,8 @@
 //! [`topology`] provides planar buffers, polygon overlay/dissolve, validity, repair and cleanup.
 //! [`vector_geom`] simplifies, segmentizes, builds hulls, swaps axes, changes geometry types,
 //! combines and spatially sorts vector features (GDAL's `gdal vector` commands of those names),
-//! with the algorithms of [`simplify`] and [`hull`].
+//! with the algorithms of [`simplify`], [`simplify_dp`] (Douglas-Peucker, also directly on WKB) and
+//! [`hull`].
 //! [`neighbors`] computes focal statistics (`gdal raster neighbors`), [`nearblack`] cleans image
 //! collars (`nearblack`, `gdal raster clean-collar`) and [`enhance`] applies lookup-table
 //! contrast enhancement (`gdalenhance`).
@@ -82,6 +83,7 @@ pub mod rpc;
 pub mod sample;
 pub mod sieve;
 pub mod simplify;
+pub mod simplify_dp;
 pub mod sql;
 pub(crate) mod strips;
 pub(crate) mod strtree;

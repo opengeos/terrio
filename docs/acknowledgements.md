@@ -105,8 +105,8 @@ coordinates and point clouds with theirs.
 ## GEOS, JTS and GeoRust
 
 [JTS Topology Suite](https://github.com/locationtech/jts) 1.20.0 (Martin Davis and
-other contributors) supplies the source algorithms for topology-preserving simplification,
-convex and concave hulls, their triangulations, integer tile validity, spatial packing and
+other contributors) supplies the source algorithms for topology-preserving and Douglas-Peucker
+simplification, convex and concave hulls, their triangulations, integer tile validity, spatial packing and
 robust clipping envelopes. These ports use JTS's Eclipse Distribution License 1.0;
 the exact revisions, copyrights and adaptations are recorded in
 [`NOTICE`](https://github.com/opengeos/terrio/blob/main/NOTICE) and

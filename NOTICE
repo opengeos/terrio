@@ -422,6 +422,7 @@ Terrio files derived from JTS source files (each file's header names them):
   crates/terrio/src/ops/jts_cdt.rs
   crates/terrio/src/ops/jts_delaunay.rs
   crates/terrio/src/ops/simplify.rs
+  crates/terrio/src/ops/simplify_dp.rs
   crates/terrio/src/ops/strtree.rs
   crates/terrio/src/tiles/overlay_envelope.rs
   crates/terrio/src/tiles/validity.rs
