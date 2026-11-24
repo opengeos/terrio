@@ -4517,6 +4517,30 @@ test("GPKG toBytes can retain declared geometry types", () => {
   assert.throws(() => source.toBytes("out.geojson", {preserveDeclaredGeometryType:true}), /GPKG/);
 });
 
+test("GPKG toBytes can preserve source feature IDs", { skip: needs("sqlite") }, () => {
+  const features = [91, 205].map((id, i) => ({
+    type: "Feature", id, properties: {}, geometry: { type: "Point", coordinates: [i, i] },
+  }));
+  const source = terrio.fromGeoJSON({ type: "FeatureCollection", features }, "points");
+  for (const preserveFid of [false, true]) {
+    const result = terrio.open(source.toBytes("points.gpkg", { preserveFid }), "points.gpkg");
+    try {
+      const id = preserveFid ? 91 : 1;
+      const bytes = result.toBytes("selected.geojson", { where: `FID = ${id}` });
+      const [feature] = JSON.parse(new TextDecoder().decode(bytes)).features;
+      assert.deepEqual(feature.geometry.coordinates, [0, 0]);
+    } finally {
+      result.free();
+    }
+  }
+  features[0].properties.fid = 701;
+  const conflicting = terrio.fromGeoJSON({ type: "FeatureCollection", features }, "points");
+  assert.throws(() => conflicting.toBytes("points.gpkg", { preserveFid: true }), /conflicts with feature ID 91/);
+  assert.throws(() => source.toBytes("points.geojson", { preserveFid: true }), /GPKG/);
+  conflicting.free();
+  source.free();
+});
+
 test("GPKG toBytes uses valid optional M declarations for mixed layouts", () => {
   const source = terrio.open(new TextEncoder().encode('WKT\n"POINT M (1 2 3)"\n"POINT (4 5)"\n'), "mixed.csv");
   for (const preserve of [false, true]) {

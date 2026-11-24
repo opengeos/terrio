@@ -512,6 +512,7 @@ class Layer:
         kmz_resources: Mapping[str, bytes] | None = None,
         style_table: Sequence[tuple[str, str]] | None = None,
         preserve_declared_geometry_type: bool = False,
+        preserve_fid: bool = False,
         cityjson_version: Literal["1.1", "2.0"] | None = None,
         citygml_version: Literal["2.0", "3.0"] | None = None,
         citygml_lod0_surface: Literal["footprint", "roof-edge"] | None = None,
@@ -524,6 +525,7 @@ class Layer:
         kmz_resources: Mapping[str, bytes] | None = None,
         style_table: Sequence[tuple[str, str]] | None = None,
         preserve_declared_geometry_type: bool = False,
+        preserve_fid: bool = False,
         cityjson_version: Literal["1.1", "2.0"] | None = None,
         citygml_version: Literal["2.0", "3.0"] | None = None,
         citygml_lod0_surface: Literal["footprint", "roof-edge"] | None = None,
@@ -551,6 +553,7 @@ class VectorDataset:
         *,
         kmz_resources: Mapping[str, bytes] | None = None,
         preserve_declared_geometry_type: bool = False,
+        preserve_fid: bool = False,
         cityjson_version: Literal["1.1", "2.0"] | None = None,
         citygml_version: Literal["2.0", "3.0"] | None = None,
         citygml_lod0_surface: Literal["footprint", "roof-edge"] | None = None,
@@ -985,6 +988,7 @@ def write_vector(
     overwrite: bool = False,
     *,
     preserve_declared_geometry_type: bool = False,
+    preserve_fid: bool = False,
     cityjson_version: Literal["1.1", "2.0"] | None = None,
     citygml_version: Literal["2.0", "3.0"] | None = None,
     citygml_lod0_surface: Literal["footprint", "roof-edge"] | None = None,
@@ -1049,6 +1053,7 @@ def convert(
     cityjson_version: Literal["1.1", "2.0"] | None = None,
     citygml_version: Literal["2.0", "3.0"] | None = None,
     citygml_lod0_surface: Literal["footprint", "roof-edge"] | None = None,
+    preserve_fid: bool = False,
 ) -> None: ...
 
 # Operations.

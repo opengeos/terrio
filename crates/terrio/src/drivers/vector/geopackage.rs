@@ -23,7 +23,7 @@ pub(crate) mod spilled;
 
 use super::sqlite::{self, BuiltTable, SchemaObject, Table, Value};
 use crate::crs::SpatialRef;
-use crate::{Error, Result};
+use crate::{Error, Result, VectorWriteOptions, signed_fid};
 use wbvector::{Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
 
 pub(super) const SRS_SQL: &str = "CREATE TABLE gpkg_spatial_ref_sys (srs_name TEXT NOT NULL, srs_id INTEGER PRIMARY KEY, organization TEXT NOT NULL, organization_coordsys_id INTEGER NOT NULL, definition  TEXT NOT NULL, description TEXT)";
@@ -492,7 +492,8 @@ pub(crate) struct LayerColumns {
 
 impl LayerColumns {
     /// A feature's row: its rowid (the `fid` field's value, or `default_rowid`), values, and the
-    /// geometry's bounds.
+    /// geometry's bounds. In preservation mode the caller validates the field and supplies
+    /// the source ID as `default_rowid`.
     pub(crate) fn row(&self, f: &Feature, default_rowid: i64, fields: &[FieldDef]) -> (i64, Vec<Value>, Option<wbvector::BBox>) {
         let rowid = self.fid_field.and_then(|i| f.attributes.get(i)?.as_i64()).unwrap_or(default_rowid);
         let mut bbox = None;
@@ -538,6 +539,39 @@ impl LayerExtent {
             self.entries.push((rowid, [f32_down(b.min_x), f32_up(b.max_x), f32_down(b.min_y), f32_up(b.max_y)]));
         }
     }
+}
+
+/// Validates source IDs and returns the attribute represented by the primary key, if present.
+pub(super) fn validate_fids(layer: &Layer, column: &str) -> Result<Option<usize>> {
+    let mut fields = layer.schema.fields().iter().enumerate().filter(|(_, f)| f.name.eq_ignore_ascii_case(column));
+    let field = fields.next();
+    let invalid = |reason| Error::InvalidArgument(format!("GeoPackage layer '{}': {reason}", layer.name));
+    if fields.next().is_some() {
+        return Err(invalid(format!("multiple attributes match primary key '{column}'")));
+    }
+    if let Some((_, f)) = field
+        && f.field_type != FieldType::Integer
+    {
+        return Err(invalid(format!("attribute '{}' matching the primary key must be an integer field", f.name)));
+    }
+    let mut ids = std::collections::HashSet::with_capacity(layer.len());
+    for f in &layer.features {
+        let id = signed_fid(f);
+        if !ids.insert(id) {
+            return Err(invalid(format!("duplicate feature ID {id}")));
+        }
+        if let Some((i, field)) = field {
+            match f.attributes.get(i) {
+                None | Some(FieldValue::Null) => {}
+                Some(FieldValue::Integer(value)) if *value == id => {}
+                Some(FieldValue::Integer(value)) => {
+                    return Err(invalid(format!("attribute '{}' value {value} conflicts with feature ID {id}", field.name)));
+                }
+                Some(_) => return Err(invalid(format!("attribute '{}' for feature ID {id} must be an integer or null", field.name))),
+            }
+        }
+    }
+    Ok(field.map(|(i, _)| i))
 }
 
 /// Writes a table (its rows, then those given) after the tables already written.
@@ -708,10 +742,11 @@ impl Builder {
 
     /// Adds a vector layer, with its R-tree index.
     pub(crate) fn add_layer(&mut self, layer: &Layer) -> Result<()> {
-        self.add_layer_with_geometry_type(layer, false)
+        self.add_layer_with_options(layer, &Default::default())
     }
 
-    pub(crate) fn add_layer_with_geometry_type(&mut self, layer: &Layer, preserve_declared_geometry_type: bool) -> Result<()> {
+    pub(super) fn add_layer_with_options(&mut self, layer: &Layer, options: &VectorWriteOptions) -> Result<()> {
+        let preserve_declared_geometry_type = options.preserve_declared_geometry_type;
         if preserve_declared_geometry_type {
             super::profile::validate_geometry_type(layer.geom_type, &layer.features)?;
         }
@@ -729,14 +764,17 @@ impl Builder {
             .fold((false, false, false, false), |a, b| (a.0 || b.0, a.1 || !b.0, a.2 || b.1, a.3 || !b.1));
         // Columns: a field named fid holding unique integers gives the feature ids, as in GDAL.
         let fields = layer.schema.fields();
-        let fid_field =
+        let fid_field = if options.preserve_fid {
+            validate_fids(layer, &self.fid_column)?
+        } else {
             fields.iter().position(|f| f.name.eq_ignore_ascii_case(&self.fid_column) && f.field_type == FieldType::Integer).filter(|&i| {
                 let mut ids: Vec<i64> = layer.features.iter().filter_map(|f| f.attributes.get(i)?.as_i64()).collect();
                 let n = ids.len();
                 ids.sort_unstable();
                 ids.dedup();
                 n == layer.len() && ids.len() == n
-            });
+            })
+        };
         let small = |i: usize| layer.features.iter().filter_map(|ft| ft.attributes.get(i)?.as_i64()).all(|v| i32::try_from(v).is_ok());
         let mut cols = self.layer_columns(layer, all_none, declared, has_z, fid_field, small);
         cols.z_hint = super::profile::dimension_hint(has_z, missing_z);
@@ -746,7 +784,11 @@ impl Builder {
         cols.m_hint = super::profile::dimension_hint(has_m, missing_m);
 
         // Rows (with each geometry's bounds) are encoded in parallel, then combined in order.
-        let encoded = crate::par::map_range(layer.len(), |n| cols.row(&layer.features[n], n as i64 + 1, fields));
+        let encoded = crate::par::map_range(layer.len(), |n| {
+            let feature = &layer.features[n];
+            let rowid = if options.preserve_fid { signed_fid(feature) } else { n as i64 + 1 };
+            cols.row(feature, rowid, fields)
+        });
         let mut rows = Vec::with_capacity(layer.len());
         let mut extent = LayerExtent::default();
         for (rowid, values, bbox) in encoded {
@@ -754,7 +796,11 @@ impl Builder {
             rows.push((rowid, values));
         }
         rows.sort_by_key(|(id, _)| *id);
-        let max_fid = rows.last().map_or(0, |(id, _)| *id);
+        let mut max_fid = rows.last().map_or(0, |(id, _)| *id);
+        if options.preserve_fid {
+            // Keep sqlite_sequence non-negative when every preserved ID is negative.
+            max_fid = max_fid.max(0);
+        }
         let count = layer.len();
         let table = Table { name: layer.name.clone(), sql: cols.sql.clone(), rows, autoindexes: vec![] };
         self.finish_layer(&layer.name, &cols, count, max_fid, extent, LayerTable::Rows(table), None)?;
@@ -1145,9 +1191,13 @@ pub fn to_bytes(layers: &[Layer]) -> Result<Vec<u8>> {
 
 /// Encodes layers while optionally retaining declared geometry types, including GEOMETRY.
 pub fn to_bytes_with_geometry_types(layers: &[Layer], preserve_declared_geometry_type: bool) -> Result<Vec<u8>> {
+    to_bytes_with_options(layers, &VectorWriteOptions { preserve_declared_geometry_type, ..Default::default() })
+}
+
+pub(crate) fn to_bytes_with_options(layers: &[Layer], options: &VectorWriteOptions) -> Result<Vec<u8>> {
     let mut b = Builder::new();
     for layer in layers {
-        b.add_layer_with_geometry_type(layer, preserve_declared_geometry_type)?;
+        b.add_layer_with_options(layer, options)?;
     }
     b.finish()
 }

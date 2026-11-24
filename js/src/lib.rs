@@ -278,6 +278,8 @@ pub(crate) fn raster_data(array: &JsValue) -> Result<RasterData, JsError> {
 struct WriteOptions {
     /// GPKG: retain the declared layer geometry type, including Unknown.
     preserve_declared_geometry_type: bool,
+    /// GPKG: use parsed feature IDs, including reader-generated IDs, as the primary key.
+    preserve_fid: bool,
     /// CityJSON output version: "1.1" or "2.0" (default).
     cityjson_version: Option<String>,
     citygml_version: Option<String>,
@@ -937,12 +939,13 @@ impl Dataset {
                     || o.limit.is_some()
                     || !resources.is_empty()
                     || o.preserve_declared_geometry_type
+                    || o.preserve_fid
                     || o.cityjson_version.is_some()
                     || o.citygml_version.is_some()
                     || o.citygml_lod0_surface.is_some()
                 {
                     return Err(JsError::new(
-                        "layers, where, select, limit, kmzResources, cityjsonVersion, citygmlVersion and preserveDeclaredGeometryType apply to vector datasets",
+                        "layers, where, select, limit, kmzResources, cityjsonVersion, citygmlVersion, preserveDeclaredGeometryType and preserveFid apply to vector datasets",
                     ));
                 }
                 let driver = o
@@ -1022,8 +1025,12 @@ impl Dataset {
                     ..Default::default()
                 };
                 let out = terrio::ops::vector_filter::translate(&chosen, &translate).map_err(js_err)?;
-                let mut options =
-                    VectorWriteOptions { driver, preserve_declared_geometry_type: o.preserve_declared_geometry_type, ..Default::default() };
+                let mut options = VectorWriteOptions {
+                    driver,
+                    preserve_declared_geometry_type: o.preserve_declared_geometry_type,
+                    preserve_fid: o.preserve_fid,
+                    ..Default::default()
+                };
                 options.tiles.min_zoom = o.minzoom;
                 options.tiles.max_zoom = o.maxzoom;
                 options.cityjson_version = o.cityjson_version.as_deref().map(str::parse).transpose().map_err(js_err)?;

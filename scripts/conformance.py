@@ -3230,7 +3230,8 @@ def suite_gpkg(ctx):
         "file changed in place), `--spat` through the R-tree compared with `ogr2ogr -spat`, appends "
         "to a file of 200,000 points compared with `ogr2ogr -append`, and terrio killed while it "
         "commits an append (SQLite must then find the file intact, with all or none of the new "
-        "features).",
+        "features). `--preserve-fid` compared with `ogr2ogr -preserve_fid`, including "
+        "the SQLite primary keys from the #1220 fixture.",
     )
     _code, out, err = run(
         [sys.executable, str(SCRIPTS / "compare_gpkg_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--points", "200000"]
