@@ -91,6 +91,9 @@ pub(crate) struct Def {
     bound: Option<Arc<Bound>>,
     /// Set for a WKT whose CRS PROJ does not resolve to the EPSG CRS terrio reads it as.
     unresolved: Option<Unresolved>,
+    /// Why a `BOUNDCRS`'s transformation is not applied, warned of by the transformers using it
+    /// (#1012 item 12).
+    unapplied: Option<Arc<str>>,
 }
 
 /// A WKT whose CRS PROJ 9.8.1 does not resolve to an EPSG CRS (`CRS::getResolvedCRS`,
@@ -600,6 +603,10 @@ impl Def {
                 Some(w) => Some(Self::from_wkt(w)?),
                 None => None,
             };
+            // Why its transformation is not applied, whatever replaces the code's (#1012 item 12).
+            if let Some(bound) = &bound {
+                d.unapplied = bound.unapplied.clone();
+            }
             if let Some(bound) = bound
                 && bound.datum.is_none()
             {
@@ -1005,6 +1012,7 @@ impl Def {
             params: Some(Arc::new(params)),
             bound: None,
             unresolved: None,
+            unapplied: None,
         };
         // The datum transformation.
         // A pipeline step's `+datum=` is the shift PROJ's `pj_datum_set` gives it, from WGS 84 to
@@ -1329,6 +1337,7 @@ impl Def {
         let converted = if wkt2::handles(&root) { Some(crate::model::wkt2_to_proj(w)?) } else { crate::model::wkt1_to_proj(w) };
         if let Some(c) = converted {
             let mut d = Self::from_proj(&c.proj)?;
+            d.unapplied = c.unapplied.as_deref().map(Arc::from);
             // A `BOUNDCRS`'s Helmert transformation that `+towgs84` cannot stand for (a full
             // rotation matrix, a Molodensky-Badekas evaluation point), as PROJ applies it.
             let helmert = c.helmert.as_ref().map(|h| datum::helmert(h.t, h.r, h.s, h.position_vector, h.exact, h.pivot));
@@ -1341,11 +1350,18 @@ impl Def {
                 // A WKT 2 `BOUNDCRS` to another CRS: its Helmert transformation to that CRS, then
                 // each of that CRS's transformations to WGS 84, as PROJ concatenates them. With
                 // none, the source CRS's own, as PROJ uses them (else its ballpark to WGS 84).
-                let wkt1::BoundTo { target, shift } = &**bound;
+                let wkt1::BoundTo { target, shift, name, target_name } = &**bound;
                 let mut source = d.clone();
                 source.registered_datum(&c, own_geogcs_text(w, &c));
                 // A target terrio cannot read is left out, as one it cannot convert is.
                 let Ok(mut t) = Self::from_proj(&target.proj) else {
+                    let why =
+                        format!("the BOUNDCRS transformation \"{name}\" is not applied: its target CRS \"{target_name}\" is not read");
+                    // Kept with a source `BOUNDCRS`'s own, as the reader keeps them.
+                    source.unapplied = Some(Arc::from(match source.unapplied.as_deref() {
+                        Some(inner) => format!("{inner}; {why}"),
+                        None => why,
+                    }));
                     return Ok(source);
                 };
                 t.registered_datum(target, None);
@@ -1465,6 +1481,7 @@ impl Def {
                 params: None,
                 bound: None,
                 unresolved: None,
+                unapplied: None,
             };
             if !geographic {
                 d.proj = Some(Arc::new(WbProj { crs, a: ell.a }));
@@ -1731,6 +1748,11 @@ impl Def {
     /// transforms into with no shift.
     pub fn on_bound_source(&self, other: &Def) -> bool {
         self.bound.as_deref().is_some_and(|b| b.source_datum.is_some() && b.source_datum == other.datum)
+    }
+
+    /// Why a `BOUNDCRS`'s transformation is not applied, if it is not.
+    pub(crate) fn unapplied(&self) -> Option<&str> {
+        self.unapplied.as_deref()
     }
 
     /// Whether this is a WKT 2 `BOUNDCRS` to a CRS other than WGS 84, whose transformations to
