@@ -2063,12 +2063,23 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
                 })
         };
     // PROJ goes from the WKT into a CRS of its datum by a longitude rotation, not its ballpark,
-    // when their prime meridians differ in radians: its WKT reader takes an angle unit near the
-    // degree for the degree, but keeps another's factor, which then differs from its database's
-    // (the grad's 0.01570796326794895, the only other unit of a registered prime meridian).
+    // when their prime meridians differ in radians. Its WKT reader takes an angle unit near the
+    // degree for the degree (and a meridian it knows, as Rome's 12.4523333333333°, for its own),
+    // but keeps another unit's factor: a grad of 0.0157079632679489 rad is not its database's
+    // 0.01570796326794895 (the only other unit of a registered prime meridian), so the meridians
+    // then differ.
+    let registered_pm = geog.and_then(epsg::get).map_or(0.0, |e| {
+        let p = Params::parse(&e.proj);
+        p.str("pm").and_then(|v| v.parse::<f64>().ok().or_else(|| prime_meridian(v))).unwrap_or(0.0)
+    });
     let pm_rotated = base.child("PRIMEM").is_some_and(|pm| {
-        let unit = pm.child("ANGLEUNIT").or_else(|| base.child("UNIT")).and_then(|u| u.num(1));
-        pm.num(1).is_some_and(|v| v != 0.0) && unit.is_some_and(|f| (f - 1f64.to_radians()).abs() > 1e-10 * f && f != 0.01570796326794895)
+        let unit = pm.child("ANGLEUNIT").or_else(|| base.child("UNIT")).and_then(|u| u.num(1)).unwrap_or(1f64.to_radians());
+        let value = pm.num(1).unwrap_or(0.0);
+        if (unit - 1f64.to_radians()).abs() <= 1e-10 * unit {
+            (proj_prime_meridian(value) - proj_prime_meridian(registered_pm)).abs() > 1e-10
+        } else {
+            unit != 0.01570796326794895 || (value * unit - registered_pm.to_radians()).abs() > 1e-12
+        }
     });
     // The name of the geographic CRS, for a projected one, which PROJ pivots through.
     let geog_name = if projected { base.name() } else { root.name() };
@@ -2542,6 +2553,10 @@ mod resolution_tests {
         // (Paris)", a longitude rotation of an accuracy of 0.
         let paris = r#"GEOGCRS["Local",DATUM["Local datum",ELLIPSOID["Clarke 1880 (IGN)",6378249.2,293.466021293627,LENGTHUNIT["metre",1]],ID["EPSG",6816]],PRIMEM["Paris",2.5969213,ANGLEUNIT["grad",0.0157079632679489]],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],ANGLEUNIT["grad",0.0157079632679489]],AXIS["geodetic longitude (Lon)",east,ORDER[2],ANGLEUNIT["grad",0.0157079632679489]]]"#;
         assert_eq!(framing(paris, 4816), (false, false, false));
+        // On another prime meridian than the registered one (Greenwich for Monte Mario (Rome)),
+        // a longitude rotation too.
+        let greenwich = rome.replacen(r#"PRIMEM["Rome",12.4523333333333"#, r#"PRIMEM["Greenwich",0"#, 1);
+        assert_eq!(framing(&greenwich, 4806), (false, false, false));
         // On its datum's own name, no ballpark.
         assert!(!framing(&rome.replacen(r#"DATUM["Local datum""#, r#"DATUM["Monte Mario (Rome)""#, 1), 4806).0);
     }

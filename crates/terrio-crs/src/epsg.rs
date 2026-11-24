@@ -300,6 +300,7 @@ impl Table {
                     offshore: flags.contains('o'),
                     unknown_area: flags.contains('u'),
                     ballpark: flags.contains('b'),
+                    framed: false,
                     concatenated: flags.contains('c'),
                     between_3d: flags.contains('h'),
                     geocentric: flags.contains('g'),

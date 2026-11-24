@@ -86,7 +86,8 @@ pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
                 } else {
                     names.join(" + ")
                 };
-                Used { name, accuracy: op.accuracy, grids: op.grids().into_iter().map(|(g, _)| g).collect(), ballpark: false }
+                // One PROJ frames with its ballpark has a ballpark step.
+                Used { name, accuracy: op.accuracy, grids: op.grids().into_iter().map(|(g, _)| g).collect(), ballpark: op.framed }
             }
             _ => {
                 let name = match kind {
@@ -313,7 +314,7 @@ impl<'a> OperationContext<'a> {
     /// A transformation as PROJ frames it between the CRSs: of unknown accuracy, when framed by a
     /// ballpark.
     fn framed(&self, op: Op) -> Op {
-        if self.framed { Op { accuracy: -1.0, chain_accuracy: -1.0, ..op } } else { op }
+        if self.framed { Op { accuracy: -1.0, chain_accuracy: -1.0, framed: true, ..op } } else { op }
     }
 
     fn aoi(&self) -> Option<&[f64; 4]> {
@@ -432,12 +433,12 @@ impl Route {
         match &mut self.kind {
             Kind::Same => true,
             Kind::List(list) => {
-                list.retain(|l| !l.op.ballpark);
+                list.retain(|l| !l.op.has_ballpark());
                 !list.is_empty()
             }
             Kind::Chains { chains, ballpark } => {
                 *ballpark = None;
-                chains.retain(|c| !c.rank.ballpark);
+                chains.retain(|c| !c.rank.has_ballpark());
                 !chains.is_empty()
             }
             Kind::Hub => {
@@ -499,11 +500,11 @@ impl Route {
     /// counts as one). Candidates have already been filtered by the CRSs' extents and area of
     /// interest; this does not select a particular point within those areas.
     pub fn has_transformation(&self) -> bool {
-        let usable = |op: &Op| !op.ballpark && op.obtainable();
+        let usable = |op: &Op| !op.has_ballpark() && op.obtainable();
         match &self.kind {
             Kind::Same => true,
             Kind::List(list) => list.iter().any(|l| usable(&l.op)),
-            Kind::Chains { chains, .. } => chains.iter().any(|c| c.legs.iter().all(|l| usable(&l.op))),
+            Kind::Chains { chains, .. } => chains.iter().any(|c| !c.rank.framed && c.legs.iter().all(|l| usable(&l.op))),
             // Through WGS 84: a transformation on each side.
             Kind::Hub => [&self.src_ops, &self.dst_ops]
                 .iter()
@@ -1124,6 +1125,7 @@ fn ranked(reg: &epsg::Registry, found: Vec<Found>, ctx: &OperationContext) -> Ve
             // an unknown area.
             unknown_area: named.is_none_or(|o| o.unknown_area),
             ballpark: false,
+            framed: false,
             concatenated: true,
             between_3d: o1.between_3d,
             geocentric: o1.geocentric || o2.geocentric,
