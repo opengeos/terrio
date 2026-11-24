@@ -237,7 +237,7 @@ pub(crate) fn validated_geoparquet_schema(py: Python<'_>, schema: &Arc<Schema>) 
                 let text = crs.as_str().map(str::to_owned).unwrap_or_else(|| crs.to_string());
                 // A definition terrio identifies as a known code is validated as that code, which
                 // needs no pyproj (whose import is most of a first read's cost); others as stored.
-                let known = SpatialRef::parse(&text).ok().and_then(|srs| srs.authority_code());
+                let known = SpatialRef::parse_literal(&text).ok().and_then(|srs| srs.authority_code());
                 if crate::vector::dataframe_crs(py, Some(known.as_deref().unwrap_or(&text)), None, false)?.is_none() {
                     value.as_object_mut().unwrap().remove("crs");
                     Some(value.to_string())
