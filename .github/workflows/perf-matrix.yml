@@ -12,8 +12,8 @@ name: perf matrix
 # or from the Actions tab (pull request number and the same arguments). The trusted `prepare` job caches the base branch's
 # fixtures and build. The `run` jobs, one per format in parallel, execute pull request code with read-only repository and
 # cache tokens; the base branch's harness takes the measurements. The `comment` job posts the report as text and runs no checked-out code.
-# A pull request's build scripts run with the job, and could change what it measures: run it on
-# pull requests whose code you would build yourself.
+# A pull request's build scripts share the job's workspace and environment, so they can change
+# the harness, fixtures, base build and GDAL too. Run it on code you would build yourself.
 
 on:
   issue_comment:
@@ -68,8 +68,11 @@ jobs:
         env:
           BODY: ${{ github.event.comment.body || format('/perf-matrix {0}', inputs.args) }}
           GH_TOKEN: ${{ github.token }}
+          REQUESTER: ${{ github.event.comment.user.login || github.actor }}
         run: |
           [[ "$PR" =~ ^[0-9]+$ ]] || { echo "Invalid pull request number"; exit 1; }
+          permission=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$REQUESTER/permission" -q .permission)
+          case "$permission" in admin|maintain|write) ;; *) echo "Repository write permission is required"; exit 1 ;; esac
           args=$(head -n 1 <<< "$BODY" | sed 's|^/perf-matrix||; s|^ *||; s| *$||')
           # Only names, numbers and options: the arguments reach a command line.
           [[ "$args" =~ ^[A-Za-z0-9_.\ -]*$ ]] || { echo "Arguments may hold letters, digits, _ . - and spaces"; exit 1; }
@@ -237,14 +240,14 @@ jobs:
   comment:
     cache-mode: none
     needs: [prepare, run]
-    if: always() && needs.prepare.result != 'skipped' && needs.prepare.result != 'cancelled' && needs.run.result != 'cancelled'
+    if: always() && needs.prepare.result == 'success' && needs.run.result != 'cancelled'
     runs-on: ubuntu-latest
     permissions:
       actions: read
       issues: write
       pull-requests: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
           pattern: perf-matrix-*
@@ -268,7 +271,19 @@ jobs:
             echo "\`$FORMATS ${ARGS}\` on GitHub runners, one per format, GDAL 3.13.3 ([run]($RUN_URL)). base: this build's time / the base branch's (<1 faster); x: its time / GDAL's."
             for f in $FORMATS; do
               echo
-              if [ -f "out/$f.md" ]; then cat "out/$f.md"; else echo "#### $f"; echo; echo "Failed before writing a report: see the run."; fi
+              echo "#### $f"
+              echo
+              if [ -f "out/$f.md" ]; then
+                # Artifacts come from PR code. Keep all their Markdown inside a fence selected here.
+                fence='```'
+                while grep -Fq "$fence" "out/$f.md"; do fence+='`'; done
+                echo "${fence}text"
+                cat "out/$f.md"
+                echo
+                echo "$fence"
+              else
+                echo "Failed before writing a report: see the run."
+              fi
             done
           } > perf.md
           # A comment holds at most 65536 characters; invalid UTF-8 from the cut is dropped.

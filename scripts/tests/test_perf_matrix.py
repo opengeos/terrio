@@ -528,3 +528,76 @@ def test_changed_files_choose_the_formats_to_measure():
     assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet"]
     assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == []
+
+
+@pytest.mark.parametrize("option,value", [("samples", "0"), ("threads", "-1"),
+                                         ("timeout", "0"), ("timeout", "nan"), ("timeout", "inf")])
+def test_run_rejects_invalid_measurement_limits(tmp_path, monkeypatch, option, value):
+    """Reject invalid limits before creating fixtures or launching workers.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped argument replacement.
+        option: Measurement limit to validate.
+        value: Invalid command line value.
+    """
+    monkeypatch.setattr(sys, "argv", ["perf_matrix.py", "run", "--dir", str(tmp_path),
+                                      f"--{option}", value])
+    with pytest.raises(SystemExit) as exc:
+        perf_matrix.main()
+    assert exc.value.code == 2
+    assert not (tmp_path / "geotiff").exists()
+
+
+def test_posted_artifact_markdown_cannot_close_its_text_fence(tmp_path):
+    """Execute the posting step with a PR artifact containing Markdown delimiters.
+
+    Args:
+        tmp_path: Isolated workflow workspace with a local GitHub CLI stub.
+    """
+    import os
+    import subprocess
+    import textwrap
+
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github/workflows/perf-matrix.yml").read_text()
+    script = textwrap.dedent(workflow.rsplit("        run: |\n", 1)[1])
+    (tmp_path / "out").mkdir()
+    artifact = "```\n[untrusted](https://example.com)\n````````\n"
+    (tmp_path / "out/geotiff.md").write_text(artifact)
+    cli = tmp_path / "gh"
+    cli.write_text("#!/bin/sh\ncp body.md posted.md\n")
+    cli.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "PR": "1",
+           "HEAD_SHA": "a" * 40, "BASE_SHA": "b" * 40, "FORMATS": "geotiff",
+           "ARGS": "--quick", "RUN_URL": "https://example.com/run"}
+    subprocess.run(["bash", "-e", "-c", script], cwd=tmp_path, env=env, check=True)
+    posted = (tmp_path / "posted.md").read_text()
+    fence = "`" * 9
+    assert f"{fence}text\n{artifact}\n{fence}\n" in posted
+
+
+def test_benchmark_request_rejects_a_read_only_collaborator(tmp_path):
+    """Check repository permission before preparing any expensive benchmark work.
+
+    Args:
+        tmp_path: Isolated request workspace with a GitHub permission response.
+    """
+    import os
+    import subprocess
+    import textwrap
+
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github/workflows/perf-matrix.yml").read_text()
+    script = textwrap.dedent(workflow.split("        run: |\n", 1)[1].split("      - name:", 1)[0])
+    cli = tmp_path / "gh"
+    cli.write_text('#!/bin/sh\ncase "$*" in *collaborators*) echo read ;; *) exit 99 ;; esac\n')
+    cli.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "PR": "1",
+           "BODY": "/perf-matrix", "REQUESTER": "reader", "GITHUB_REPOSITORY": "test/repo",
+           "GITHUB_OUTPUT": str(tmp_path / "outputs")}
+    result = subprocess.run(["bash", "-e", "-c", script], cwd=tmp_path, env=env,
+                            text=True, capture_output=True)
+    assert result.returncode == 1
+    assert "Repository write permission is required" in result.stdout
+    assert not (tmp_path / "outputs").exists()

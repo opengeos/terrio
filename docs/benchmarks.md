@@ -347,6 +347,11 @@ the options of `run`. Runner timings vary more than a quiet desktop's, but each 
 made within one run on one runner. The Actions tab runs the same workflow for a pull request
 number. Each format runs in its own job, in parallel.
 
+Run this workflow only on code you would build yourself. Pull request build scripts share the
+measurement job's workspace and environment, so they can influence the harness, fixtures,
+base build and GDAL reference as well as their own build. The posted measurements are not an
+independent security check of pull request code.
+
 `perf_matrix.py touched` reads changed file paths on standard input and prints the formats whose
 reads go through them (`PATHS` in the script; shared I/O files and `Cargo.lock` count for every
 format).

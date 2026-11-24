@@ -1362,6 +1362,11 @@ def main() -> None:
     rep = sub.add_parser("report")
     rep.add_argument("results", type=Path, nargs="+", help="results files, one or several formats")
     a = p.parse_args()
+    if a.cmd == "run":
+        for name in ("samples", "threads", "timeout"):
+            value = getattr(a, name)
+            if not math.isfinite(value) or value <= 0:
+                p.error(f"--{name} must be positive and finite")
     if a.cmd == "touched":
         print(" ".join(touched([line.strip() for line in sys.stdin if line.strip()])))
         return
