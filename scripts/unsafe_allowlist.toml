@@ -107,6 +107,11 @@ count = 2
 origin = "existing"
 reason = "The Arrow C stream and C data interfaces: arrays and streams moved out of PyCapsules"
 
+[files."python/src/simplify_wkb.rs"]
+count = 1
+origin = "added"
+reason = "Arrow C data import for WKB arrays: named live PyCapsules retain the borrowed schema; FFI_ArrowArray::from_raw moves the array out and leaves a released value, transferring its release callback once to Arrow's owned ArrayData"
+
 [files."crates/terrio/src/deflate_compress.rs"]
 count = 22
 origin = "added"

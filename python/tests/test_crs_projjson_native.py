@@ -43,11 +43,12 @@ def same_proj():
 
 
 @pytest.mark.parametrize("code", CODES)
-def test_code_crs_projjson_is_gdal_s(code):
+def test_code_crs_projjson_is_gdal_s(code, in_a_new_thread):
     """`CRS.from_epsg`: PROJ's database object, with its ensemble, axes and usage."""
-    assert TCRS.from_epsg(code).to_dict(projjson=True) == RCRS.from_epsg(code).to_dict(
-        projjson=True
+    ours, expected = in_a_new_thread(
+        lambda: [C.from_epsg(code).to_dict(projjson=True) for C in (TCRS, RCRS)]
     )
+    assert ours == expected
 
 
 @pytest.mark.parametrize("code", CODES)

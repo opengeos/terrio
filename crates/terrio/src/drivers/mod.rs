@@ -7,6 +7,7 @@ use std::path::Path;
 use wbraster::Raster;
 
 pub(crate) mod aaigrid;
+pub(crate) mod area_matched;
 #[cfg(any(feature = "netcdf-hdf5", feature = "zarr"))]
 mod cf;
 pub(crate) mod common;

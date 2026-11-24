@@ -87,7 +87,7 @@ CODE_CRSS = {
 
 @pytest.mark.parametrize("make", list(CODE_CRSS))
 @pytest.mark.parametrize("code", [4326, 3857, 32633])
-def test_code_projjson_matches_rasterio(make, code):
+def test_code_projjson_matches_rasterio(make, code, in_a_new_thread):
     """CRSs from codes give PROJ's database object (area, bbox, scope) as GDAL builds them, and
     pickled ones come back from WKT. These codes' EPSG records read alike in PROJ 9.7 and 9.8
     (others gained `remarks`)."""
@@ -96,8 +96,10 @@ def test_code_projjson_matches_rasterio(make, code):
     # a rasterio wheel's reads otherwise (`datum` for `datum_ensemble`).
     if "proj_dir" not in pytest.importorskip("pyproj").datadir.get_data_dir():
         pytest.skip("pyproj does not use the PROJ database of its wheel")
-    expected = CODE_CRSS[make](RCRS, code).to_dict(projjson=True)
-    assert CODE_CRSS[make](TCRS, code).to_dict(projjson=True) == expected
+    expected, ours = in_a_new_thread(
+        lambda: [CODE_CRSS[make](C, code).to_dict(projjson=True) for C in (RCRS, TCRS)]
+    )
+    assert ours == expected
 
 
 WRITE_CRSS = {

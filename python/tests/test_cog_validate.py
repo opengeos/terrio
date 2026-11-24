@@ -44,6 +44,8 @@ def test_verdicts(files):
     assert not terrio.validate_cog(str(files["tiled_overviews"]))[0]
     ok, errors, _ = terrio.validate_cog(str(files["strip_overviews"]))
     assert "Overview of index 0 is not tiled" in errors
+    # The 525 x 375 overview is larger than 512 on one side only: rio-cogeo 7.0.4 checks it too.
+    assert "Overview of index 1 is not tiled" in errors
     assert terrio.validate_cog(str(files["not_tiff"])) == (False, ["The file is not a GeoTIFF"], [])
     # Warnings fail strict validation.
     assert terrio.validate_cog(str(files["strips"]), strict=True)[0] is False

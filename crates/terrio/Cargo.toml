@@ -112,6 +112,10 @@ cad = ["dep:acadrust"]
 parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:arrow-ipc", "dep:arrow-buffer", "dep:arrow-select", "dep:bytes"]
 ## HTTP(S), S3, GCS and Azure inputs, range reads of remote COGs and STAC (native builds only).
 remote = ["dep:ureq", "dep:rustls-graviola", "dep:rustls", "dep:webpki-roots", "dep:hmac", "dep:sha2", "terrio-crs/grid-transport"]
+## HTTPS with `ring` on x86-64 and AArch64 CPUs without the features `rustls-graviola` needs
+## (AVX2, ADX and BMI2 among them on x86-64; see docs/architecture.md). Needs a C compiler. Off by
+## default: without it, HTTPS on such a CPU fails with an error naming the missing features.
+ring-fallback = ["remote", "rustls/ring"]
 ## AVIF tiles of PMTiles and MBTiles archives.
 avif = ["tiles", "dep:rusty_av1d"]
 ## NetCDF, HDF5 and HDF-EOS reading, netCDF writing.
@@ -179,7 +183,8 @@ sha2 = { workspace = true, optional = true }
 [target.'cfg(target_os = "wasi")'.dependencies]
 tempfile.workspace = true
 
-# HTTPS without a C compiler, on the architectures `rustls-graviola` supports.
+# HTTPS without a C compiler, on the architectures `rustls-graviola` supports (and on CPUs
+# without the features it needs, with `ring` through `ring-fallback`).
 [target.'cfg(all(not(target_family = "wasm"), any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
 rustls-graviola = { workspace = true, optional = true }
 

@@ -433,13 +433,15 @@ pub(crate) struct Converted {
     pub geogcs: Node,
     /// The EPSG geographic CRS, when the reader knows it.
     pub geog: Option<u32>,
-    /// A WKT 1 `GEOGCS` to identify the datum by, when the WKT has none of its own (WKT 2).
-    pub geogcs_wkt1: Option<String>,
+    /// A WKT 2 CRS's datum, to identify it by when it has no code; `None` for WKT 1.
+    pub datum: Option<crate::wkt2::DatumOf>,
     /// A WKT 2 `BOUNDCRS` to another CRS than WGS 84: that CRS and the shift to it.
     pub bound: Option<Box<BoundTo>>,
     /// A `BOUNDCRS`'s Helmert transformation that `+towgs84` cannot stand for: a full rotation
     /// matrix, or a Molodensky-Badekas evaluation point.
     pub helmert: Option<Helmert>,
+    /// Why a WKT 2 `BOUNDCRS`'s transformation is not applied, as a warning (#1012 item 12).
+    pub unapplied: Option<String>,
 }
 
 /// A Helmert transformation as PROJ's `helmert` and `molobadekas` steps take it: translations in
@@ -462,6 +464,9 @@ pub(crate) struct BoundTo {
     pub target: Converted,
     /// The 3 or 7 parameters of the Helmert transformation to it, as `+towgs84`'s.
     pub shift: Vec<f64>,
+    /// The transformation's name and its target CRS's, for a warning when it is not applied.
+    pub name: String,
+    pub target_name: String,
 }
 
 /// What a WKT 1 `GEOGCS`, `GEOCCS` or `PROJCS` gives its PROJ string, read from its model
@@ -568,7 +573,15 @@ pub(crate) fn convert(input: &Wkt1Input, geogcs: &Node) -> Option<Converted> {
         out.push(format!("+proj=geocent +to_meter={to_meter}"));
         out.extend(tail);
         let geog = input.datum_epsg.and_then(|d| super::epsg::geographic_on(d).iter().copied().find(|c| !super::epsg::is_deprecated(*c)));
-        return Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog, geogcs_wkt1: None, bound: None, helmert: None });
+        return Some(Converted {
+            proj: out.join(" "),
+            geogcs: geogcs.clone(),
+            geog,
+            datum: None,
+            bound: None,
+            helmert: None,
+            unapplied: None,
+        });
     }
     if input.kind == Wkt1Kind::Geographic {
         out.push("+proj=longlat".to_string());
@@ -576,7 +589,15 @@ pub(crate) fn convert(input: &Wkt1Input, geogcs: &Node) -> Option<Converted> {
             tail.push(format!("+to_deg={ang}"));
         }
         out.extend(tail);
-        return Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None, bound: None, helmert: None });
+        return Some(Converted {
+            proj: out.join(" "),
+            geogcs: geogcs.clone(),
+            geog: None,
+            datum: None,
+            bound: None,
+            helmert: None,
+            unapplied: None,
+        });
     }
 
     let params = &input.params;
@@ -1057,7 +1078,7 @@ pub(crate) fn convert(input: &Wkt1Input, geogcs: &Node) -> Option<Converted> {
     out.push(format!("+y_0={fn_}"));
     out.push(format!("+to_meter={to_meter}"));
     out.extend(tail);
-    Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None, bound: None, helmert: None })
+    Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, datum: None, bound: None, helmert: None, unapplied: None })
 }
 
 /// The northing of the pole in Polar Stereographic (variant C), EPSG method 9830, whose false

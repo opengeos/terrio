@@ -170,6 +170,7 @@ The copyright notices of those source files:
   Copyright (c) 2014, Even Rouault <even dot rouault at spatialys dot com>
   Copyright (c) 2007-2016, Even Rouault <even dot rouault at spatialys dot com>
   Copyright (c) 2025, Even Rouault <even dot rouault at spatialys.com>
+  Copyright (c) 2009, Phil Vachon <philippe at cowpig.ca>
   Copyright (c) 2009, Frank Warmerdam
   Copyright (c) 2010, Chris Yesson <chris.yesson@ioz.ac.uk>
   Copyright (c) 2010-2011, Even Rouault <even dot rouault at spatialys.com>
@@ -421,6 +422,7 @@ Terrio files derived from JTS source files (each file's header names them):
   crates/terrio/src/ops/jts_cdt.rs
   crates/terrio/src/ops/jts_delaunay.rs
   crates/terrio/src/ops/simplify.rs
+  crates/terrio/src/ops/simplify_dp.rs
   crates/terrio/src/ops/strtree.rs
   crates/terrio/src/tiles/overlay_envelope.rs
   crates/terrio/src/tiles/validity.rs
@@ -1783,6 +1785,33 @@ HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
 WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
+
+-------------------------------------------------------------------------------
+ras2cng (https://github.com/gpt-cmdr/ras2cng)
+-------------------------------------------------------------------------------
+
+Terrio files derived from ras2cng source files (each file's header names them):
+  crates/terrio/src/drivers/area_matched.rs
+
+Copyright (c) 2024 William M. Katzenmeyer, P.E., C.F.M. / CLB Engineering
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 -------------------------------------------------------------------------------
 fdlibm (https://www.netlib.org/fdlibm/), as FreeBSD's msun and the Rust libm crate have it

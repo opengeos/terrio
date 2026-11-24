@@ -135,6 +135,11 @@ pub(crate) fn convert_root(input: &Wkt2Root, root: &Node) -> Result<Converted> {
     // terrio cannot convert is left out, as terrio did before it read those.
     // The exact or evaluation-point step only with the target it is to: not to WGS 84 when
     // the target is left out.
+    // A shift left out is reported by the transformers using the CRS (#1012 item 12): its points
+    // are then placed without it.
+    let name = shown(root.child("ABRIDGEDTRANSFORMATION").and_then(Node::name).unwrap_or(""));
+    let mut unapplied = None;
+    let mut not_applied = |why: String| unapplied = Some(format!("the BOUNDCRS transformation \"{name}\" is not applied: {why}"));
     match helmert_shift(&b.transformation, b.to_wgs84)? {
         Some((t, true, helmert)) => {
             c.proj = format!("{} +towgs84={}", c.proj, t.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
@@ -143,15 +148,42 @@ pub(crate) fn convert_root(input: &Wkt2Root, root: &Node) -> Result<Converted> {
         // To another CRS (ED50): the shift to it, then its own transformations to WGS 84, as
         // PROJ chains them.
         Some((t, false, helmert)) => {
-            let target = root.child("TARGETCRS").and_then(first_node);
-            if let Some(target) = b.target.as_ref().zip(target).and_then(|(input, node)| convert_root(input, node).ok()) {
-                c.bound = Some(Box::new(BoundTo { target, shift: t }));
-                c.helmert = helmert;
+            let node = root.child("TARGETCRS").and_then(first_node);
+            // A `BOUNDCRS` target is named by its source CRS.
+            let named = node.map(|n| n.child("SOURCECRS").and_then(first_node).unwrap_or(n));
+            let target_name = shown(named.and_then(Node::name).unwrap_or(""));
+            match b.target.as_ref().zip(node) {
+                // A target bound itself (a `BOUNDCRS`): PROJ 9.9.0 does not chain through it and
+                // links the CRSs by its ballpark.
+                Some((Wkt2Root::Bound(_), _)) => not_applied(format!(
+                    "its target CRS \"{target_name}\" is bound to another CRS itself, which PROJ does not chain through either"
+                )),
+                Some((input, node)) => match convert_root(input, node) {
+                    Ok(target) => {
+                        c.bound = Some(Box::new(BoundTo { target, shift: t, name: name.clone(), target_name }));
+                        c.helmert = helmert;
+                    }
+                    Err(_) => not_applied(format!("its target CRS \"{target_name}\" is not read")),
+                },
+                None => not_applied(format!("its target CRS \"{target_name}\" is not read")),
             }
         }
-        None => {}
+        None => not_applied(format!("terrio applies Helmert transformations only, not \"{}\"", shown(&b.transformation.method))),
+    }
+    // Kept with a source `BOUNDCRS`'s own, when its transformation is left out too.
+    if let Some(why) = unapplied {
+        c.unapplied = Some(match c.unapplied.take() {
+            Some(inner) => format!("{inner}; {why}"),
+            None => why,
+        });
     }
     Ok(c)
+}
+
+/// A name from the WKT as a warning shows it: at most 120 characters, its control characters
+/// (and quotes) escaped, as grid names are.
+fn shown(name: &str) -> String {
+    name.chars().take(120).flat_map(char::escape_debug).collect()
 }
 
 /// What a WKT 2 geographic, geocentric, projected or derived geographic CRS gives its PROJ string,
@@ -931,18 +963,38 @@ impl Geodetic {
     }
 
     fn converted(&self, proj: String) -> Converted {
-        // A WKT 1 `GEOGCS` of the datum, for identifying it by name when it has no code.
-        let q = |s: &str| s.replace('"', "\"\"");
-        let geogcs_wkt1 = format!(
-            "GEOGCS[\"{}\",DATUM[\"{}\",SPHEROID[\"{}\",{},{}]],PRIMEM[\"Greenwich\",{}],UNIT[\"degree\",0.0174532925199433]]",
-            q(self.name.as_deref().unwrap_or("unknown")),
-            q(&self.datum_name),
-            q(&self.ellipsoid_name),
-            self.a,
-            self.rf,
-            self.pm
-        );
-        Converted { proj, geogcs: self.node.clone(), geog: self.geog, geogcs_wkt1: Some(geogcs_wkt1), bound: None, helmert: None }
+        let datum = DatumOf {
+            crs_name: self.name.clone().unwrap_or_else(|| "unknown".into()),
+            datum_name: self.datum_name.clone(),
+            ellipsoid_name: self.ellipsoid_name.clone(),
+            a: self.a,
+            rf: self.rf,
+            pm: self.pm,
+        };
+        Converted { proj, geogcs: self.node.clone(), geog: self.geog, datum: Some(datum), bound: None, helmert: None, unapplied: None }
+    }
+}
+
+/// A WKT 2 geodetic CRS's datum, as [`crate::identify_datum`] identifies it when it has no code:
+/// the CRS's, datum's and ellipsoid's names (`unknown` when unnamed), the ellipsoid, and the prime
+/// meridian in degrees.
+#[derive(Debug, Clone)]
+pub(crate) struct DatumOf {
+    pub crs_name: String,
+    pub datum_name: String,
+    pub ellipsoid_name: String,
+    pub a: f64,
+    /// The inverse flattening, 0 for a sphere.
+    pub rf: f64,
+    pub pm: f64,
+}
+
+impl DatumOf {
+    /// A geographic CRS in degrees on the datum, as a PROJ string.
+    pub(crate) fn proj(&self) -> String {
+        let shape = if self.rf == 0.0 { format!("+b={}", self.a) } else { format!("+rf={}", self.rf) };
+        let pm = if self.pm != 0.0 { format!(" +pm={}", self.pm) } else { String::new() };
+        format!("+proj=longlat +a={} {shape}{pm}", self.a)
     }
 }
 

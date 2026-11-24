@@ -370,9 +370,11 @@ def test_a_copy_s_writer_given_overviews_after_all_writes_its_source_s_mask_whol
         assert np.array_equal(ds.read(), RGB)
 
 
-def test_a_cog_writer_refuses_a_mask_of_its_rows_size_in_another_shape(tmp_path):
+@pytest.mark.parametrize("writer", ["CogWriter", "GeoTiffWriter"])
+def test_a_row_writer_refuses_a_mask_of_its_rows_size_in_another_shape(tmp_path, writer):
     """A mask is the `(rows, width)` of the pixels it masks: flattened, one of the same size in
-    another shape (its rows and columns swapped, or one row) would mask other pixels."""
+    another shape (its rows and columns swapped, or one row) would mask other pixels. A closed
+    writer says that it is closed before it looks at the rows or the mask."""
     from terrio import _terrio
     from terrio.errors import InvalidArgumentError
 
@@ -380,7 +382,7 @@ def test_a_cog_writer_refuses_a_mask_of_its_rows_size_in_another_shape(tmp_path)
     pixels = np.arange(rows * width, dtype="uint8").reshape(rows, width)
     mask = np.array([[255, 0, 255, 255], [0, 255, 255, 0]], np.uint8)
     out = str(tmp_path / "masked.tif")
-    writer = _terrio.CogWriter(out, width, 2 * rows, 1, "uint8", T.to_gdal(), mask=True)
+    writer = getattr(_terrio, writer)(out, width, 2 * rows, 1, "uint8", T.to_gdal(), mask=True)
     for other in (mask.T, mask.reshape(1, rows * width)):
         with pytest.raises(InvalidArgumentError, match="expected a mask of 2 rows of 4 columns"):
             writer.write(pixels, other)
@@ -389,15 +391,16 @@ def test_a_cog_writer_refuses_a_mask_of_its_rows_size_in_another_shape(tmp_path)
     writer.write(pixels, mask[::-1])
     writer.close()
     with pytest.raises(InvalidArgumentError, match="the writer is closed"):
-        writer.write(pixels, mask.T)
+        writer.write(pixels[:, :3], mask.T)
     with rio.open(out) as ds:
         assert np.array_equal(ds.dataset_mask(), np.vstack([mask, mask[::-1]]))
 
 
-def test_a_cog_writer_refuses_a_mask_it_has_not_and_rows_without_the_one_it_has(tmp_path):
+@pytest.mark.parametrize("writer", ["CogWriter", "GeoTiffWriter"])
+def test_a_row_writer_refuses_a_mask_it_has_not_and_rows_without_the_one_it_has(tmp_path, writer):
     """A mask given to a writer created without one, or none to a writer created with one, is
     refused before the writer takes the rows, each with a message saying what to give instead: the
-    writers then take their rows as they should be given."""
+    writers then take their rows as they should be given. Taken, the first would be dropped."""
     from terrio import _terrio
     from terrio.errors import InvalidArgumentError
 
@@ -405,11 +408,12 @@ def test_a_cog_writer_refuses_a_mask_it_has_not_and_rows_without_the_one_it_has(
     pixels = np.arange(rows * width, dtype="uint8").reshape(rows, width)
     mask = np.array([[255, 0, 255, 255], [0, 255, 255, 0]], np.uint8)
     out = str(tmp_path / "masked.tif")
-    plain = _terrio.CogWriter(str(tmp_path / "plain.tif"), width, rows, 1, "uint8", T.to_gdal())
-    masked = _terrio.CogWriter(out, width, rows, 1, "uint8", T.to_gdal(), mask=True)
-    with pytest.raises(InvalidArgumentError, match="the COG has no mask: give its rows without"):
+    create = getattr(_terrio, writer)
+    plain = create(str(tmp_path / "plain.tif"), width, rows, 1, "uint8", T.to_gdal())
+    masked = create(out, width, rows, 1, "uint8", T.to_gdal(), mask=True)
+    with pytest.raises(InvalidArgumentError, match="has no mask: give its rows without one"):
         plain.write(pixels, mask)
-    with pytest.raises(InvalidArgumentError, match="the COG has a mask: give its rows"):
+    with pytest.raises(InvalidArgumentError, match="has a mask: give its rows"):
         masked.write(pixels)
     assert plain.rows_written == masked.rows_written == 0
     plain.write(pixels)
@@ -437,6 +441,34 @@ def test_a_copy_whose_mask_goes_to_a_sidecar_holds_it(tmp_path, monkeypatch, dri
         assert filecmp.cmp(copied + suffix, held + suffix, shallow=False), suffix
     with rio.open(copied) as ds:
         assert np.array_equal(ds.dataset_mask(), MASK)
+
+
+def test_a_copy_written_in_rows_given_a_mask_for_a_sidecar_gives_its_writer_none(
+    tmp_path, monkeypatch
+):
+    """A GeoTIFF copy written in rows from its source and its mask (`_copy_mask`), then given a
+    mask of its own that goes to a `.msk` sidecar (`GDAL_TIFF_INTERNAL_MASK=NO` by the time it is
+    closed), writes the files a dataset given the same pixels and mask writes: the sidecar holds
+    the dataset's mask, which replaces the source's, and the file none. Its row writer, created
+    without a mask, is given none: it would refuse the source mask's rows."""
+    src = source(tmp_path / "src.tif", mask=MASK)
+    own = np.full((HEIGHT, WIDTH), 255, np.uint8)
+    own[:, :100] = 0
+    monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", "1")
+    profile = dict(PROFILE, count=3, dtype="uint8", compress="deflate")
+    copied, written = str(tmp_path / "copied.tif"), str(tmp_path / "written.tif")
+    with rio.open(src) as ds:
+        with rio.open(copied, "w", **profile, _copy_of=ds, _copy_mask=True) as dst:
+            assert dst._copy_of is ds
+            dst.write_mask(own)
+            monkeypatch.setenv("GDAL_TIFF_INTERNAL_MASK", "NO")
+        with rio.open(written, "w", **profile) as dst:
+            dst.write(ds.read())
+            dst.write_mask(own)
+    for suffix in ("", ".msk"):
+        assert filecmp.cmp(copied + suffix, written + suffix, shallow=False), suffix
+    with rio.open(copied) as ds:
+        assert np.array_equal(ds.dataset_mask(), own)
 
 
 @pytest.mark.parametrize("driver", ["COG", "GTiff"])

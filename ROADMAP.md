@@ -87,6 +87,9 @@ and drivers below.
       read but for what it does not cover: Gaussian resampling (not a core kernel), paletted and
       complex bands, datasets opened with `overview_level` and written datasets. Boundless reads
       are out of #429's scope.
+- [ ] Expose the integer-window nearest-neighbour sampling selector from
+      [#1224](https://github.com/opengeos/terrio/pull/1224) in CLI/MCP, Python and JavaScript.
+      The initial opt-in is Rust-only; existing surfaces retain fractional sampling.
 - [x] Geolocation-array warping: reproject swaths using the longitude/latitude arrays already
       exposed by the scientific-format drivers, including subsampled arrays and pixel-center
       conventions. Done in [#241](https://github.com/opengeos/terrio/pull/241);
@@ -226,7 +229,9 @@ Command-group progress:
 - [x] Vector geometry operations: simplify, segmentize, convex and concave hulls, swap XY,
       geometry-type conversion, grouped combine and spatial sort. Landed in
       [#306](https://github.com/opengeos/terrio/pull/306), through Rust, CLI/MCP, Python and
-      JavaScript, with GDAL/GEOS comparisons and documented tolerances.
+      JavaScript, with GDAL/GEOS comparisons and documented tolerances. Douglas-Peucker
+      simplification (JTS's `DouglasPeuckerSimplifier` without its repair step), also directly on
+      WKB arrays, compared with OGR's `Simplify`.
 - [x] Vector gridding and linear referencing: every `gdal_grid` algorithm (search ellipses,
       quadtree order, per-quadrant limits) as `terrio vector-grid`, and `ogrlineref` as
       `terrio lineref`. Landed in [#305](https://github.com/opengeos/terrio/pull/305), through Rust,
@@ -675,6 +680,12 @@ WebAssembly (the `terrio-js` npm package):
 - [x] Pure-Rust HDF5 reading through crates.io `hdf5-reader`. Terrio and NetCDF share compatible
       reader types; the HEC-RAS engine owns its reader and may pin a different release, so reader
       updates do not have to wait for an engine release.
+- [x] Overviews that keep the valid area of a raster with nodata (`OVERVIEW_RESAMPLING`
+      `AREA_MATCHED`, `AREA_MATCHED_MODE`; GDAL has no equivalent), for COG overviews and GeoTIFF
+      overviews at factors, with the area each level keeps in the band metadata. Read, validated
+      and copied by GDAL 3.13.3 on real rasters (the `cog-area-matched` conformance suite) and
+      by GDAL 3.12.2 through rasterio (`python/tests/test_cog_area_matched.py`).
+- [ ] Streamed and bounded-memory writing of area-matched overviews.
 - [x] CRS: datum shift grids (NTv2, GeoTIFF grids), vertical datums, time-dependent transformations
       between dynamic datums (coordinate epochs). Done: PROJ's GeoTIFF grids (PROJ-data), NTv2 and GTX
       read in pure Rust and interpolated as PROJ does (`hgridshift`, `vgridshift`, NADCON5's

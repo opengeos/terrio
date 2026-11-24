@@ -105,6 +105,49 @@ fn mvt_directories_and_tiles_keep_each_selected_layers_range() {
     }
 }
 
+/// An inverted spatial filter (its corners swapped) reads the features of its corners' extent, as
+/// the filter itself takes it: eager and streamed reads of every format, indexed ones included.
+#[test]
+fn an_inverted_spatial_filter_reads_its_corners_extent() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut extensions = vec!["geojson", "csv", "shp", "kml", "gml"];
+    if cfg!(feature = "sqlite") {
+        extensions.push("gpkg");
+    }
+    if cfg!(feature = "tiles") {
+        extensions.push("pmtiles");
+    }
+    if cfg!(feature = "flatgeobuf") {
+        extensions.push("fgb");
+    }
+    if cfg!(feature = "parquet") {
+        extensions.push("parquet");
+    }
+    for extension in extensions {
+        let path = directory.path().join(format!("points.{extension}"));
+        let path = path.to_str().unwrap();
+        terrio::write_vector(&[points("points", 0, 7)], path, &Default::default()).unwrap();
+        // PMTiles filters in EPSG:3857, the other formats in the points' EPSG:4326.
+        let rect = if extension == "pmtiles" { (1_280_000.0, 5_700_000.0, 1_620_000.0, 5_860_000.0) } else { (11.5, 45.5, 14.5, 46.5) };
+        let options = |rect| VectorOpenOptions { spatial_filter: Some(rect), ..Default::default() };
+        let inverted = (rect.2, rect.3, rect.0, rect.1);
+        let expected = terrio::open_vector(path, &options(rect)).unwrap();
+        assert!(expected.layers.iter().any(|l| !l.features.is_empty()), "{extension}: the rectangle holds features");
+        let eager = terrio::open_vector(path, &options(inverted)).unwrap();
+        assert_eq!(eager.layers.len(), expected.layers.len(), "{extension}");
+        for (a, b) in eager.layers.iter().zip(&expected.layers) {
+            assert_eq!(sequences(a), sequences(b), "{extension}, eager");
+        }
+        if extension != "pmtiles" {
+            let streamed = terrio::stream::open_layers(path, &options(inverted), 3).unwrap();
+            assert_eq!(streamed.len(), expected.layers.len(), "{extension}, streamed");
+            for (reader, b) in streamed.into_iter().zip(&expected.layers) {
+                assert_eq!(sequences(&reader.read_all().unwrap()), sequences(b), "{extension}, streamed");
+            }
+        }
+    }
+}
+
 #[test]
 fn streamed_ranges_match_eager_readers_after_spatial_filtering() {
     let directory = tempfile::tempdir().unwrap();
