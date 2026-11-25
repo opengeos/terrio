@@ -43,6 +43,10 @@ test("other tokens, URLs in free text among them, are left as they are", () => {
     "gs://../evil.example/data.tif",
     "/vsigs/../evil.example/data.tif",
     "gs://bucket?alt=media#frag/obj.tif",
+    // A dot segment in the key would resolve into another bucket.
+    "gs://bucket/../other/obj.tif",
+    "/vsigs/bucket/a/./b.tif",
+    "s3://my.dotted.bucket/../other/obj.tif",
   ]) {
     assert.equal(toWorkerPath(token), token, token);
   }
