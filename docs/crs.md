@@ -1354,10 +1354,21 @@ They read and write:
   ProjRectifiedGridAngleGeoKey at 90 in the keys' angular unit (81° in grads); and a polar
   stereographic CRS by its origin latitude when given (ProjNatOriginLatGeoKey, else
   ProjFalseOriginLatGeoKey, else ProjCenterLatGeoKey: 90° and a ProjStdParallel1GeoKey of 71° or
-  -71° is variant A of its scale, the standard parallel unread). Not yet as libgeotiff reads them:
-  without any origin latitude, a polar stereographic CRS's ProjStdParallel1GeoKey is still read as
-  its standard parallel, leniently, where libgeotiff takes a latitude of 0; a Stereographic or
-  Mercator CRS's scale keys, a Mercator's latitude keys, and Laborde (CT 4) (#1012 item 35). A
+  -71° is variant A of its scale, the standard parallel unread); Mercator 2SP by its
+  ProjStdParallel1GeoKey whatever its scale, else 1SP of its latitude of origin (as `+lat_ts`) and
+  ProjScaleAtNatOriginGeoKey alone; Stereographic of ProjScaleAtNatOriginGeoKey alone; Laborde
+  (CT 4) as `+proj=labrd`. An ellipsoid, datum or prime meridian given by its code without its
+  values is the registry's (Airy 1830 for 7001 or for datum 6277, which also gets OSGB36's
+  transformations; the spheres 7035, 7047 and 7048; Paris for 8903), as libgeotiff looks them up.
+  A projected code alone (no projection, method, geographic CRS, datum or ellipsoid key) is the
+  registry's CRS, a deprecated code's single replacement, in the keys' linear unit
+  (ProjLinearUnitsGeoKey, else the stated code's own), without its code when that is not the CRS's
+  unit: EPSG:32633 with ProjLinearUnitsGeoKey 9002 is UTM zone 33N in feet; beside other keys, the
+  stated code, deprecated or not (EPSG:4855 with GeographicTypeGeoKey 4258 is 4855, not 5105), as
+  GDAL 3.12 reads them (#1012 items 32 to 35). Not yet as libgeotiff reads them: without any origin
+  latitude, a polar stereographic CRS's ProjStdParallel1GeoKey is still read as its standard
+  parallel, leniently, where libgeotiff takes a latitude of 0 (GDAL places such points tens of
+  thousands of kilometres away). A
   user-defined projected CRS can be read by a registered code (see below). A horizontal CRS with a
   datum shift of its own (a WKT's `TOWGS84` or `BOUNDCRS` to WGS 84, a PROJ string's `+towgs84`)
   is written with GeogTOWGS84GeoKey: with the code its WKT declares, else as a user-defined CRS on

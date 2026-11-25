@@ -2,7 +2,10 @@
 //! 3.12.2 (libgeotiff's `GTIFFetchProjParms`) reads them: ProjCenterEasting/NorthingGeoKey as the
 //! false easting and northing, a Hotine oblique Mercator without ProjRectifiedGridAngleGeoKey at
 //! 90°, and a polar stereographic CRS of ProjNatOriginLatGeoKey 90° without its
-//! ProjStdParallel1GeoKey (opengeos/terrio#1012, item 35).
+//! ProjStdParallel1GeoKey (opengeos/terrio#1012, item 35). GeoKeys with a projected code alone
+//! read as the registry's CRS (a deprecated code's replacement) in their linear unit, an
+//! ellipsoid, datum or prime meridian by its code alone, Mercator's and stereographic's scale and
+//! latitude keys, and Laborde oblique Mercator (items 32 to 35).
 //!
 //! `data/geokeys_read_gdal.json` (`scripts/gen_geokeys_read_gdal.py`, GDAL 3.12.2,
 //! `PROJ_NETWORK=OFF`) holds the keys and where GDAL's CRS places a point from WGS 84
@@ -15,7 +18,7 @@ use terrio_crs::{SpatialRef, Transformer};
 fn user_defined_geokeys_are_read_as_gdal_reads_them() {
     let data: Value = serde_json::from_str(include_str!("data/geokeys_read_gdal.json")).unwrap();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 10);
+    assert_eq!(cases.len(), 25);
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     for case in cases {
         let name = case["name"].as_str().unwrap();
@@ -23,7 +26,13 @@ fn user_defined_geokeys_are_read_as_gdal_reads_them() {
         let doubles: Vec<f64> = case["doubles"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
         let crs = SpatialRef::from_geokeys(&directory, &doubles, b"").unwrap_or_else(|e| panic!("{name}: {e}"));
         let (lon, lat) = (case["point"][0].as_f64().unwrap(), case["point"][1].as_f64().unwrap());
-        let (x, y) = Transformer::new(&wgs84, &crs).and_then(|t| t.transform(lon, lat)).unwrap_or_else(|e| panic!("{name}: {e}"));
+        // From WGS 84, or from the CRS's own geographic CRS on a sphere, where PROJ has no
+        // transformation from WGS 84.
+        let source = match case["from"].as_str() {
+            Some("geodetic") => SpatialRef::from_wkt(&crs.geographic_wkt().unwrap()),
+            _ => wgs84.clone(),
+        };
+        let (x, y) = Transformer::new(&source, &crs).and_then(|t| t.transform(lon, lat)).unwrap_or_else(|e| panic!("{name}: {e}"));
         let (gx, gy) = (case["gdal"][0].as_f64().unwrap(), case["gdal"][1].as_f64().unwrap());
         assert!((x - gx).abs() < 1e-3 && (y - gy).abs() < 1e-3, "{name}: ({x}, {y}), GDAL ({gx}, {gy})");
     }

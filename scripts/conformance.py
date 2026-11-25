@@ -2854,8 +2854,20 @@ PROJ_CASES = {
     },
     "geokeys_read_gdal": {
         "user_defined_geokeys_are_read_as_gdal_reads_them": (
-            "GeoKeys of user-defined projected CRSs as other writers write them (10 cases)", IDENTICAL,
-            "GDAL 3.12.2 (libgeotiff GTIFFetchProjParms): within 1 mm",
+            "GeoKeys as other writers write them: user-defined projected CRSs, a projected code alone or with its unit, "
+            "ellipsoids, datums and prime meridians by code (25 cases)", TOLERANCE,
+            "GDAL 3.12.2 (libgeotiff GTIFFetchProjParms, GTIFGetDefn): within 1 mm",
+        ),
+    },
+    "wkt_axes_and_units": {
+        "a_wkt1_geographic_crs_follows_its_axis_directions": (
+            "WKT 1 GEOGCS AXIS directions (west, south, in their order)", TOLERANCE, "PROJ 9.9.0 (always_xy): within 1e-9 degrees",
+        ),
+        "wkt2_parameters_without_a_unit_are_in_degrees_and_metres": (
+            "WKT 2 conversion parameters without a unit", TOLERANCE, "PROJ 9.9.0: within 1e-9 degrees",
+        ),
+        "south_orientated_transverse_mercator_in_wkt1_is_westing_first": (
+            "South-orientated Transverse Mercator in WKT 1, whatever its AXIS", TOLERANCE, "PROJ 9.9.0 (always_xy): within 1 mm",
         ),
     },
     "wkt1_axes": {

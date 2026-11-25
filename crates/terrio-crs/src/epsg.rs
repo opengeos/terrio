@@ -370,6 +370,43 @@ impl Table {
     }
 }
 
+/// An EPSG ellipsoid's semi-major axis in metres and inverse flattening (0 for a sphere), by its
+/// code, as the registry's WKT 1 gives it, for GeoKeys giving the code without the values
+/// (libgeotiff's `GTIFGetEllipsoidInfo`, #1012 item 34). Also EPSG:7047, the deprecated GRS 1980
+/// authalic sphere no CRS is on (6370997 m, PROJ's `+ellps=sphere`, as GDAL 3.12 reads it).
+pub(crate) fn ellipsoid(code: u32) -> Option<(f64, f64)> {
+    if code == 7047 {
+        return Some((6_370_997.0, 0.0));
+    }
+    static ELLIPSOIDS: OnceLock<HashMap<u32, (f64, f64)>> = OnceLock::new();
+    ELLIPSOIDS.get_or_init(|| nodes("SPHEROID[").filter_map(|n| Some((n.epsg()?, (n.num(1)?, n.num(2)?)))).collect()).get(&code).copied()
+}
+
+/// An EPSG prime meridian's longitude in degrees, by its code, as the registry's WKT 1 gives it
+/// (Paris, EPSG:8903, 2.33722917), for GeoKeys giving the code without the longitude (#1012
+/// item 34).
+pub(crate) fn prime_meridian(code: u32) -> Option<f64> {
+    static MERIDIANS: OnceLock<HashMap<u32, f64>> = OnceLock::new();
+    MERIDIANS.get_or_init(|| nodes("PRIMEM[").filter_map(|n| Some((n.epsg()?, n.num(1)?))).collect()).get(&code).copied()
+}
+
+/// The WKT 1 nodes of a keyword in the registry's CRSs.
+fn nodes(keyword: &'static str) -> impl Iterator<Item = crate::wkt1::Node> {
+    let text = &table().text;
+    text.match_indices(keyword).filter_map(move |(i, _)| {
+        let mut depth = 0;
+        let end = text[i..].char_indices().find(|&(_, c)| {
+            depth += match c {
+                '[' => 1,
+                ']' => -1,
+                _ => 0,
+            };
+            c == ']' && depth == 0
+        })?;
+        crate::wkt1::parse(&text[i..=i + end.0])
+    })
+}
+
 /// The operations GDAL uses given the grids that can be found: those listed with grids, without
 /// the ones whose grids are missing, when at least one operation needing grids remains; else
 /// those listed without grids.

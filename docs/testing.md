@@ -2134,8 +2134,9 @@ as GDAL does, also of a code terrio does not carry (EPSG:3752 gives 3994) (`carg
 when that is the same CRS (definition, datum, transformations and area of use: EPSG:4329 as 4979),
 else as WKT in a citation; read back, each places its point as the code does, but EPSG:6986, whose
 WKT terrio reads about 0.3 m from PROJ (opengeos/terrio#1012, item 19). GeoKeys giving a deprecated
-projected code are read as GDAL 3.12.2 reads them: a single replacement's CRS (EPSG:4855 as 5105,
-2036 as 2953, 3752 as 3994), another code its own. The EPSG table itself is generated with
+projected code are read as GDAL 3.12.2 reads them: alone, a single replacement's CRS (EPSG:4855 as
+5105, 2036 as 2953, 3752 as 3994) in the keys' linear unit, another code its own; beside other keys,
+its own (`geokeys_read_gdal`). The EPSG table itself is generated with
 `OSR_USE_NON_DEPRECATED=NO` (`scripts/gen_epsg_table.py`), and so are the GDAL reference points of
 `epsg_accuracy` (`scripts/gen_epsg_points.py`).
 

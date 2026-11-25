@@ -166,14 +166,31 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
         (_, Some(c), _) | (Some(2), _, Some(c)) if keyed(c) => Some(u32::from(c)),
         _ => None,
     };
+    let mut rescaled = None;
     let mut epsg = match (k.short(1024), k.short(3072), k.short(2048)) {
-        // A deprecated projected code with a single replacement, as GDAL 3.12 reads it by default
-        // (`OSR_USE_NON_DEPRECATED=YES`): EPSG:4855 as 5105, 3752 (which terrio does not carry)
-        // as 3994. A geographic one GDAL keeps (EPSG:4140).
-        (_, Some(code), _) if keyed(code) => match crate::epsg_replacements(u32::from(code)) {
-            [replacement] if SpatialRef::from_epsg(*replacement).is_ok() => Some(*replacement),
-            _ => Some(u32::from(code)),
-        },
+        // A projected code as GDAL 3.12 reads it (`GTIFGetOGISDefnAsOSR`, #1012 items 32 and 33).
+        // As the only key of its CRS (no projection, method, geographic CRS, datum or ellipsoid
+        // key), the registry's CRS: a deprecated code's single replacement (by default,
+        // `OSR_USE_NON_DEPRECATED=YES`: 26814 as 26847, 3752, which terrio does not carry, as
+        // 3994), in the keys' linear unit (ProjLinearUnitsGeoKey, else the stated code's own),
+        // without a code when that is not its unit. Beside other keys, the stated code, deprecated
+        // or not (EPSG:4855 with GeographicTypeGeoKey 4258 is EPSG:4855, not 5105). A geographic
+        // one GDAL keeps (EPSG:4140).
+        (_, Some(code), _) if keyed(code) => {
+            let code = u32::from(code);
+            let only = [3074, 3075, 2048, 2050, 2056].iter().all(|id| k.short(*id).is_none());
+            let target = match crate::epsg_replacements(code) {
+                [replacement] if only && SpatialRef::from_epsg(*replacement).is_ok() => *replacement,
+                _ => code,
+            };
+            match only.then(|| in_keys_unit(&k, code, target)).flatten() {
+                Some(c) => {
+                    rescaled = Some(c);
+                    None
+                }
+                None => Some(target),
+            }
+        }
         (Some(2), _, Some(code)) if keyed(code) => Some(code as u32),
         (Some(1), _, _) => {
             // A registered CRS only in the GeoKeys' linear unit: GDAL builds the CRS from the
@@ -194,6 +211,9 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
         }
         _ => None,
     };
+    if let Some(c) = rescaled {
+        return GeoKeysCrs { crs: Some(c), unsupported_method: None };
+    }
     let (mut crs, mut proj4, mut unsupported_method) = (None, None, None);
     if epsg.is_none() {
         // Geographic and projected user-defined CRSs, and ESRI PE citations.
@@ -623,8 +643,11 @@ fn geographic_proj(k: &GeoKeys) -> Option<String> {
         return Some(n.to_string());
     }
     let mut out = ellipsoid_proj(k)?;
-    // GeogPrimeMeridianLongGeoKey and GeogTOWGS84GeoKey.
-    if let Some(pm) = k.double(2061).filter(|pm| *pm != 0.0) {
+    // GeogPrimeMeridianLongGeoKey, else GeogPrimeMeridianGeoKey's registered longitude (Paris,
+    // 8903, as libgeotiff looks it up, #1012 item 34), and GeogTOWGS84GeoKey.
+    let pm =
+        k.double(2061).or_else(|| k.short(2051).filter(|c| *c != USER_DEFINED).and_then(|c| crate::epsg::prime_meridian(u32::from(c))));
+    if let Some(pm) = pm.filter(|pm| *pm != 0.0) {
         out.push_str(&format!(" +pm={pm}"));
     }
     if let Some(t) = k.doubles(2062).filter(|t| t.len() == 3 || t.len() == 7) {
@@ -634,7 +657,8 @@ fn geographic_proj(k: &GeoKeys) -> Option<String> {
 }
 
 /// The ellipsoid of GeoKeys, as PROJ parameters: their EPSG geographic CRS's, else their
-/// ellipsoid code's, else their semi-major axis and inverse flattening (or semi-minor axis).
+/// ellipsoid code's, else their semi-major axis and inverse flattening (or semi-minor axis), else
+/// their datum code's, as libgeotiff looks the codes up (`GTIFGetDefn`, #1012 item 34).
 fn ellipsoid_proj(k: &GeoKeys) -> Option<String> {
     // The ellipsoid of another EPSG geographic CRS, when its datum cannot be named.
     if let Some(e) = k.short(2048).filter(|c| *c != USER_DEFINED).and_then(|c| crate::epsg_ellipsoid(c as u32)) {
@@ -646,9 +670,22 @@ fn ellipsoid_proj(k: &GeoKeys) -> Option<String> {
         Some(7008) => Some("+ellps=clrk66"),
         Some(7004) => Some("+ellps=bessel"),
         Some(7022) => Some("+ellps=intl"),
-        Some(7035) | Some(7047) => Some("+R=6371007.181"),
         _ => None,
     };
+    let registered = |(a, rf): (f64, f64)| if rf == 0.0 { format!("+R={a}") } else { format!("+a={a} +rf={rf}") };
+    if let Some(e) = ellipsoid {
+        return Some(e.to_string());
+    }
+    if k.double(2057).is_none() {
+        // The registry's ellipsoid of the code (Airy 1830, 7001; the spheres 7035 and 7048), else
+        // the datum's (OSGB 1936, 6277), without the axes.
+        if let Some(e) = k.short(2056).filter(|c| *c != USER_DEFINED).and_then(|c| crate::epsg::ellipsoid(u32::from(c))) {
+            return Some(registered(e));
+        }
+        let datum = k.short(2050).filter(|c| *c != USER_DEFINED)?;
+        let geog = crate::epsg::geographic_on(u32::from(datum)).iter().copied().find(|g| !crate::epsg::is_deprecated(*g))?;
+        return crate::epsg_ellipsoid(geog);
+    }
     Some(match ellipsoid {
         Some(e) => e.to_string(),
         None => {
@@ -727,11 +764,14 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
         // Hotine oblique Mercator: variant A (natural origin) and B (centre of projection).
         3 => oblique_mercator(" +no_uoff")?,
         9815 => oblique_mercator("")?,
-        // Mercator 2SP has its standard parallel in ProjStdParallel1GeoKey, 1SP a scale (with
-        // which a zero standard parallel is taken as unused).
-        7 => match lat1.filter(|ts| *ts != 0.0 || scale == 1.0) {
+        // As libgeotiff and GDAL 3.12 read Mercator (#1012 item 35): 2SP with
+        // ProjStdParallel1GeoKey, whatever the scale (which GDAL ignores, with a warning); else
+        // 1SP, of ProjScaleAtNatOriginGeoKey alone (not ProjScaleAtCenterGeoKey) and of the
+        // latitude of origin, which PROJ writes as `+lat_ts`.
+        7 => match lat1 {
             Some(ts) => format!("merc +lon_0={lon0} +lat_ts={ts} {false_xy}"),
-            None => format!("merc +lon_0={lon0} +k={scale} {false_xy}"),
+            None if lat0 != 0.0 => format!("merc +lon_0={lon0} +lat_ts={lat0} {false_xy}"),
+            None => format!("merc +lon_0={lon0} +k={} {false_xy}", k.double(SCALE_AT_NAT_ORIGIN).unwrap_or(1.0)),
         },
         8 => format!("lcc +lat_1={} +lat_2={} +lat_0={lat0} +lon_0={lon0} {false_xy}", lat1?, lat2.or(lat1)?),
         9 => format!("lcc +lat_1={lat0} +lat_0={lat0} +lon_0={lon0} +k_0={scale} {false_xy}"),
@@ -739,7 +779,10 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
         11 => format!("aea +lat_1={} +lat_2={} +lat_0={lat0} +lon_0={lon0} {false_xy}", lat1?, lat2.or(lat1)?),
         12 => format!("aeqd +lat_0={lat0} +lon_0={lon0} {false_xy}"),
         13 => format!("eqdc +lat_1={} +lat_2={} +lat_0={lat0} +lon_0={lon0} {false_xy}", lat1?, lat2.or(lat1)?),
-        14 => format!("stere +lat_0={lat0} +lon_0={lon0} +k={scale} {false_xy}"),
+        // ProjScaleAtNatOriginGeoKey alone, as libgeotiff reads it.
+        14 => format!("stere +lat_0={lat0} +lon_0={lon0} +k={} {false_xy}", k.double(SCALE_AT_NAT_ORIGIN).unwrap_or(1.0)),
+        // Laborde oblique Mercator (CT 4), as GDAL 3.12 reads it (`SetLOM`).
+        4 => format!("labrd +lat_0={lat0} +lon_0={lon0} +azi={} +k={scale} {false_xy}", k.double(AZIMUTH).unwrap_or(0.0)),
         15 => {
             // Variant B's standard parallel is in ProjStdParallel1GeoKey for some writers, and in
             // ProjNatOriginLatGeoKey for GDAL (which writes a scale of 1 too); a natural origin
@@ -864,6 +907,27 @@ fn units(k: &GeoKeys) -> (String, f64) {
         },
         None => ("+units=m".into(), 1.0),
     }
+}
+
+/// The registry's projected CRS `target` in the linear unit of GeoKeys stating `code` alone, when
+/// that is not its unit: ProjLinearUnitsGeoKey's, else `code`'s own, as GDAL 3.12 changes the
+/// unit of the CRS it imports (`SetLinearUnitsAndUpdateParameters`), its false easting and northing
+/// kept in metres, and drops its code. `None` in its own unit.
+fn in_keys_unit(k: &GeoKeys, code: u32, target: u32) -> Option<SpatialRef> {
+    let crs = SpatialRef::from_epsg(target).ok()?;
+    let (unit, size) = if k.short(3076).is_some() {
+        units(k)
+    } else {
+        let own = SpatialRef::from_epsg(code).ok()?;
+        let token = own.to_proj4()?.split_whitespace().find(|t| t.starts_with("+units=") || t.starts_with("+to_meter="))?.to_string();
+        (token, own.metres_per_unit())
+    };
+    if (crs.metres_per_unit() / size - 1.0).abs() < 1e-12 {
+        return None;
+    }
+    let proj = crs.to_proj4()?;
+    let tokens: Vec<&str> = proj.split_whitespace().filter(|t| !t.starts_with("+units=") && !t.starts_with("+to_meter=")).collect();
+    SpatialRef::from_proj4(&format!("{} {unit}", tokens.join(" "))).ok()
 }
 
 /// The size in metres of the GeoKeys' linear unit (a metre when they give none).
