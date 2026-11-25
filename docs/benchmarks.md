@@ -360,6 +360,7 @@ python scripts/perf_matrix.py run --format geotiff           # every case; 30 to
 python scripts/perf_matrix.py fixtures --format zarr
 python scripts/perf_matrix.py run --format zarr --only shard --access window --quick
 python scripts/perf_matrix.py run --format geotiff-write      # the GeoTIFF fixtures, written
+python scripts/perf_matrix.py fixtures --format geoparquet-write
 python scripts/perf_matrix.py run --format geoparquet-write   # the GeoParquet fixtures, written
 # `run` prints its results file path; report summarizes one again:
 python scripts/perf_matrix.py report "$HOME/.cache/terrio-bench/matrix/geotiff/results-20261124-120000.jsonl"
