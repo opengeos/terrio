@@ -220,25 +220,30 @@ fn decompress(compression: u16, raw: Vec<u8>, limit: usize) -> TiffResult<Vec<u8
 /// does anything unusual (a code past the table, a table filled without a clear): `weezl` then
 /// decodes it, and reports what is wrong. Every string is a copy of earlier output, so the table
 /// holds where each one starts in the output and its length, and a short one is copied as 16
-/// bytes: about 1.3x faster than `weezl` on Float32 elevation tiles.
+/// bytes: about 1.3x faster than `weezl` on Float32 elevation tiles. The output starts with the
+/// 256 single bytes, removed at the end, so that a literal is such a copy too: one path for every
+/// code, 12% faster on Float32 tiles with the floating-point predictor (a code for 1.4 bytes).
 fn lzw_bytes(raw: &[u8], limit: usize) -> Option<Vec<u8>> {
     const CLEAR: usize = 256;
     const EOI: usize = 257;
     // Room past the string being written: the longest string (under 4096 bytes) and a 16-byte copy.
     const ROOM: usize = 4096 + 16;
+    // The single bytes, and room for a 16-byte copy of the last.
+    const HEAD: usize = 256 + 16;
     // The table's offsets are 32-bit: larger chunks are left to `weezl`.
-    if limit > u32::MAX as usize - ROOM {
+    if limit > u32::MAX as usize - ROOM - HEAD {
         return None;
     }
-    let mut out: Vec<u8> = Vec::new();
-    // Codes 258 and up: (start, length) in `out`.
-    let mut table = vec![(0u32, 0u32); 4096];
+    let end = HEAD + limit;
+    let mut out: Vec<u8> = (0..=255).chain([0; 16]).collect();
+    // Codes up to 255 and from 258: (start, length) in `out`.
+    let mut table: Vec<(u32, u32)> = (0..4096).map(|c| (c.min(255), 1)).collect();
     let (mut bits, mut nbits, mut i) = (0u64, 0u32, 0usize);
     let (mut width, mut next) = (9u32, 258usize);
-    // The previous string: (start, length) in `out`. None after a clear.
-    let mut prev: Option<(usize, usize)> = None;
-    let mut pos = 0;
-    while pos < limit {
+    // The previous string: (start, length) in `out`, of no length after a clear.
+    let (mut prev, mut prev_len) = (0usize, 0usize);
+    let mut pos = HEAD;
+    while pos < end {
         if nbits < width {
             if let Some(word) = raw.get(i..i + 8) {
                 // Eight bytes at once, the whole ones counted: the bits past them are the next
@@ -259,50 +264,47 @@ fn lzw_bytes(raw: &[u8], limit: usize) -> Option<Vec<u8>> {
         }
         let code = (bits >> (64 - width)) as usize;
         (bits, nbits) = (bits << width, nbits - width);
-        if code == CLEAR {
-            (width, next, prev) = (9, 258, None);
+        if code.wrapping_sub(CLEAR) < 2 {
+            if code == EOI {
+                break;
+            }
+            (width, next, prev_len) = (9, 258, 0);
             continue;
-        }
-        if code == EOI {
-            break;
         }
         // The output grows as the stream backs it, from eight times the stream (LZW rarely packs
         // more): a chunk size from the header is not allocated up front.
         if out.len() < pos + ROOM {
-            let len = (limit + ROOM).min(out.len().saturating_mul(2).max(pos + ROOM).max(raw.len().saturating_mul(8)));
+            let len = (end + ROOM).min(out.len().saturating_mul(2).max(pos + ROOM).max(raw.len().saturating_mul(8)));
             let extra = len - out.len();
             crate::dataset::fallible::reserve(&mut out, extra, "a TIFF chunk").ok()?;
             out.resize(len, 0);
         }
-        let len = if code < 256 {
-            out[pos] = code as u8;
-            1
-        } else if code < next {
+        let len = if code < next {
             let (start, len) = table[code];
             copy_earlier(&mut out, start as usize, len as usize, pos);
             len as usize
-        } else if code == next {
+        } else if code == next && prev_len > 0 {
             // The previous string and its own first byte.
-            let (start, len) = prev?;
-            copy_earlier(&mut out, start, len, pos);
-            out[pos + len] = out[start];
-            len + 1
+            copy_earlier(&mut out, prev, prev_len, pos);
+            out[pos + prev_len] = out[prev];
+            prev_len + 1
         } else {
             return None;
         };
-        if let Some((start, len)) = prev {
+        if prev_len > 0 {
             // The previous string and the first byte of this one, which follows it in `out`.
-            *table.get_mut(next)? = (start as u32, len as u32 + 1);
+            *table.get_mut(next)? = (prev as u32, prev_len as u32 + 1);
             next += 1;
             if next + 1 >= 1 << width && width < 12 {
                 width += 1;
             }
         }
-        prev = Some((pos, len));
+        (prev, prev_len) = (pos, len);
         pos += len;
     }
-    (pos >= limit).then(|| {
-        out.truncate(limit);
+    (pos >= end).then(|| {
+        out.truncate(end);
+        out.drain(..HEAD);
         out
     })
 }
@@ -590,7 +592,13 @@ impl ChunkCodec {
             Codec::Lzma | Codec::Lzw | Codec::Zstd | Codec::Chunky(_) | Codec::Complex(_) | Codec::WhiteIsZero(_) => {
                 self.lossless(raw, w, h)?
             }
-            Codec::Lerc => self.lerc(raw, w, h)?,
+            Codec::Lerc => {
+                let mut res = self.lerc(raw, w, h)?;
+                if (dw, dh) == (w, h) {
+                    return Ok(res);
+                }
+                return self.result(res.as_buffer(0).as_bytes(), w, dw, dh);
+            }
             Codec::Deflate => return self.deflate(&raw, w, h, dw, dh),
             Codec::Jxl => self.jxl(&raw, w, h)?,
             Codec::Jpeg => self.jpeg(&raw, w, h)?,
@@ -809,11 +817,11 @@ impl ChunkCodec {
         unpredict(data, w, self.spp, self.sample.size(), self.predictor)
     }
 
-    /// Bound each LERC header before allowing mask or pixel inspection.
+    /// Bound each LERC header before allowing mask or pixel inspection, and count the blobs.
     /// Layouts follow lerc-reader 0.5's Lerc1/Lerc2 header readers. Their public
     /// inspection APIs can allocate masks, so bounds must precede those calls.
     #[cfg(feature = "lerc")]
-    fn lerc_headers(&self, blob: &[u8], w: usize, h: usize) -> TiffResult<()> {
+    fn lerc_headers(&self, blob: &[u8], w: usize, h: usize) -> TiffResult<usize> {
         let read = |bytes: &[u8], offset: usize| -> TiffResult<u32> {
             let value = bytes
                 .get(offset..offset.checked_add(4).ok_or(TiffError::LimitsExceeded)?)
@@ -822,7 +830,7 @@ impl ChunkCodec {
             Ok(u32::from_le_bytes(bytes))
         };
         let expected = w.checked_mul(h).ok_or(TiffError::LimitsExceeded)?;
-        let (mut offset, mut channels, mut bytes_total) = (0usize, 0usize, 0usize);
+        let (mut offset, mut channels, mut bytes_total, mut blobs) = (0usize, 0usize, 0usize, 0usize);
         let mut lerc1_mask: Option<Vec<u8>> = None;
         while offset < blob.len() {
             let data = &blob[offset..];
@@ -882,53 +890,56 @@ impl ChunkCodec {
                 return Err(invalid("LERC: invalid blob length"));
             }
             offset = offset.checked_add(length).ok_or(TiffError::LimitsExceeded)?;
+            blobs += 1;
         }
         if channels != self.spp && !(self.lerc_alpha && channels.checked_add(1) == Some(self.spp)) {
             return Err(invalid("LERC: decoded channel count differs from TIFF"));
         }
 
-        Ok(())
+        Ok(blobs)
     }
 
-    /// Decodes LERC blobs into native-endian samples, as libtiff's LERC codec does: masked pixels
-    /// of floating-point images are NaN, a mask coding the alpha channel becomes 0 or 255.
+    /// Decodes LERC blobs into the chunk's `w` x `h` samples, as libtiff's LERC codec does: masked
+    /// pixels of floating-point images are NaN, a mask coding the alpha channel becomes 0 or 255.
     #[cfg(feature = "lerc")]
-    fn lerc(&self, raw: Vec<u8>, w: usize, h: usize) -> TiffResult<Vec<u8>> {
+    fn lerc(&self, raw: Vec<u8>, w: usize, h: usize) -> TiffResult<DecodingResult> {
         // A blob holds the chunk's samples, at most, with a mask and headers: one inflating past
         // twice that, past every sample as a double with a mask and headers, or past the limit,
         // is not inflated further.
         let decoded = self.decoded_size(w, h)?;
         let most = fallible::len(&[w, h, self.spp.max(1), 9], "a LERC blob")?.saturating_add(1 << 20);
         let cap = decoded.saturating_mul(2).saturating_add(4096 * (self.spp + 1)).min(most);
-        let inflate = |r: &mut dyn Read| -> TiffResult<Vec<u8>> {
-            let mut out = Vec::new();
-            r.take(cap.min(self.limit).saturating_add(1) as u64).read_to_end(&mut out)?;
-            if out.len() > self.limit {
+        let bound = cap.min(self.limit).saturating_add(1);
+        // Blobs of `len` bytes, `bound` for a stream going on past it.
+        let check = |len: usize| {
+            if len > self.limit {
                 Err(TiffError::LimitsExceeded)
-            } else if out.len() > cap {
+            } else if len > cap {
                 Err(invalid(format!("LERC: blobs of over {cap} bytes for a {w} x {h} chunk")))
             } else {
-                Ok(out)
+                Ok(())
             }
         };
         let blob = match self.lerc_wrapper {
             0 => raw,
-            1 => inflate(&mut flate2::read::ZlibDecoder::new(&raw[..]))?,
-            2 => {
-                let limit = crate::zstandard::read_limit(cap.min(self.limit).saturating_add(1));
-                inflate(&mut zrip::FrameDecoder::with_limit(&raw[..], limit))?
+            1 => {
+                let mut out = Vec::new();
+                flate2::read::ZlibDecoder::new(&raw[..]).take(bound as u64).read_to_end(&mut out)?;
+                check(out.len())?;
+                out
             }
+            // In one pass, into a buffer of the stream's size, rather than read as a stream.
+            2 => match zrip::decompress_with_limit(&raw, bound) {
+                Ok(out) => check(out.len()).map(|_| out)?,
+                Err(zrip::DecompressError::OutputTooSmall) => return Err(check(bound).expect_err("past both bounds")),
+                Err(e) => return Err(invalid(format!("LERC: Zstandard: {e}"))),
+            },
             other => return Err(invalid(format!("unknown LERC compression wrapper {other}"))),
         };
-        self.lerc_headers(&blob, w, h)?;
+        // Each blob's size, checked before it is decoded; its checksum is checked once, by the decoder.
+        let bands = self.lerc_headers(&blob, w, h)?;
         let lerc_err = |e: lerc_core::Error| invalid(format!("LERC: {e}"));
         let n = w * h;
-        // The blob's own size, checked before it is decoded.
-        let info = lerc_reader::inspect_first(&blob).map_err(lerc_err)?;
-        if (info.width as usize).saturating_mul(info.height as usize) > n {
-            return Err(invalid(format!("LERC: a {} x {} blob for a {w} x {h} chunk", info.width, info.height)));
-        }
-        let bands = lerc_reader::get_band_count(&blob).map_err(lerc_err)?;
         // Samples interleaved by pixel, with a validity mask per sample.
         let (mut samples, masks): (Vec<f64>, Vec<Option<Vec<u8>>>) = if bands > 1 {
             // A floating-point image with one blob per sample.
@@ -946,7 +957,18 @@ impl ChunkCodec {
             (out, masks)
         } else {
             let d = lerc_reader::decode(&blob).map_err(lerc_err)?;
-            (pixels_f64(&d.pixels), vec![d.mask])
+            if matches!(d.info.version, lerc_core::Version::Lerc2(v) if v >= 6) && d.info.remaining_band_count != 0 {
+                return Err(invalid("LERC: Lerc2 v6 remaining-band count exceeds the payload"));
+            }
+            // Every sample, of the image's own type: the result as decoded.
+            if d.pixels.len() == n * self.spp {
+                match self.lerc_native(d.pixels, d.mask.as_deref()) {
+                    Ok(res) => return Ok(res),
+                    Err(pixels) => (pixels_f64(&pixels), vec![d.mask]),
+                }
+            } else {
+                (pixels_f64(&d.pixels), vec![d.mask])
+            }
         };
         let depth = samples.len() / n.max(1);
         if self.lerc_alpha && depth + 1 == self.spp {
@@ -975,11 +997,47 @@ impl ChunkCodec {
         if samples.len() != n * self.spp {
             return Err(invalid(format!("LERC: {} samples for a {w} x {h} chunk of {} samples per pixel", samples.len(), self.spp)));
         }
-        self.to_bytes(&samples)
+        self.result(&self.to_bytes(&samples)?, w, w, h)
+    }
+
+    /// A single blob's samples (all of the chunk's) as the result when they are of the image's
+    /// type, without a conversion: floating-point ones NaN where the mask says invalid, as through
+    /// `f64` (but for signaling NaNs, kept as stored, as libtiff keeps them). Other types are given
+    /// back.
+    #[cfg(feature = "lerc")]
+    fn lerc_native(&self, pixels: lerc_core::PixelData, mask: Option<&[u8]>) -> Result<DecodingResult, lerc_core::PixelData> {
+        use lerc_core::PixelData as P;
+        let spp = self.spp;
+        macro_rules! nan {
+            ($v:ident, $nan:expr) => {{
+                for (valid, px) in mask.unwrap_or(&[]).iter().zip($v.chunks_exact_mut(spp)) {
+                    if *valid == 0 {
+                        px.fill($nan);
+                    }
+                }
+            }};
+        }
+        Ok(match (pixels, self.sample) {
+            (P::F32(mut v), Sample::F32) => {
+                nan!(v, f32::NAN);
+                DecodingResult::F32(v)
+            }
+            (P::F64(mut v), Sample::F64) => {
+                nan!(v, f64::NAN);
+                DecodingResult::F64(v)
+            }
+            (P::U8(v), Sample::U8) => DecodingResult::U8(v),
+            (P::I8(v), Sample::I8) => DecodingResult::I8(v),
+            (P::U16(v), Sample::U16) => DecodingResult::U16(v),
+            (P::I16(v), Sample::I16) => DecodingResult::I16(v),
+            (P::U32(v), Sample::U32) => DecodingResult::U32(v),
+            (P::I32(v), Sample::I32) => DecodingResult::I32(v),
+            (p, _) => return Err(p),
+        })
     }
 
     #[cfg(not(feature = "lerc"))]
-    fn lerc(&self, _raw: Vec<u8>, _w: usize, _h: usize) -> TiffResult<Vec<u8>> {
+    fn lerc(&self, _raw: Vec<u8>, _w: usize, _h: usize) -> TiffResult<DecodingResult> {
         Err(disabled("lerc"))
     }
 
@@ -1107,29 +1165,33 @@ impl ChunkCodec {
         Ok(out)
     }
 
-    /// The `dw` x `dh` image data of a chunk decoded `w` samples wide, typed.
+    /// The `dw` x `dh` image data of a chunk decoded `w` samples wide, typed in one pass over
+    /// `bytes`: rows past their end are left out, and zeros fill the rest.
     fn result(&self, bytes: &[u8], w: usize, dw: usize, dh: usize) -> TiffResult<DecodingResult> {
         let size = self.sample.size();
         let (row, keep) = (w * self.spp * size, dw * self.spp * size);
         let what = "a TIFF chunk";
-        let total = fallible::len(&[dh, keep], what)?;
-        let mut data = Vec::new();
-        fallible::reserve(&mut data, total, what)?;
-        for r in 0..dh {
-            let start = r * row;
-            data.extend_from_slice(bytes.get(start..start + keep).unwrap_or(&[]));
-        }
-        data.resize(total, 0);
+        let total = fallible::len(&[dh, keep], what)? / size;
+        let rows = (0..dh).map(|r| bytes.get(r * row..r * row + keep).unwrap_or(&[]));
         macro_rules! typed {
             ($variant:ident, $t:ty) => {{
-                let mut typed = Vec::new();
-                fallible::reserve(&mut typed, total / size, what)?;
-                typed.extend(data.chunks_exact(size).map(|c| <$t>::from_ne_bytes(c.try_into().unwrap())));
+                let mut typed: Vec<$t> = Vec::new();
+                fallible::reserve(&mut typed, total, what)?;
+                for r in rows {
+                    typed.extend(r.chunks_exact(size).map(|c| <$t>::from_ne_bytes(c.try_into().unwrap())));
+                }
+                typed.resize(total, <$t>::default());
                 DecodingResult::$variant(typed)
             }};
         }
         Ok(match self.sample {
-            Sample::U8 => DecodingResult::U8(data),
+            Sample::U8 => {
+                let mut data = Vec::new();
+                fallible::reserve(&mut data, total, what)?;
+                rows.for_each(|r| data.extend_from_slice(r));
+                data.resize(total, 0);
+                DecodingResult::U8(data)
+            }
             Sample::I8 => typed!(I8, i8),
             Sample::U16 => typed!(U16, u16),
             Sample::I16 => typed!(I16, i16),
@@ -1141,6 +1203,32 @@ impl ChunkCodec {
             Sample::F32 => typed!(F32, f32),
             Sample::F64 => typed!(F64, f64),
         })
+    }
+}
+
+/// The `wc` samples of `N` bytes of a row under the floating-point predictor, from `planes`, the
+/// row as stored (its byte planes, differenced along the row), into `out`. A byte's value is the
+/// sum of the row's bytes up to it: each plane's sums run as a chain of their own, from the sum of
+/// the planes before it, rather than one chain along the row, and each sample is written as its
+/// bytes are summed: 1.3 to 1.9 times as fast on 512 x 512 Float32 tiles, 2.2 times on Float64.
+#[inline(always)]
+fn float_planes<const N: usize>(planes: &[u8], out: &mut [u8], wc: usize) {
+    let planes: [&[u8]; N] = std::array::from_fn(|b| &planes[b * wc..(b + 1) * wc]);
+    let mut sums = [0u8; N];
+    let mut before = 0u8;
+    for (sum, plane) in sums.iter_mut().zip(planes) {
+        *sum = before;
+        before = plane.iter().fold(before, |a, &x| a.wrapping_add(x));
+    }
+    for (v, out) in out.as_chunks_mut::<N>().0.iter_mut().enumerate() {
+        for (sum, plane) in sums.iter_mut().zip(planes) {
+            *sum = sum.wrapping_add(plane[v]);
+        }
+        // Most significant first, so big-endian, in native-endian order.
+        *out = sums;
+        if cfg!(target_endian = "little") {
+            out.reverse();
+        }
     }
 }
 
@@ -1179,6 +1267,16 @@ pub(crate) fn unpredict(data: &mut [u8], w: usize, spp: usize, size: usize, pred
             let wc = w * spp;
             let mut tmp = fallible::filled_now(row, 0u8, "a TIFF row of the floating-point predictor")?;
             for r in data.chunks_exact_mut(row) {
+                // A sample a pixel: each plane's sums as a chain of its own, from a copy of the row.
+                if spp == 1 && matches!(size, 2 | 4 | 8) {
+                    tmp.copy_from_slice(r);
+                    match size {
+                        2 => float_planes::<2>(&tmp, r, wc),
+                        4 => float_planes::<4>(&tmp, r, wc),
+                        _ => float_planes::<8>(&tmp, r, wc),
+                    }
+                    continue;
+                }
                 // The sums along the row, into `tmp`.
                 if spp == 1 {
                     let mut sum = 0u8;
@@ -1741,12 +1839,45 @@ mod tests {
             assert!(matches!(e, TiffError::LimitsExceeded), "{e}");
             // A valid chunk decodes with the limit at its blob's size.
             let blob = encode(4, 4);
-            let pixels = codec(wrapper, blob.len()).lerc(wrap(&blob), 4, 4).unwrap();
+            let DecodingResult::U8(pixels) = codec(wrapper, blob.len()).lerc(wrap(&blob), 4, 4).unwrap() else { panic!("not U8") };
             assert_eq!(pixels, (0..16).collect::<Vec<u8>>());
         }
         // A blob larger than its chunk.
         let e = codec(0, usize::MAX).lerc(encode(64, 64), 4, 4).unwrap_err();
         assert!(e.to_string().contains("a 64 x 64 blob for a 4 x 4 chunk"), "{e}");
+    }
+
+    /// A Float32 or Float64 LERC blob decodes to its values bit for bit, NaN where its mask says
+    /// invalid, and an Int16 one to its values: the samples as decoded, without a conversion.
+    #[cfg(feature = "lerc")]
+    #[test]
+    fn lerc_blobs_of_the_image_type_decode_to_their_values_and_nan_where_masked() {
+        let (w, h) = (5, 3);
+        let mask: Vec<u8> = (0..w * h).map(|i| u8::from(i % 4 != 1)).collect();
+        let mask = lerc_writer::MaskView::new(w as u32, h as u32, &mask).unwrap();
+        macro_rules! view {
+            ($values:expr) => {
+                lerc_writer::RasterView::new(w as u32, h as u32, 1, $values).unwrap()
+            };
+        }
+        let values: Vec<f64> = (0..w * h).map(|i| (i as f64 * 0.37).sin() * 100.0).collect();
+        let f32s: Vec<f32> = values.iter().map(|v| *v as f32).collect();
+        let codec = |sample, bits| ChunkCodec { codec: Codec::Lerc, sample, limit: usize::MAX, ..packed(bits, 1) };
+        let blob = lerc_writer::encode(view!(&f32s[..]), Some(mask), lerc_writer::EncodeOptions::new()).unwrap();
+        let Ok(DecodingResult::F32(out)) = codec(Sample::F32, 32).lerc(blob, w, h) else { panic!("Float32 expected") };
+        let blob = lerc_writer::encode(view!(&values[..]), Some(mask), lerc_writer::EncodeOptions::new()).unwrap();
+        let Ok(DecodingResult::F64(out64)) = codec(Sample::F64, 64).lerc(blob, w, h) else { panic!("Float64 expected") };
+        for i in 0..w * h {
+            if i % 4 == 1 {
+                assert!(out[i].is_nan() && out64[i].is_nan(), "pixel {i}");
+            } else {
+                assert_eq!((out[i].to_bits(), out64[i].to_bits()), (f32s[i].to_bits(), values[i].to_bits()), "pixel {i}");
+            }
+        }
+        let i16s: Vec<i16> = (0..w * h).map(|i| i as i16 * 300 - 2000).collect();
+        let blob = lerc_writer::encode(view!(&i16s[..]), None, lerc_writer::EncodeOptions::new()).unwrap();
+        let Ok(DecodingResult::I16(out)) = codec(Sample::I16, 16).lerc(blob, w, h) else { panic!("Int16 expected") };
+        assert_eq!(out, i16s);
     }
 
     #[cfg(feature = "lerc")]
@@ -1788,7 +1919,7 @@ mod tests {
                 let allowed = bands == 3 || (alpha && bands == 2);
                 assert_eq!(codec.lerc_headers(&raw, 2, 2).is_ok(), allowed, "alpha={alpha}, bands={bands}");
                 if allowed {
-                    let pixels = codec.lerc(raw, 2, 2).unwrap();
+                    let DecodingResult::U8(pixels) = codec.lerc(raw, 2, 2).unwrap() else { panic!("not U8") };
                     let expected = if bands == 2 { [1, 1, 255] } else { [1, 1, 1] };
                     assert_eq!(pixels, expected.repeat(4));
                 }
@@ -2028,11 +2159,12 @@ mod tests {
     }
 
     /// The floating-point predictor (3) is undone for Float16, Float32 and Float64 samples, one to
-    /// four per pixel, each against the values the rows were built from.
+    /// four per pixel, in rows of 1 to 513 pixels, each against the values the rows were built from.
     #[test]
     fn floating_point_predictor_is_undone_for_every_sample_size_and_count() {
-        for (sample, spp) in [Sample::F16, Sample::F32, Sample::F64].into_iter().flat_map(|s| (1..=4).map(move |p| (s, p))) {
-            let (size, w, rows) = (sample.size(), 7, 3);
+        let cases = [Sample::F16, Sample::F32, Sample::F64].into_iter().flat_map(|s| (1..=4).map(move |p| (s, p)));
+        for ((sample, spp), w) in cases.flat_map(|c| [1, 2, 7, 33, 513].map(|w| (c, w))) {
+            let (size, rows) = (sample.size(), 3);
             let wc = w * spp;
             let bits = (size * 8) as u16;
             let codec = ChunkCodec { codec: Codec::Lzma, sample, spp, predictor: 3, bits, ..packed(8, spp) };
@@ -2053,7 +2185,7 @@ mod tests {
                 }
             }
             codec.unpredict(&mut stored, w).unwrap();
-            assert_eq!(stored, expected, "{sample:?} with {spp} samples");
+            assert_eq!(stored, expected, "{sample:?} with {spp} samples, {w} pixels");
         }
     }
 
