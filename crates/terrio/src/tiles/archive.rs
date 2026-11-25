@@ -651,28 +651,6 @@ pub(crate) fn vector_to_bytes(layers: &[wbvector::Layer], o: &TileWriteOptions, 
     write_vector_archive(&vt, o, name, kind)
 }
 
-/// Writes vector layers as a directory of MVT tiles (`z/x/y.pbf`, gzipped) with a
-/// `metadata.json`, as GDAL's MVT driver does.
-#[cfg(not(target_family = "wasm"))]
-pub(crate) fn write_mvt_dir(layers: &[wbvector::Layer], o: &TileWriteOptions, path: &std::path::Path) -> Result<()> {
-    let vt = vector::make_tiles(layers, o)?;
-    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("tiles");
-    if path.exists() {
-        return Err(Error::InvalidArgument(format!("'{}' already exists", path.display())));
-    }
-    std::fs::create_dir_all(path)?;
-    let mut md: serde_json::Map<String, serde_json::Value> =
-        vector::metadata_items(&vt, o, name).into_iter().map(|(k, v)| (k, serde_json::Value::String(v))).collect();
-    md.insert("json".into(), serde_json::Value::String(serde_json::to_string_pretty(&vt.json).unwrap_or_default()));
-    std::fs::write(path.join("metadata.json"), serde_json::to_string_pretty(&serde_json::Value::Object(md)).unwrap_or_default())?;
-    for (z, x, y, d) in &vt.tiles {
-        let dir = path.join(z.to_string()).join(x.to_string());
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join(format!("{y}.pbf")), pmtiles::compress(d, pmtiles::COMPRESSION_GZIP)?)?;
-    }
-    Ok(())
-}
-
 /// Reads a directory of MVT tiles (`z/x/y.pbf` with a `metadata.json`), as GDAL's MVT driver
 /// does: the tiles of one zoom level (the highest by default).
 #[cfg(not(target_family = "wasm"))]
@@ -756,19 +734,30 @@ pub(crate) fn write_vector(
     driver: crate::formats::VectorDriver,
     o: &TileWriteOptions,
 ) -> Result<()> {
-    use crate::formats::VectorDriver as V;
-    let kind = match driver {
-        V::MBTiles => ArchiveKind::MBTiles,
-        V::PMTiles => ArchiveKind::PMTiles,
-        _ => {
-            #[cfg(not(target_family = "wasm"))]
-            return write_mvt_dir(layers, o, std::path::Path::new(path));
-            #[cfg(target_family = "wasm")]
-            return Err(Error::Unsupported("directories of MVT tiles cannot be written in WebAssembly builds".into()));
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let schemas: Vec<wbvector::Layer> = layers.iter().map(crate::stream::schema_of).collect();
+        let mut writer = super::vector_stream::VectorTileStreamWriter::create(path, driver, &schemas, o)?;
+        for (li, layer) in layers.iter().enumerate() {
+            for feats in layer.features.chunks(crate::stream::DEFAULT_CHUNK) {
+                let mut chunk = crate::stream::schema_of(layer);
+                chunk.features = feats.to_vec();
+                writer.write_chunk(li, chunk)?;
+            }
         }
-    };
-    std::fs::write(path, vector_to_bytes(layers, o, &stem(path), kind)?)?;
-    Ok(())
+        writer.finish()
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        use crate::formats::VectorDriver as V;
+        let kind = match driver {
+            V::MBTiles => ArchiveKind::MBTiles,
+            V::PMTiles => ArchiveKind::PMTiles,
+            _ => return Err(Error::Unsupported("directories of MVT tiles cannot be written in WebAssembly builds".into())),
+        };
+        std::fs::write(path, vector_to_bytes(layers, o, &stem(path), kind)?)?;
+        Ok(())
+    }
 }
 
 /// Whether bytes look like a Mapbox Vector Tile (gzipped, or starting with a layer).

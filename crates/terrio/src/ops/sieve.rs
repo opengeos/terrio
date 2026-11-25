@@ -227,11 +227,13 @@ pub fn sieve(ds: &RasterDataset, o: &SieveOptions) -> Result<RasterDataset> {
             cur = next;
         }
     }
-    // Pixels of merged areas take their new area's value; the others keep theirs.
+    // Pixels of merged areas take their new area's integer label (matching GDAL 3.13's
+    // GDALSieveFilter); unmerged and masked pixels keep their original source samples
+    // (preserving NaN nodata and float precision).
     let out: Vec<f64> = (0..w * h)
         .map(|p| {
             let id = ids[p];
-            if id != u32::MAX && big[id as usize] != -1 { value_of[big[id as usize] as usize] as f64 } else { values[p] as f64 }
+            if id != u32::MAX && big[id as usize] != -1 { value_of[big[id as usize] as usize] as f64 } else { raw[p] }
         })
         .collect();
     build_raster(Grid::of(r), vec![out], r.data_type, ds.band_nodata(o.band), &ds.crs(), super::convert_value)

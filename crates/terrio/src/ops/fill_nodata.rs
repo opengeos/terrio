@@ -101,9 +101,10 @@ pub fn fill_nodata(ds: &RasterDataset, o: &FillNodataOptions<'_>) -> Result<Rast
     let n = w * h;
     let start = (o.band - 1) * n;
     let raw = super::band_f64(r, o.band - 1);
+    let band_nodata = ds.band_nodata(o.band);
     let mut valid: Vec<bool> = match o.mask {
         Some(m) => m.iter().map(|v| *v != 0).collect(),
-        None => match ds.nodata() {
+        None => match band_nodata {
             Some(nd) if super::is_integer(r.data_type) => {
                 let (lo, hi) = super::type_range(r.data_type);
                 if !nd.is_finite() || nd.fract() != 0.0 || nd < lo || nd > hi {
@@ -132,13 +133,13 @@ pub fn fill_nodata(ds: &RasterDataset, o: &FillNodataOptions<'_>) -> Result<Rast
         y_min: r.y_min,
         cell_size_x: r.cell_size_x,
         cell_size_y: r.cell_size_y,
-        nodata: r.nodata,
+        nodata: band_nodata.unwrap_or(r.nodata),
         data_type: r.data_type,
         crs: r.crs.clone(),
         metadata: r.metadata.clone(),
         data: crate::pixel::map_data!(&r.data, v => v[start..start + n].to_vec()),
     };
-    let mut out = RasterDataset::with_driver(raster, ds.driver, ds.has_nodata);
+    let mut out = RasterDataset::with_driver(raster, ds.driver, band_nodata.is_some());
     out.affine = ds.affine;
     out.geolocation = ds.geolocation.clone();
     if valid.iter().all(|v| *v) || valid.iter().all(|v| !*v) {
@@ -250,7 +251,7 @@ pub fn fill_nodata(ds: &RasterDataset, o: &FillNodataOptions<'_>) -> Result<Rast
     // An explicit mask instead keeps the donor flags set by the search (notably
     // for zero values in nearest interpolation's search fringe).
     if o.mask.is_none() {
-        valid = match ds.nodata() {
+        valid = match band_nodata {
             Some(nd) => super::sieve::nodata_mask(&values.iter().map(|v| *v as f64).collect::<Vec<_>>(), nd, r.data_type),
             None => vec![true; n],
         };

@@ -107,11 +107,18 @@ pub(crate) fn valid_region(region: &str) -> bool {
     !region.is_empty() && region.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
+pub(crate) use crate::vfs::valid_s3_bucket as valid_bucket;
+
 impl S3Object {
     /// The object's URL, at the regional endpoint when `region` is given, or at the endpoint in
     /// `AWS_S3_ENDPOINT`.
     pub fn url(&self, region: Option<&str>) -> String {
         let key = uri_encode(&self.key, false);
+        let bucket = if valid_bucket(&self.bucket) {
+            std::borrow::Cow::Borrowed(self.bucket.as_str())
+        } else {
+            std::borrow::Cow::Owned(uri_encode(&self.bucket, true))
+        };
         let https = env_flag("AWS_HTTPS") != Some(false);
         let scheme = if https { "https" } else { "http" };
         if let Some(endpoint) = env("AWS_S3_ENDPOINT") {
@@ -120,10 +127,10 @@ impl S3Object {
                 Some((s, h)) => (s, h),
                 None => (scheme, endpoint),
             };
-            return if env_flag("AWS_VIRTUAL_HOSTING") == Some(true) {
-                format!("{scheme}://{}.{host}/{key}", self.bucket)
+            return if env_flag("AWS_VIRTUAL_HOSTING") == Some(true) && valid_bucket(&self.bucket) {
+                format!("{scheme}://{bucket}.{host}/{key}")
             } else {
-                format!("{scheme}://{host}/{}/{key}", self.bucket)
+                format!("{scheme}://{host}/{bucket}/{key}")
             };
         }
         let host = match region.filter(|region| valid_region(region)) {
@@ -131,10 +138,10 @@ impl S3Object {
             None => "s3.amazonaws.com".to_string(),
         };
         // Bucket names with dots do not match the endpoint's TLS certificate: use path-style URLs.
-        if env_flag("AWS_VIRTUAL_HOSTING") == Some(false) || (https && self.bucket.contains('.')) {
-            format!("{scheme}://{host}/{}/{key}", self.bucket)
+        if env_flag("AWS_VIRTUAL_HOSTING") == Some(false) || (https && self.bucket.contains('.')) || !valid_bucket(&self.bucket) {
+            format!("{scheme}://{host}/{bucket}/{key}")
         } else {
-            format!("{scheme}://{}.{host}/{key}", self.bucket)
+            format!("{scheme}://{bucket}.{host}/{key}")
         }
     }
 }

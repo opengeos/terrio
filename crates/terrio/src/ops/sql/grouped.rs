@@ -97,12 +97,7 @@ pub(super) fn execute(layer: &Layer, s: &Select, limit: Option<usize>) -> Result
     if let Some((i, desc)) = order {
         let mut sorted: Vec<_> = out.features.into_iter().map(|feature| (Value::from_field(&feature.attributes[i]), feature)).collect();
         sorted.sort_by(|(a, _), (b, _)| {
-            let o = match (a, b) {
-                (Value::Null, Value::Null) => Ordering::Equal,
-                (Value::Null, _) => Ordering::Less,
-                (_, Value::Null) => Ordering::Greater,
-                _ => compare(a, b).unwrap_or(Ordering::Equal),
-            };
+            let o = super::compare_order(a, b);
             if desc { o.reverse() } else { o }
         });
         out.features = sorted.into_iter().map(|(_, feature)| feature).collect();
