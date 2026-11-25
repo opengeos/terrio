@@ -1576,7 +1576,11 @@ class GeoPackage:
                 return p if p.startswith("/") else "/vsicurl/" + p
 
             def read(p, **kw):
-                return po.read_arrow(p, **kw)[1]
+                # GDAL names the geometry column as the file does (`geom`), terrio `geometry`: the
+                # digest compares columns by name, so GDAL's is renamed (no copy).
+                meta, table = po.read_arrow(p, **kw)
+                geometry = meta.get("geometry_name")
+                return table.rename_columns(["geometry" if c == geometry else c for c in table.column_names])
 
         boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
         if boxes:
@@ -2449,7 +2453,12 @@ def worker(spec: dict) -> dict:
     t0 = time.perf_counter()
     if n_threads:  # a handle per thread, opened in the threads and timed as the read
 
+        # Each job waits for the others to start, so N jobs run on N threads: an idle pool thread
+        # would otherwise take a second job.
+        started = threading.Barrier(n_threads)
+
         def job(k):
+            started.wait()
             d = open_(src)  # a handle per thread: GDAL datasets are not thread-safe
             return [(i, items[i](d)) for i in range(k, len(items), n_threads)]
 
@@ -2683,7 +2692,8 @@ def summarize(row: dict) -> dict:
             tools = [t for t in tools if t != "base"]
         differ = next(((t, r) for t in tools for r in row[t] if r["n"] != ref["n"] or not math.isclose(r["sum"], ref["sum"], rel_tol=1e-6)), None)
         exact = ref.get("digest") is not None and all(r.get("digest") == ref["digest"] for t in tools for r in row[t])
-        out["values"] = ("exact" if exact else "checksum_match") if differ is None else f"DIFFER: {differ[0]} n {differ[1]['n']} sum {differ[1]['sum']:.6g} vs gdal n {ref['n']} sum {ref['sum']:.6g}"
+        # Equal digests are exact first: a NaN read sums to NaN, which no sum check accepts.
+        out["values"] = "exact" if exact else "checksum_match" if differ is None else f"DIFFER: {differ[0]} n {differ[1]['n']} sum {differ[1]['sum']:.6g} vs gdal n {ref['n']} sum {ref['sum']:.6g}"
         # terrio's outputs label the case; the base build's comparisons stay in its own samples
         compares = [r["compare"] for r in row["terrio"] if "compare" in r]
         if compares:  # outputs compared with GDAL's, pixel by pixel: the worst sample labels the case
@@ -2693,6 +2703,9 @@ def summarize(row: dict) -> dict:
                 else f"DIFFER: {c['beyond_tol']} of {c['n']} values beyond {c['tol']:g} (max {c['max_diff']:.6g})" if c["beyond_tol"]
                 else "within_tol" if c["differing"] else "exact"
             )
+        # A base build whose output differs from GDAL's beyond the tolerance is not ranked against.
+        if any(r["compare"]["mismatch"] or r["compare"]["beyond_tol"] for r in row.get("base", []) if "compare" in r):
+            out.pop("base_ratio", None)
     return out
 
 
