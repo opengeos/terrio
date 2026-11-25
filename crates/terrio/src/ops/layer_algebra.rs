@@ -329,7 +329,7 @@ impl Set {
     fn intersection(&self, other: &Self) -> Result<Self> {
         let mut out = Self::default();
         if !other.area.0.is_empty() {
-            let mask = Mask::new(other.area.clone());
+            let mask = other.area_mask();
             for part in self.parts() {
                 let mut parts = vec![];
                 mask.intersection(&part, true, &mut parts)?;
@@ -339,7 +339,7 @@ impl Set {
             }
         }
         if !self.area.0.is_empty() {
-            let mask = Mask::new(self.area.clone());
+            let mask = self.area_mask();
             for l in &other.lines {
                 let mut parts = vec![];
                 mask.intersection(&Geometry::LineString(l.iter().copied().map(coord).collect()), true, &mut parts)?;
@@ -380,12 +380,14 @@ impl Set {
                 area = area.difference(&mask);
             }
         }
-        let mask = other.normalized()?;
         let mut out = Self { area, ..Self::default() };
-        for l in &self.lines {
-            out.lines.extend(cut_line(l, &mask, false).0);
+        if !self.lines.is_empty() || !self.points.is_empty() {
+            let mask = other.normalized()?;
+            for l in &self.lines {
+                out.lines.extend(cut_line(l, &mask, false).0);
+            }
+            out.points.extend(self.points.iter().copied().filter(|p| !mask.covers(*p)));
         }
-        out.points.extend(self.points.iter().copied().filter(|p| !mask.covers(*p)));
         out.multi = self.multi && other.dimension() < 0;
         out.collection = self.collection
             && (other.dimension() < 0
