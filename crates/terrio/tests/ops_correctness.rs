@@ -57,13 +57,20 @@ fn calc_round_large_negative_decimals_and_i128_min_do_not_panic() {
         assert_eq!(out.raster.get(0, 0, 1), 0.0, "{expr}");
     }
 
-    // i128::MIN = -170141183460469231731687303715884105728; division/mod/negation must return an error, not panic.
+    // i128::MIN = -170141183460469231731687303715884105728: floor-div and negation overflow,
+    // while `i128::MIN % -1` evaluates to 0 (matching Python).
     let i128_min = "(-170141183460469231731687303715884105727 - 1)";
-    for expr in [format!("{i128_min} // -1 + A * 0"), format!("{i128_min} % -1 + A * 0"), format!("-{i128_min} + A * 0")] {
+    for expr in [format!("{i128_min} // -1 + A * 0"), format!("-{i128_min} + A * 0")] {
         let res =
             calc(&[CalcInput { name: "A".into(), ds: &src, band: 1 }], &CalcOptions { calc: vec![expr.clone()], ..Default::default() });
         assert!(res.is_err(), "{expr} should return overflow error rather than panicking");
     }
+    let rem_out = calc(
+        &[CalcInput { name: "A".into(), ds: &src, band: 1 }],
+        &CalcOptions { calc: vec![format!("{i128_min} % -1 + A * 0")], ..Default::default() },
+    )
+    .unwrap();
+    assert_eq!(rem_out.raster.get(0, 0, 0), 0.0);
 }
 
 #[test]
@@ -144,18 +151,18 @@ fn warp_cutline_with_empty_polygon_or_empty_ring_does_not_panic() {
     assert_eq!(warped.raster.cols, 2);
     assert_eq!(warped.raster.rows, 2);
 
-    // Completely empty polygon cutline must return an error, not panic.
+    // Completely empty polygon cutline is rejected by Cutline::from_vector.
     let mut empty_layer = Layer::new("empty");
     empty_layer.push(Feature {
         fid: 1,
         geometry: Some(Geometry::Polygon { exterior: Ring(vec![]), interiors: vec![] }),
         attributes: vec![],
     });
-    let cutline_res = Cutline::from_vector(&VectorDataset::new(vec![empty_layer], VectorDriver::GeoJSON));
-    assert!(
-        cutline_res.is_err()
-            || warp(&[&src], &WarpOptions { cutline: cutline_res.ok(), crop_to_cutline: true, ..Default::default() }).is_err()
-    );
+    assert!(Cutline::from_vector(&VectorDataset::new(vec![empty_layer], VectorDriver::GeoJSON)).is_err());
+
+    // A manually constructed Cutline containing only empty rings must return Err in warp (not panic or produce infinite bounds).
+    let empty_cutline = Cutline { polygons: vec![vec![vec![]]], srs: None };
+    assert!(warp(&[&src], &WarpOptions { cutline: Some(empty_cutline), crop_to_cutline: true, ..Default::default() }).is_err());
 }
 
 #[test]

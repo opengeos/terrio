@@ -2636,6 +2636,9 @@ fn cutline_extent(c: &Cutline, s: &Source, dst_srs: &SpatialRef, has_res: bool) 
     for t in [&to_src, &to_dst].into_iter().flatten() {
         t.check_policy()?;
     }
+    if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
+        return Err(Error::InvalidArgument("the cutline has no points to crop to".into()));
+    }
     Ok((x0, y0, x1, y1))
 }
 

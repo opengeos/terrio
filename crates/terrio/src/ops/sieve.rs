@@ -227,7 +227,8 @@ pub fn sieve(ds: &RasterDataset, o: &SieveOptions) -> Result<RasterDataset> {
             cur = next;
         }
     }
-    // Pixels of merged areas take their new area's value; the others keep theirs.
+    // Pixels of merged areas take their new area's integer label (matching GDAL's GDALSieveFilter);
+    // unmerged and masked pixels keep their original source samples (preserving NaN nodata and floats).
     let out: Vec<f64> = (0..w * h)
         .map(|p| {
             let id = ids[p];

@@ -717,7 +717,8 @@ fn python_binary(op: BinOp, a: &Val, b: &Val) -> Result<Val> {
                 Val::Int(q - if y < 0 && r != 0 { 1 } else { 0 })
             }
             BinOp::Mod => {
-                let r = x.checked_rem(y).ok_or_else(overflow)?;
+                // `i128::MIN % -1` is mathematically 0 (matching Python), even though Rust's `%` panics.
+                let r = x.checked_rem(y).unwrap_or(0);
                 Val::Int(if r != 0 && ((r < 0) != (y < 0)) { r + y } else { r })
             }
             BinOp::Pow if y < 0 => Val::Float((x as f64).powf(y as f64)),
@@ -1056,9 +1057,13 @@ impl Evaluator<'_> {
                                 .map(|&x| {
                                     let q = x.div_euclid(p);
                                     let r = x.rem_euclid(p);
-                                    wrap((q + i128::from(r > p - r)).wrapping_mul(p), a.dt)
+                                    let scaled = q
+                                        .checked_add(i128::from(r > p - r))
+                                        .and_then(|v| v.checked_mul(p))
+                                        .ok_or_else(|| Error::InvalidArgument("integer overflow".into()))?;
+                                    Ok(wrap(scaled, a.dt))
                                 })
-                                .collect()
+                                .collect::<Result<Vec<_>>>()?
                         } else {
                             vec![0; a.ints().len()]
                         };
