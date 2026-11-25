@@ -160,7 +160,7 @@ fn ellipsoid(value: &Value) -> Result<String> {
     Ok(named("ELLIPSOID", string(o, "name")?, args))
 }
 fn datum(value: &Value) -> Result<(String, Option<String>)> {
-    let o = object(value, &["name", "ellipsoid", "prime_meridian", "members", "accuracy"])?;
+    let o = object(value, &["name", "ellipsoid", "prime_meridian", "members", "accuracy", "anchor_epoch"])?;
     let ensemble = o.get("type").and_then(Value::as_str) == Some("DatumEnsemble") || o.contains_key("members");
     typed(o, if ensemble { "DatumEnsemble" } else { "GeodeticReferenceFrame" })?;
     let mut args = Vec::new();
@@ -179,6 +179,13 @@ fn datum(value: &Value) -> Result<(String, Option<String>)> {
         return Err(bad("accuracy is only supported on datum ensembles"));
     }
     args.push(ellipsoid(required(o, "ellipsoid")?)?);
+    // A reference frame's anchor epoch, as PROJ writes it (#1012 item 65).
+    if let Some(epoch) = anchor_epoch(o)? {
+        if ensemble {
+            return Err(bad("anchor_epoch is not supported on datum ensembles"));
+        }
+        args.push(node("ANCHOREPOCH", &[epoch.to_string()]));
+    }
     if ensemble {
         let accuracy = required(o, "accuracy")?
             .as_str()
@@ -248,11 +255,21 @@ fn coordinate_system(value: &Value, geographic: bool) -> Result<(Vec<String>, St
     Ok((out, units.remove(0).1))
 }
 
-/// A vertical reference frame, by its name and identifiers.
+/// A datum's `anchor_epoch`, a finite decimal year, when given.
+fn anchor_epoch(o: &serde_json::Map<String, Value>) -> Result<Option<f64>> {
+    o.get("anchor_epoch")
+        .map(|e| e.as_f64().filter(|e| e.is_finite()).ok_or_else(|| bad("anchor_epoch must be a finite number")))
+        .transpose()
+}
+
+/// A vertical reference frame, by its name, anchor epoch and identifiers.
 fn vertical_datum(value: &Value) -> Result<String> {
-    let o = object(value, &["name"])?;
+    let o = object(value, &["name", "anchor_epoch"])?;
     typed(o, "VerticalReferenceFrame")?;
     let mut args = vec![];
+    if let Some(epoch) = anchor_epoch(o)? {
+        args.push(node("ANCHOREPOCH", &[epoch.to_string()]));
+    }
     id(o, &mut args)?;
     Ok(named("VDATUM", string(o, "name")?, args))
 }

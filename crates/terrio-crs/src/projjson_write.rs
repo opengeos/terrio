@@ -33,7 +33,7 @@ fn unsupported(what: impl std::fmt::Display) -> Error {
 
 /// The PROJJSON of a CRS.
 pub(crate) fn write(s: &SpatialRef) -> Result<String> {
-    let mut v = crs(s)?;
+    let mut v = crs(s, anchors(s))?;
     if let Value::Object(o) = &mut v {
         o.insert("$schema".into(), SCHEMA.into());
     }
@@ -52,41 +52,87 @@ fn with_id(mut v: Value, code: Option<u32>) -> Value {
     v
 }
 
-fn crs(s: &SpatialRef) -> Result<Value> {
+/// Whether the WKT 2 a CRS was read from gives its geodetic and its vertical datum an
+/// `ANCHOREPOCH`, which PROJ 9.9.0 writes (#1012 item 65): then the epoch is written also where
+/// this writer rebuilds the datum from the registry (an identified code, the parts of a compound
+/// one), from PROJ's database. PROJ writes none for a datum without one, nor for WKT 1 or a PROJ
+/// string; nor does this for an EPSG code, whose registry WKT is GDAL's WKT 1, though PROJ writes
+/// them for the code from its database. The vertical datum's epoch is the WKT's own, as PROJ writes
+/// it (2011 on the CGVD2013a(2010) datum, whose registry epoch is 2010).
+#[derive(Clone, Copy)]
+struct Anchors {
+    geodetic: bool,
+    vertical: bool,
+    /// The vertical datum's own `ANCHOREPOCH` value.
+    vertical_epoch: Option<f64>,
+}
+
+fn anchors(s: &SpatialRef) -> Anchors {
+    let none = Anchors { geodetic: false, vertical: false, vertical_epoch: None };
+    let Some(w) = s.wkt.as_deref().filter(|_| s.proj4.is_none()) else { return none };
+    let Some(root) = crate::parsed::tree(w).filter(|root| crate::model::dialect(w, root) == crate::model::Dialect::Wkt2) else {
+        return none;
+    };
+    let mut out = none;
+    // Each epoch belongs to the datum node it is a child of; a bound CRS's target datum is not
+    // the CRS's own (PROJ 9.9.0 writes no epoch for a source whose WKT has none).
+    fn walk(node: &Node, out: &mut Anchors) {
+        if node.is(&["TARGETCRS"]) {
+            return;
+        }
+        if let Some(epoch) = node.child("ANCHOREPOCH") {
+            if node.is(&["VDATUM", "VERTICALDATUM", "VRF"]) {
+                out.vertical = true;
+                out.vertical_epoch = epoch.num(0).filter(|e| e.is_finite());
+            } else if node.is(&["DATUM", "GEODETICDATUM", "TRF"]) {
+                out.geodetic = true;
+            }
+        }
+        for a in &node.args {
+            if let crate::wkt1::Arg::Node(n) = a {
+                walk(n, out);
+            }
+        }
+    }
+    walk(&root, &mut out);
+    out
+}
+
+fn crs(s: &SpatialRef, anchors: Anchors) -> Result<Value> {
     if let Some(code) = s.epsg {
         // A compound code, given or declared, by the registry; a compound CRS identified by its
         // parts (opengeos/terrio#1012 item 47) by its own text below, as PROJ 9.9.0 writes it.
         let declared = s.wkt.as_deref().is_none_or(|w| crate::declared_epsg(w) == Some(code));
         if let Some(c) = epsg::compound(code).filter(|_| declared) {
-            let horizontal = crs(&SpatialRef::from_epsg(c.horizontal)?)?;
+            let horizontal = crs(&SpatialRef::from_epsg(c.horizontal)?, anchors)?;
             return Ok(with_id(
-                json!({"type": "CompoundCRS", "name": c.name, "components": [horizontal, vertical(c.vertical)?]}),
+                json!({"type": "CompoundCRS", "name": c.name, "components": [horizontal, vertical(c.vertical, anchors)?]}),
                 Some(code),
             ));
         }
         if epsg::vertical(code).is_some() {
-            return vertical(code);
+            return vertical(code, anchors);
         }
     }
     let wkt = s.to_wkt().ok_or_else(|| unsupported("a CRS without definition"))?;
     if let Some((h, v)) = crate::def::split_compound(&wkt) {
         // uncut: stored or built WKT
-        let horizontal = crs(&SpatialRef::from_wkt_text(&h))?;
+        let horizontal = crs(&SpatialRef::from_wkt_text(&h), anchors)?;
         // Its EPSG code only when its unit and direction are the code's: not heights in feet as
         // the code's metres.
         let code =
             crate::def::vertical_code(&v).ok_or_else(|| unsupported("a vertical CRS without an EPSG code of its unit and direction"))?;
         let name = wkt1::parse(&wkt).and_then(|n| n.name().map(str::to_string)).unwrap_or_else(|| "unknown".into());
         return Ok(with_id(
-            json!({"type": "CompoundCRS", "name": name, "components": [horizontal, vertical(code)?]}),
+            json!({"type": "CompoundCRS", "name": name, "components": [horizontal, vertical(code, anchors)?]}),
             crate::declared_epsg(&wkt).filter(|c| crate::declared_fits(&wkt, *c)),
         ));
     }
-    horizontal(s, &wkt)
+    horizontal(s, &wkt, anchors)
 }
 
 /// An EPSG vertical CRS.
-fn vertical(code: u32) -> Result<Value> {
+fn vertical(code: u32, anchors: Anchors) -> Result<Value> {
     let v = epsg::vertical(code).ok_or_else(|| unsupported(format!("EPSG:{code}, not a vertical CRS terrio knows")))?;
     let datum_name = wkt1::parse(&v.wkt)
         .and_then(|n| n.child("VERT_DATUM").or_else(|| n.child("VDATUM")).and_then(|d| d.name().map(str::to_string)))
@@ -94,10 +140,15 @@ fn vertical(code: u32) -> Result<Value> {
     let (name, abbreviation, direction) =
         if v.down { ("Gravity-related depth", "D", "down") } else { ("Gravity-related height", "H", "up") };
     let axis = json!({"name": name, "abbreviation": abbreviation, "direction": direction, "unit": length_unit(v.to_meter, None)});
+    let mut datum = json!({"type": "VerticalReferenceFrame", "name": datum_name});
+    // Its anchor epoch, which PROJ 9.9.0 writes (#1012 item 65): the WKT's, else the registry's.
+    if let Some(epoch) = anchors.vertical_epoch.or_else(|| epsg::anchor_epoch(v.datum)).filter(|_| anchors.vertical) {
+        datum["anchor_epoch"] = epoch.into();
+    }
     Ok(json!({
         "type": "VerticalCRS",
         "name": v.name,
-        "datum": with_id(json!({"type": "VerticalReferenceFrame", "name": datum_name}), (v.datum != 0).then_some(v.datum)),
+        "datum": with_id(datum, (v.datum != 0).then_some(v.datum)),
         "coordinate_system": {"subtype": "vertical", "axis": [axis]},
         "id": id(code),
     }))
@@ -130,7 +181,7 @@ fn base_node(root: &Node) -> Option<&Node> {
         .or_else(|| [GEOGRAPHIC_OR_GEODETIC_CRS, WKT1_GEOGRAPHIC, WKT1_GEOCENTRIC].iter().any(|keys| root.is(keys)).then_some(root))
 }
 
-fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
+fn horizontal(s: &SpatialRef, wkt: &str, anchors: Anchors) -> Result<Value> {
     let root = wkt1::parse(wkt).ok_or_else(|| unsupported("an unreadable WKT"))?;
     let def = Def::new(s)?;
     let entry = s.epsg.and_then(epsg::get);
@@ -200,7 +251,7 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
         t => t,
     };
     let mut written = vec!["towgs84"];
-    let datum = datum(base, &p, &def)?;
+    let datum = datum(base, &p, &def, anchors.geodetic)?;
     let iau = match (code, s.authority()) {
         (None, Some(("IAU_2015", n))) => Some(json!({"authority": "IAU", "code": n, "version": 2015})),
         _ => None,
@@ -321,7 +372,7 @@ fn spherical_cs(root: &Node) -> bool {
 }
 
 /// A geodetic reference frame, from the WKT's datum and ellipsoid nodes and the PROJ string.
-fn datum(base: &Node, p: &Params, def: &Def) -> Result<Value> {
+fn datum(base: &Node, p: &Params, def: &Def, anchored: bool) -> Result<Value> {
     let node = base.datum();
     let code = node.and_then(Node::epsg);
     let name =
@@ -350,6 +401,17 @@ fn datum(base: &Node, p: &Params, def: &Def) -> Result<Value> {
     }
     let ellipsoid = with_id(ellipsoid, e.and_then(Node::epsg));
     let mut d = json!({"type": "GeodeticReferenceFrame", "name": name, "ellipsoid": ellipsoid});
+    // A WKT 2 datum's `ANCHOREPOCH`, which PROJ 9.9.0 writes (#1012 item 65), else the EPSG
+    // datum's where the WKT 2 read had one (`anchored`) but the datum is the registry's here; not
+    // for a WKT without one, which PROJ leaves without.
+    if let Some(epoch) = node
+        .and_then(|n| n.child("ANCHOREPOCH"))
+        .and_then(|a| a.num(0))
+        .filter(|e| e.is_finite())
+        .or_else(|| code.filter(|_| anchored).and_then(epsg::anchor_epoch))
+    {
+        d["anchor_epoch"] = epoch.into();
+    }
     if let Some(pm) = prime_meridian(base, p)? {
         d["prime_meridian"] = pm;
     }

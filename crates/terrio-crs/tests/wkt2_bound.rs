@@ -235,3 +235,29 @@ fn an_unapplied_transformation_method_is_refused() {
         assert_eq!(crs.to_proj4(), None, "{method}");
     }
 }
+
+/// A WKT 1 `GEOGCS` target without `TOWGS84` (#1012 item 53): PROJ 9.9.0 chains the bound shift
+/// with the target's own transformation (Monte Mario to WGS 84 (4)), whether the target has its
+/// EPSG codes or only ESRI's datum name; with a `TOWGS84` on the target, its ballpark.
+#[test]
+fn a_wkt1_target_is_chained_through_its_own_transformations() {
+    offline();
+    let bound = |target: &str| {
+        format!(
+            r#"BOUNDCRS[SOURCECRS[GEOGCRS["Bessel src",DATUM["unknown",ELLIPSOID["Bessel 1841",6377397.155,299.1528128,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["longitude",east,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["latitude",north,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]]]],TARGETCRS[{target}],ABRIDGEDTRANSFORMATION["src to MM",METHOD["Position Vector transformation (geog2D domain)",ID["EPSG",9606]],PARAMETER["X-axis translation",-100,ID["EPSG",8605]],PARAMETER["Y-axis translation",-50,ID["EPSG",8606]],PARAMETER["Z-axis translation",80,ID["EPSG",8607]],PARAMETER["X-axis rotation",0,ID["EPSG",8608]],PARAMETER["Y-axis rotation",0,ID["EPSG",8609]],PARAMETER["Z-axis rotation",0,ID["EPSG",8610]],PARAMETER["Scale difference",1,ID["EPSG",8611]]]]"#
+        )
+    };
+    let esri = r#"GEOGCS["MM",DATUM["D_Monte_Mario",SPHEROID["International_1924",6378388,297]],PRIMEM["Greenwich",0],UNIT["Degree",0.0174532925199433]]"#;
+    let coded = r#"GEOGCS["Monte Mario",DATUM["Monte_Mario",SPHEROID["International 1924",6378388,297],AUTHORITY["EPSG","6265"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4265"]]"#;
+    let shifted = esri.replace("297]]", "297],TOWGS84[-104.1,-49.1,-9.9,0.971,-2.917,0.714,-11.68]]");
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let chained = (11.999455115472871, 42.00324278663212);
+    for (target, expected) in [(esri, chained), (coded, chained), (shifted.as_str(), (12.0, 42.0))] {
+        let src = crs(&bound(target));
+        let got = Transformer::new(&src, &wgs84).unwrap().transform(12.0, 42.0).unwrap();
+        assert!(metres(got, expected) < 1e-3, "{target}: {got:?}");
+    }
+    // Back from WGS 84, through the inverse of Monte Mario to WGS 84 (4).
+    let got = Transformer::new(&wgs84, &crs(&bound(esri))).unwrap().transform(chained.0, chained.1).unwrap();
+    assert!(metres(got, (11.999999911330553, 42.000000338587675)) < 1e-3, "{got:?}");
+}

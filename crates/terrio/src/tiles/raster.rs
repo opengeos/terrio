@@ -36,19 +36,82 @@ pub(crate) struct Image {
     pub palette: bool,
 }
 
+/// Verifies embedded VP8, VP8L, and ANMF frame headers (including sub-chunks inside ANMF)
+/// stay within the declared WebP canvas dimensions before `image-webp` allocates frame planes.
+fn validate_webp_frames(b: &[u8], canvas_w: u32, canvas_h: u32) -> Result<()> {
+    validate_webp_chunks(b.get(12..).unwrap_or(&[]), canvas_w, canvas_h, true)
+}
+
+fn validate_webp_chunks(chunks: &[u8], canvas_w: u32, canvas_h: u32, allow_anmf: bool) -> Result<()> {
+    let mut off = 0usize;
+    while off + 8 <= chunks.len() {
+        let tag = &chunks[off..off + 4];
+        let len = u32::from_le_bytes([chunks[off + 4], chunks[off + 5], chunks[off + 6], chunks[off + 7]]) as usize;
+        let Some(end) = off.checked_add(8).and_then(|s| s.checked_add(len)) else {
+            return Err(Error::InvalidData("tile image: WebP chunk length overflows".into()));
+        };
+        if end > chunks.len() {
+            break;
+        }
+        let payload = &chunks[off + 8..end];
+        let check = |fw: u32, fh: u32| -> Result<()> {
+            if fw == 0 || fh == 0 || fw > canvas_w || fh > canvas_h {
+                return Err(Error::ResourceLimit(format!(
+                    "tile image: WebP embedded frame {fw}x{fh} exceeds canvas {canvas_w}x{canvas_h}"
+                )));
+            }
+            Ok(())
+        };
+        match tag {
+            b"VP8 " if payload.len() >= 10 && payload[3..6] == [0x9d, 0x01, 0x2a] => {
+                let fw = u32::from(u16::from_le_bytes([payload[6], payload[7]]) & 0x3fff);
+                let fh = u32::from(u16::from_le_bytes([payload[8], payload[9]]) & 0x3fff);
+                check(fw, fh)?;
+            }
+            b"VP8L" if payload.len() >= 5 && payload[0] == 0x2f => {
+                let bits = u32::from_le_bytes([payload[1], payload[2], payload[3], payload[4]]);
+                check((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1)?;
+            }
+            b"ANMF" if allow_anmf && payload.len() >= 16 => {
+                let fw = (u32::from(payload[6]) | (u32::from(payload[7]) << 8) | (u32::from(payload[8]) << 16)) + 1;
+                let fh = (u32::from(payload[9]) | (u32::from(payload[10]) << 8) | (u32::from(payload[11]) << 16)) + 1;
+                check(fw, fh)?;
+                validate_webp_chunks(&payload[16..], canvas_w, canvas_h, false)?;
+            }
+            _ => {}
+        }
+        let padded = len.saturating_add(len & 1);
+        let Some(next) = off.checked_add(8).and_then(|s| s.checked_add(padded)) else {
+            break;
+        };
+        off = next;
+    }
+    Ok(())
+}
+
 /// Decodes a PNG, JPEG, WebP or AVIF tile to 8-bit samples.
 pub(crate) fn decode_image(b: &[u8]) -> Result<Image> {
     let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("tile image: {e}"));
     if b.starts_with(b"\x89PNG") {
+        let png_err = |e: png::DecodingError| match e {
+            png::DecodingError::LimitsExceeded => Error::ResourceLimit(format!("tile image: {e}")),
+            other => err(&other),
+        };
         let mut d = png::Decoder::new(std::io::Cursor::new(b));
+        d.set_limits(png::Limits { bytes: 64 << 20 });
         d.set_transformations(png::Transformations::normalize_to_color8());
-        let mut reader = d.read_info().map_err(|e| err(&e))?;
+        let mut reader = d.read_info().map_err(png_err)?;
         let palette = reader.info().color_type == png::ColorType::Indexed;
-        let mut buf = vec![0u8; reader.output_buffer_size().ok_or_else(|| err(&"too large"))?];
-        let info = reader.next_frame(&mut buf).map_err(|e| err(&e))?;
+        let out_size = reader.output_buffer_size().ok_or_else(|| Error::ResourceLimit("tile image: PNG tile exceeds limit".into()))?;
+        if out_size > 64 << 20 {
+            return Err(Error::ResourceLimit(format!("tile image: PNG tile size {out_size} exceeds 64 MiB limit")));
+        }
+        let mut buf = crate::dataset::fallible::filled_now(out_size, 0u8, "a PNG tile")?;
+        let info = reader.next_frame(&mut buf).map_err(png_err)?;
         let channels = info.color_type.samples();
         let (w, h) = (info.width as usize, info.height as usize);
-        buf.truncate(w * h * channels);
+        let expected = crate::dataset::fallible::len(&[w, h, channels], "a PNG tile")?;
+        buf.truncate(expected);
         return Ok(Image { w, h, channels, data: buf, palette });
     }
     if b.starts_with(&[0xff, 0xd8]) {
@@ -60,7 +123,12 @@ pub(crate) fn decode_image(b: &[u8]) -> Result<Image> {
         let mut d = image_webp::WebPDecoder::new(std::io::Cursor::new(b)).map_err(|e| err(&e))?;
         let (w, h) = d.dimensions();
         let channels = if d.has_alpha() { 4 } else { 3 };
-        let mut data = vec![0u8; d.output_buffer_size().ok_or_else(|| err(&"too large"))?];
+        let out_size = d.output_buffer_size().ok_or_else(|| err(&"too large"))?;
+        if out_size > (64 << 20) {
+            return Err(Error::ResourceLimit(format!("WebP tile decoded size {out_size} exceeds 64 MiB limit")));
+        }
+        validate_webp_frames(b, w, h)?;
+        let mut data = crate::dataset::fallible::filled_now(out_size, 0u8, "a WebP tile")?;
         d.read_image(&mut data).map_err(|e| err(&e))?;
         return Ok(Image { w: w as usize, h: h as usize, channels, data, palette: false });
     }
@@ -1559,6 +1627,50 @@ mod tests {
         let mut tiles = Vec::new();
         make_tiles_from_dataset(&utm, &o, &mut tiles).unwrap();
         assert!(sorted(tiles) == sorted(reference.tiles));
+    }
+
+    #[test]
+    fn webp_embedded_frame_exceeding_vp8x_canvas_is_rejected() {
+        // Minimal RIFF WEBP with a 1x1 VP8X canvas and an embedded 16383x16383 VP8 keyframe header.
+        let mut body = b"WEBP".to_vec();
+        body.extend_from_slice(b"VP8X");
+        body.extend_from_slice(&10u32.to_le_bytes());
+        body.extend_from_slice(&[0u8; 10]); // canvas = 1x1 (width-1=0, height-1=0)
+        body.extend_from_slice(b"VP8 ");
+        body.extend_from_slice(&10u32.to_le_bytes());
+        let mut vp8 = [0u8; 10];
+        vp8[3..6].copy_from_slice(&[0x9d, 0x01, 0x2a]);
+        vp8[6..8].copy_from_slice(&16383u16.to_le_bytes());
+        vp8[8..10].copy_from_slice(&16383u16.to_le_bytes());
+        body.extend_from_slice(&vp8);
+        let mut webp = b"RIFF".to_vec();
+        webp.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        webp.extend_from_slice(&body);
+        let Err(err) = decode_image(&webp) else { panic!("expected ResourceLimit") };
+        assert!(matches!(err, Error::ResourceLimit(_)), "got: {err:?}");
+
+        // ANMF frame with valid 1x1 header but embedded oversized VP8L sub-chunk is also rejected.
+        let mut anmf_payload = vec![0u8; 16]; // x=0, y=0, w-1=0 (1), h-1=0 (1)
+        anmf_payload.extend_from_slice(b"VP8L");
+        anmf_payload.extend_from_slice(&5u32.to_le_bytes());
+        let bits = 16382u32 | (16382u32 << 14); // 16383x16383
+        anmf_payload.push(0x2f);
+        anmf_payload.extend_from_slice(&bits.to_le_bytes());
+        anmf_payload.push(0); // pad odd chunk length
+        let mut anim_body = b"WEBP".to_vec();
+        anim_body.extend_from_slice(b"VP8X");
+        anim_body.extend_from_slice(&10u32.to_le_bytes());
+        let mut vp8x = [0u8; 10];
+        vp8x[0] = 0x02; // animation flag
+        anim_body.extend_from_slice(&vp8x);
+        anim_body.extend_from_slice(b"ANMF");
+        anim_body.extend_from_slice(&(anmf_payload.len() as u32).to_le_bytes());
+        anim_body.extend_from_slice(&anmf_payload);
+        let mut anim_webp = b"RIFF".to_vec();
+        anim_webp.extend_from_slice(&(anim_body.len() as u32).to_le_bytes());
+        anim_webp.extend_from_slice(&anim_body);
+        let Err(err) = validate_webp_frames(&anim_webp, 1, 1) else { panic!("expected ResourceLimit") };
+        assert!(matches!(err, Error::ResourceLimit(_)), "got: {err:?}");
     }
 }
 

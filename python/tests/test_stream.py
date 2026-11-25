@@ -100,6 +100,26 @@ def test_bbox_and_errors(tmp_path):
         stream.__arrow_c_stream__()
 
 
+def test_flatgeobuf_streams_with_a_bbox_keep_what_open_vector_keeps(tmp_path):
+    box = (-100.0, -80.0, -90.0, -70.0)
+    collection = squares(1000).__geo_interface__
+    indexed = str(tmp_path / "indexed.fgb")
+    terrio.Layer.from_geojson(collection, name="squares", crs="EPSG:4326").write(indexed)
+    # A feature without a geometry makes the writer leave out the spatial index.
+    collection["features"][-1]["geometry"] = None
+    unindexed = str(tmp_path / "unindexed.fgb")
+    terrio.Layer.from_geojson(collection, name="squares", crs="EPSG:4326").write(unindexed)
+
+    def ids(layer):
+        return sorted(f["properties"]["i"] for f in layer.__geo_interface__["features"])
+
+    expected = ids(terrio.open_vector(indexed, bbox=box)[0])
+    assert 0 < len(expected) < 1000
+    for p in [indexed, unindexed]:
+        assert ids(terrio.open_vector(p, bbox=box)[0]) == expected, p
+        assert ids(terrio.open_stream(p, bbox=box, batch_size=128).read_all()) == expected, p
+
+
 def test_geoparquet_arrow_streams_hand_out_the_files_batches(tmp_path):
     pa = pytest.importorskip("pyarrow")
     pq = pytest.importorskip("pyarrow.parquet")

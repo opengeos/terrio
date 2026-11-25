@@ -689,6 +689,8 @@ def test_every_path_pattern_names_files_of_the_repository():
 
 def test_changed_files_choose_the_formats_to_measure():
     """A format's own file picks it; a shared one picks every format; others pick none."""
+    # GeoPackage's `where` read goes through `terrio.sql` and the eager vector read.
+    assert all("geopackage" in perf_matrix.touched([f]) for f in ("python/src/ops.rs", "crates/terrio/src/drivers/vector/mod.rs"))
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
     assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "flatgeobuf", "geopackage", "geotiff-write",

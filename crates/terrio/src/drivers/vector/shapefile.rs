@@ -355,7 +355,7 @@ pub fn parse(
     let mut pos = 100;
     while pos + 8 <= shp.len() {
         let words = u32::from_be_bytes([shp[pos + 4], shp[pos + 5], shp[pos + 6], shp[pos + 7]]) as usize;
-        let end = (pos + 8 + 2 * words).min(shp.len());
+        let end = pos.checked_add(8).and_then(|p| words.checked_mul(2).and_then(|b| p.checked_add(b))).unwrap_or(shp.len()).min(shp.len());
         geometries.push(parse_shape(&shp[pos + 8..end], method));
         pos = end;
     }
@@ -459,9 +459,15 @@ fn parse_shape(rec: &[u8], method: OrganizePolygons) -> Option<Geometry> {
         return None;
     }
     let points_at = parts_at + if multipoint { 0 } else { 4 * num_parts };
-    let mut starts: Vec<usize> =
-        if multipoint { vec![0] } else { (0..num_parts).map(|i| i32_at(parts_at + 4 * i).map(|v| v as usize)).collect::<Option<_>>()? };
+    let mut starts: Vec<usize> = if multipoint {
+        vec![0]
+    } else {
+        (0..num_parts).map(|i| i32_at(parts_at + 4 * i).and_then(|v| usize::try_from(v).ok())).collect::<Option<_>>()?
+    };
     starts.push(num_points);
+    if !starts.windows(2).all(|w| w[0] <= w[1]) {
+        return None;
+    }
     let z_at = points_at + 16 * num_points + 16;
     let m_at = if has_z { z_at + 8 * num_points + 16 } else { z_at };
     let coords: Vec<Coord> = (0..num_points)

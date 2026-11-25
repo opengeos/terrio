@@ -21,7 +21,6 @@
 +proj=isea +k_0=0.5r	ERR
 +proj=isea +x_0=0.5r	ERR
 +proj=isea +y_0=0.5r	ERR
-+proj=krovak +alpha=abc	ERR
 +proj=krovak +k_0=0.5r	ERR
 +proj=labrd +lat_0=-18.9 +lon_0=46.4 +azi=18.9 +k_0=0.5r	ERR
 +proj=lcc +lat_1=30 +lat_2=50 +k_0=0.5r	ERR
@@ -29,7 +28,6 @@
 +proj=mbtfps +x_0=0.5r	ERR
 +proj=mbtfps +y_0=0.5r	ERR
 +proj=merc +k_0=0.5r	ERR
-+proj=mod_krovak +alpha=abc	ERR
 +proj=mod_krovak +k_0=0.5r	ERR
 +proj=murd2 +lat_1=30 +lat_2=50 +k_0=0.5r	ERR
 +proj=murd2 +lat_1=30 +lat_2=50 +x_0=0.5r	ERR

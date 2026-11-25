@@ -149,6 +149,8 @@ crates/terrio-crs/data/crs_catalog.tsv.zst are derived from the same dataset (EP
 through PROJ 9.9.0's database and GDAL (scripts/gen_crs_catalog.py), under the same terms.
 The EPSG names and aliases in crates/terrio-crs/data/crs_names.tsv.zst are derived from the
 same dataset, through PROJ 9.9.0's database (scripts/gen_crs_names.py), under the same terms.
+So are the EPSG datums' anchor epochs in crates/terrio-crs/data/datum_anchor_epochs.tsv, through
+PROJ 9.9.0's database (scripts/gen_datum_anchor_epochs.py).
 So are the EPSG WKTs and points of the test data crates/terrio-crs/tests/data/wkt_unresolved.json
 (PROJ 9.9.0's WKTs of EPSG CRSs and its placements of points in them, by
 scripts/gen_wkt_unresolved.py).

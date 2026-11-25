@@ -195,8 +195,10 @@ fn open_raster<'py>(py: Python<'py>, path: &str, lazy: bool) -> PyResult<Bound<'
 ///     layers: Only these layers (names). `None` reads them all.
 ///     bbox: Only the features whose bounding box intersects this rectangle `(min_x, min_y,
 ///         max_x, max_y)`, in the layer's CRS. GeoPackages find them through their R-tree
-///         index and GeoParquet files through their bounding-box columns, without reading the
-///         other features; other formats are read whole, then filtered.
+///         index, FlatGeobuf files with a spatial index through it (by range requests when
+///         remote) and GeoParquet files through their bounding-box columns, without reading the
+///         other features; unindexed FlatGeobuf files and other formats are read whole, then
+///         filtered.
 ///     options: Driver open options by their GDAL names, as `terrio convert --oo` takes them:
 ///         the CSV options (`X_POSSIBLE_NAMES`, ...), the tile archive options (`ZOOM_LEVEL`,
 ///         ...) and the HECRAS options of HEC-RAS geometry and plan files (`CELL_SUMMARIES`,

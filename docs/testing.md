@@ -2078,17 +2078,18 @@ Monte Mario (Rome); NAD83(2011) on a renamed datum, which terrio reads as no cod
 Transverse Mercator CRSs without code on NAD83, ED50, DHDN, OSGB36 and Monte Mario (Rome) given as
 WKT 1 `GEOGCS` and WKT 2 `BASEGEOGCRS`, DHDN / 3-degree Gauss-Kruger zone 3 with another false
 easting, and renamed ESRI WKTs with an ID of an authority PROJ does not know (`LOCAL`), which PROJ
-places by the code's own transformations. So do the WKTs it resolves (WKT 2 without IDs, WKT 2 with
-the datum's ID). WKT 1 with the datum's `AUTHORITY` alone falls under one or the other, by its name.
+places by the first CRS of the datum with transformations: for most WKTs the CRS of their code,
+for ONGD14 its geocentric CRS. So do the WKTs it resolves (WKT 2 without IDs, WKT 2 with the
+datum's ID). WKT 1 with the datum's `AUTHORITY` alone falls under one or the other, by its name.
 The WKTs are variants of the 16 geographic CRSs whose ESRI or renamed WKT PROJ places through an
 intermediate datum (Monte Mario (Rome), Tokyo 1892, DHDN, ...), of every 25th EPSG geographic 2D
 CRS, and ESRI WKTs of eight projected CRSs (three with northing first). The points go to and from
-WGS 84 and, for a sample, to ETRS89, NAD83 and ETRS89 / UTM zone 32N: 1,121 cases. 1,100 of them are
-placed within 1 mm of PROJ, 112 of those where PROJ places them otherwise than by the code, by
-0.12 m to 388 m (five, ESRI's ONGD14 to WGS 84 and its variants, by 1.23 m through PROJ's datum
-pivot). The other 21 are pinned at the code's placement: those PROJ places through its ballpark
-into a CRS of a renamed datum (also under the CRS's own name), or by its datum pivot into a CRS it
-cannot find by its name (ONGD14 renamed), which terrio does not follow yet. ATF (Paris) is left
+WGS 84 and, for a sample, to ETRS89, NAD83 and ETRS89 / UTM zone 32N: 1,121 cases, all placed
+within 1 mm of PROJ, 133 of them where PROJ places them otherwise than by the code, by 0.12 m to
+about 390 m: through its search, through its ballpark into a CRS of a renamed datum (also under
+the CRS's own name), or by its datum pivot (ESRI's ONGD14 to WGS 84 and its variants, ONGD14
+renamed and with an ID of an unknown authority, by 1.2 m). None is pinned at the code's placement
+any more. ATF (Paris) is left
 out (its ESRI WKT is checked in `grads_and_prime_meridians`) (`cargo test -p terrio-crs --test wkt_unresolved`;
 regenerate with `scripts/gen_wkt_unresolved.py`, pyproj 3.8.0; the names PROJ looks CRSs up by come
 from `scripts/gen_crs_names.py`).
@@ -2135,8 +2136,9 @@ as GDAL does, also of a code terrio does not carry (EPSG:3752 gives 3994) (`carg
 when that is the same CRS (definition, datum, transformations and area of use: EPSG:4329 as 4979),
 else as WKT in a citation; read back, each places its point as the code does, but EPSG:6986, whose
 WKT terrio reads about 0.3 m from PROJ (opengeos/terrio#1012, item 19). GeoKeys giving a deprecated
-projected code are read as GDAL 3.12.2 reads them: a single replacement's CRS (EPSG:4855 as 5105,
-2036 as 2953, 3752 as 3994), another code its own. The EPSG table itself is generated with
+projected code are read as GDAL 3.12.2 reads them: alone, a single replacement's CRS (EPSG:4855 as
+5105, 2036 as 2953, 3752 as 3994) in the keys' linear unit, another code its own; beside other keys,
+its own (`geokeys_read_gdal`). The EPSG table itself is generated with
 `OSR_USE_NON_DEPRECATED=NO` (`scripts/gen_epsg_table.py`), and so are the GDAL reference points of
 `epsg_accuracy` (`scripts/gen_epsg_points.py`).
 

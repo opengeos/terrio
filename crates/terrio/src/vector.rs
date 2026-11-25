@@ -220,9 +220,10 @@ pub use crate::drivers::vector::geoparquet::RowGroupInfo;
 #[cfg_attr(docsrs, doc(cfg(feature = "flatgeobuf")))]
 /// Reads a remote FlatGeobuf file whose bytes the caller fetches (see [`crate::sparse`]): its
 /// header, and the features whose bounding box intersects `bbox` (in the layer's CRS), found with
-/// the file's spatial index so that only the index nodes on the way and those features are read;
-/// every feature without `bbox` or without an index. `name` is the file name, whose stem names
-/// the layer when the header does not. Callers filter the features by their geometries, as
+/// the file's spatial index so that only the index nodes on the way and those features are read
+/// (without an index, every feature is read and those that do not intersect `bbox` are dropped).
+/// Without `bbox`, every feature is read. `name` is the file name, whose stem names the layer when
+/// the header does not. Callers filter the features by their geometries, as
 /// `ogr2ogr -spat` does (see [`crate::ops::vector_filter`]).
 ///
 /// Reads fail until the bytes they need are fetched, and are then run again.

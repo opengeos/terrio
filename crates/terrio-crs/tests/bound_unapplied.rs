@@ -60,18 +60,17 @@ fn a_target_bound_itself_is_not_chained_through_and_warns() {
     }
 }
 
-/// A WKT 1 target without `TOWGS84` is not read either, and warns. PROJ 9.9.0 reads it and
-/// applies the shift (9.999316°, 49.999745° into WGS 84), as terrio does for the same target in
-/// WKT 2.
+/// A WKT 1 target without `TOWGS84` is read, as in WKT 2: PROJ 9.9.0 applies the shift and the
+/// target's transformation (9.999316°, 49.999745° into WGS 84) (#1012 item 53).
 #[test]
-fn a_wkt1_target_is_not_read_and_warns() {
+fn a_wkt1_target_is_read_as_in_wkt2() {
     offline();
     let shift = translations("shift", 100.0, 50.0, -20.0);
-    let (_, warnings) = at(&bound(SOURCE, ED50_WKT1, &shift), 4326);
-    assert_eq!(warnings, ["the BOUNDCRS transformation \"shift\" is not applied: its target CRS \"ED50\" is not read"]);
-    let ((x, y), warnings) = at(&bound(SOURCE, ED50, &shift), 4326);
-    assert!((x - 9.999315576959662).abs() < 1e-9 && (y - 49.9997449986732).abs() < 1e-9, "{x} {y}");
-    assert!(warnings.is_empty(), "{warnings:?}");
+    for target in [ED50_WKT1, ED50] {
+        let ((x, y), warnings) = at(&bound(SOURCE, target, &shift), 4326);
+        assert!((x - 9.999315576959662).abs() < 1e-9 && (y - 49.9997449986732).abs() < 1e-9, "{x} {y}");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
 }
 
 /// A transformation that is not a Helmert one (NTv2) is not applied, and warns. PROJ 9.9.0 applies
@@ -142,7 +141,7 @@ fn a_bound_source_keeps_its_own_reason() {
     offline();
     let grid = r#"ABRIDGEDTRANSFORMATION["grid",METHOD["NTv2",ID["EPSG",9615]],PARAMETERFILE["Latitude and longitude difference file","BETA2007.gsb"]]"#;
     let inner = format!("BOUNDCRS[SOURCECRS[{SOURCE}],TARGETCRS[{WGS84}],{grid}]");
-    let src = bound(&inner, ED50_WKT1, &translations("shift", 100.0, 50.0, -20.0));
+    let src = bound(&inner, ED50_WKT1_TOWGS84, &translations("shift", 100.0, 50.0, -20.0));
     let (_, warnings) = at(&src, 4326);
     assert_eq!(
         warnings,
@@ -166,7 +165,7 @@ fn names_in_the_warning_are_escaped() {
         ["the BOUNDCRS transformation \"a\\u{1b}[31mb\" is not applied: terrio applies Helmert transformations only, not \"NTv2\""]
     );
     let long = translations(&"x".repeat(300), 100.0, 50.0, -20.0);
-    let (_, warnings) = at(&bound(SOURCE, ED50_WKT1, &long), 4326);
+    let (_, warnings) = at(&bound(SOURCE, ED50_WKT1_TOWGS84, &long), 4326);
     assert_eq!(
         warnings,
         [format!("the BOUNDCRS transformation \"{}\" is not applied: its target CRS \"ED50\" is not read", "x".repeat(120))]

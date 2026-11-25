@@ -2189,6 +2189,180 @@ mod tests {
         assert_eq!(names, ["Gray", "Undefined", "Undefined"]);
     }
 
+    /// A COG of three JPEG Byte bands, red, green and blue, is YCbCr unless PHOTOMETRIC says
+    /// otherwise, as GDAL 3.13.3's COG driver writes it: its bands read as red, green and blue,
+    /// close to the source, from a smaller file than RGB's. A GeoTIFF copy stays RGB, and one JPEG
+    /// band gray.
+    #[test]
+    fn a_cog_of_three_jpeg_bands_is_ycbcr_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let raster = |bands: usize| {
+            let cfg = wbraster::RasterConfig { cols: 64, rows: 64, bands, data_type: wbraster::DataType::U8, ..Default::default() };
+            let data = (0..bands * 64 * 64).map(|i| ((i % 64) * 2 + (i / 64 % 64) + i / 4096 * 40) as u8).collect();
+            wbraster::Raster::from_data_native(cfg, wbraster::raster::RasterData::U8(data)).unwrap()
+        };
+        let write = |bands: usize, driver: crate::formats::RasterDriver, photometric: Option<&str>| {
+            let r = raster(bands);
+            let out = dir.path().join(format!("{bands}-{driver:?}-{}.tif", photometric.unwrap_or("default")));
+            let mut creation_options = vec![("COMPRESS".to_string(), "JPEG".to_string())];
+            creation_options.extend(photometric.map(|p| ("PHOTOMETRIC".to_string(), p.to_string())));
+            let options = crate::RasterWriteOptions { driver: Some(driver), creation_options, ..Default::default() };
+            // Three bands are red, green and blue, which a GeoTIFF copy writes PHOTOMETRIC=RGB and
+            // GDAL's COG driver YCbCr.
+            let mut ds = crate::RasterDataset::new(r.clone(), false);
+            if bands == 3 {
+                ds.band_metadata =
+                    ["Red", "Green", "Blue"].map(|c| crate::BandMetadata { color_interp: Some(c.into()), ..Default::default() }).to_vec();
+            }
+            crate::write_raster_dataset(&ds, out.to_str().unwrap(), &options).unwrap();
+            let mut dec = tiff::decoder::Decoder::new(std::fs::File::open(&out).unwrap()).unwrap();
+            let tag = dec.find_tag_unsigned::<u16>(tiff::tags::Tag::PhotometricInterpretation).unwrap();
+            let read = read_geotiff(&out).unwrap();
+            let error = read.raster.data.to_f64_vec().iter().zip(r.data.to_f64_vec()).map(|(a, b)| (a - b).abs()).sum::<f64>()
+                / (bands * 64 * 64) as f64;
+            let names: Vec<String> = (1..=bands).map(|b| read.band_color_interp(b).to_string()).collect();
+            (tag, names, error, std::fs::metadata(&out).unwrap().len())
+        };
+        use crate::formats::RasterDriver::{Cog, GTiff};
+        let (tag, names, error, ycbcr_size) = write(3, Cog, None);
+        assert_eq!((tag, names), (Some(6), vec!["Red".to_string(), "Green".into(), "Blue".into()]));
+        assert!(error < 4.0, "mean error {error}");
+        let (tag, _, _, rgb_size) = write(3, Cog, Some("RGB"));
+        assert_eq!(tag, Some(2));
+        assert!(ycbcr_size < rgb_size, "YCbCr {ycbcr_size} bytes, RGB {rgb_size}");
+        assert_eq!(write(3, GTiff, None).0, Some(2));
+        assert_eq!(write(1, Cog, None).0, Some(1));
+    }
+
+    /// A repeated COMPRESS is read as the writer reads it, the last one winning: LZW then JPEG
+    /// writes the YCbCr COG of JPEG's default.
+    #[test]
+    fn a_cog_takes_the_last_compress_for_its_photometric() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = wbraster::RasterConfig { cols: 64, rows: 64, bands: 3, data_type: wbraster::DataType::U8, ..Default::default() };
+        let data = (0..3 * 64 * 64).map(|i| (i % 251) as u8).collect();
+        let mut ds =
+            crate::RasterDataset::new(wbraster::Raster::from_data_native(cfg, wbraster::raster::RasterData::U8(data)).unwrap(), false);
+        ds.band_metadata =
+            ["Red", "Green", "Blue"].map(|c| crate::BandMetadata { color_interp: Some(c.into()), ..Default::default() }).to_vec();
+        let out = dir.path().join("lzw-then-jpeg.tif");
+        let creation_options = vec![("COMPRESS".to_string(), "LZW".to_string()), ("COMPRESS".to_string(), "JPEG".to_string())];
+        let options = crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::Cog), creation_options, ..Default::default() };
+        crate::write_raster_dataset(&ds, out.to_str().unwrap(), &options).unwrap();
+        let mut dec = tiff::decoder::Decoder::new(std::fs::File::open(&out).unwrap()).unwrap();
+        assert_eq!(dec.find_tag_unsigned::<u16>(tiff::tags::Tag::Compression).unwrap(), Some(7));
+        assert_eq!(dec.find_tag_unsigned::<u16>(tiff::tags::Tag::PhotometricInterpretation).unwrap(), Some(6));
+    }
+
+    /// Under PHOTOMETRIC=RGB the third band is blue whatever its source interpretation, so its
+    /// overviews are averaged as a colour band, not weighted as an alpha band, with nodata in
+    /// effect: a source Alpha third band gives the overviews of a source Blue one.
+    #[test]
+    fn rgb_photometric_overviews_average_a_source_alpha_third_band_as_blue() {
+        let dir = tempfile::tempdir().unwrap();
+        let overview = |third: &str| {
+            let cfg = wbraster::RasterConfig {
+                cols: 64,
+                rows: 64,
+                bands: 3,
+                data_type: wbraster::DataType::U8,
+                nodata: 255.0,
+                ..Default::default()
+            };
+            // Zeros in the third band, which an alpha weighting drops, and some nodata.
+            let data = (0..3 * 64 * 64)
+                .map(|i| {
+                    if i % 7 == 0 {
+                        0
+                    } else if i % 97 == 0 {
+                        255
+                    } else {
+                        (i % 200) as u8
+                    }
+                })
+                .collect();
+            let mut ds =
+                crate::RasterDataset::new(wbraster::Raster::from_data_native(cfg, wbraster::raster::RasterData::U8(data)).unwrap(), true);
+            ds.band_metadata =
+                ["Red", "Green", third].map(|c| crate::BandMetadata { color_interp: Some(c.into()), ..Default::default() }).to_vec();
+            let out = dir.path().join(format!("{third}.tif"));
+            let creation_options = [("COMPRESS", "DEFLATE"), ("PHOTOMETRIC", "RGB"), ("BLOCKSIZE", "16")]
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .to_vec();
+            let options =
+                crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::Cog), creation_options, ..Default::default() };
+            crate::write_raster_dataset(&ds, out.to_str().unwrap(), &options).unwrap();
+            let mut dec = tiff::decoder::Decoder::new(std::fs::File::open(&out).unwrap()).unwrap();
+            dec.next_image().unwrap();
+            match dec.read_image().unwrap() {
+                tiff::decoder::DecodingResult::U8(v) => v,
+                _ => unreachable!("Byte overview"),
+            }
+        };
+        assert_eq!(overview("Alpha"), overview("Blue"));
+    }
+
+    /// Three Byte bands of Undefined colour interpretation written with PHOTOMETRIC=RGB or YCBCR
+    /// read as red, green and blue, as GDAL 3.13.3 writes them: the photometric given overrides the
+    /// source's colour interpretations, which are left out of GDAL_METADATA.
+    #[test]
+    fn rgb_and_ycbcr_photometrics_override_undefined_colour_interpretations() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = wbraster::RasterConfig { cols: 40, rows: 30, bands: 3, data_type: wbraster::DataType::U8, ..Default::default() };
+        let r = wbraster::Raster::from_data_native(cfg, wbraster::raster::RasterData::U8((0..3600).map(|i| (i % 251) as u8).collect()))
+            .unwrap();
+        let mut ds = crate::RasterDataset::with_driver(r, crate::formats::RasterDriver::GTiff, false);
+        ds.band_metadata = vec![crate::BandMetadata { color_interp: Some("Undefined".into()), ..Default::default() }; 3];
+        for driver in [crate::formats::RasterDriver::GTiff, crate::formats::RasterDriver::Cog] {
+            for (compress, photometric) in [("JPEG", "RGB"), ("JPEG", "YCBCR"), ("DEFLATE", "RGB")] {
+                let out = dir.path().join(format!("{driver:?}-{compress}-{photometric}.tif")).to_str().unwrap().to_string();
+                let options = crate::RasterWriteOptions {
+                    driver: Some(driver),
+                    creation_options: vec![("COMPRESS".into(), compress.into()), ("PHOTOMETRIC".into(), photometric.into())],
+                    ..Default::default()
+                };
+                crate::write_raster_dataset(&ds, &out, &options).unwrap();
+                let read = read_geotiff(std::path::Path::new(&out)).unwrap();
+                let names: Vec<&str> = (1..=3).map(|b| read.band_color_interp(b)).collect();
+                assert_eq!(names, ["Red", "Green", "Blue"], "{driver:?} {compress} {photometric}");
+            }
+        }
+    }
+
+    /// In YCbCr, given or a COG's JPEG default, the first three bands' colour interpretations
+    /// other than Undefined are kept, as GDAL 3.13.3 copies them; PHOTOMETRIC=RGB given overrides
+    /// them all.
+    #[test]
+    fn ycbcr_keeps_colour_interpretations_other_than_undefined() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = wbraster::RasterConfig { cols: 40, rows: 30, bands: 3, data_type: wbraster::DataType::U8, ..Default::default() };
+        let r = wbraster::Raster::from_data_native(cfg, wbraster::raster::RasterData::U8((0..3600).map(|i| (i % 251) as u8).collect()))
+            .unwrap();
+        use crate::formats::RasterDriver::{Cog, GTiff};
+        for (case, (source, driver, photometric, expected)) in [
+            (["Gray", "Undefined", "Undefined"], GTiff, Some("YCBCR"), ["Gray", "Green", "Blue"]),
+            (["Gray", "Undefined", "Undefined"], Cog, None, ["Gray", "Green", "Blue"]),
+            (["Blue", "Green", "Red"], GTiff, Some("YCBCR"), ["Blue", "Green", "Red"]),
+            (["Blue", "Green", "Red"], Cog, None, ["Blue", "Green", "Red"]),
+            (["Gray", "Undefined", "Undefined"], GTiff, Some("RGB"), ["Red", "Green", "Blue"]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut ds = crate::RasterDataset::with_driver(r.clone(), GTiff, false);
+            ds.band_metadata = source.map(|c| crate::BandMetadata { color_interp: Some(c.into()), ..Default::default() }).to_vec();
+            // A plain name: Windows refuses the quotes of a debug-formatted one.
+            let out = dir.path().join(format!("{case}.tif")).to_str().unwrap().to_string();
+            let mut creation_options = vec![("COMPRESS".to_string(), "JPEG".to_string())];
+            creation_options.extend(photometric.map(|p| ("PHOTOMETRIC".to_string(), p.to_string())));
+            let options = crate::RasterWriteOptions { driver: Some(driver), creation_options, ..Default::default() };
+            crate::write_raster_dataset(&ds, &out, &options).unwrap();
+            let read = read_geotiff(std::path::Path::new(&out)).unwrap();
+            let names: Vec<&str> = (1..=3).map(|b| read.band_color_interp(b)).collect();
+            assert_eq!(names, expected, "{source:?} {driver:?} {photometric:?}");
+        }
+    }
+
     /// A structural tag libtiff cannot read (in a fuzzed file, ImageWidth retyped
     /// UNDEFINED) makes GDAL refuse the file at open: terrio refuses it there too, rather than
     /// spending minutes decoding what the crate made of it. Integer types are read.
@@ -2526,13 +2700,13 @@ mod tests {
 
     #[test]
     fn warns_of_a_projection_method_it_cannot_read() {
-        // A WGS 84 CRS projected with method 4 (oblique Mercator, Laborde), which terrio does
-        // not map.
-        let keys = [1, 1, 0, 4, 1024, 0, 1, 1, 2048, 0, 1, 4326, 3072, 0, 1, 32767, 3075, 0, 1, 4];
+        // A WGS 84 CRS projected with method 5 (oblique Mercator, Rosenmund), which terrio does
+        // not map (nor GDAL).
+        let keys = [1, 1, 0, 4, 1024, 0, 1, 1, 2048, 0, 1, 4326, 3072, 0, 1, 32767, 3075, 0, 1, 5];
         let _ = crate::warnings::take();
         assert!(crs_from_geokeys(&keys, None, None).wkt.is_none());
         let w = crate::warnings::take();
-        assert!(w.len() == 1 && w[0].contains("projection method 4"), "{w:?}");
+        assert!(w.len() == 1 && w[0].contains("projection method 5"), "{w:?}");
     }
 
     /// A chunk's buffer is allocated fallibly: a size no allocator gives, past what a `Vec` holds

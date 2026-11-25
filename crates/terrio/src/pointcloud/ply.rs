@@ -337,6 +337,9 @@ impl PlyReader {
         let mut word = Vec::new();
         let before: Vec<Element> = self.elements.iter().take(self.vertex).cloned().collect();
         for e in before {
+            if e.properties.is_empty() {
+                continue;
+            }
             for _ in 0..e.count {
                 for p in &e.properties {
                     match (self.encoding, p) {
@@ -412,6 +415,9 @@ impl FormatReader for PlyReader {
                 Property::List(..) => None,
             })
             .collect();
+        if props.is_empty() && n > 0 {
+            return Err(Error::InvalidData("PLY: vertex element has no scalar properties".into()));
+        }
         let k = ((n - c.done) as usize).min(c.chunk);
         let mut cols: Vec<Values> = self.dims.iter().map(|(_, t)| Values::with_capacity(*t, k)).collect();
         let mut word = Vec::new();

@@ -197,7 +197,8 @@ fn decode_value(b: &[u8]) -> Result<Option<MvtValue>> {
 pub(crate) fn decode(bytes: &[u8]) -> Result<Vec<MvtLayer>> {
     let raw;
     let bytes = if bytes.starts_with(&[0x1f, 0x8b]) {
-        raw = super::pmtiles::decompress(bytes, super::pmtiles::COMPRESSION_GZIP)?;
+        const MAX_MVT_TILE_BYTES: usize = 64 << 20;
+        raw = super::pmtiles::decompress_with_limit(bytes, super::pmtiles::COMPRESSION_GZIP, Some(MAX_MVT_TILE_BYTES), "MVT tile payload")?;
         &raw[..]
     } else {
         bytes

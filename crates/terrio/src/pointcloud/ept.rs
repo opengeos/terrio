@@ -248,6 +248,18 @@ impl EptReader {
         if !matches!(info.data_type.as_str(), "laszip" | "binary" | "zstandard") {
             return Err(Error::Unsupported(format!("EPT data type '{}'", info.data_type)));
         }
+        if info.span == 0 {
+            return Err(Error::InvalidData("EPT: span must be positive".into()));
+        }
+        let b = info.bounds;
+        if !b.iter().all(|v| v.is_finite())
+            || !(b[3] >= b[0] && b[4] >= b[1] && b[5] >= b[2])
+            || !(b[3] - b[0]).is_finite()
+            || !(b[4] - b[1]).is_finite()
+            || !(b[5] - b[2]).is_finite()
+        {
+            return Err(Error::InvalidData("EPT: bounds must be finite and ordered".into()));
+        }
         let srs = &json["srs"];
         let horizontal = match (srs["wkt"].as_str(), srs["authority"].as_str(), srs["horizontal"].as_str()) {
             (Some(wkt), ..) if !wkt.is_empty() => SpatialRef::parse_literal(wkt).unwrap_or_default(),
@@ -345,6 +357,9 @@ impl EptReader {
             if depth_end > 0 && key.d >= depth_end {
                 continue;
             }
+            if key.d >= 31 {
+                return Err(Error::InvalidData(format!("EPT: octree depth {} exceeds maximum supported depth", key.d)));
+            }
             if count == -1 {
                 // The node and its descendants are in their own page.
                 if page != name {
@@ -410,8 +425,19 @@ impl EptReader {
                     return Err(Error::InvalidData("EPT: an empty schema".into()));
                 }
                 let bytes = if kind == "zstandard" {
-                    // Every frame, to at most the records of the node's points in the hierarchy.
-                    let limit = usize::try_from(points).ok().and_then(|n| n.checked_mul(rl)).unwrap_or(usize::MAX);
+                    // Cap per-node decompressed payload at 256 MiB to prevent crafted EPT hierarchy
+                    // point counts from forcing multi-gigabyte decompression allocations.
+                    const MAX_EPT_NODE_BYTES: usize = 256 << 20;
+                    let limit = usize::try_from(points)
+                        .ok()
+                        .and_then(|n| n.checked_mul(rl))
+                        .ok_or_else(|| Error::InvalidData(format!("EPT node {}: declared byte size overflows", key.name())))?;
+                    if limit > MAX_EPT_NODE_BYTES {
+                        return Err(Error::ResourceLimit(format!(
+                            "EPT node {}: declared decompressed size {limit} exceeds {MAX_EPT_NODE_BYTES} bytes",
+                            key.name()
+                        )));
+                    }
                     crate::zstandard::decompress(&bytes, limit).map_err(|e| Error::InvalidData(format!("EPT node {}: {e}", key.name())))?
                 } else {
                     bytes

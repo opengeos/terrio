@@ -55,9 +55,12 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   ballpark); such a shift wins over the EPSG code of a source CRS terrio identifies, and over the
   `TOWGS84` of a WKT 1 source CRS (GDAL's `GEOGCS` or `PROJCS` in `SOURCECRS`). A target that is
   bound itself (a `BOUNDCRS`) is not chained through, as PROJ does not chain through it, nor
-  through a WKT 1 target with its own `TOWGS84`; PROJ links such CRSs by its ballpark. When a
-  `BOUNDCRS`'s transformation is not applied (that case, a WKT 1 target, which terrio does not
-  read where PROJ does, or a grid's transformation), each transformer using the CRS warns
+  through a WKT 1 target with its own `TOWGS84`; PROJ links such CRSs by its ballpark. A WKT 1
+  `GEOGCS` target without one is chained through as PROJ 9.9.0 chains it, found by its codes or
+  its datum's name (ESRI's `D_Monte_Mario`), for a shift `+towgs84` stands for; a full-matrix or
+  evaluation-point shift to it is left out, as PROJ leaves it out. When a
+  `BOUNDCRS`'s transformation is not applied (those cases, or a grid's transformation), each
+  transformer using the CRS warns
   (`take_warnings`), and its points are placed without it (by the source CRS's own
   transformations when terrio identifies it, else by the ballpark). Their PROJ
   string leaves out a shift to a CRS other than WGS 84, as PROJ's does. Their scale difference is a
@@ -70,7 +73,10 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   CRS's `AXIS` nodes give its axes in WKT 1 as in WKT 2, as GDAL and PROJ read them in GIS order:
   `AXIS["Y",WEST],AXIS["X",SOUTH]` counts coordinates west and south, and northing then easting is
   read as easting then northing; south-orientated Transverse Mercator is west and south but for
-  north-east axes (south and west), and Krovak without them south and west. South-orientated
+  north-east axes (south and west), and Krovak without them south and west. A WKT 1 `GEOGCS`'s
+  `AXIS` directions count longitudes west and latitudes south as WKT 2's do (west-positive
+  planetary longitudes), and a WKT 2 parameter without a unit is in degrees or metres, not in its
+  CS's or base CRS's unit, as PROJ 9.9.0 reads them. South-orientated
   Transverse Mercator subtracts its false easting and northing (EPSG method 9808: W = FE - x,
   S = FN - y); PROJ 9.9.0 refuses one with offsets, and terrio writes it no PROJ string. A world
   projection given a latitude of natural origin its method has no use for (Robinson, Sinusoidal)
@@ -506,6 +512,17 @@ Flags combined with `+init=epsg:N`, except the metadata switches `no_defs` and
 `wktext`, are refused because that path cannot apply overrides to the registry
 definition. Use an expanded `+proj` definition when changing these flags.
 
+As PROJ 9.9.0's CRS parser stores them, a conversion parameter within 1e-8 of an integer is that
+integer (angles in degrees, false eastings and northings in the CRS's unit): `+lat_0=45.000000001`
+is 45. Krovak's `+alpha` is the co-latitude of the cone axis, which PROJ reads but whose Krovak has
+no other than 30.2881397° (within 1e-7): a transformer with another is refused, as PROJ has no
+pipeline for it. `+over` keeps longitudes past the antimeridian, unwrapped, as PROJ keeps them (Eckert
+IV's inverse at (3, 0.5) on `+R=1` is 211.337°, which it refuses without `+over`; Van der Grinten
+beyond ±180° takes the other side's branch). A geographic longitude beyond 10 radians (572.96°) is
+refused going into a projection or a datum shift, as PROJ's `fwd_prepare()` refuses it, but not
+through a null transformation or a ballpark. The ellipsoidal `cea` inverse (ESRI's Behrmann) past
+the pole line fails, as PROJ gives no latitude there, not the pole.
+
 A value PROJ 9.9.0 cannot read is refused when the method reads the parameter, as PROJ refuses it
 ("invalid value for lat_ts"), rather than taken as the parameter's default: `+proj=eqc +lat_ts=abc`,
 an unreadable `+towgs84` or `+pm`. A `towgs84` list must contain three or seven numeric values.
@@ -705,9 +722,10 @@ the CRS's own registered transformations keep their accuracy. A renamed Monte Ma
 goes through Monte Mario, 72 m from EPSG:4806's own transformation, and a renamed Georgia Geodetic
 Datum (EPSG:10831) through Pulkovo 1942, 7 m away. A prime meridian in grads (Carthage (Paris),
 EPSG:4816) is not PROJ's registered one to the last digit, so PROJ rotates the longitudes instead,
-without the ballpark, and the accuracies are kept. One step is not followed yet: from a WKT with an
-ID of an authority PROJ does not know (`AUTHORITY["LOCAL","1"]`), PROJ's pivot takes only the first
-of the datum's CRSs with transformations; terrio places it by the code.
+without the ballpark, and the accuracies are kept. From a WKT with an ID of an authority PROJ does
+not know (`AUTHORITY["LOCAL","1"]`), PROJ's pivot takes only the first of the datum's CRSs with
+transformations, in order of code, and so does terrio: ONGD14 renamed goes by its geocentric CRS's
+"ONGD14 to WGS 84 (1)", 1.2 m from the code's placement (#1012 item 7).
 terrio also does not follow PROJ for an ESRI ATF (Paris) (EPSG:4901) WKT without a code. PROJ takes
 IGNF's ATIG geocentric chain, which applies the Paris prime meridian twice and lands 178 km from
 PROJ's own placement of EPSG:4901. terrio, which has no IGNF transformations, identifies the WKT as
@@ -716,7 +734,11 @@ EPSG:4901 and places it as PROJ places EPSG:4901 (opengeos/terrio#1012).
 `Transformer::operation_at(x, y, z)` returns the transformations `transform_3d` runs for a point,
 as PROJ's `proj_trans_get_last_used_operation`: their names, summed accuracy, grids and whether one
 is a ballpark, or `None` between CRSs of one datum. EPSG's null transformations (`SWEREF99 to WGS
-84 (1)`, 1 m) and their concatenations are named, as by PROJ, not reported as a ballpark.
+84 (1)`, 1 m) and their concatenations are named, as by PROJ, not reported as a ballpark. A
+concatenation PROJ's database registers under a name of its own is named so (`NTF (Paris) to WGS
+84 (1)`, not its steps `NTF (Paris) to NTF (1) + NTF to WGS 84 (1)`, #1012 item 54). A
+transformation between geocentric CRSs on another ellipsoid than its datum's (below) is reported
+as the ballpark PROJ frames it with, of unknown accuracy (item 56).
 Conversions (projections, units) are not named, and geoid models are named without PROJ's EPSG index (`WGS 84 to EGM96 height`).
 
 ```rust
@@ -900,7 +922,11 @@ or chained through an intermediate vertical CRS (DHHN92 to SNN76 through EVRF200
 axis directions (depths included) and units. For each point, the most accurate transformation
 whose area holds it is used, PROJ's way: one interpolating in another datum's geographic CRS
 counts the accuracy of the horizontal transformation to it (both ways), and is evaluated there.
-Where none applies, heights are kept. Vertical CRSs of one datum (NAVD88 height in metres and in
+Where none applies, heights are kept, but for the only transformation PROJ lists between two
+EPSG compound CRSs (one whose area holds the CRSs' common area and needs no grid, so PROJ drops its
+ballpark), which `proj_trans` runs everywhere: Belfast height to Malin Head height (1) between
+ETRS89-IRE + Malin Head height and + Belfast height (EPSG:12229, 12230), at the centre of Ireland
+too (#1012 item 69). Vertical CRSs of one datum (NAVD88 height in metres and in
 US survey feet) only convert units.
 
 ```sh
@@ -1303,6 +1329,11 @@ axes, planetocentric latitudes (`+geoc`, a spherical coordinate system) as a `Ge
 spherical coordinate system, IAU_2015 CRSs with their `IAU`/2015 identifier. Differences from
 PROJ's output:
 
+- a datum's `anchor_epoch` is written where the WKT 2 read gives it an `ANCHOREPOCH` (from PROJ
+  9.9.0's database where the datum is written from the registry, an identified code or a compound
+  CRS's parts), as PROJ writes it, and read back (#1012 item 65); not for a WKT without one, as
+  PROJ, nor for an EPSG code, whose registry WKT is GDAL's WKT 1, though PROJ writes it from its
+  database there;
 - no `scope`, `area`, `bbox` or `usages`;
 - the WGS 84 and ETRS89 ensembles are written as their datum, without members (so GDAL's
   `IsSame` with the EPSG CRS is false; coordinates are the same);
@@ -1354,10 +1385,25 @@ They read and write:
   ProjRectifiedGridAngleGeoKey at 90 in the keys' angular unit (81° in grads); and a polar
   stereographic CRS by its origin latitude when given (ProjNatOriginLatGeoKey, else
   ProjFalseOriginLatGeoKey, else ProjCenterLatGeoKey: 90° and a ProjStdParallel1GeoKey of 71° or
-  -71° is variant A of its scale, the standard parallel unread). Not yet as libgeotiff reads them:
-  without any origin latitude, a polar stereographic CRS's ProjStdParallel1GeoKey is still read as
-  its standard parallel, leniently, where libgeotiff takes a latitude of 0; a Stereographic or
-  Mercator CRS's scale keys, a Mercator's latitude keys, and Laborde (CT 4) (#1012 item 35). A
+  -71° is variant A of its scale, the standard parallel unread); Mercator 2SP by its
+  ProjStdParallel1GeoKey whatever its scale, else 1SP of its latitude of origin (as `+lat_ts`) and
+  ProjScaleAtNatOriginGeoKey alone; Stereographic of ProjScaleAtNatOriginGeoKey, else (unlike
+  GDAL, which reads 1) of ProjScaleAtCenterGeoKey, where terrio wrote it before; Laborde
+  (CT 4) as `+proj=labrd`. An ellipsoid, datum or prime meridian given by its code without its
+  values is the registry's (Airy 1830 for 7001 or for datum 6277, which also gets OSGB36's
+  transformations; the spheres 7035, 7047 and 7048; Paris for 8903), as libgeotiff looks them up;
+  axes given beside an ellipsoid code are the ellipsoid's, as GDAL reads them (7030 with a
+  sphere's axes is that sphere).
+  A projected code alone (no projection, method, geographic CRS, datum or ellipsoid key) is the
+  registry's CRS, a deprecated code's single replacement, in the keys' linear unit
+  (ProjLinearUnitsGeoKey, else the stated code's own), without its code when that is not the CRS's
+  unit, on its own datum: EPSG:32633 with ProjLinearUnitsGeoKey 9002 is UTM zone 33N in feet,
+  EPSG:27700 in feet keeps OSGB36 and its transformations; beside other keys, the
+  stated code, deprecated or not (EPSG:4855 with GeographicTypeGeoKey 4258 is 4855, not 5105), as
+  GDAL 3.12 reads them (#1012 items 32 to 35). Not yet as libgeotiff reads them: without any origin
+  latitude, a polar stereographic CRS's ProjStdParallel1GeoKey is still read as its standard
+  parallel, leniently, where libgeotiff takes a latitude of 0 (GDAL places such points tens of
+  thousands of kilometres away). A
   user-defined projected CRS can be read by a registered code (see below). A horizontal CRS with a
   datum shift of its own (a WKT's `TOWGS84` or `BOUNDCRS` to WGS 84, a PROJ string's `+towgs84`)
   is written with GeogTOWGS84GeoKey: with the code its WKT declares, else as a user-defined CRS on
@@ -1369,9 +1415,11 @@ They read and write:
   GeogTOWGS84GeoKey next to it is read as the code's WKT 1 with that `TOWGS84` (but not a zero
   shift on the WGS 84 datum, which is no shift; on another datum of WGS 84's ellipsoid it is kept), so that such a file, terrio's or GDAL's, reads back with its shift (the CRS keeps its
   code; GDAL 3.13.3 reads it without the shift). A WKT 2 `BOUNDCRS` whose transformation
-  `+towgs84` only approximates (a Molodensky-Badekas evaluation point, a full rotation matrix) is
-  written as its WKT in an ESRI PE citation, which keeps it. Not yet: a compound CRS with a shift is
-  written by its codes, without it (#1012 item 62);
+  `+towgs84` only approximates (a Molodensky-Badekas evaluation point, a full rotation matrix), or
+  to a datum other than WGS 84 (ED50), is written as its WKT in an ESRI PE citation, which keeps it
+  (#1012 item 64). A compound CRS whose horizontal CRS has a shift of its own is read with it, as
+  PROJ 9.9.0 reads it (not as the compound code it is identified as), and written by its codes
+  with GeogTOWGS84GeoKey, read back with the shift (#1012 item 62);
 - ESRI PE citations (`ESRI PE String = <WKT>`), which GDAL writes for a CRS GeoKeys cannot hold
   (an engineering CRS, a method GeoTIFF has no code for, a definition only its PROJ string
   describes): terrio writes them for the same CRSs. A CRS whose WKT holds a NUL (from a PROJJSON
@@ -1384,11 +1432,13 @@ equivalent registered CRS of the citation's exact name (or an ESRI CRS, as terri
 also names a UTM zone by its ProjectionGeoKey or a `UTM zone 33N` citation, on WGS 84, NAD83 or
 NAD27, in the GeoKeys' unit, and, with the `wbprojection-fallback` feature (which `terrio` enables),
 the projected CRS a citation names (an `EPSG:` reference or a CRS name), on the GeoKeys' datum when
-they give its code. The code's definition then replaces the keys': where the keys give a datum of
-their own or none, a citation naming a CRS on another ellipsoid (`EPSG:32633` on keys of Clarke
-1866, `NAD27 / UTM zone 15N` on keys without a datum, which GDAL reads on WGS 84) gives other
-coordinates than GDAL. The GeoKeys of a CRS terrio reads only through wbprojection need that feature
-too.
+they give its code, of the keys' own conversion when they give one (EPSG:2048 with another false
+easting is not EPSG:2048, EPSG:5070 with other standard parallels is not EPSG:5070), and none for
+keys of a conversion terrio does not read. The code's definition then replaces the keys': where
+the keys give a datum of their own or none, a citation naming a CRS on another ellipsoid
+(`EPSG:32633` on keys of Clarke 1866, `NAD27 / UTM zone 15N` on keys without a datum, which GDAL
+reads on WGS 84) gives other coordinates than GDAL. The GeoKeys of a CRS terrio reads only
+through wbprojection need that feature too.
 
 `tests/geokeys_gdal.rs` compares both directions with GDAL 3.12.1 (rasterio 1.5.0), frozen by
 `scripts/gen_geokeys_gdal.py`: the GeoKeys GDAL writes for 376 CRSs (every 20th EPSG projected and
@@ -1421,8 +1471,9 @@ and the `Axis order`, `Body` and `Method` lines of `terrio crs CRS` (and its MCP
   - otherwise the WKT's `AXIS` nodes give the order. Without them, a WKT 1 geographic CRS with an
     EPSG code is in that code's order, and any other CRS east then north.
 
-  Geocentric and vertical CRSs, Polar Stereographic (whose axes point along meridians, unless a
-  WKT states others) and axes other than north and east (`northEast`, `south`) are `Other`.
+  Geocentric and vertical CRSs, Polar Stereographic and polar Lambert azimuthal equal-area (at a
+  pole, within 1e-10°: their axes point along meridians, unless a WKT states others) and axes
+  other than north and east (`northEast`, `south`) are `Other`.
   `has_north_east_axis_order()` goes by the CRS's WKT instead, for GML's authority order (a
   bound CRS's by its source CRS, as `axis_order()`).
 - `projection_params()` gives the method (the `+proj` name PROJ writes: `etmerc` is `tmerc`,
@@ -1446,7 +1497,8 @@ and the `Axis order`, `Body` and `Method` lines of `terrio crs CRS` (and its MCP
   an IAU_2015 CRS (`Mars`), and for another ellipsoid, `Earth` within 0.7% of the Earth's mean
   radius, else the body of PROJ's table whose semi-major axis is within 0.7% of the ellipsoid's
   (`+R=3396190` is on Mars). It gives `None` for an ellipsoid that matches no body, or bodies of
-  several names (PROJ's `Non-Earth body`). `is_earth()` is `body() == Some("Earth")`.
+  several names (PROJ's `Non-Earth body`), and for a vertical CRS (EPSG:5773), which has no
+  ellipsoid. `is_earth()` is `body() == Some("Earth")`.
 
 `tests/crs_accessors.rs` compares them with PROJ 9.9.0 (pyproj 3.8.0) on 777 CRSs, frozen by
 `scripts/gen_crs_accessors.py`:

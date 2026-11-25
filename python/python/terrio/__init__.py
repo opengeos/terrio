@@ -410,7 +410,8 @@ def iter_features(
         layer: The layer's name. By default, the first layer.
         batch_size: The most features read at a time.
         bbox: Only the features whose bounding box intersects this rectangle
-            ``(min_x, min_y, max_x, max_y)``, in the layer's CRS (GeoPackage and GeoParquet).
+            ``(min_x, min_y, max_x, max_y)``, in the layer's CRS (GeoPackage, GeoParquet and
+            FlatGeobuf).
 
     Yields:
         dict: A GeoJSON ``Feature``: ``id``, ``geometry`` and ``properties``.

@@ -1103,6 +1103,16 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
         layers.iter_mut().for_each(|l| options.keep_range(l));
         return Ok(finish_vector(layers, path, VectorDriver::Parquet));
     }
+    // A remote FlatGeobuf with a spatial index is read with a bbox by range requests: the index
+    // nodes on the way and the features found, not the whole file.
+    #[cfg(all(remote, feature = "flatgeobuf"))]
+    if let Some(bbox) = options.spatial_filter
+        && let Some(layer) = crate::drivers::vector::flatgeobuf::read_remote(path, bbox)?
+    {
+        let mut layers = select_layers(vec![layer], path, options)?;
+        layers.iter_mut().for_each(|l| options.keep_range(l));
+        return Ok(finish_vector(layers, path, VectorDriver::FlatGeobuf));
+    }
     let local = vfs::resolve(path)?;
     match open_local(local.as_str(), options).map_err(|e| naming_resolved_dataset(e, path, &local))? {
         Dataset::Vector(v) => {
@@ -1940,6 +1950,7 @@ pub(crate) fn needs_nodata_pam(ds: &RasterDataset) -> bool {
 
 /// The options a GeoTIFF or COG is written with from its source dataset, as GDAL 3.12.2's `CreateCopy`
 /// takes them from the source bands: `PHOTOMETRIC=RGB` for red, green and blue first bands,
+/// except on a COG of three JPEG bands, which GDAL 3.13.3's COG driver writes in YCbCr,
 /// `ALPHA=YES` for an alpha last band besides the colour ones (it then weights the overviews);
 /// each unless the caller gave it, and only when the caller gave no band colour interpretations.
 /// The color table is inherited as `RasterWriteOptions::inherited_from` decides. `None` when
@@ -1950,11 +1961,17 @@ pub(crate) fn color_options(ds: &RasterDataset, path: &str, options: &RasterWrit
         return None;
     }
     let interps_given = options.band_metadata.iter().any(|b| b.color_interp.is_some());
-    let given = |k: &str| options.creation_options.iter().find(|(o, _)| o.eq_ignore_ascii_case(k)).map(|(_, v)| v.to_ascii_uppercase());
+    // The last of a repeated option wins, as in the writer.
+    let given =
+        |k: &str| options.creation_options.iter().rev().find(|(o, _)| o.eq_ignore_ascii_case(k)).map(|(_, v)| v.to_ascii_uppercase());
     let ci = |b: usize| ds.band_metadata.get(b).and_then(|m| m.color_interp.as_deref()).map(str::to_ascii_lowercase);
     let bands = ds.raster.bands;
     let photometric = given("PHOTOMETRIC");
-    let rgb = photometric.is_none() && bands >= 3 && (0..3).map(ci).eq(["red", "green", "blue"].map(|c| Some(c.to_string())));
+    // GDAL 3.13.3's COG driver gives three JPEG bands PHOTOMETRIC=YCBCR itself, which the writer's
+    // default is (`GDALCOGCreator::Create`; the writer's side is in `gtiff_write::plan`).
+    let compress = options.compression.as_deref().map(str::to_ascii_uppercase).or_else(|| given("COMPRESS"));
+    let cog_ycbcr = driver == Some(RasterDriver::Cog) && bands == 3 && compress.as_deref() == Some("JPEG");
+    let rgb = photometric.is_none() && !cog_ycbcr && bands >= 3 && (0..3).map(ci).eq(["red", "green", "blue"].map(|c| Some(c.to_string())));
     // The colour samples, as the writer resolves the photometric (3 Byte bands are RGB).
     let color_samples = match photometric.as_deref() {
         Some("RGB" | "YCBCR") => 3,
