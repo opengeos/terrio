@@ -263,6 +263,7 @@ one file at a time. Each format lists the ways its files vary and the ways they 
 | GeoTIFF | codec and predictor, data type, tiled or stripped, band or pixel interleave, 1–12 bands | one window, 16 windows, whole file, 8x decimated (overview), 4 threads × 4 windows |
 | Zarr | v2 or v3, codec (zlib, gzip, zstd, Blosc LZ4/Zstd with shuffle or bitshuffle, none), data type, chunk size, sharding, cube chunking | one window, 16 windows, whole array, one band of a cube, 4 threads × 4 windows |
 | GeoParquet | geometry type, WKB or GeoArrow, compression, row group size, covering bbox column, spatial sort | all columns, two columns, a bbox of 1% of the extent, 16 bboxes, 4 threads × 4 bboxes, an attribute filter |
+| FlatGeobuf | geometry type, with or without a spatial index | all columns, two columns, a bbox of 1% of the extent, 16 bboxes |
 
 GDAL or zarr-python writes one fixture per file combination. terrio and GDAL each read every
 fixture in every way, from a local path and over HTTP from a local server that adds a 20 ms
@@ -297,6 +298,14 @@ The GeoParquet `where` request is reported separately as `where/sql-vs-filter`: 
 `terrio.sql`, while GDAL uses `pyogrio.read_arrow(where=...)`. This compares complete filtering
 workflows, including their different execution paths. Unsupported HTTP SQL inputs appear as
 errors and are excluded from rankings.
+
+FlatGeobuf reads use two Terrio entry points: `terrio.open_vector(bbox=...)` for the bbox
+reads, since it searches the spatial index, and `terrio.open_stream` for whole and column
+reads, since it selects columns. GDAL reads all of them with `pyogrio.read_arrow`. A FlatGeobuf
+stores each feature whole, so a column read needs the same bytes as a whole read. The bytes a
+bbox read needs are the header, the index nodes visited and the features found, or every feature
+without an index. As for the other formats' chunks, a node or feature that several of the 16 boxes
+touch counts once.
 
 The worker environment sets `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` to avoid directory scans,
 `GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES` to enable GDAL range merging, and `GDAL_CACHEMAX=512`

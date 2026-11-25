@@ -90,10 +90,10 @@ jobs:
           [[ "$args" =~ ^[A-Za-z0-9_.\ -]*$ ]] || { echo "Arguments may hold letters, digits, _ . - and spaces"; exit 1; }
           read -ra words <<< "$args"
           case "${words[0]:-}" in
-            geotiff|zarr|geoparquet) formats=${words[0]}; rest=("${words[@]:1}") ;;
-            "" ) formats="geotiff zarr geoparquet"; rest=(--quick) ;;
-            -*) formats="geotiff zarr geoparquet"; rest=("${words[@]}") ;;
-            *) echo "The first word is a format: geotiff, zarr or geoparquet"; exit 1 ;;
+            geotiff|zarr|geoparquet|flatgeobuf) formats=${words[0]}; rest=("${words[@]:1}") ;;
+            "" ) formats="geotiff zarr geoparquet flatgeobuf"; rest=(--quick) ;;
+            -*) formats="geotiff zarr geoparquet flatgeobuf"; rest=("${words[@]}") ;;
+            *) echo "The first word is a format: geotiff, zarr, geoparquet or flatgeobuf"; exit 1 ;;
           esac
           for w in "${rest[@]}"; do
             case "$w" in --out|--dir|--base|--format|--allow-battery) echo "$w is set by the workflow"; exit 1 ;; esac
@@ -114,8 +114,8 @@ jobs:
       - uses: mamba-org/setup-micromamba@v3
         with:
           environment-name: perf
-          # The GDAL of the matrix's published runs; pyogrio and PyArrow for GeoParquet, zarr-python
-          # for the Zarr fixtures.
+          # The GDAL of the matrix's published runs; pyogrio and PyArrow for GeoParquet and FlatGeobuf,
+          # zarr-python for the Zarr fixtures.
           create-args: python=3.12 gdal=3.13.3 libgdal-core=3.13.3 libgdal-arrow-parquet pyogrio pyarrow zarr>=3 numpy pip maturin
           # Not cached: a cache saved after the pull request's code ran could carry its changes.
           cache-environment: false
@@ -193,8 +193,8 @@ jobs:
       - uses: mamba-org/setup-micromamba@v3
         with:
           environment-name: perf
-          # The GDAL of the matrix's published runs; pyogrio and PyArrow for GeoParquet, zarr-python
-          # for the Zarr fixtures.
+          # The GDAL of the matrix's published runs; pyogrio and PyArrow for GeoParquet and FlatGeobuf,
+          # zarr-python for the Zarr fixtures.
           create-args: python=3.12 gdal=3.13.3 libgdal-core=3.13.3 libgdal-arrow-parquet pyogrio pyarrow zarr>=3 numpy pip maturin
           # Not cached: a cache saved after the pull request's code ran could carry its changes.
           cache-environment: false
