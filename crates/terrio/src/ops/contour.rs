@@ -90,7 +90,7 @@ pub fn contour(ds: &RasterDataset, options: &ContourOptions) -> Result<Layer> {
     }
     let r = &ds.raster;
     let values = super::BandView::of(r, options.band - 1);
-    let nodata = if options.ignore_nodata { None } else { options.nodata.or(ds.nodata()) };
+    let nodata = if options.ignore_nodata { None } else { options.nodata.or_else(|| ds.band_nodata(options.band)) };
     // GDALContourGenerateEx compares Float32 nodata at the band's stored precision.
     let nodata = nodata.map(|v| if r.data_type == crate::DataType::F32 { v as f32 as f64 } else { v });
     let valid = |v: f64| v.is_finite() && nodata.is_none_or(|nd| v != nd);

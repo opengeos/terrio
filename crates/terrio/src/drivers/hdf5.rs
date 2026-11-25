@@ -144,8 +144,12 @@ fn pixel_type(dt: &Datatype) -> Option<NumType> {
         return None;
     }
     let im_offset = if misread { part } else { im.byte_offset as usize };
+    let size = *size as usize;
+    if part > size || im_offset.checked_add(part).is_none_or(|end| end > size) {
+        return None;
+    }
     let supported = t.half || matches!(t.data_type, DataType::I16 | DataType::I32 | DataType::F32 | DataType::F64);
-    supported.then_some(NumType { complex: Some((im_offset, *size as usize)), ..t })
+    supported.then_some(NumType { complex: Some((im_offset, size)), ..t })
 }
 
 fn num_type(dt: &Datatype) -> Option<NumType> {

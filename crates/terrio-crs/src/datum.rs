@@ -179,6 +179,10 @@ pub(crate) struct Op {
     /// to geocentric coordinates on: a geocentric CRS's transformation beside a CRS without
     /// heights, whose legs between geocentric CRSs PROJ runs after `pop v_3` (#1012 item 8).
     pub keeps_wgs84_leg_height: bool,
+    /// Whether PROJ keeps heights across its leg at the WGS 84 end between 3D CRSs too: one
+    /// registered between 2D CRSs, which PROJ runs between `push v_3` and `pop v_3` (PZ-90 to
+    /// WGS 84 (1) in PZ-90.11's chain, LUREF to WGS 84 (4)).
+    pub keeps_height_3d: bool,
     pub steps: Vec<Step>,
     /// PROJ's name for it, the names of its steps joined by ` + ` (empty for ballparks), by which
     /// PROJ breaks the last ties when it sorts the chains it makes.
@@ -629,6 +633,7 @@ impl Op {
             priority: false,
             keeps_height: true,
             keeps_wgs84_leg_height: false,
+            keeps_height_3d: false,
             steps,
             name: String::new(),
         }
@@ -749,7 +754,7 @@ pub(crate) fn run(steps: &[Step], p: Point, reverse: bool, heights: bool) -> Opt
 
 /// Runs an op on a point: its heights change unless it keeps them between 2D CRSs.
 pub(crate) fn run_op(op: &Op, p: Point, reverse: bool, three_d: bool) -> Option<Point> {
-    if op.keeps_wgs84_leg_height && !three_d {
+    if keeps_wgs84_leg_height(op, three_d) {
         // The leg at the WGS 84 end (the steps' end), after the last geographic point between
         // two legs, keeps the height; the legs before it, on geocentric coordinates, move it. A
         // transformation of one leg keeps it unless it runs between geocentric CRSs.
@@ -764,6 +769,12 @@ pub(crate) fn run_op(op: &Op, p: Point, reverse: bool, three_d: bool) -> Option<
         };
     }
     run(&op.steps, p, reverse, three_d || !op.keeps_height)
+}
+
+/// Whether an operation keeps heights across its leg at the WGS 84 end only: between 3D CRSs as
+/// PROJ runs it, else as `Def::beside_2d` set it.
+pub(crate) fn keeps_wgs84_leg_height(op: &Op, three_d: bool) -> bool {
+    if three_d { op.keeps_height_3d } else { op.keeps_wgs84_leg_height }
 }
 
 /// The start of an operation's WGS 84 leg, after its last intermediate geographic point.

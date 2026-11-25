@@ -831,3 +831,47 @@ fn zarr_arrays_read_what_lazy_rasters_read() {
     assert!(lean.read(window, &[0]).is_err());
     assert!(lean.read(Window::new(60, 60, 8, 8), &[1]).is_err());
 }
+
+/// A node whose name holds `?` and `#`, in a store whose objects the caller fetches: terrio-js
+/// percent-encodes each segment of the keys, so they are not refused as URL delimiters.
+#[test]
+fn caller_fetched_node_names_keep_url_delimiters() {
+    use terrio::sparse::{ObjectRange, SparseObjects};
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("s.zarr");
+    std::fs::create_dir_all(store.join("a#?/c/0")).unwrap();
+    std::fs::write(store.join("zarr.json"), r#"{"zarr_format": 3, "node_type": "group", "attributes": {}}"#).unwrap();
+    let meta = r#"{"zarr_format": 3, "node_type": "array", "shape": [2, 2], "data_type": "uint8", "fill_value": 0,
+        "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [2, 2]}},
+        "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
+        "codecs": [{"name": "bytes"}], "attributes": {}}"#;
+    std::fs::write(store.join("a#?/zarr.json"), meta).unwrap();
+    std::fs::write(store.join("a#?/c/0/0"), [1u8, 2, 3, 4]).unwrap();
+    let objects = Arc::new(SparseObjects::new());
+    let fetch = |objects: &SparseObjects| {
+        let missing = objects.missing();
+        assert!(!missing.is_empty(), "permanent error without missing objects");
+        for (key, range) in missing {
+            assert_eq!(range, ObjectRange::Whole);
+            objects.insert(&key, range, std::fs::read(store.join(&key)).ok());
+        }
+    };
+    let mut rounds = 0;
+    let mut r = loop {
+        rounds += 1;
+        assert!(rounds <= 8, "fetch loop did not converge");
+        match terrio::LazyRaster::from_zarr_objects(objects.clone(), "http://127.0.0.1/s.zarr", "a#?") {
+            Ok(r) if !objects.has_missing() => break r,
+            _ => fetch(&objects),
+        }
+    };
+    let w = loop {
+        rounds += 1;
+        assert!(rounds <= 16, "fetch loop did not converge");
+        match r.read_window(Window::new(0, 0, 2, 2), &WindowOptions::default()) {
+            Ok(w) if !objects.has_missing() => break w,
+            _ => fetch(&objects),
+        }
+    };
+    assert_eq!((w.raster.get(0, 0, 0), w.raster.get(0, 1, 1)), (1.0, 4.0));
+}

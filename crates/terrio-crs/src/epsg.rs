@@ -16,9 +16,13 @@
 //! names from Esri's projection engine data (Apache-2.0). See `NOTICE`.
 
 use super::datum::{Op, parse_steps};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
+/// The EPSG table, which WebAssembly modules hold compressed: native builds embed it decompressed
+/// ([`epsg_text`]).
+#[cfg(any(target_family = "wasm", test))]
 static DATA: &[u8] = include_bytes!("../data/epsg.tsv.zst");
 static ESRI_DATA: &[u8] = include_bytes!("../data/esri.tsv.zst");
 /// Transformations between EPSG vertical CRSs (`scripts/gen_vertical_table.py`).
@@ -128,10 +132,9 @@ struct PairLists {
     lists: OpLists,
 }
 
-/// The table: its text, decompressed once, and an index of its lines. Entries are parsed on
-/// first use.
+/// The table: its text and an index of its lines, built once. Entries are parsed on first use.
 struct Table {
-    text: String,
+    text: Cow<'static, str>,
     crs: HashMap<u32, Lazy<Option<Entry>>>,
     ops: HashMap<u32, Lazy<Option<Arc<Op>>>>,
     /// Direct transformations between geographic CRSs, by (source, target) code.
@@ -151,6 +154,22 @@ struct Table {
     registered: Vec<(usize, usize)>,
     /// The deprecated CRSs, with the codes of those that replace them.
     replacements: HashMap<u32, Vec<u32>>,
+    /// The transformations PROJ lists for a geographic 3D or geocentric CRS in another direction
+    /// than into WGS 84 (3D), where they differ, by code and direction.
+    directed: HashMap<(u32, Direction), Lazy<OpLists>>,
+}
+
+/// A direction between a geographic 3D or geocentric CRS and WGS 84 other than into WGS 84 (3D),
+/// in which PROJ may list other transformations, or the same in another order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Direction {
+    /// From WGS 84 (3D): ONGD14 to WGS 84 (2), where PROJ runs (1) into it.
+    From3d,
+    /// Into WGS 84 (2D): LUREF to WGS 84 (4) before (3), which PROJ ranks the other way between
+    /// 3D CRSs.
+    Into2d,
+    /// From WGS 84 (2D).
+    From2d,
 }
 
 /// A line of the table (its fields after the code) and what it parses to.
@@ -174,24 +193,33 @@ pub(crate) fn decompress(data: &[u8]) -> String {
     zrip::decompress(data).ok().and_then(|bytes| String::from_utf8(bytes).ok()).unwrap_or_default()
 }
 
+/// The EPSG table's text. Native builds embed it decompressed (`build.rs`, 7.7 MB of read-only
+/// data), so that the first lookup of a process indexes it without decompressing it first.
+/// WebAssembly modules keep it compressed and decompress it on first use.
+fn epsg_text() -> Cow<'static, str> {
+    #[cfg(not(target_family = "wasm"))]
+    return Cow::Borrowed(include_str!(concat!(env!("OUT_DIR"), "/epsg.tsv")));
+    #[cfg(target_family = "wasm")]
+    Cow::Owned(decompress(DATA))
+}
+
 fn table() -> &'static Table {
     static TABLE: OnceLock<Table> = OnceLock::new();
-    TABLE.get_or_init(|| load(DATA))
+    TABLE.get_or_init(|| load(epsg_text()))
 }
 
 fn vertical_table() -> &'static Table {
     static TABLE: OnceLock<Table> = OnceLock::new();
-    TABLE.get_or_init(|| load(VERTICAL_DATA))
+    TABLE.get_or_init(|| load(decompress(VERTICAL_DATA).into()))
 }
 
 fn esri_table() -> &'static Table {
     static TABLE: OnceLock<Table> = OnceLock::new();
-    TABLE.get_or_init(|| load(ESRI_DATA))
+    TABLE.get_or_init(|| load(decompress(ESRI_DATA).into()))
 }
 
-/// Decompresses a table and indexes its lines.
-fn load(data: &[u8]) -> Table {
-    let text = decompress(data);
+/// Indexes the lines of a table's text.
+fn load(text: Cow<'static, str>) -> Table {
     let (mut crs, mut ops, mut pairs) = (HashMap::new(), HashMap::new(), HashMap::new());
     let (mut verticals, mut compounds, mut geoids) = (HashMap::new(), HashMap::new(), HashMap::<u32, Vec<_>>::new());
     let mut vertical_ops = HashMap::new();
@@ -199,6 +227,7 @@ fn load(data: &[u8]) -> Table {
     let mut dates = HashMap::new();
     let (mut geodetic, mut registered) = (Vec::new(), Vec::new());
     let mut replacements = HashMap::new();
+    let mut directed = HashMap::new();
     let mut pos = 0;
     for line in text.split_inclusive('\n') {
         let start = pos;
@@ -261,12 +290,38 @@ fn load(data: &[u8]) -> Table {
                     replacements.insert(code, line[rest - start..].split(',').filter_map(|c| c.parse().ok()).collect());
                 }
             }
+            "L" => {
+                let direction = match line[rest - start..].split('\t').next() {
+                    Some("f3") => Some(Direction::From3d),
+                    Some("t2") => Some(Direction::Into2d),
+                    Some("f2") => Some(Direction::From2d),
+                    _ => None,
+                };
+                if let (Ok(code), Some(direction)) = (key.parse::<u32>(), direction) {
+                    directed.insert((code, direction), Lazy::new(after_second(), end));
+                }
+            }
             "E" => geodetic.push((start + 2, end)),
             "R" => registered.push((start + 2, end)),
             _ => {}
         }
     }
-    Table { text, crs, ops, pairs, verticals, compounds, geoids, vertical_ops, alternatives, dates, geodetic, registered, replacements }
+    Table {
+        text,
+        crs,
+        ops,
+        pairs,
+        verticals,
+        compounds,
+        geoids,
+        vertical_ops,
+        alternatives,
+        dates,
+        geodetic,
+        registered,
+        replacements,
+        directed,
+    }
 }
 
 impl Table {
@@ -302,6 +357,7 @@ impl Table {
                     priority: flags.contains('p'),
                     keeps_height: flags.contains('z'),
                     keeps_wgs84_leg_height: false,
+                    keeps_height_3d: flags.contains('k'),
                     steps,
                     name,
                 }))
@@ -368,6 +424,14 @@ impl Table {
             PairLists { lists: (next(), next()) }
         }))
     }
+}
+
+/// The transformations PROJ lists for an EPSG geographic 3D or geocentric CRS in a direction
+/// other than into WGS 84 (3D), without and with grids (as [`Entry::ops`] and
+/// [`Entry::grid_ops`]), when they differ from those.
+pub(crate) fn directed(code: u32, direction: Direction) -> Option<&'static OpLists> {
+    let t = table();
+    Some(t.directed.get(&(code, direction))?.get(&t.text, |ids| t.lists(ids)))
 }
 
 /// The operations GDAL uses given the grids that can be found: those listed with grids, without
@@ -1085,6 +1149,15 @@ mod tests {
             (10919, 10918),
         ];
         assert_eq!(fallbacks, expected);
+    }
+
+    /// The embedded table is the compressed one's text, so every lookup gives what it did when the
+    /// table was decompressed on first use.
+    #[test]
+    fn embedded_table_is_the_compressed_table() {
+        let text = epsg_text();
+        assert!(text.len() > 1_000_000);
+        assert!(text == decompress(DATA));
     }
 
     #[test]
