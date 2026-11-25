@@ -1404,16 +1404,24 @@ fn decode_in_threads<D: Read + Seek + Send + 'static>(
     let workers = reserved.0;
     // The next chunk to decode, and whether to stop.
     let (next, stop) = (AtomicUsize::new(0), AtomicBool::new(false));
+    // The workers' range requests (over HTTP, a block evicted since the prefetch) stop with the
+    // caller's.
+    #[cfg(remote)]
+    let cancellation = crate::http::ReadCancellation::current();
     std::thread::scope(|scope| -> crate::Result<()> {
         // A bounded queue: decoding never runs far ahead of placing.
         let (tx, rx) = std::sync::mpsc::sync_channel::<crate::Result<DecodedChunk>>(workers * 2);
         for _ in 0..workers {
             let (tx, next, stop) = (tx.clone(), &next, &stop);
+            #[cfg(remote)]
+            let cancellation = &cancellation;
             // A thread that cannot be started (its stack not allocated) leaves the chunks to
             // the others, or to the caller.
             let _ = std::thread::Builder::new().spawn_scoped(scope, move || {
                 #[cfg(test)]
                 let _live = LiveWorker::enter();
+                #[cfg(remote)]
+                let _cancellation = cancellation.as_ref().map(crate::http::ReadCancellation::enter);
                 // A decoder that an earlier read left, else a new one. A thread that cannot
                 // open the file leaves the chunks to the others.
                 let (at, mut d) = match pool.and_then(|p| p.take(ifd)) {

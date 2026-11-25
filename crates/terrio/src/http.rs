@@ -1363,6 +1363,11 @@ impl ReadCancellation {
         Self(flags.into())
     }
 
+    /// The calling thread's cancellation, for work it hands to other threads; `None` outside any.
+    pub(crate) fn current() -> Option<Self> {
+        CANCEL_READS.with_borrow(|flags| (!flags.is_empty()).then(|| Self(flags.clone())))
+    }
+
     pub(crate) fn enter(&self) -> ReadCancellationScope {
         let stop = self.0.last().expect("capture_with pushes a flag").clone();
         ReadCancellationScope { previous: Some(CANCEL_READS.replace(self.0.clone())), stop }
@@ -3722,6 +3727,24 @@ mod tests {
         assert!(r.prefetch(&runs).is_err());
         assert!(started.elapsed() < Duration::from_secs(10), "waited {:?} for the stalled request", started.elapsed());
         assert_eq!(gate.most(), 2, "the stalled request was in flight when the run failed");
+    }
+
+    /// A read's cancellation, taken from the calling thread, stops another thread's range requests.
+    #[test]
+    fn a_read_cancellation_carries_to_another_thread() {
+        assert!(ReadCancellation::current().is_none());
+        let flag = Arc::new(AtomicBool::new(false));
+        let _scope = ReadCancellation::capture_with(flag.clone()).enter();
+        let cancellation = ReadCancellation::current().expect("inside a read's scope");
+        flag.store(true, Ordering::SeqCst);
+        std::thread::spawn(move || {
+            let client = Client::new(&Remote::Url("http://127.0.0.1/unused".into()), options());
+            assert!(client.check_cancelled().is_ok(), "a new thread has no cancellation of its own");
+            let _scope = cancellation.enter();
+            assert!(client.check_cancelled().is_err(), "the caller's cancellation must reach the thread");
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]
