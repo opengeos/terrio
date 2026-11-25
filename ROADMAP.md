@@ -285,6 +285,11 @@ Command-group progress:
       PROJ lists them, and every PROJ projection checked against PROJ as a PROJ string and as WKT.
 - [x] GeoJSON and GeoTIFF read and write, so the model is proven on one vector and one raster format.
 - [x] `terrio info` for any supported dataset.
+- [x] Approximate per-band min/max on lazy rasters: `LazyRaster::approx_min_max`, in GDAL's
+      `ComputeRasterMinMax(bApproxOK=TRUE)` order (stored statistics, the sampled overview, then
+      sampled blocks), reading only those blocks
+      ([#1307](https://github.com/opengeos/terrio/pull/1307)). Library-only by design:
+      `terrio info --stats` keeps exact statistics on the CLI/MCP surface.
 
 ## 0.2: Core formats
 

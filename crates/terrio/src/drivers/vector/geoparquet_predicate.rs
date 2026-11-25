@@ -78,9 +78,39 @@ impl ParquetStream {
                 Some(first)
             })
             .collect();
-        for (g, spatial) in self.windows.pending() {
-            if !predicate.may_match_ranges(|i| bounds(self.meta.row_group(g), &self.file_schema, &self.columns[i])) {
-                continue;
+        let candidates: Vec<_> = self
+            .windows
+            .pending()
+            .into_iter()
+            .filter(|(g, _)| predicate.may_match_ranges(|i| bounds(self.meta.row_group(*g), &self.file_schema, &self.columns[i])))
+            .collect();
+        // The predicate columns' chunks of each candidate group. With a prefetcher (a remote
+        // file), they are fetched together, at most its budget at a time (a group alone when it
+        // is larger), rather than one group per round trip.
+        let chunks = |g: usize| {
+            let rg = self.meta.row_group(g);
+            (0..rg.num_columns()).filter(|&i| mask.leaf_included(i)).map(|i| rg.column(i).byte_range()).collect::<Vec<_>>()
+        };
+        let budget = self.windows.prefetch_budget();
+        let mut announced = 0;
+        for (k, (g, spatial)) in candidates.iter().cloned().enumerate() {
+            if let Some(budget) = budget
+                && k == announced
+            {
+                let mut ranges = chunks(g);
+                let mut total = ranges.iter().fold(0u64, |t, r| t.saturating_add(r.1));
+                announced += 1;
+                while let Some((next, _)) = candidates.get(announced) {
+                    let more = chunks(*next);
+                    let size = more.iter().fold(0u64, |t, r| t.saturating_add(r.1));
+                    if total.saturating_add(size) > budget {
+                        break;
+                    }
+                    total = total.saturating_add(size);
+                    ranges.extend(more);
+                    announced += 1;
+                }
+                self.windows.prefetch(&mut ranges)?;
             }
             let mut keep = Vec::new();
             let mut row = 0;
@@ -150,8 +180,9 @@ mod tests {
         assert_eq!(remaining.features.iter().map(|f| f.fid).collect::<Vec<_>>(), (4..20).collect::<Vec<_>>());
     }
 
-    /// A query on a GeoParquet path filters its rows in the reader and gives what the same
-    /// query gives on the layer read whole, also when the reader cannot evaluate the clause.
+    /// A query on a GeoParquet file, local or remote, filters its rows in the reader and gives
+    /// what the same query gives on the layer read whole, also when the reader cannot evaluate
+    /// the clause.
     #[test]
     fn sql_on_a_path_matches_the_query_on_the_whole_layer() {
         let mut layer = Layer::new("t");
@@ -169,6 +200,17 @@ mod tests {
         let path = dir.path().join("t.parquet");
         let path = path.to_str().unwrap();
         super::super::write(&layer, path).unwrap();
+        // The file on disk, and served over HTTP (the remote reader).
+        #[allow(unused_mut)]
+        let mut sources = vec![path.to_string()];
+        #[cfg(remote)]
+        sources.push(format!("{}/t.parquet", crate::http::test_server(std::fs::read(path).unwrap()).0));
+        for path in &sources {
+            sql_on_a_source_matches_the_query_on_the_whole_layer(path);
+        }
+    }
+
+    fn sql_on_a_source_matches_the_query_on_the_whole_layer(path: &str) {
         let whole = crate::open_vector(path, &Default::default()).unwrap().into_resolved_layers();
         assert!(whole[0].features.iter().all(|feature| feature.geometry.is_some()));
         assert!(whole[0].crs.is_some());
@@ -179,6 +221,7 @@ mod tests {
             "SELECT * FROM t WHERE FID >= 47",
             "SELECT COUNT(*) FROM t WHERE id > 20",
             "SELECT * FROM t WHERE missing > 1 OR id = 1",
+            "SELECT * FROM t WHERE ST_Area(geometry) = 0 AND id < 3",
             "SELECT * FROM t",
         ] {
             let expected = crate::ops::sql::query(&whole, statement);
@@ -191,17 +234,107 @@ mod tests {
                             .map(|f| (f.fid, f.geometry.as_ref().map(Geometry::to_wkb), f.attributes.clone()))
                             .collect::<Vec<_>>()
                     };
-                    assert_eq!(rows(&got), rows(&expected), "{statement}");
+                    assert_eq!(rows(&got), rows(&expected), "{path}: {statement}");
                     let crs = |layer: &Layer| layer.crs.as_ref().map(|crs| (crs.epsg, crs.wkt.clone()));
-                    assert_eq!(crs(&got), crs(&expected), "{statement}");
-                    assert_eq!(got.geom_type, expected.geom_type, "{statement}");
+                    assert_eq!(crs(&got), crs(&expected), "{path}: {statement}");
+                    assert_eq!(got.geom_type, expected.geom_type, "{path}: {statement}");
                 }
-                (Err(got), Err(expected)) => assert_eq!(got.to_string(), expected.to_string(), "{statement}"),
+                (Err(got), Err(expected)) => assert_eq!(got.to_string(), expected.to_string(), "{path}: {statement}"),
                 (got, expected) => {
-                    panic!("{statement}: got {:?}, expected {:?}", got.map(|l| l.features.len()), expected.map(|l| l.features.len()))
+                    panic!(
+                        "{path}: {statement}: got {:?}, expected {:?}",
+                        got.map(|l| l.features.len()),
+                        expected.map(|l| l.features.len())
+                    )
                 }
             }
         }
+    }
+
+    /// A file of 200 rows in row groups of 10: `id` (0..200) and an 8 KB `name` per row.
+    fn grouped_file() -> bytes::Bytes {
+        use arrow_array::{Int64Array, RecordBatch, StringArray};
+        use arrow_schema::Field;
+        use std::sync::Arc;
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false), Field::new("name", DataType::Utf8, false)]));
+        let ids: Vec<i64> = (0..200).collect();
+        let names: Vec<String> = ids.iter().map(|i| format!("{i:0>8192}")).collect();
+        let batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(ids)), Arc::new(StringArray::from(names))]).unwrap();
+        let props = parquet::file::properties::WriterProperties::builder().set_max_row_group_row_count(Some(10)).build();
+        let mut data = Vec::new();
+        let mut writer = parquet::arrow::ArrowWriter::try_new(&mut data, schema, Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        data.into()
+    }
+
+    /// With a prefetcher (a remote file), the predicate pass announces the filter columns of the
+    /// row groups its statistics keep before reading them, many groups per call, within the
+    /// prefetcher's budget.
+    #[test]
+    fn predicate_columns_are_prefetched_together_within_the_budget() {
+        use std::sync::{Arc, Mutex};
+        let data = grouped_file();
+        let meta = parquet::arrow::arrow_reader::ArrowReaderMetadata::load(&data, Default::default()).unwrap().metadata().clone();
+        let id_chunk = |g: usize| meta.row_group(g).column(0).byte_range();
+        // `id < 35 OR id >= 180`: groups 0..4 and 18..20.
+        let kept: Vec<usize> = (0..4).chain(18..20).collect();
+        // Two of the largest kept chunks: the kept groups in pairs.
+        let pair = 2 * kept.iter().map(|&g| id_chunk(g).1).max().unwrap();
+        for (budget, calls) in [(u64::MAX, 1), (pair, 3)] {
+            // The ranges of each call to the prefetcher.
+            type Calls = Arc<Mutex<Vec<Vec<(u64, u64)>>>>;
+            let seen = Calls::default();
+            let record = seen.clone();
+            let prefetch = move |r: &[(u64, u64)]| {
+                record.lock().unwrap().push(r.to_vec());
+                Ok(())
+            };
+            let mut stream = ParquetStream::open(|| Ok(data.clone()), "t", None, None, 64, None, None)
+                .unwrap()
+                .with_prefetcher((Box::new(prefetch), budget));
+            stream.filter_attributes(&Expression::parse("id < 35 OR id >= 180").unwrap()).unwrap();
+            let seen = std::mem::take(&mut *seen.lock().unwrap());
+            assert_eq!(seen.len(), calls, "budget {budget}");
+            assert_eq!(seen.concat(), kept.iter().map(|&g| id_chunk(g)).collect::<Vec<_>>(), "budget {budget}");
+            let fids: Vec<u64> = stream.read_all().unwrap().features.iter().map(|f| f.fid).collect();
+            assert_eq!(fids, (0..35).chain(180..200).collect::<Vec<_>>());
+        }
+    }
+
+    /// A query on a remote GeoParquet file filters its rows in the reader, as on a local one.
+    #[cfg(remote)]
+    #[test]
+    fn sql_on_a_url_matches_the_query_on_a_local_path() {
+        let data = grouped_file();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.parquet");
+        std::fs::write(&path, &data).unwrap();
+        let (base, requests) = crate::http::test_server(data.to_vec());
+        let statement = "SELECT id FROM t WHERE id < 35 OR id IN (150, 199)";
+        let local = crate::ops::sql::query_path(path.to_str().unwrap(), statement, &Default::default()).unwrap();
+        let remote = crate::ops::sql::query_path(&format!("{base}/t.parquet"), statement, &Default::default()).unwrap();
+        let rows = |l: &Layer| l.features.iter().map(|f| (f.fid, f.attributes.clone())).collect::<Vec<_>>();
+        assert_eq!(rows(&remote), rows(&local));
+        assert_eq!(remote.features.len(), 37);
+        // Only the 6 row groups whose statistics may match are read, not the 20 of the file: a
+        // whole read would fetch the file's 1.6 MB of names. A request without a range (or with
+        // another form) counts as the whole file.
+        let fetched: usize = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                r.as_deref()
+                    .and_then(|r| {
+                        let (a, b) = r.strip_prefix("bytes=")?.split_once('-')?;
+                        Some(b.parse::<usize>().ok()?.min(data.len() - 1) + 1 - a.parse::<usize>().ok()?)
+                    })
+                    .unwrap_or(data.len())
+            })
+            .sum();
+        assert!(fetched < data.len() / 2, "{fetched} of {} bytes", data.len());
     }
 
     #[test]
@@ -223,9 +356,16 @@ mod tests {
         let meta = meta.into_builder().set_row_groups(vec![group]).build();
         // Keep the data pages intact but make their row count disagree with the footer.
         ParquetMetaDataWriter::new(&mut bytes, &meta).finish().unwrap();
-        std::fs::write(path, bytes).unwrap();
-        let error = crate::ops::sql::query_path(path, "SELECT * FROM t WHERE id < 7", &Default::default()).unwrap_err();
-        assert!(error.to_string().contains("predicate row count mismatch"), "{error}");
+        std::fs::write(path, &bytes).unwrap();
+        // On disk, and served over HTTP (the remote reader).
+        #[allow(unused_mut)]
+        let mut sources = vec![path.to_string()];
+        #[cfg(remote)]
+        sources.push(format!("{}/t.parquet", crate::http::test_server(bytes).0));
+        for path in &sources {
+            let error = crate::ops::sql::query_path(path, "SELECT * FROM t WHERE id < 7", &Default::default()).unwrap_err();
+            assert!(error.to_string().contains("predicate row count mismatch"), "{path}: {error}");
+        }
     }
 
     /// `IN` keeps a row group when one of its values may be in the group's range.

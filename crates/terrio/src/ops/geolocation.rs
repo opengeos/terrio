@@ -71,8 +71,9 @@ impl GeolocationTransformer {
                 return Err(Error::InvalidArgument("geolocation band is out of range".into()));
             }
             let mut values = super::band_f64(&ds.raster, band - 1);
+            let nodata = ds.band_nodata(band).map(|v| if ds.raster.data_type == crate::DataType::F32 { v as f32 as f64 } else { v });
             for v in &mut values {
-                if !v.is_finite() || (ds.has_nodata && super::is_nodata(*v, ds.raster.nodata)) {
+                if !v.is_finite() || nodata.is_some_and(|nd| super::is_nodata(*v, nd)) {
                     *v = f64::NAN;
                 }
             }

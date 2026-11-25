@@ -114,7 +114,7 @@ fn are_real_equal(a: f64, b: f64) -> bool {
 }
 
 /// The minimum and maximum of the valid values. `None` when there are none.
-fn min_max(values: impl Iterator<Item = f64>, nodata: Option<f64>, t: DataType) -> Option<(f64, f64)> {
+pub(crate) fn min_max(values: impl Iterator<Item = f64>, nodata: Option<f64>, t: DataType) -> Option<(f64, f64)> {
     let (mut lo, mut hi, mut n) = (f64::INFINITY, f64::NEG_INFINITY, 0usize);
     for v in values {
         if is_valid(v, nodata, t) {
@@ -124,6 +124,27 @@ fn min_max(values: impl Iterator<Item = f64>, nodata: Option<f64>, t: DataType) 
         }
     }
     (n > 0).then_some((lo, hi))
+}
+
+/// The blocks GDAL's approximate statistics sample (`ComputeStatistics(bApproxOK=TRUE)`): one
+/// block in every `nSampleRate`, as `(x, y, width, height)` windows.
+pub(crate) fn sampled_blocks(cols: usize, rows: usize, block: (usize, usize)) -> Vec<(usize, usize, usize, usize)> {
+    let (bw, bh) = (block.0.max(1), block.1.max(1));
+    let per_row = cols.div_ceil(bw);
+    let per_col = rows.div_ceil(bh);
+    let mut rate = ((per_row as f64 * per_col as f64).sqrt() as usize).max(1);
+    // GDAL avoids probing only the first column of blocks of a square raster.
+    if rate == per_row && per_row > 1 {
+        rate += 1;
+    }
+    (0..per_row * per_col)
+        .step_by(rate)
+        .map(|i| {
+            let (bx, by) = (i % per_row, i / per_row);
+            let (x0, y0) = (bx * bw, by * bh);
+            (x0, y0, (cols - x0).min(bw), (rows - y0).min(bh))
+        })
+        .collect()
 }
 
 /// GDAL's approximate minimum and maximum of a band without overviews: the pixels of one block in
@@ -136,21 +157,9 @@ fn sampled_min_max(
     nodata: Option<f64>,
     t: DataType,
 ) -> Option<(f64, f64)> {
-    let (bw, bh) = (block.0.max(1), block.1.max(1));
-    let per_row = cols.div_ceil(bw);
-    let per_col = rows.div_ceil(bh);
-    let mut rate = ((per_row as f64 * per_col as f64).sqrt() as usize).max(1);
-    // GDAL avoids probing only the first column of blocks of a square raster.
-    if rate == per_row && per_row > 1 {
-        rate += 1;
-    }
-    let blocks = (0..per_row * per_col).step_by(rate);
-    let pixels = blocks.flat_map(|i| {
-        let (bx, by) = (i % per_row, i / per_row);
-        let (x0, y0) = (bx * bw, by * bh);
-        let (w, h) = ((cols - x0).min(bw), (rows - y0).min(bh));
-        (y0..y0 + h).flat_map(move |y| values[y * cols + x0..y * cols + x0 + w].iter().copied())
-    });
+    let pixels = sampled_blocks(cols, rows, block)
+        .into_iter()
+        .flat_map(|(x0, y0, w, h)| (y0..y0 + h).flat_map(move |y| values[y * cols + x0..y * cols + x0 + w].iter().copied()));
     min_max(pixels, nodata, t)
 }
 
@@ -219,7 +228,12 @@ pub(crate) fn count(values: &[f64], nodata: Option<f64>, t: DataType, min: f64, 
 }
 
 /// The first histogram stored for a band (numbered from 1) in a dataset's `.aux.xml` sidecar.
+/// `None` when sidecar discovery is disabled (`GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`), as for
+/// [`stored_range`]'s PAM lookup.
 pub(crate) fn pam_histogram(path: &str, band: usize) -> Option<Histogram> {
+    if crate::config::sidecars_disabled() {
+        return None;
+    }
     let xml = std::fs::read_to_string(format!("{path}.aux.xml")).ok()?;
     let start = xml.find(&format!("<PAMRasterBand band=\"{band}\""))?;
     let block = &xml[start..];
@@ -238,24 +252,30 @@ pub(crate) fn pam_histogram(path: &str, band: usize) -> Option<Histogram> {
     (buckets.len() == count).then_some(Histogram { count, min, max, buckets })
 }
 
+/// The `STATISTICS_MINIMUM`/`MAXIMUM` of a band (numbered from 1) in a GeoTIFF's `GDAL_METADATA`.
+pub(crate) fn tag_range(tags: &crate::geotiff::GeoTags, band: usize) -> Option<(f64, f64)> {
+    let get = |k: &str| -> Option<f64> {
+        tags.band_metadata.iter().find(|(b, n, _)| *b + 1 == band && n == k).and_then(|(_, _, v)| v.trim().parse().ok())
+    };
+    Some((get("STATISTICS_MINIMUM")?, get("STATISTICS_MAXIMUM")?))
+}
+
 /// The minimum and maximum of a band (numbered from 1) stored with a dataset, in GDAL's order:
 /// `STATISTICS_MINIMUM`/`MAXIMUM` metadata (the `.aux.xml` sidecar, then a GeoTIFF's
 /// `GDAL_METADATA`), then what the format records itself (an EHdr `.stx` file, an Idrisi `.rdc`
 /// header, a Surfer grid's Z range).
-pub(crate) fn stored_range(ds: &RasterDataset, path: &str, band: usize) -> Option<(f64, f64)> {
+pub(crate) fn stored_range(driver: crate::formats::RasterDriver, path: &str, band: usize) -> Option<(f64, f64)> {
     use crate::formats::RasterDriver as D;
-    if let Some(r) = crate::ops::dem::pam_statistics(path, band) {
+    // With sidecar discovery disabled (`GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`), the PAM
+    // sidecar is not consulted; statistics stored in the file itself remain available.
+    if !crate::config::sidecars_disabled()
+        && let Some(r) = crate::ops::dem::pam_statistics(path, band)
+    {
         return Some(r);
     }
     let p = std::path::Path::new(path);
-    match ds.driver {
-        D::GTiff | D::Cog => {
-            let tags = crate::geotiff::read_geo_tags(p)?;
-            let get = |k: &str| -> Option<f64> {
-                tags.band_metadata.iter().find(|(b, n, _)| *b + 1 == band && n == k).and_then(|(_, _, v)| v.trim().parse().ok())
-            };
-            Some((get("STATISTICS_MINIMUM")?, get("STATISTICS_MAXIMUM")?))
-        }
+    match driver {
+        D::GTiff | D::Cog => tag_range(&crate::geotiff::read_geo_tags(p)?, band),
         D::EHdr => {
             // `band min max [mean stddev]` lines.
             let stx = std::fs::read_to_string(p.with_extension("stx")).ok()?;
@@ -375,5 +395,54 @@ mod tests {
     fn json_numbers_as_gdal_prints_them() {
         let h = Histogram { count: 1, min: 365.2274509803922, max: 2.0, buckets: vec![3] };
         assert_eq!(serde_json::to_string(&h).unwrap(), r#"{"count":1,"min":365.22745098039218,"max":2.0,"buckets":[3]}"#);
+    }
+
+    /// `info --hist` takes a band's stored range and stored histogram from its `.aux.xml`, except
+    /// under `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, where GDAL reads no sidecar: the default
+    /// histogram is then computed over the pixels, for the range and the histogram alike.
+    #[test]
+    fn info_histograms_ignore_pam_sidecars_under_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.tif");
+        let ds = raster(RasterData::F32((1..=64).map(|v| v as f32).collect()), 8, 8, None);
+        let options = crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::GTiff), ..Default::default() };
+        crate::write_raster_dataset(&ds, path.to_str().unwrap(), &options).unwrap();
+        let path = path.to_str().unwrap();
+        let hist = |empty_dir: bool| {
+            if empty_dir {
+                crate::config::push_scope(std::collections::HashMap::from([(
+                    "GDAL_DISABLE_READDIR_ON_OPEN".to_string(),
+                    Some("EMPTY_DIR".to_string()),
+                )]));
+            }
+            let info = crate::info::info_path(path, &crate::info::InfoOptions { statistics: false, histogram: true });
+            if empty_dir {
+                crate::config::pop_scope();
+            }
+            match info.unwrap() {
+                crate::info::Info::Raster(r) => r.bands[0].histogram.clone().unwrap(),
+                _ => panic!("not a raster"),
+            }
+        };
+        let computed = hist(false);
+        let half = 63.0 / 510.0;
+        assert_eq!((computed.count, computed.min, computed.max), (256, 1.0 - half, 64.0 + half));
+        // A stored range.
+        let sidecar = format!("{path}.aux.xml");
+        std::fs::write(
+            &sidecar,
+            r#"<PAMDataset><PAMRasterBand band="1"><Metadata><MDI key="STATISTICS_MINIMUM">0</MDI><MDI key="STATISTICS_MAXIMUM">255</MDI></Metadata></PAMRasterBand></PAMDataset>"#,
+        )
+        .unwrap();
+        assert_eq!(hist(false).min, -0.5);
+        assert_eq!(hist(true), computed);
+        // A stored histogram.
+        std::fs::write(
+            &sidecar,
+            r#"<PAMDataset><PAMRasterBand band="1"><Histograms><HistItem><HistMin>0</HistMin><HistMax>2</HistMax><BucketCount>2</BucketCount><IncludeOutOfRange>0</IncludeOutOfRange><Approximate>0</Approximate><HistCounts>30|34</HistCounts></HistItem></Histograms></PAMRasterBand></PAMDataset>"#,
+        )
+        .unwrap();
+        assert_eq!(hist(false).buckets, vec![30, 34]);
+        assert_eq!(hist(true), computed);
     }
 }
