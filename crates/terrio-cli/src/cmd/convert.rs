@@ -144,6 +144,7 @@ fn stream_options(a: &Args) -> terrio::Result<Option<terrio::stream::ConvertOpti
         None => None,
     };
     if a.preserve_fid
+        || !a.dataset_options.is_empty()
         || a.srcwin.is_some()
         || a.overview.is_some()
         || a.vector.write_mode() != WriteMode::Create

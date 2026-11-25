@@ -428,7 +428,10 @@ def shapes(
     transform = guard_transform(transform)
     if connectivity not in (4, 8):
         raise ValueError("Connectivity Option must be 4 or 8")
-    arr = np.asarray(source)
+    if hasattr(source, "ds") and hasattr(source, "bidx"):
+        arr = np.asarray(source.ds.read(source.bidx))
+    else:
+        arr = np.asarray(source)
     if arr.ndim == 3 and arr.shape[0] == 1:
         arr = arr[0]
     if arr.dtype.name not in (
@@ -507,7 +510,10 @@ def sieve(
     Returns:
         numpy.ndarray: The sieved array.
     """
-    arr = np.asarray(source)
+    if hasattr(source, "ds") and hasattr(source, "bidx"):
+        arr = np.asarray(source.ds.read(source.bidx))
+    else:
+        arr = np.asarray(source)
     src = _terrio.Raster.from_array(np.ascontiguousarray(arr), _PIXELS)
     m = None
     if mask is not None:

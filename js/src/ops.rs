@@ -565,7 +565,7 @@ pub fn rasterize(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         None => all,
     };
     let grid = match &taken[0] {
-        Some(l) => Some(Grid::like(&input_raster(l)?)),
+        Some(l) => Some(Grid::like(&input_lazy_raster(l)?.header())),
         None => None,
     };
     let o = RasterizeOptions {

@@ -3419,11 +3419,12 @@ def cmd_calc(args: argparse.Namespace, env: Any) -> None:
         output, files = resolve_inout(
             files=args.files, output=args.output, overwrite=args.overwrite
         )
-        inputs = [tuple(n.split("=")) for n in args.name] + [(None, n) for n in files]
+        inputs = [tuple(n.split("=", 1)) for n in args.name] + [(None, n) for n in files]
+        name_to_idx = {name: i for i, (name, _) in enumerate(inputs) if name is not None}
         sources = [stack.enter_context(rasterio.open(path)) for _, path in inputs]
 
         def get_bands(d: Any, i: Any = None) -> Any:
-            idx = d if d in dict(inputs) else int(d) - 1
+            idx = name_to_idx[d] if d in name_to_idx else int(d) - 1
             src = sources[idx]
             return rasterio.band(src, i) if i else [rasterio.band(src, j) for j in src.indexes]
 

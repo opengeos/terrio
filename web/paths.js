@@ -41,6 +41,9 @@ function remotePath(value) {
     const [, bucket, key] = m;
     return bucket.includes(".") ? `${prefix}/https/s3.amazonaws.com/${bucket}/${encodeKey(key)}` : `${prefix}/https/${bucket}.s3.amazonaws.com/${encodeKey(key)}`;
   }
-  if ((m = /^(?:gs:\/\/|\/vsigs\/)([^/]+)\/([\s\S]*)$/.exec(rest))) return `${prefix}/https/storage.googleapis.com/${m[1]}/${encodeKey(m[2])}`;
+  if ((m = /^(?:gs:\/\/|\/vsigs\/)([a-z0-9][a-z0-9._-]{1,220}[a-z0-9])\/([\s\S]*)$/.exec(rest))) {
+    const [, bucket, key] = m;
+    if (!bucket.includes("..")) return `${prefix}/https/storage.googleapis.com/${bucket}/${encodeKey(key)}`;
+  }
   return value;
 }

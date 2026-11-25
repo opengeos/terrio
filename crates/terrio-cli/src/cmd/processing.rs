@@ -261,11 +261,26 @@ fn parse_footprint_attribute(value: &str) -> std::result::Result<(String, String
 
 // Preserve local filenames verbatim; remote source identifiers must not persist authentication.
 fn footprint_location(input: &str) -> String {
-    let Some((scheme, rest)) = input.split_once("://") else { return input.to_owned() };
-    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
-    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(authority, _)| (authority, &rest[authority.len()..]));
-    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
-    format!("{scheme}://{host}{path}")
+    if let Some((prefix, query)) = input.split_once("/vsicurl?") {
+        let sanitized_url = query.split('&').find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            (k.eq_ignore_ascii_case("url") && v.contains("://")).then(|| footprint_location(v))
+        });
+        return match sanitized_url {
+            Some(url) => format!("{prefix}/vsicurl?url={url}"),
+            None => format!("{prefix}/vsicurl"),
+        };
+    }
+    if let Some((scheme, rest)) = input.split_once("://") {
+        let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+        let (authority, path) = rest.split_once('/').map_or((rest, ""), |(authority, _)| (authority, &rest[authority.len()..]));
+        let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+        return format!("{scheme}://{host}{path}");
+    }
+    if input.starts_with("/vsi") {
+        return input.split(['?', '#']).next().unwrap_or(input).to_owned();
+    }
+    input.to_owned()
 }
 
 pub fn footprint(a: FootprintArgs) -> Result<()> {
@@ -831,7 +846,7 @@ pub fn clean_coverage(a: CleanCoverageArgs) -> Result<()> {
 
 #[cfg(test)]
 mod inputs_tests {
-    use super::csv_records;
+    use super::{csv_records, footprint_location};
 
     #[test]
     fn csv_records_follow_rfc_4180_quoting() {
@@ -839,5 +854,15 @@ mod inputs_tests {
         assert_eq!(csv_records(text).unwrap(), [vec!["path", "label"], vec![" a,b.tif ", "two\nlines"], vec!["c.tif", "say \"hi\""]]);
         assert!(csv_records("path\n\"open.tif\n").unwrap_err().contains("not closed"));
         assert!(csv_records("path\n\"a\"b\n").unwrap_err().contains("after a closing quote"));
+    }
+
+    #[test]
+    fn footprint_location_redacts_vsi_and_url_credentials() {
+        assert_eq!(footprint_location("local/path.tif"), "local/path.tif");
+        assert_eq!(footprint_location("https://user:secret@example.org/a.tif?sig=tok#frag"), "https://example.org/a.tif");
+        let vsiaz = footprint_location("/vsiaz/container/a.tif?sig=SECRET");
+        assert!(!vsiaz.contains("SECRET"), "must not retain SAS token: {vsiaz}");
+        let vsicurl = footprint_location("/vsicurl?userpwd=alice:s3cr3t&url=https://example.org/a.tif");
+        assert!(!vsicurl.contains("s3cr3t"), "must not retain VSI userpwd: {vsicurl}");
     }
 }

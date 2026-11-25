@@ -4184,7 +4184,28 @@ class MemoryFile:
         name = (
             filename or f"{uuid.uuid4().hex}{ext if ext.startswith('.') or not ext else '.' + ext}"
         )
-        self.name = os.path.join(self._dir, name)
+        if filename is not None:
+            normalized = filename.replace("\\", "/")
+            if (
+                os.path.isabs(filename)
+                or os.path.isabs(normalized)
+                or os.path.splitdrive(filename)[0]
+                or ".." in normalized.split("/")
+            ):
+                raise ValueError(
+                    f"MemoryFile filename must stay inside the memory file directory: {filename!r}"
+                )
+        candidate = os.path.join(self._dir, name)
+        root_real = os.path.realpath(self._dir)
+        cand_real = os.path.realpath(candidate)
+        if os.path.commonpath([root_real, cand_real]) != root_real or cand_real == root_real:
+            raise ValueError(
+                f"MemoryFile filename must stay inside the memory file directory: {filename!r}"
+            )
+        parent = os.path.dirname(candidate)
+        if parent != self._dir:
+            os.makedirs(parent, exist_ok=True)
+        self.name = candidate
         self._pos = 0
         self.closed = False
         if data is not None:

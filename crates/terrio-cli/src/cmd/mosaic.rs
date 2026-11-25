@@ -77,7 +77,11 @@ pub fn run(a: Args) -> terrio::Result<()> {
         resampling: Resampling::parse(&a.resampling)?,
         dst_srs: srs(&a.t_srs)?,
     };
-    if !output.to_ascii_lowercase().ends_with(".vrt") {
+    let is_vrt = match a.out.format.as_deref() {
+        Some(f) => terrio::formats::RasterDriver::from_name(f) == Some(terrio::formats::RasterDriver::VRT),
+        None => output.to_ascii_lowercase().ends_with(".vrt"),
+    };
+    if !is_vrt {
         // The inputs read by windows where they can be.
         return super::quiet(|| mosaic_to_path(inputs, &o, output, &a.out.options()?));
     }
