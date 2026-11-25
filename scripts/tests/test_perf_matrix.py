@@ -143,6 +143,26 @@ def test_geopackage_pages_come_from_the_table_b_tree_and_the_r_tree(tmp_path):
     assert 0 < nodes < total
 
 
+def test_geopackage_needed_bytes_read_a_fixture_under_a_directory_with_a_hash(tmp_path):
+    """Open a fixture by its path, even when a directory's name holds a URI fragment's `#`.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+    """
+    ogr = pytest.importorskip("osgeo.ogr")
+    path = tmp_path / "matrix#1" / "t.gpkg"
+    path.parent.mkdir()
+    ds = ogr.GetDriverByName("GPKG").CreateDataSource(str(path))
+    lyr = ds.CreateLayer(perf_matrix.GeoPackage.LAYER, None, ogr.wkbPoint)
+    for i in range(3):
+        f = ogr.Feature(lyr.GetLayerDefn())
+        f.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT ({i} {i})"))
+        lyr.CreateFeature(f)
+    lyr = ds = None
+    need = perf_matrix.GeoPackage.meta(path, "full")["need_bytes"]
+    assert 0 < need <= path.stat().st_size
+
+
 def test_http_ranges_larger_than_a_piece_are_served_whole_and_counted(tmp_path, monkeypatch):
     """Serve a range across several 1 MiB pieces, and count its bytes once.
 
@@ -593,6 +613,7 @@ def test_changed_files_choose_the_formats_to_measure():
     assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
     assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "geopackage"]
     assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "geopackage"]
+    assert perf_matrix.touched(["crates/terrio/src/ops/sql/select.rs"]) == ["geopackage"]
     assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == []
 

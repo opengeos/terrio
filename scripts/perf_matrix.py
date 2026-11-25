@@ -971,7 +971,8 @@ class GeoPackage:
         import bisect
         import sqlite3
 
-        con = sqlite3.connect(f"file:{path}?immutable=1", uri=True)  # read only: never writes the fixture
+        # Read only, never writing the fixture; the path as a URI, so a `#` or `?` in it stays a path.
+        con = sqlite3.connect(f"{Path(path).resolve().as_uri()}?immutable=1", uri=True)
         try:
             page_size = con.execute("PRAGMA page_size").fetchone()[0]
             roots = dict(con.execute("SELECT name, rootpage FROM sqlite_master WHERE type = 'table'"))
@@ -1107,6 +1108,7 @@ PATHS = {
         "crates/terrio/src/stream/*",
         "crates/terrio/src/arrow.rs",
         "crates/terrio/src/ops/sql.rs",
+        "crates/terrio/src/ops/sql/*",
         "python/src/stream.rs",
         "python/src/arrow.rs",
     ],
