@@ -108,15 +108,18 @@ pub fn parse(text: &str) -> Option<Geometry> {
         Some(p) if p.eq_ignore_ascii_case("SRID=") => text.split_once(';')?.1,
         _ => text,
     };
-    let mut p = Parser { s: text.as_bytes(), i: 0 };
+    let mut p = Parser { s: text.as_bytes(), i: 0, depth: 0 };
     let g = p.geometry()?;
     p.skip_ws();
     (p.i == p.s.len()).then_some(g).flatten()
 }
 
+const MAX_DEPTH: usize = 64;
+
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
+    depth: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -158,6 +161,16 @@ impl Parser<'_> {
 
     /// Parses a geometry. The outer `Option` fails on bad syntax; the inner is `None` for EMPTY.
     fn geometry(&mut self) -> Option<Option<Geometry>> {
+        if self.depth >= MAX_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let out = self.geometry_inner();
+        self.depth -= 1;
+        out
+    }
+
+    fn geometry_inner(&mut self) -> Option<Option<Geometry>> {
         let kind = self.word();
         let mut dims = Dims { z: false, m: false };
         let mut tag = kind;

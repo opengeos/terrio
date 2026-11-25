@@ -1410,6 +1410,7 @@ PATHS = {
     ],
     "geopackage": [
         "crates/terrio/src/drivers/vector/gpkg_read.rs",
+        "crates/terrio/src/drivers/vector/mod.rs",  # the eager read `terrio.sql` opens
         "crates/terrio/src/drivers/vector/wkb.rs",
         "crates/terrio/src/drivers/sqlite.rs",
         "crates/terrio/src/drivers/sqlite_repack.rs",
@@ -1419,6 +1420,7 @@ PATHS = {
         "crates/terrio/src/ops/sql/*",
         "python/src/stream.rs",
         "python/src/arrow.rs",
+        "python/src/ops.rs",  # `terrio.sql`, the `where` read
     ],
 }
 

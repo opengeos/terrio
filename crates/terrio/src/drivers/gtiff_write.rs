@@ -55,7 +55,8 @@ pub(crate) struct CodecParams {
     pub max_z_error: f64,
     /// JPEG: the quality, 1 to 100.
     pub jpeg_quality: u8,
-    /// JPEG: three bands in YCbCr (`PHOTOMETRIC=YCBCR`), subsampled.
+    /// JPEG: three bands in YCbCr, subsampled; [`Level::sparse_image`] sets it from the layout's
+    /// photometric.
     pub jpeg_ycbcr: bool,
     pub webp_quality: u8,
     pub webp_lossless: bool,
@@ -873,22 +874,30 @@ impl TiffOptions {
         if let Some(p) = co("PREDICTOR") {
             o.predictor = parse_predictor(p, cog)?;
         }
-        // The levels are checked whatever the compression, as the qualities are.
-        if let Some(v) = co("ZLEVEL") {
+        // The levels are checked whatever the compression, as the qualities are. GDAL's COG
+        // driver takes LEVEL as ZLEVEL for Deflate and as ZSTD_LEVEL for Zstandard, in their
+        // place (GDAL 3.13.3 `GDALCOGCreator::Create`); other codecs ignore it. LEVEL, read last,
+        // wins.
+        let compression = o.compression;
+        let levels = |key: &'static str, codecs: [Compression; 2]| {
+            let level = co("LEVEL").filter(|_| cog && codecs.contains(&compression));
+            co(key).map(|v| (key, v)).into_iter().chain(level.map(|v| ("LEVEL", v)))
+        };
+        for (key, v) in levels("ZLEVEL", [Compression::Deflate, Compression::LercDeflate]) {
             o.codec.deflate_level = v
                 .trim()
                 .parse::<u32>()
                 .ok()
                 .and_then(crate::deflate_compress::Level::new)
-                .ok_or_else(|| Error::InvalidArgument(format!("invalid ZLEVEL '{v}' (1 to 9)")))?;
+                .ok_or_else(|| Error::InvalidArgument(format!("invalid {key} '{v}' (1 to 9)")))?;
         }
-        if let Some(v) = co("ZSTD_LEVEL") {
+        for (key, v) in levels("ZSTD_LEVEL", [Compression::Zstd, Compression::LercZstd]) {
             o.codec.zstd_level = v
                 .trim()
                 .parse::<i32>()
                 .ok()
                 .filter(|l| (1..=22).contains(l))
-                .ok_or_else(|| Error::InvalidArgument(format!("invalid ZSTD_LEVEL '{v}' (1 to 22)")))?;
+                .ok_or_else(|| Error::InvalidArgument(format!("invalid {key} '{v}' (1 to 22)")))?;
         }
         if let Some(v) = co("MAX_Z_ERROR") {
             o.codec.max_z_error = v
@@ -933,7 +942,6 @@ impl TiffOptions {
         if o.compression == Compression::Jxl && co("JXL_LOSSLESS").is_some_and(|v| !yes(v)) {
             return Err(Error::Unsupported("lossy JPEG XL is not written: JXL_LOSSLESS=YES only".into()));
         }
-        o.codec.jpeg_ycbcr = o.photometric == Some(6);
         o.alpha = co("ALPHA").is_some_and(|v| yes(v) || v.eq_ignore_ascii_case("NON-PREMULTIPLIED"));
         if !o.color_table.is_empty() && o.photometric.is_none() {
             o.photometric = Some(3);
@@ -1180,6 +1188,9 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
         Some(6) if jpeg && samples == 3 => 6,
         Some(6) => return Err(Error::Unsupported("PHOTOMETRIC=YCBCR needs JPEG compression of 3 bands".into())),
         Some(p) => p,
+        // GDAL 3.13.3's COG driver writes three JPEG bands as YCbCr (`GDALCOGCreator::Create`);
+        // `dataset::color_options` keeps PHOTOMETRIC=RGB off such a copy to match.
+        None if opts.cog && jpeg && samples == 3 => 6,
         None if (samples == 3 || (samples == 4 && opts.compression == Compression::WebP)) && raster.data_type == DataType::U8 => 2,
         None => 1,
     };
@@ -1215,6 +1226,13 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
     // The colour interpretations GDAL reads from the photometric and extra samples written
     // (`GTiffRasterBand`): GDAL_METADATA holds only the bands' others (see [`geo_tags`]).
     let implied: Vec<&str> = (0..samples).map(|i| implied_color_interp(photometric, &extra, base_samples, i)).collect();
+    // GDAL 3.13.3's `GTiffDataset::CreateCopy` ignores the first three bands' colour
+    // interpretations under PHOTOMETRIC=RGB given, and their Undefined ones in YCbCr: those read
+    // as red, green and blue. Others, such as Gray or Blue first, are kept in YCbCr.
+    let ignored = |i: usize, c: &str| {
+        implied.get(i).is_some_and(|m| m.eq_ignore_ascii_case(c))
+            || (i < 3 && (opts.photometric == Some(2) || (photometric == 6 && c.eq_ignore_ascii_case("Undefined"))))
+    };
     let layout = Layout {
         tile,
         rows_per_strip: opts.rows_per_strip,
@@ -1244,7 +1262,7 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
         }
         _ => Vec::new(),
     };
-    let mut geo = geo_tags(raster, opts, &image_structure, &implied)?;
+    let mut geo = geo_tags(raster, opts, &image_structure, ignored)?;
     if !opts.georeferenced || !opts.gcps.is_empty() || opts.geo_transform.is_some_and(|gt| !crate::is_north_up(&gt)) {
         geo.retain(|(tag, _)| !matches!(tag, 33550 | 33922));
     }
@@ -1688,11 +1706,15 @@ fn mask_levels(
 /// overviews weight by itself (`IsMaskBand`), and whether it is the other bands' mask band too
 /// (two or four bands, Byte or UInt16: `GDALRasterBand::GetMaskBand`).
 fn alpha_weights(opts: &TiffOptions, bands: usize, t: DataType) -> (Option<usize>, bool) {
-    let last_is_alpha = opts
-        .band_metadata
-        .get(bands.wrapping_sub(1))
-        .and_then(|b| b.color_interp.as_deref())
-        .is_some_and(|c| c.eq_ignore_ascii_case("alpha"));
+    // PHOTOMETRIC=RGB given makes the first three bands red, green and blue whatever their source
+    // interpretations (see `plan`), so a third band read as Alpha in the source is blue here.
+    let rgb_band = bands <= 3 && opts.photometric == Some(2);
+    let last_is_alpha = !rgb_band
+        && opts
+            .band_metadata
+            .get(bands.wrapping_sub(1))
+            .and_then(|b| b.color_interp.as_deref())
+            .is_some_and(|c| c.eq_ignore_ascii_case("alpha"));
     let alpha = (opts.alpha || last_is_alpha).then(|| bands - 1);
     (alpha, alpha.is_some() && matches!(bands, 2 | 4) && matches!(t, DataType::U8 | DataType::U16))
 }
@@ -1812,6 +1834,7 @@ impl<'a> Level<'a> {
         layout: &Layout,
         empty: Option<f64>,
     ) -> Result<Image> {
+        let codec = &CodecParams { jpeg_ycbcr: layout.photometric == 6, ..*codec };
         let parts = layout.parts;
         // The size of a sample's part, and the TIFF samples per pixel.
         let size = t.size_bytes();
@@ -2170,12 +2193,17 @@ fn implied_color_interp(photometric: u16, extra: &[u16], base: usize, i: usize) 
     }
 }
 
-/// The GeoTIFF tags of a raster written with `opts`. `implied` holds the colour interpretations
-/// the written photometric and extra samples give the bands: as GDAL's
-/// `GTiffDataset::WriteMetadata`, only the bands' other colour interpretations go to
-/// GDAL_METADATA (GDAL 3.12.1 copies a gray or RGB file without it, and three gray Byte bands,
-/// written as RGB, with theirs).
-fn geo_tags(r: &Raster, opts: &TiffOptions, image_structure: &[(String, String)], implied: &[&str]) -> Result<Vec<(u16, Value)>> {
+/// The GeoTIFF tags of a raster written with `opts`. `ignored(band, interpretation)` says
+/// whether a band's colour interpretation is left out: one the written photometric and extra
+/// samples give the band, as GDAL's `GTiffDataset::WriteMetadata` writes only the bands' other
+/// colour interpretations to GDAL_METADATA (GDAL 3.12.1 copies a gray or RGB file without it, and
+/// three gray Byte bands, written as RGB, with theirs), or one the photometric given overrides.
+fn geo_tags(
+    r: &Raster,
+    opts: &TiffOptions,
+    image_structure: &[(String, String)],
+    ignored: impl Fn(usize, &str) -> bool,
+) -> Result<Vec<(u16, Value)>> {
     let mut tags = vec![
         (33550, Value::Doubles(vec![r.cell_size_x, r.cell_size_y, 0.0])),
         (33922, Value::Doubles(vec![0.0, 0.0, 0.0, r.x_min, r.y_max(), 0.0])),
@@ -2213,7 +2241,7 @@ fn geo_tags(r: &Raster, opts: &TiffOptions, image_structure: &[(String, String)]
         .enumerate()
         .map(|(i, b)| {
             let mut b = b.clone();
-            if b.color_interp.as_deref().is_some_and(|c| implied.get(i).is_some_and(|m| m.eq_ignore_ascii_case(c))) {
+            if b.color_interp.as_deref().is_some_and(|c| ignored(i, c)) {
                 b.color_interp = None;
             }
             b
@@ -4240,7 +4268,7 @@ mod tests {
         let wkt = r#"local_cs ("site grid",UNIT["metre",1],AUTHORITY["EPSG","32615"])"#;
         let crs = crate::crs::SpatialRef::from_wkt(wkt).to_crs_info();
         let r = Raster::from_data(wbraster::RasterConfig { cols: 2, rows: 2, crs, ..Default::default() }, vec![1.0; 4]).unwrap();
-        let tags = geo_tags(&r, &Default::default(), &[], &[]).unwrap();
+        let tags = geo_tags(&r, &Default::default(), &[], |_, _| false).unwrap();
         let Some(Value::Shorts(keys)) = tags.iter().find(|(tag, _)| *tag == 34735).map(|(_, value)| value) else { panic!() };
         let Some(Value::Ascii(ascii)) = tags.iter().find(|(tag, _)| *tag == 34737).map(|(_, value)| value) else { panic!() };
         let (entries, remainder) = keys[4..].as_chunks::<4>();
@@ -5912,6 +5940,46 @@ following conditions:
         }
     }
 
+    /// A COG's `LEVEL` is its Deflate (DEFLATE, LERC_DEFLATE) or Zstandard (ZSTD, LERC_ZSTD)
+    /// level, as GDAL 3.13.3's COG driver takes it, ahead of `ZLEVEL` and `ZSTD_LEVEL`; other
+    /// codecs and GeoTIFFs ignore it.
+    #[test]
+    fn cog_level_is_the_deflate_or_zstd_level() {
+        // Text repeats differently enough for Deflate levels 1 and 9 and Zstandard levels 1 and 4
+        // to give other bytes.
+        let text = b"Permission is hereby granted, free of charge, to any person obtaining a copy of this software \
+            and associated documentation files, to deal in the Software without restriction, including without \
+            limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies.";
+        let cfg = wbraster::RasterConfig { cols: text.len(), rows: 4, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let r = Raster::from_data_native(cfg, RasterData::U8(text.repeat(4))).unwrap();
+        let write = |compression: &str, cog: bool, co: &[(&str, &str)]| {
+            let options = crate::RasterWriteOptions {
+                compression: Some(compression.into()),
+                creation_options: co.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+                ..Default::default()
+            };
+            TiffOptions::from_write_options(&options, cog, None).map(|o| encode(&r, &o.unwrap()).unwrap())
+        };
+        let cog = |compression: &str, co: &[(&str, &str)]| write(compression, true, co).unwrap();
+        assert_ne!(cog("DEFLATE", &[("ZLEVEL", "1")]), cog("DEFLATE", &[("ZLEVEL", "9")]));
+        for level in ["1", "9"] {
+            assert_eq!(cog("DEFLATE", &[("LEVEL", level)]), cog("DEFLATE", &[("ZLEVEL", level)]), "LEVEL={level}");
+        }
+        assert_eq!(cog("DEFLATE", &[("LEVEL", "1"), ("ZLEVEL", "9")]), cog("DEFLATE", &[("ZLEVEL", "1")]));
+        assert_ne!(cog("ZSTD", &[("ZSTD_LEVEL", "1")]), cog("ZSTD", &[("ZSTD_LEVEL", "4")]));
+        assert_eq!(cog("ZSTD", &[("LEVEL", "1"), ("ZSTD_LEVEL", "4")]), cog("ZSTD", &[("ZSTD_LEVEL", "1")]));
+        // A GeoTIFF has no LEVEL; LZW none, whatever its value.
+        assert_eq!(write("DEFLATE", false, &[("LEVEL", "1")]).unwrap(), write("DEFLATE", false, &[]).unwrap());
+        assert_eq!(cog("LZW", &[("LEVEL", "99")]), cog("LZW", &[]));
+        for (compression, value, range) in [("DEFLATE", "10", "1 to 9"), ("ZSTD", "23", "1 to 22")] {
+            let error = write(compression, true, &[("LEVEL", value)]).unwrap_err().to_string();
+            assert!(error.contains(&format!("invalid LEVEL '{value}' ({range})")), "{error}");
+        }
+        // LEVEL replaces ZLEVEL and ZSTD_LEVEL, which are still checked.
+        assert!(write("DEFLATE", true, &[("LEVEL", "1"), ("ZLEVEL", "99")]).is_err());
+        assert!(write("ZSTD", true, &[("LEVEL", "1"), ("ZSTD_LEVEL", "99")]).is_err());
+    }
+
     /// `ZLEVEL` reaches the Deflate encoder through each write of a GeoTIFF or COG: whole
     /// (`write_raster`, `write_raster_dataset`), to bytes (`memory::write_raster_bytes`, and the
     /// in-memory codec of WebAssembly builds) and in strips (an operation's `StripWriter`).
@@ -6260,33 +6328,27 @@ following conditions:
     #[test]
     fn color_interpretations_survive_lazy_reads_and_band_selection() {
         let rgb = layouts_raster(3, DataType::U8);
-        let bytes = encode(
-            &rgb,
-            &TiffOptions {
-                compression: Compression::Jpeg,
-                photometric: Some(6),
-                codec: CodecParams { jpeg_ycbcr: true, ..Default::default() },
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let bytes = encode(&rgb, &TiffOptions { compression: Compression::Jpeg, photometric: Some(6), ..Default::default() }).unwrap();
         let jpeg = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap().header();
         assert_eq!((1..=3).map(|b| jpeg.band_color_interp(b)).collect::<Vec<_>>(), ["Red", "Green", "Blue"]);
 
+        // Under PHOTOMETRIC=RGB, band 1's Undefined is ignored, as GDAL ignores it; band 4's
+        // Alpha, which no extra sample implies, is kept in GDAL_METADATA.
         let r = layouts_raster(4, DataType::U8);
+        let undefined = crate::BandMetadata { color_interp: Some("Undefined".into()), ..Default::default() };
+        let alpha = crate::BandMetadata { color_interp: Some("Alpha".into()), ..Default::default() };
         let opts = TiffOptions {
             photometric: Some(2),
-            alpha: true,
-            band_metadata: vec![crate::BandMetadata { color_interp: Some("Undefined".into()), ..Default::default() }],
+            band_metadata: vec![undefined.clone(), undefined.clone(), undefined, alpha],
             ..Default::default()
         };
         let mut lazy = crate::LazyRaster::from_tiff_bytes(encode(&r, &opts).unwrap()).unwrap().unwrap();
         let header = lazy.header();
         assert!(header.raster.data.is_empty());
-        assert_eq!((1..=4).map(|b| header.band_color_interp(b)).collect::<Vec<_>>(), ["Undefined", "Green", "Blue", "Alpha"]);
+        assert_eq!((1..=4).map(|b| header.band_color_interp(b)).collect::<Vec<_>>(), ["Red", "Green", "Blue", "Alpha"]);
         let subset =
             lazy.read_window(crate::Window::new(1, 1, 2, 2), &crate::WindowOptions { bands: vec![4, 2, 1], ..Default::default() }).unwrap();
-        assert_eq!((1..=3).map(|b| subset.band_color_interp(b)).collect::<Vec<_>>(), ["Alpha", "Green", "Undefined"]);
+        assert_eq!((1..=3).map(|b| subset.band_color_interp(b)).collect::<Vec<_>>(), ["Alpha", "Green", "Red"]);
     }
 
     #[test]

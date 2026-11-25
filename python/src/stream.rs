@@ -102,8 +102,8 @@ fn pick(readers: Vec<FeatureReader>, layer: Option<&str>) -> terrio::Result<Feat
 ///     batch_size: The most features in a chunk.
 ///     bbox: Only the features whose bounding box intersects this rectangle
 ///         `(min_x, min_y, max_x, max_y)`, in the layer's CRS, found through the R-tree of a
-///         GeoPackage and the bounding boxes of a GeoParquet file (other formats are not
-///         filtered).
+///         GeoPackage and the bounding boxes of a GeoParquet file, and by the features' bounding
+///         boxes in a FlatGeobuf file (other formats are not filtered).
 ///     columns: Only these fields, by name (the geometry is always read). A struct column of a
 ///         GeoParquet file is named as a whole: its members, `name.member` in the chunks.
 ///

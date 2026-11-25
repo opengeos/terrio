@@ -641,7 +641,7 @@ fn layout_like(
         parts,
         nbits: None,
     };
-    let codec = CodecParams { jpeg_ycbcr: photometric == 6, ..Default::default() };
+    let codec = CodecParams::default();
     Ok((layout, compression, codec))
 }
 

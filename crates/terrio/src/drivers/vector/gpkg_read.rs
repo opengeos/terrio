@@ -343,6 +343,10 @@ pub(crate) fn rtree_candidates(db: &impl Tables, rtree: &str, bbox: Rect) -> Res
     // Node 1 is the root; its first two bytes give the depth of the tree.
     let Some(root_node) = node(1)?.filter(|n| n.len() >= 4) else { return Ok(None) };
     let depth = u16::from_be_bytes([root_node[0], root_node[1]]) as usize;
+    if depth > 32 {
+        return Err(bad(format!("R-tree '{rtree}' depth {depth} exceeds limit")));
+    }
+    let mut visited = std::collections::HashSet::from([1i64]);
     let mut stack: Vec<(Vec<u8>, usize)> = vec![(root_node, 0)];
     while let Some((data, level)) = stack.pop() {
         let count = data.get(2..4).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize).ok_or_else(|| bad("truncated R-tree node"))?;
@@ -358,12 +362,12 @@ pub(crate) fn rtree_candidates(db: &impl Tables, rtree: &str, bbox: Rect) -> Res
             if level == depth {
                 out.push(id);
             } else {
+                if !visited.insert(id) {
+                    return Err(bad(format!("R-tree '{rtree}' contains a cycle or duplicate interior node {id}")));
+                }
                 let child = node(id)?.ok_or_else(|| bad("missing R-tree child node"))?;
                 stack.push((child, level + 1));
             }
-        }
-        if stack.len() > 1_000_000 {
-            return Err(bad(format!("R-tree '{rtree}' is malformed")));
         }
     }
     out.sort_unstable();
