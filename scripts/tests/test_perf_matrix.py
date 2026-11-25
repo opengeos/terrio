@@ -52,6 +52,38 @@ def test_summarize_ranks_only_complete_matching_samples():
     assert "time_ratio" not in partial and partial["terrio"]["read_s"] == 2
 
 
+def test_equal_sums_with_different_bytes_are_not_exact():
+    """Rank a case as `exact` only when every sample's bytes hash as GDAL's."""
+    exact = summarize(_row(terrio=[{**_sample(2), "digest": "a"}], gdal=[{**_sample(1), "digest": "a"}]))
+    assert exact["values"] == "exact" and "digest" not in exact["terrio"]
+    # Two compensating errors keep the sum and count: the bytes still differ.
+    swapped = summarize(_row(terrio=[{**_sample(2), "digest": "b"}], gdal=[{**_sample(1), "digest": "a"}]))
+    assert swapped["values"] == "checksum_match"
+    text = report([exact, swapped])
+    assert "values not byte-identical to GDAL's (sum within 1e-6 and count equal; ranked): 1\n  u8_none" in text
+    # A later sample whose bytes differ is caught too.
+    later = _row(terrio=[{**_sample(2), "digest": "a"}, {**_sample(2), "digest": "b"}], gdal=[{**_sample(1), "digest": "a"}])
+    assert summarize(later)["values"] == "checksum_match"
+
+
+def test_digest_compares_values_not_their_layout():
+    """Hash the values read: not a band's shape, a table's chunks, column order or integer width."""
+    import numpy as np
+
+    a = np.arange(12, dtype="float32").reshape(3, 4)
+    assert perf_matrix.digest([a]) == perf_matrix.digest([a[None]]) == perf_matrix.digest([np.asfortranarray(a)])
+    assert perf_matrix.digest([a]) != perf_matrix.digest([a.astype("float64")])
+    assert perf_matrix.digest([a]) != perf_matrix.digest([a[::-1]])
+    pa = pytest.importorskip("pyarrow")
+    xy = pa.struct([pa.field("x", pa.float64(), False), pa.field("y", pa.float64(), False)])
+    rings = pa.array([[[{"x": 1.0, "y": 2.0}]], [[{"x": 3.0, "y": 4.0}, {"x": 5.0, "y": 6.0}]]], pa.list_(pa.list_(xy)))
+    t = pa.table({"id": pa.array([1, 2], pa.int32()), "class": ["a", "bb"], "geometry": rings, "wkb": [b"x", b"yy"]})
+    padded = pa.concat_tables([t.slice(0, 1), t]).slice(1)  # sliced, in two chunks
+    wide = t.set_column(0, "id", t.column("id").cast(pa.int64())).select(["wkb", "geometry", "class", "id"])
+    assert perf_matrix.digest([t]) == perf_matrix.digest([padded]) == perf_matrix.digest([(None, wide)])
+    assert perf_matrix.digest([t]) != perf_matrix.digest([t.set_column(0, "id", pa.array([2, 1], pa.int32()))])
+
+
 def test_report_lists_mismatches_and_failures_apart_and_warns_on_mixed_machines():
     ok = summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)]))
     differ = summarize({**_row(terrio=[_sample(9, s=0)], gdal=[_sample(1)]), "fixture": "f32_none"})

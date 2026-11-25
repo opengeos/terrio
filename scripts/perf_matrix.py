@@ -112,6 +112,71 @@ def checksum(a) -> tuple[float, int]:
     return float(a.sum(dtype="float64")), int(a.size)
 
 
+def _arrow_canonical(t):
+    """An Arrow type with the widest integer, float, string and binary types and nullable fields.
+
+    Args:
+        t: The type, with any extension type unwrapped.
+
+    Returns:
+        The type every tool's column of the same values casts to.
+    """
+    import pyarrow as pa
+
+    if pa.types.is_integer(t):
+        return pa.int64()
+    if pa.types.is_floating(t):
+        return pa.float64()
+    if pa.types.is_string(t) or pa.types.is_large_string(t):
+        return pa.large_string()
+    if pa.types.is_binary(t) or pa.types.is_large_binary(t):
+        return pa.large_binary()
+    if pa.types.is_list(t) or pa.types.is_large_list(t) or pa.types.is_fixed_size_list(t):
+        return pa.large_list(_arrow_canonical(t.value_type))
+    if pa.types.is_struct(t):
+        return pa.struct([pa.field(f.name, _arrow_canonical(f.type)) for f in t])
+    return t
+
+
+def digest(results) -> str:
+    """A hash of every value a case read, in order, to compare two tools' reads exactly.
+
+    A raster's hash covers its data type and its bytes in C order, not its shape: a band read as
+    `(1, h, w)` and as `(h, w)` hash the same. A table's covers its columns by name, each cast to a
+    canonical type (`int32` and `int64` columns of the same values hash the same, as do chunked
+    and sliced copies) and serialized as Arrow IPC; extension types hash as their storage.
+
+    Args:
+        results: What each of a case's items returned: arrays, tables or `(metadata, table)`.
+
+    Returns:
+        The hex BLAKE2b digest.
+    """
+    import hashlib
+
+    import numpy as np
+
+    h = hashlib.blake2b(digest_size=16)
+    for res in results:
+        table = res[1] if isinstance(res, tuple) else res
+        if hasattr(table, "column_names"):
+            import pyarrow as pa
+
+            names = sorted(table.column_names)
+            cols = []
+            for name in names:
+                col = table.column(name)
+                if isinstance(col.type, pa.BaseExtensionType):
+                    col = pa.chunked_array([c.storage for c in col.chunks], col.type.storage_type)
+                cols.append(col.cast(_arrow_canonical(col.type)).combine_chunks())
+            h.update(pa.RecordBatch.from_arrays(cols, names=names).serialize())
+        else:
+            a = np.ascontiguousarray(res)
+            h.update(a.dtype.str.encode())
+            h.update(memoryview(a).cast("B"))
+    return h.hexdigest()
+
+
 @contextlib.contextmanager
 def staged_fixture(path: Path):
     """Stage one fixture independently and preserve an already completed publisher.
@@ -1012,7 +1077,7 @@ def worker(spec: dict) -> dict:
     t2 = time.perf_counter()
     r2 = _rchar(local)
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**2 if sys.platform == "darwin" else 1024)
-    sums = [check(x) for x in out]  # after the timed read and its peak memory
+    sums = [check(x) for x in out]  # after the timed read and its peak memory, as the digest
     return {
         "init_s": t0 - ti,
         "open_s": t1 - t0,
@@ -1022,6 +1087,7 @@ def worker(spec: dict) -> dict:
         "rss_mb": rss,
         "sum": sum(s for s, _ in sums),
         "n": sum(n for _, n in sums),
+        "digest": digest(out),
     }
 
 
@@ -1187,8 +1253,9 @@ def summarize(row: dict) -> dict:
 
     A time ratio only when every sample of terrio and GDAL succeeded (a tool
     stops at its first failure), and a ratio to the base only when the base's did too: a base that
-    failed where this build succeeds is listed as such. `values` is `checksum_match` only when every
-    sample's sum and count equal GDAL's first, else the first that differs.
+    failed where this build succeeds is listed as such. `values` is `exact` when every sample's
+    digest equals GDAL's first, else `checksum_match` when every sample's sum and count do, else the
+    first that differs.
 
     Args:
         row: A case's row, with the samples of each tool as lists and the errors as `*_error`.
@@ -1202,7 +1269,7 @@ def summarize(row: dict) -> dict:
         rs = row.get(tool)
         if not rs:
             continue
-        out[tool] = {k: statistics.median(r[k] for r in rs) for k in rs[0] if k not in ("sum", "n")}
+        out[tool] = {k: statistics.median(r[k] for r in rs) for k in rs[0] if k not in ("sum", "n", "digest")}
         out[tool]["total_s"] = statistics.median(r["open_s"] + r["read_s"] for r in rs)
         out[f"{tool}_sum"], out[f"{tool}_n"] = rs[0]["sum"], rs[0]["n"]
     base_ok = "base" in out and "base_error" not in row
@@ -1220,8 +1287,14 @@ def summarize(row: dict) -> dict:
         else:
             tools = [t for t in tools if t != "base"]
         differ = next(((t, r) for t in tools for r in row[t] if r["n"] != ref["n"] or not math.isclose(r["sum"], ref["sum"], rel_tol=1e-6)), None)
-        out["values"] = "checksum_match" if differ is None else f"DIFFER: {differ[0]} n {differ[1]['n']} sum {differ[1]['sum']:.6g} vs gdal n {ref['n']} sum {ref['sum']:.6g}"
+        exact = ref.get("digest") is not None and all(r.get("digest") == ref["digest"] for t in tools for r in row[t])
+        out["values"] = ("exact" if exact else "checksum_match") if differ is None else f"DIFFER: {differ[0]} n {differ[1]['n']} sum {differ[1]['sum']:.6g} vs gdal n {ref['n']} sum {ref['sum']:.6g}"
     return out
+
+
+# The `values` of a case whose values agree with GDAL's: `exact` (the same bytes), or
+# `checksum_match` (the same count and sum within 1e-6; `same` in older results).
+MATCH = ("exact", "checksum_match", "same")
 
 
 def _errors(r: dict) -> list[str]:
@@ -1265,7 +1338,7 @@ def fmt_row(r: dict) -> str:
     s += f" | KiB {_bytes(t) >> 10:7} vs {_bytes(g) >> 10:7} need {r['need_bytes'] >> 10:7}"
     if "requests" in t:
         s += f" | req {t['requests']:4.0f}/{g['requests']:4.0f} rounds {t['rounds']:3.0f}/{g['rounds']:3.0f}"
-    label = "checksum_match" if r["values"] in ("same", "checksum_match") else "DIFFER"
+    label = r["values"] if r["values"] in MATCH else "DIFFER"
     s += f" | init {t['init_s'] * 1000:3.0f}/{g['init_s'] * 1000:3.0f} ms rss {t['rss_mb']:4.0f}/{g['rss_mb']:4.0f} MB {label}"
     if "base_ratio" in r:
         s += f" | base {r['base']['total_s'] * 1000:8.1f} ms x{r['base_ratio']:5.2f}"
@@ -1291,8 +1364,9 @@ def report(rows: list[dict]) -> str:
     if len({(h["cpu"], h["cpus"], h["cpu_quota"], h["mem_gb"]) for h in heads}) > 1:
         lines.append("WARNING: these results come from different machines: compare ratios within one machine only")
     computed = [r for r in rows if "time_ratio" in r]
-    ok = [r for r in computed if r["values"] in ("same", "checksum_match")]
-    differ = [r for r in computed if r["values"] not in ("same", "checksum_match")]
+    ok = [r for r in computed if r["values"] in MATCH]
+    differ = [r for r in computed if r["values"] not in MATCH]
+    inexact = [r for r in ok if r["values"] != "exact"]
     based = [r for r in ok if "base_ratio" in r]
     if based:
         gm = math.exp(statistics.fmean(math.log(r["base_ratio"]) for r in based))
@@ -1330,6 +1404,8 @@ def report(rows: list[dict]) -> str:
     lines.append(f"more than 1.5x the bytes needed (+ 256 KiB): {len(over_need)}/{len(ok)}")
     lines += ["  " + fmt_row(r) for r in over_need]
     errors = [r for r in rows if "time_ratio" not in r]
+    lines.append(f"\nvalues not byte-identical to GDAL's (sum within 1e-6 and count equal; ranked): {len(inexact)}")
+    lines += ["  " + fmt_row(r) for r in inexact]
     lines.append(f"\nvalues differ from GDAL (not ranked): {len(differ)}" + "".join(f"\n  {r['fixture']}/{r['access']}/{r['source']} x{r['time_ratio']:.2f}: {r['values']}" for r in differ))
     lines.append(f"errors: {len(errors)}" + "".join("\n  " + fmt_row(r) for r in errors))
     return "\n".join(lines)

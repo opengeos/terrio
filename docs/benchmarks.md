@@ -278,18 +278,24 @@ Every case records:
   from the file's own chunk tables;
 - HTTP requests and sequential rounds of requests: a request that starts after every request in
   flight has ended waited for them, so it opens a new round;
-- peak memory, and whether terrio's checksums match GDAL's: the sum and count of the pixels, or of
-  the rows' `id` (`value` when `id` is not read), in every sample of both tools. Time and peak
-  memory are taken before this check.
+- peak memory, and whether terrio's values equal GDAL's, in every sample of both tools. Time and
+  peak memory are taken before this check.
 
-These sums and counts are benchmark checks, not exhaustive pixel, categorical-attribute or
-geometry conformance checks. Counts match exactly; numeric sums use relative tolerance `1e-6`.
+The values check hashes everything a read returned. A raster read hashes as its data type and its
+bytes in C order (a band read as `(1, h, w)` or `(h, w)` hashes the same); a table hashes each
+column by name, cast to a canonical type (64-bit integers and floats, large strings and binaries,
+extension types as their storage) and serialized as Arrow IPC, so row order, every attribute and
+the geometry's bytes count. A case whose hashes equal GDAL's in every sample is `exact`. Otherwise
+the check falls back to the sum and count of the pixels, or of the rows' `id` (`value` when `id`
+is not read): counts equal and sums within relative tolerance `1e-6` give `checksum_match`, which is
+still ranked but listed apart as not byte-identical. Anything else is a mismatch. A geometry that
+one tool returns as WKB and the other as native GeoArrow (a bbox read of a GeoArrow file: terrio
+native, GDAL WKB) hashes differently, so these cases are `checksum_match` at best.
 Process peak RSS includes initialization, warm-up and retained read results, but excludes
 subsequent validation allocations. RSS units are normalized for Linux and macOS.
 
-The result label is `checksum_match`, rather than a claim of exact value equality. Only cases
-where every sample of both tools succeeded and matched GDAL's checksums are ranked;
-the report lists failures, timeouts and value mismatches apart. Local byte counts need Linux's
+Only cases where every sample of both tools succeeded and matched GDAL's values (`exact` or
+`checksum_match`) are ranked; the report lists failures, timeouts and value mismatches apart. Local byte counts need Linux's
 `/proc/self/io`. Local reads after the first come from the OS page cache, so the matrix measures
 decoding and I/O logic, not the disk.
 
