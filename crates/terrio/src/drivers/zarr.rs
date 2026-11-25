@@ -717,12 +717,11 @@ fn blosc_decompress(src: &[u8], most: usize) -> Result<Vec<u8>> {
     }
     let flags = src[2];
     let typesize = src[3].max(1) as usize;
-    let u32_at = |i: usize| src.get(i..i + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
-    let nbytes = u32_at(4).unwrap_or(0);
+    let nbytes = le_u32_at(src, 4).unwrap_or(0);
     if nbytes > most {
         return Err(bad(format!("Blosc: a chunk declaring {nbytes} bytes, more than {most}")));
     }
-    let blocksize = u32_at(8).unwrap_or(0).max(1);
+    let blocksize = le_u32_at(src, 8).unwrap_or(0).max(1);
     if flags & 0x02 != 0 {
         return copied(src.get(16..16 + nbytes).ok_or_else(|| bad("Blosc: truncated data"))?, "a Blosc chunk");
     }
@@ -755,8 +754,9 @@ thread_local! {
     static BLOSC_SCRATCH: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
 }
 
-/// Decompresses the `nblocks` blocks of a Blosc chunk `src` into `out`, unshuffling them
-/// (`shuffles`: byte, bit) through the scratch `block`, at least a block long when used.
+/// Decompresses the `nblocks` blocks of a Blosc chunk `src` into `out`, unshuffling them (the
+/// `(byte_shuffle, bit_shuffle)` pair) through the scratch `block`, at least a block long when
+/// used.
 #[allow(clippy::too_many_arguments)]
 fn blosc_blocks(
     src: &[u8],
@@ -769,13 +769,12 @@ fn blosc_blocks(
     block: &mut [u8],
 ) -> Result<()> {
     let compressor = flags >> 5;
-    let u32_at = |i: usize| src.get(i..i + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
     for (j, dst) in out.chunks_mut(blocksize).enumerate().take(nblocks) {
         let bsize = dst.len();
         let leftover = bsize < blocksize;
         let split = flags & 0x10 == 0 && typesize <= 16 && blocksize / typesize >= 128 && !leftover;
         let nsplits = if split { typesize } else { 1 };
-        let pos = u32_at(16 + 4 * j).ok_or_else(|| bad("Blosc: truncated block offsets"))?;
+        let pos = le_u32_at(src, 16 + 4 * j).ok_or_else(|| bad("Blosc: truncated block offsets"))?;
         if bit_shuffle && bsize >= typesize {
             // Decompressed in place, its byte planes in the scratch block, interleaved back.
             blosc_block(src, pos, nsplits, compressor, dst)?;
@@ -793,6 +792,11 @@ fn blosc_blocks(
     Ok(())
 }
 
+/// The little-endian `u32` at offset `i` of `src`, if it holds one.
+fn le_u32_at(src: &[u8], i: usize) -> Option<usize> {
+    src.get(i..i.checked_add(4)?).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+}
+
 /// Decompresses the `nsplits` streams of a Blosc block, from offset `pos` of `src`, into `dst`,
 /// each into its equal share of it: a stream decompressing to fewer bytes than its share (a block
 /// short of its size, which would be unshuffled out of its bounds) or to more is an error.
@@ -804,27 +808,27 @@ fn blosc_block(src: &[u8], mut pos: usize, nsplits: usize, compressor: u8, dst: 
         return Err(bad(format!("Blosc: a block of {bsize} bytes in {nsplits} streams")));
     }
     for (k, part) in dst.chunks_exact_mut(neblock).enumerate() {
-        let cbytes = src
-            .get(pos..pos + 4)
-            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
-            .ok_or_else(|| bad("Blosc: truncated block"))?;
+        let cbytes = le_u32_at(src, pos).ok_or_else(|| bad("Blosc: truncated block"))?;
         pos += 4;
         let stream = src.get(pos..pos + cbytes).ok_or_else(|| bad("Blosc: truncated stream"))?;
         pos += cbytes;
         // Each into at most the `neblock` bytes it stands for.
-        let put = |part: &mut [u8], decoded: Vec<u8>| {
-            part[..decoded.len()].copy_from_slice(&decoded);
-            decoded.len()
+        let put = |part: &mut [u8], decoded: Vec<u8>| -> Result<usize> {
+            let n = decoded.len();
+            let dst =
+                part.get_mut(..n).ok_or_else(|| bad(format!("Blosc: a stream decompressing to {n} bytes, more than its {neblock}")))?;
+            dst.copy_from_slice(&decoded);
+            Ok(n)
         };
         let n = match compressor {
             _ if cbytes == neblock => {
                 part.copy_from_slice(stream);
                 neblock
             }
-            0 => put(part, blosclz_decompress(stream, neblock)?),
+            0 => put(part, blosclz_decompress(stream, neblock)?)?,
             1 => lz4_flex::block::decompress_into(stream, part).map_err(|e| bad(format!("Blosc LZ4: {e}")))?,
-            3 => put(part, read_at_most(flate2::read::ZlibDecoder::new(stream), neblock, "Blosc zlib: a block")?),
-            4 => put(part, zstd_decode(stream, neblock)?),
+            3 => put(part, read_at_most(flate2::read::ZlibDecoder::new(stream), neblock, "Blosc zlib: a block")?)?,
+            4 => put(part, zstd_decode(stream, neblock)?)?,
             c => return Err(Error::Unsupported(format!("Blosc compressor {c} is not supported"))),
         };
         if n != neblock {
@@ -3411,6 +3415,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A Blosc header for `nbytes` bytes in blocks of `blocksize`, element size `typesize`.
+    fn blosc_header(flags: u8, typesize: u8, nbytes: u32, blocksize: u32) -> Vec<u8> {
+        let mut h = vec![2, 1, flags, typesize];
+        for v in [nbytes, blocksize, 0] {
+            h.extend_from_slice(&v.to_le_bytes());
+        }
+        h
+    }
+
+    /// A split block whose size is not a multiple of its stream count is refused before any
+    /// stream is read, rather than decoded into unequal shares.
+    #[test]
+    fn blosc_block_not_divisible_by_its_streams_is_refused() {
+        // 385 bytes of 3-byte elements: split into 3 streams of 128 bytes, one byte unaccounted.
+        let mut src = blosc_header(0, 3, 385, 385);
+        src.extend_from_slice(&20u32.to_le_bytes());
+        let e = blosc_decompress(&src, 385).unwrap_err().to_string();
+        assert!(e.contains("a block of 385 bytes in 3 streams"), "{e}");
+    }
+
+    /// A stream decompressing to fewer bytes than its share of the block is an error naming the
+    /// bytes it produced.
+    #[test]
+    fn blosc_short_stream_is_refused() {
+        let stream = lz4_flex::block::compress(&[7u8; 8]);
+        let mut src = blosc_header(1 << 5, 1, 16, 16);
+        src.extend_from_slice(&20u32.to_le_bytes());
+        src.extend_from_slice(&(stream.len() as u32).to_le_bytes());
+        src.extend_from_slice(&stream);
+        let e = blosc_decompress(&src, 16).unwrap_err().to_string();
+        assert!(e.contains("a block decompressing to 8 bytes, 16 expected"), "{e}");
+        // The same stream as a whole block decodes.
+        let mut whole = blosc_header(1 << 5, 1, 8, 8);
+        whole.extend_from_slice(&20u32.to_le_bytes());
+        whole.extend_from_slice(&(stream.len() as u32).to_le_bytes());
+        whole.extend_from_slice(&stream);
+        assert_eq!(blosc_decompress(&whole, 8).unwrap(), vec![7u8; 8]);
     }
 
     #[test]
