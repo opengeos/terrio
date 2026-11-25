@@ -456,6 +456,8 @@ static OUTSIDE_ON_POOL: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 #[cfg(threads)]
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
 enum Enter {
+    /// Runs on the caller's thread without holding the pool, so a nested `par` call inside it
+    /// can take the pool when no other outside call holds it.
     Serial,
     Pool(Option<OutsideGuard>),
 }
@@ -496,7 +498,8 @@ impl Pool {
     /// the whole call; an outside call overlapping it runs serially. Serial calls do not hold the
     /// pool: two outside threads at work keep it busy with one of their calls while the other
     /// runs on its own thread, rather than both running serially. Serial work must not use
-    /// rayon's iterators, which would enter its global pool.
+    /// rayon's iterators, which would enter its global pool. A nested `par` call made from serial
+    /// work can take the pool when it is free, so it must not hold a lock that a pool job takes.
     ///
     /// Thread-local configuration and warnings do not follow work to pool threads.
     /// Serial fallback observes the caller's state, so that observation can depend on
