@@ -309,8 +309,9 @@ errors and are excluded from rankings.
 
 FlatGeobuf reads use two Terrio entry points: `terrio.open_vector(bbox=...)` for the bbox
 reads, since it searches the spatial index, and `terrio.open_stream` for whole and column
-reads, since it selects columns. GDAL reads all of them with `pyogrio.read_arrow`. A FlatGeobuf
-stores each feature whole, so a column read needs the same bytes as a whole read. The bytes a
+reads, since it selects columns. GDAL reads all of them with `pyogrio.read_arrow`, whose geometry
+column, `wkb_geometry`, the values check compares as terrio's `geometry`. A FlatGeobuf stores each
+feature whole, so a column read needs the same bytes as a whole read. The bytes a
 bbox read needs are the header, the index nodes visited and the features found, or every feature
 without an index. As for the other formats' chunks, a node or feature that several of the 16 boxes
 touch counts once.

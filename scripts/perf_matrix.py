@@ -1065,7 +1065,10 @@ class FlatGeobuf:
                 return p if p.startswith("/") else "/vsicurl/" + p
 
             def read(p, **kw):
-                return pyogrio.read_arrow(p, **kw)
+                # GDAL names the geometry column `wkb_geometry`, terrio `geometry`: the digest
+                # compares columns by name, so GDAL's is renamed (no copy).
+                table = pyogrio.read_arrow(p, **kw)[1]
+                return table.rename_columns(["geometry" if c == "wkb_geometry" else c for c in table.column_names])
 
         boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16}.get(access, 0))
         if boxes:

@@ -690,6 +690,7 @@ def test_changed_files_choose_the_formats_to_measure():
     assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
     assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "flatgeobuf", "geopackage"]
     assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
+    assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
     assert perf_matrix.touched(["crates/terrio/src/ops/sql/select.rs"]) == ["geopackage"]
     assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == ["flatgeobuf"]
@@ -920,3 +921,25 @@ def test_flatgeobuf_needed_bytes_walk_every_level_of_a_deep_index(tmp_path, monk
         assert read.sum() < num_nodes  # the search skips part of the index
         expected = header + int(read.sum()) * 40 + found * feature
         assert perf_matrix.FlatGeobuf.meta(path, access)["need_bytes"] == expected
+
+
+def test_flatgeobuf_gdal_read_names_the_geometry_as_terrio(tmp_path):
+    """Name GDAL's FlatGeobuf geometry column `geometry`, as terrio does, so the digests compare."""
+    ogr = pytest.importorskip("osgeo.ogr")
+    pytest.importorskip("pyogrio")
+    if ogr.GetDriverByName("FlatGeobuf") is None:
+        pytest.skip("FlatGeobuf driver is required")
+    ogr.UseExceptions()
+    path = tmp_path / "tiny.fgb"
+    ds = ogr.GetDriverByName("FlatGeobuf").CreateDataSource(str(path))
+    lyr = ds.CreateLayer("data", None, ogr.wkbPoint)
+    lyr.CreateField(ogr.FieldDefn("id", ogr.OFTInteger64))
+    f = ogr.Feature(lyr.GetLayerDefn())
+    f["id"] = 1
+    f.SetGeometry(ogr.CreateGeometryFromWkt("POINT (1 2)"))
+    lyr.CreateFeature(f)
+    lyr = ds = None
+    open_, items, check, _ = perf_matrix.FlatGeobuf.reader("gdal", "full", {})
+    table = items[0](open_(str(path)))
+    assert table.column_names == ["id", "geometry"]
+    assert check(table) == (1.0, 1)
