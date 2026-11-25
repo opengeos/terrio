@@ -864,7 +864,12 @@ class FlatGeobuf:
 
         Returns:
             The ranges; the root's is last, and first in the file.
+
+        Raises:
+            ValueError: If there are no features.
         """
+        if count < 1:
+            raise ValueError("a spatial index of no features")
         counts, n = [count], count
         while True:  # at least two levels, as the reference implementation lays out one feature
             n = -(-n // FlatGeobuf.NODE_SIZE)

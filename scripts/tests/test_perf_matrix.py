@@ -643,3 +643,10 @@ def test_benchmark_request_rejects_a_read_only_collaborator(tmp_path):
     assert result.returncode == 1
     assert "Repository write permission is required" in result.stdout
     assert not (tmp_path / "outputs").exists()
+
+
+def test_flatgeobuf_index_levels_end_at_one_root_and_refuse_no_features():
+    assert perf_matrix.FlatGeobuf.levels(1) == [(1, 2), (0, 1)]
+    assert perf_matrix.FlatGeobuf.levels(17)[-1] == (0, 1)
+    with pytest.raises(ValueError):
+        perf_matrix.FlatGeobuf.levels(0)
