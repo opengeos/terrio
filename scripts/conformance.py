@@ -3177,8 +3177,8 @@ PROJ_CASES = {
         ),
         "geodetic_3d_crss_are_placed_as_proj_places_them": (
             "EPSG geocentric and geographic 3D CRSs from and into WGS 84 (2D) and (3D) (2,068 cases)", TOLERANCE,
-            "PROJ 9.9.0 (no grids): within 1 mm; heights kept through the datum shift beside WGS 84 (2D); 12 pending "
-            "(GDA94 and ONGD14 by other transformations, PZ-90.11 from WGS 84 (3D), LUREF (3) for (4))",
+            "PROJ 9.9.0 (no grids): within 1 mm; heights kept through the datum shift beside WGS 84 (2D); PROJ's "
+            "transformations for each direction (GDA94 (geocentric), ONGD14, LUREF)",
         ),
         "heights_beside_wgs_84_2d_are_kept_through_the_shift": (
             "Heights beside a CRS without heights kept through the datum shift (PZ-90, WGS 72BE, PZ-90.11, chains from OSGB36)", TOLERANCE,
@@ -3188,8 +3188,7 @@ PROJ_CASES = {
     "epsg_deprecated": {
         "deprecated_codes_are_placed_by_their_own_definition_as_proj_does": (
             "Deprecated EPSG CRSs by their own definition (501 cases)", TOLERANCE,
-            "PROJ 9.9.0 (pyproj 3.8.0, no grids): within 1 mm (1e-8 degrees geographic); the 2 RGNC 1991 geocentric CRSs pending "
-            "(another transformation)",
+            "PROJ 9.9.0 (pyproj 3.8.0, no grids): within 1 mm (1e-8 degrees geographic)",
         ),
         "replacements_are_those_proj_lists": "Deprecated EPSG CRSs: their replacements are PROJ 9.9.0's, GDAL's substitution of a single one",
         "codes_proj_cannot_transform": (

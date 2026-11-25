@@ -79,6 +79,8 @@ pub(crate) struct Def {
     /// of the cone axis than Krovak's (`conversion.cpp`, within 1e-7 of 30.2881397°, #1012 item
     /// 39). Transformers using it are refused.
     pub(crate) no_pipeline: Option<Arc<str>>,
+    /// The EPSG code whose registered transformations `ops` are, for [`Def::facing`].
+    code: Option<u32>,
     /// All the operations of a datum found by its name ([`Def::datum_by_name`]), those whose
     /// grids are missing included, as `geog`'s registry entry gives them otherwise.
     all_ops: Option<Vec<Arc<Op>>>,
@@ -596,6 +598,7 @@ impl Def {
         if let Some(e) = entry {
             let mut d = Self::from_proj(&e.proj)?;
             d.ops = epsg::usable(&e.ops, &e.grid_ops);
+            d.code = s.epsg;
             d.datum = (e.datum != 0).then_some(e.datum);
             d.geog = (e.geog != 0).then_some(e.geog);
             d.three_d = e.three_d;
@@ -1042,6 +1045,7 @@ impl Def {
             geog: None,
             named_geog: None,
             no_pipeline: None,
+            code: None,
             all_ops: None,
             three_d: false,
             dynamic: false,
@@ -1516,6 +1520,7 @@ impl Def {
                 geog: None,
                 named_geog: None,
                 no_pipeline: None,
+                code: None,
                 all_ops: None,
                 three_d: false,
                 dynamic: false,
@@ -1842,19 +1847,50 @@ impl Def {
     /// A definition with all registered grid operations, including unavailable grids.
     pub fn with_all_operations(&self) -> Self {
         let mut out = self.clone();
-        if let Some(all) = &self.all_ops {
+        if let Some(all) = self.adjustable_all_ops() {
             out.ops = all.clone();
-        } else if let Some(e) = self.geog.and_then(epsg::get)
-            && !e.grid_ops.is_empty()
-        {
-            out.ops = e.grid_ops.clone();
+            out.all_ops = Some(all);
         }
         out
     }
 
-    /// The explicit all-grid list, or the registered list `with_all_operations` would select.
+    /// The registry entry of an EPSG geographic 3D or geocentric CRS whose transformations the
+    /// definition still has (not a definition's own `TOWGS84`, nor those of another direction).
+    fn registered_3d(&self) -> Option<&'static epsg::Entry> {
+        let e = epsg::get(self.code?).filter(|e| e.three_d)?;
+        let registered = epsg::usable(&e.ops, &e.grid_ops);
+        (self.ops.len() == registered.len() && self.ops.iter().zip(&registered).all(|(a, b)| Arc::ptr_eq(a, b))).then_some(e)
+    }
+
+    /// The transformations PROJ lists for this side of a transformation from or into WGS 84,
+    /// for an EPSG geographic 3D or geocentric CRS whose own are those into WGS 84 (3D): from
+    /// WGS 84 (`target`), or beside a CRS without heights (`beside_heights` false), when they
+    /// differ (ONGD14 from WGS 84; LUREF beside WGS 84 (2D)). Before [`Def::beside_2d`], which
+    /// sets how they keep heights.
+    pub fn facing(&mut self, target: bool, beside_heights: bool) {
+        let direction = match (target, beside_heights) {
+            (false, true) => return,
+            (true, true) => epsg::Direction::From3d,
+            (false, false) => epsg::Direction::Into2d,
+            (true, false) => epsg::Direction::From2d,
+        };
+        let Some(code) = self.registered_3d().and(self.code) else { return };
+        let Some((ops, grid_ops)) = epsg::directed(code, direction) else { return };
+        self.ops = epsg::usable(ops, grid_ops);
+        self.all_ops = Some(if grid_ops.is_empty() { ops } else { grid_ops }.clone());
+    }
+
+    /// The explicit all-grid list, or the registered list `with_all_operations` selects: a
+    /// geographic 3D or geocentric CRS's own (GDA94 (geocentric) goes through WGS 84 (G1762),
+    /// which GDA94's list has not), else its geographic CRS's grid list.
     fn adjustable_all_ops(&self) -> Option<Vec<Arc<Op>>> {
-        self.all_ops.clone().or_else(|| self.geog.and_then(epsg::get).filter(|e| !e.grid_ops.is_empty()).map(|e| e.grid_ops.clone()))
+        if let Some(all) = &self.all_ops {
+            return Some(all.clone());
+        }
+        if let Some(e) = self.registered_3d() {
+            return Some(if e.grid_ops.is_empty() { &e.ops } else { &e.grid_ops }.clone());
+        }
+        self.geog.and_then(epsg::get).filter(|e| !e.grid_ops.is_empty()).map(|e| e.grid_ops.clone())
     }
 
     /// The parameters of the PROJ string the definition was read from.
@@ -1925,8 +1961,8 @@ impl Def {
                 .collect()
         }
         self.three_d = false;
-        self.ops = keep_wgs84_leg_height(&self.ops, was_geocentric);
         self.all_ops = self.adjustable_all_ops().as_deref().map(|ops| keep_wgs84_leg_height(ops, was_geocentric));
+        self.ops = keep_wgs84_leg_height(&self.ops, was_geocentric);
     }
 
     /// A CRS without heights beside a geocentric CRS: its own `+towgs84` (an operation without a
@@ -1938,8 +1974,8 @@ impl Def {
                 .map(|o| if o.name.is_empty() && !o.ballpark { Arc::new(Op { keeps_height: false, ..(**o).clone() }) } else { o.clone() })
                 .collect()
         }
-        self.ops = move_own_shift_height(&self.ops);
         self.all_ops = self.adjustable_all_ops().as_deref().map(move_own_shift_height);
+        self.ops = move_own_shift_height(&self.ops);
     }
 
     /// Whether it is a geographic 3D or a geocentric CRS.
@@ -2750,6 +2786,22 @@ mod endpoint_height_policy_tests {
             assert!((datum::run_op(&adjusted.ops[0], point, false, false).unwrap().h - 110.0).abs() < 1e-6);
             assert_eq!(datum::run_op(&adjusted.ops[1], point, false, false).unwrap().h, 100.0);
         }
+    }
+
+    #[test]
+    fn a_geocentric_crs_expands_to_its_own_registered_operations() {
+        // GDA94 (geocentric)'s transformations go through WGS 84 (G1762), which GDA94's grid list
+        // (its geographic 2D CRS's) has not.
+        let base = Def::new(&SpatialRef::from_epsg(4938).unwrap()).unwrap().geographic_endpoint();
+        let all = base.with_all_operations();
+        assert!(
+            all.ops.iter().any(|o| o.name.contains("GDA94 to WGS 84 (G1762) (1)")),
+            "{:?}",
+            all.ops.iter().map(|o| &o.name).collect::<Vec<_>>()
+        );
+        let mut beside = base.clone();
+        beside.beside_2d(true);
+        assert!(beside.with_all_operations().ops.iter().any(|o| o.name.contains("GDA94 to WGS 84 (G1762) (1)")));
     }
 
     #[test]

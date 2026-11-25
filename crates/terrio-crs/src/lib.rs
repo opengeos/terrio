@@ -2588,6 +2588,9 @@ impl Transformer {
         if cartesian_dst.is_some() {
             d = d.geographic_endpoint();
         }
+        // PROJ's transformations for each side, which may differ by direction (#1012 item 70).
+        s.facing(false, dst_heights);
+        d.facing(true, src_heights);
         // From or into a CRS without heights (WGS 84 (2D)), PROJ keeps the height through the
         // datum shift (#1012 item 8).
         if src_3d && !dst_heights {

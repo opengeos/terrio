@@ -139,20 +139,36 @@ fn run_chain<'a>(legs: impl Clone + Iterator<Item = (&'a Op, bool)>, p: Point, t
     fn run<'a>(mut legs: impl Iterator<Item = (&'a Op, bool)>, p: Point) -> Option<Point> {
         legs.try_fold(p, |q, (op, reverse)| datum::run(&op.steps, q, reverse, true))
     }
-    let Some((i, (marked, reverse))) = legs.clone().enumerate().find(|(_, (op, _))| !three_d && op.keeps_wgs84_leg_height) else {
+    let Some((i, (marked, reverse))) = legs.clone().enumerate().find(|(_, (op, _))| datum::keeps_wgs84_leg_height(op, three_d)) else {
         return run(legs, p);
     };
     let (rest, wgs84) = marked.steps.split_at(datum::wgs84_leg_boundary(marked));
     let q = run(legs.clone().take(i), p)?;
+    // Between 3D CRSs only the WGS 84 leg keeps the height: the legs before and after it move it
+    // (PZ-90 to WGS 84 (1) in PZ-90.11's chain). Beside a CRS without heights, the height the
+    // chain ends with is the one it started with (reverse) or had before the leg (forward).
+    // In 3D, the legs after it by the same rule (another leg kept across).
+    let tail = |q: Point| -> Option<Point> {
+        if three_d {
+            let tail: Vec<(&Op, bool)> = legs.clone().skip(i + 1).collect();
+            run_chain(tail.into_iter(), q, true)
+        } else {
+            run(legs.clone().skip(i + 1), q)
+        }
+    };
     if reverse {
+        let height = if three_d { q.h } else { p.h };
         let q = datum::run(wgs84, q, true, true)?;
-        let q = datum::run(rest, Point { h: p.h, ..q }, true, true)?;
-        run(legs.skip(i + 1), q)
+        let q = datum::run(rest, Point { h: height, ..q }, true, true)?;
+        tail(q)
     } else {
         let q = datum::run(rest, q, false, true)?;
         let height = q.h;
         let q = datum::run(wgs84, q, false, true)?;
-        run(legs.skip(i + 1), q).map(|q| Point { h: height, ..q })
+        if three_d {
+            return tail(Point { h: height, ..q });
+        }
+        tail(q).map(|q| Point { h: height, ..q })
     }
 }
 
@@ -1209,6 +1225,7 @@ fn ranked(reg: &epsg::Registry, found: Vec<Found>, ctx: &OperationContext) -> Ve
             priority: o1.priority || o2.priority || datum::is_priority(&name),
             keeps_height: o1.keeps_height && o2.keeps_height,
             keeps_wgs84_leg_height: false,
+            keeps_height_3d: false,
             steps: o1.steps.iter().chain(&o2.steps).cloned().collect(),
             name,
         };
@@ -1760,6 +1777,22 @@ fn step_names(op: &Op, reverse: bool) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::{SpatialRef, Transformer};
+
+    #[test]
+    fn a_3d_chain_keeps_the_height_only_across_its_wgs84_leg() {
+        // A transformation PROJ keeps the height across between 3D CRSs, chained before and
+        // after transformations that move it: their changes stay.
+        let ell = crate::math::Ell::wgs84();
+        let kept = Op { keeps_height_3d: true, ..Op::world(datum::towgs84_steps(ell, &[0.0, 0.0, 10.0])) };
+        let moving = Op { keeps_height: false, ..Op::world(datum::towgs84_steps(ell, &[0.0, 0.0, 5.0])) };
+        let p = Point { lon: 10_f64.to_radians(), lat: 50_f64.to_radians(), h: 100.0, t: None };
+        for reverse in [false, true] {
+            let legs = [(&moving, reverse), (&kept, reverse), (&moving, reverse), (&kept, reverse), (&moving, reverse)];
+            let expected = legs.iter().try_fold(p, |q, (op, r)| datum::run_op(op, q, *r, true)).unwrap();
+            let chained = run_chain(legs.into_iter(), p, true).unwrap();
+            assert!((chained.h - expected.h).abs() < 1e-9 && (chained.h - p.h).abs() > 1.0, "reverse {reverse}: {chained:?} {expected:?}");
+        }
+    }
 
     #[test]
     fn hub_availability_excludes_operations_outside_the_crs_extents() {
