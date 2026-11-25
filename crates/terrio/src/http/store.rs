@@ -657,7 +657,11 @@ fn host_of(url: &str) -> &str {
 fn is_azure(url: &str) -> bool {
     let url = url.strip_prefix(super::azure_bearer_prefix()).unwrap_or(url);
     host_of(url).to_ascii_lowercase().ends_with(".blob.core.windows.net")
-        || crate::vfs::custom_azure_endpoint().is_some_and(|ep| crate::vfs::url_origin(url) == crate::vfs::url_origin(&ep))
+        || crate::vfs::custom_azure_endpoint().is_some_and(|ep| {
+            crate::vfs::url_origin(url).is_some()
+                && crate::vfs::url_origin(url) == crate::vfs::url_origin(&ep)
+                && url.starts_with(&format!("{ep}/"))
+        })
 }
 
 /// Uploads a local file (or bytes) to an object.

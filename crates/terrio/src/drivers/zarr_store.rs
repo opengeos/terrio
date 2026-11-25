@@ -107,7 +107,10 @@ fn safe_key(key: &str, remote: bool) -> bool {
     }
     for seg in key.split('/') {
         let bytes = seg.as_bytes();
-        if seg == ".." || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':') {
+        if seg == ".."
+            || (!remote && bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+            || (remote && (seg.eq_ignore_ascii_case("%2e%2e") || seg.eq_ignore_ascii_case(".%2e") || seg.eq_ignore_ascii_case("%2e.")))
+        {
             return false;
         }
     }
@@ -542,6 +545,9 @@ mod tests {
         assert!(safe_key("2026-01-01T00:00:00/0", true));
         assert!(!safe_key(r"..\..\secret", false));
         assert!(!safe_key("C:secret", false));
+        assert!(safe_key("x:1", true));
+        assert!(!safe_key("%2e%2e/secret", true));
+        assert!(!safe_key(".%2E/secret", true));
         assert!(!safe_key("a?sig=1", true));
         assert!(safe_key("a?sig=1", false));
         assert!(!safe_key("a#frag", true));
