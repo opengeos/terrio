@@ -92,7 +92,8 @@ jobs:
           case "${words[0]:-}" in
             geotiff|zarr|geoparquet|warp|terrain) formats=${words[0]}; rest=("${words[@]:1}") ;;
             "" ) formats="geotiff zarr geoparquet warp terrain"; rest=(--quick) ;;
-            -*) formats="geotiff zarr geoparquet warp terrain"; rest=("${words[@]}") ;;
+            # Options alone go to the read formats, whose options they are; an operation is named.
+            -*) formats="geotiff zarr geoparquet"; rest=("${words[@]}") ;;
             *) echo "The first word is a format: geotiff, zarr, geoparquet, warp or terrain"; exit 1 ;;
           esac
           for w in "${rest[@]}"; do

@@ -346,10 +346,12 @@ and 360) at most on the fixture. GDAL 3.13's hillshade rounding depends on the C
 level of tolerance.
 
 After the timing, each terrio sample computes GDAL's output in its own process and compares
-the two outputs pixel by pixel, with the rules of `scripts/conformance.py`. Shape, data type,
+the two outputs pixel by pixel, with the rules of `scripts/compare_ops_with_gdal.py` except for
+nodata, where it is stricter (below). Shape, data type,
 CRS, geotransform (to 1e-6 pixel) and nodata must match. A float nodata is compared as the
 output's type holds it: `gdal_calc.py` records float32's largest value as `3.402823466e+38`.
-Then every pixel counts, nodata included: equal values (NaN with NaN) agree, and any other pixel differs by its absolute
+Then every pixel counts, nodata included (that script compares only the pixels valid in GDAL's
+output): equal values (NaN with NaN) agree, and any other pixel differs by its absolute
 difference. A case is `exact` when no pixel differs and `within_tol` when every pixel is within
 the case's tolerance. The report lists the within-tolerance cases with their differing pixel
 count and maximum difference. Otherwise, the case is `DIFFER`, with the number of pixels
@@ -393,7 +395,8 @@ On a pull request, a maintainer's comment `/perf-matrix` runs the matrix on a Gi
 (`.github/workflows/perf-matrix.yml`): the pull request's terrio, its base branch's and GDAL
 3.13.3, with the base branch's harness, and posts the report. With no arguments it runs every
 format with one sample per tool; `/perf-matrix geoparquet --only geoarrow` runs one format with
-the options of `run`; `/perf-matrix warp` and `/perf-matrix terrain` time the operations.
+the options of `run`; options alone (`/perf-matrix --samples 5`) run the read formats;
+`/perf-matrix warp` and `/perf-matrix terrain` time the operations.
 Runner timings vary more than a quiet desktop's, but each comparison is made within one run on
 one runner. The Actions tab runs the same workflow for a pull request
 number. Each format runs in its own job, in parallel.

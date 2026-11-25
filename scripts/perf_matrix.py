@@ -781,10 +781,12 @@ class GeoParquet:
 
 
 def compare_raster(out, ref, tol: float) -> dict:
-    """terrio's output of an operation against GDAL's, pixel by pixel, as `scripts/conformance.py` does.
+    """terrio's output of an operation against GDAL's, pixel by pixel.
 
-    Every pixel counts, nodata included: equal values (NaN with NaN) agree, and a pixel differs
-    by `|terrio - GDAL|` (infinite where one is NaN). A different shape, type, CRS, geotransform
+    The rules are `scripts/compare_ops_with_gdal.py`'s, but stricter for nodata: that script
+    compares only the pixels valid in GDAL's output, while here every pixel counts, nodata
+    included: equal values (NaN with NaN) agree, and a pixel differs by `|terrio - GDAL|`
+    (infinite where one is NaN). A different shape, type, CRS, geotransform
     (by more than 1e-6 pixel) or nodata value (in the output's type) puts every pixel beyond the
     tolerance.
 
@@ -893,7 +895,10 @@ class _Operation:
 
 
 class Warp(_Operation):
-    """Reprojection of a UTM DEM to WGS 84 longitudes and latitudes, as `gdalwarp -t_srs EPSG:4326`."""
+    """Reprojection of a UTM DEM to WGS 84 longitudes and latitudes, as `gdalwarp -t_srs EPSG:4326`.
+
+    Reference: GDAL 3.13.3.
+    """
 
     # access: (resampling, output width (0: GDAL's default, about the source's resolution), tolerance)
     # Tolerances as compare_ops_with_gdal.py's: nearest exact, interpolating resamplings 1e-2.
@@ -946,7 +951,10 @@ class Warp(_Operation):
 
 
 class Terrain(_Operation):
-    """Terrain products of a DEM, as `gdaldem`, and the raster analyses `gdal_proximity` and `gdal_calc`."""
+    """Terrain products of a DEM, as `gdaldem`, and the raster analyses `gdal_proximity` and `gdal_calc`.
+
+    Reference: GDAL 3.13.3.
+    """
 
     FIXTURES = {**_Operation.FIXTURES, "u8_none": GeoTiff.FIXTURES["u8_none"]}
     # access: (input fixture, operation, its argument, tolerance)
