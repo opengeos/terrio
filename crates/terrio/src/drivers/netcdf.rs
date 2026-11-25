@@ -262,20 +262,31 @@ impl VarRef<'_> {
     }
 }
 
+/// Opens the auxiliary HDF5 handle at most once per NetCDF read, reusing it across
+/// variable ordering and `_NoFill` inspection.
+struct LazyHdf5<'a> {
+    cell: std::cell::OnceCell<Option<hdf5_reader::Hdf5File>>,
+    open: &'a dyn Fn() -> Option<hdf5_reader::Hdf5File>,
+}
+
+impl<'a> LazyHdf5<'a> {
+    fn new(open: &'a dyn Fn() -> Option<hdf5_reader::Hdf5File>) -> Self {
+        Self { cell: std::cell::OnceCell::new(), open }
+    }
+
+    fn get(&self) -> Option<&hdf5_reader::Hdf5File> {
+        self.cell.get_or_init(self.open).as_ref()
+    }
+}
+
 /// Every variable, in GDAL 3.13.3's order: the root group's in definition order, then each subgroup's
 /// (in definition order, recursively). A group that does not track creation order is listed by name.
-fn all_variables<'a>(
-    f: &'a NcFile,
-    path: &Path,
-    hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf5File>,
-    ordered: bool,
-) -> Result<Vec<VarRef<'a>>> {
+fn all_variables<'a>(f: &'a NcFile, path: &Path, h5: &LazyHdf5<'_>, ordered: bool) -> Result<Vec<VarRef<'a>>> {
     let root = f.root_group().map_err(|e| err(path, e))?;
     let classic = matches!(f.format(), NcFormat::Classic | NcFormat::Offset64 | NcFormat::Cdf5);
     // NetCDF-4 groups and variables come in the creation order of their HDF5 links when the group
     // tracks it, as netCDF-4 groups do: their definition order. netCDF lists the links of a group
-    // that does not track it by name. The file is opened again, once, to tell.
-    let h5 = std::cell::OnceCell::new();
+    // that does not track it by name. The file is opened at most once via `h5`.
     let sort_by_name = |group_path: &str| -> bool {
         // Explicit variable lookup needs no ordering. In memory this also avoids copying the
         // entire input into the auxiliary HDF5 reader; classic files need no HDF5 reader either.
@@ -283,7 +294,7 @@ fn all_variables<'a>(
             return false;
         }
         let header = || {
-            let h = h5.get_or_init(hdf5).as_ref()?;
+            let h = h5.get()?;
             let mut g = h.root_group().ok()?;
             for part in group_path.split('/').filter(|p| !p.is_empty()) {
                 g = g.group(part).ok()?;
@@ -365,7 +376,9 @@ fn subdatasets(vars: &[VarRef], file: &str) -> Vec<(String, String)> {
 /// The paths of a file's raster variables (`Band1`, `/group/Band1`), as [`read`] names them.
 pub(crate) fn data_variable_paths(path: &Path) -> Result<Vec<String>> {
     let f = NcFile::open(path).map_err(|e| err(path, e))?;
-    let vars = all_variables(&f, path, &|| super::hdf5::open_file(path).ok(), true)?;
+    let open = || super::hdf5::open_file(path).ok();
+    let h5 = LazyHdf5::new(&open);
+    let vars = all_variables(&f, path, &h5, true)?;
     Ok(data_variables(&vars).iter().map(|r| r.full.clone()).collect())
 }
 
@@ -457,7 +470,8 @@ pub(crate) fn read_bytes(bytes: &[u8], name: &str, variable: Option<&str>) -> Re
 }
 
 fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf5File>, variable: Option<&str>) -> Result<RasterDataset> {
-    let vars = all_variables(f, path, hdf5, variable.is_none())?;
+    let h5 = LazyHdf5::new(hdf5);
+    let vars = all_variables(f, path, &h5, variable.is_none())?;
     let candidates = data_variables(&vars);
     let var = match variable {
         Some(name) => {
@@ -492,14 +506,15 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     // `bands` dimension (whose values are then pixel-interleaved).
     let interleaved = trailing_bands(var);
     let (y_dim, x_dim) = if interleaved { (0, 1) } else { (nd.saturating_sub(2), nd - 1) };
-    let cols = dims[x_dim].size as usize;
-    let rows = if nd >= 2 { dims[y_dim].size as usize } else { 1 };
+    let dim_usize = |size: u64| usize::try_from(size).map_err(|_| err(path, "variable dimensions overflow"));
+    let cols = dim_usize(dims[x_dim].size)?;
+    let rows = if nd >= 2 { dim_usize(dims[y_dim].size)? } else { 1 };
     let bands: usize = if interleaved {
-        dims[2].size as usize
+        dim_usize(dims[2].size)?
     } else if nd > 2 {
         dims[..nd - 2]
             .iter()
-            .try_fold(1usize, |acc, d| acc.checked_mul(d.size as usize))
+            .try_fold(1usize, |acc, d| acc.checked_mul(usize::try_from(d.size).ok()?))
             .ok_or_else(|| err(path, "variable dimensions overflow"))?
     } else {
         1
@@ -547,6 +562,21 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
             crate::declared::check_bytes(cols, rows, bands, size, false)?;
         }
     }
+    let fill_attribute = attr_f64(var, "_FillValue").or_else(|| attr_f64(var, "missing_value"));
+    // netCDF-4 variables written without fill values (`_NoFill`): HDF5 datasets whose fill value
+    // is undefined, as the netCDF library reads them. Looked for only without a fill value
+    // attribute, as netCDF-4 files are opened again for it, and before the values are read: the
+    // auxiliary HDF5 handle (in memory, a copy of the input) is released first.
+    let no_fill = || {
+        attr_str(var, "_NoFill").is_some_and(|v| v.eq_ignore_ascii_case("true"))
+            || (!matches!(f.format(), NcFormat::Classic | NcFormat::Offset64 | NcFormat::Cdf5)
+                && h5
+                    .get()
+                    .and_then(|h| h.dataset(&format!("/{}", var_ref.read_path())).ok())
+                    .is_some_and(|d| d.fill_value().is_none_or(|fv| !fv.defined)))
+    };
+    let default_fill = fill_attribute.is_none() && !unsigned && complex.is_none() && !no_fill();
+    drop(h5);
     let data = match (var.dtype(), unsigned) {
         _ if complex.is_some() => {
             let part = complex.unwrap_or(wbraster::DataType::F32);
@@ -575,13 +605,15 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     let ignore_axis_checks = (attr(var, "res").is_some() && attr(var, "transform").is_some())
         || f.global_attributes().is_ok_and(|a| a.iter().any(|a| a.name == "GMT_version"));
     // The axis values, and whether they are stored as floats (spacing is checked more loosely).
-    let coord = |d: &str| -> Option<(Vec<f64>, bool, bool)> {
+    let coord = |d: &str, expected: usize| -> Option<(Vec<f64>, bool, bool)> {
         let (p, v) = var_ref.lookup(d)?;
         let spatial = ignore_axis_checks || is_spatial_axis(v);
-        let values = (v.ndim() == 1 && spatial).then(|| f.read_variable_as_f64(&p).ok().map(|a| a.iter().copied().collect())).flatten()?;
-        Some((values, matches!(v.dtype(), NcType::Float), is_longitude(v)))
+        let matches_len = v.ndim() == 1 && v.dimensions().first().is_some_and(|dim| dim.size == expected as u64);
+        let values: Vec<f64> =
+            (matches_len && spatial).then(|| f.read_variable_as_f64(&p).ok().map(|a| a.iter().copied().collect())).flatten()?;
+        (values.len() == expected).then_some((values, matches!(v.dtype(), NcType::Float), is_longitude(v)))
     };
-    let (xs, ys) = if nd >= 2 { (coord(&dims[x_dim].name), coord(&dims[y_dim].name)) } else { (None, None) };
+    let (xs, ys) = if nd >= 2 { (coord(&dims[x_dim].name, cols), coord(&dims[y_dim].name, rows)) } else { (None, None) };
     let grid_mapping =
         attr_str(var, "grid_mapping").and_then(|g| var_ref.lookup(g.split_whitespace().next().unwrap_or_default())).map(|(_, v)| v);
     let projected = grid_mapping.and_then(|g| attr_str(g, "grid_mapping_name")).is_some_and(|n| n != "latitude_longitude");
@@ -689,20 +721,10 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
             None => {}
         }
     }
-    let mut nodata = attr_f64(var, "_FillValue").or_else(|| attr_f64(var, "missing_value"));
-    // Without one, netCDF's default fill value of the type (not for bytes), as GDAL reports it.
-    // netCDF-4 variables written without fill values (`_NoFill`): HDF5 datasets whose fill value
-    // is undefined, as the netCDF library reads them.
-    // Looked for only without a fill value attribute: netCDF-4 files are opened again for it.
-    let no_fill = || {
-        attr_str(var, "_NoFill").is_some_and(|v| v.eq_ignore_ascii_case("true"))
-            || (!matches!(f.format(), NcFormat::Classic | NcFormat::Offset64 | NcFormat::Cdf5)
-                && super::hdf5::open_file(path)
-                    .ok()
-                    .and_then(|h| h.dataset(&format!("/{}", var_ref.read_path())).ok())
-                    .is_some_and(|d| d.fill_value().is_none_or(|fv| !fv.defined)))
-    };
-    if nodata.is_none() && !unsigned && complex.is_none() && !no_fill() {
+    let mut nodata = fill_attribute;
+    // Without one, netCDF's default fill value of the type (not for bytes), as GDAL reports it,
+    // unless the variable is written without fill values (`default_fill`, above).
+    if default_fill {
         nodata = match var.dtype() {
             NcType::Short => Some(-32767.0),
             NcType::Int => Some(-2147483647.0),
@@ -1031,7 +1053,8 @@ mod tests {
         let selected = read_file(&file, &path, &unavailable, Some("zulu")).unwrap();
         assert_eq!(selected.raster.data.to_f64_vec(), [2.0, 3.0, 0.0, 1.0]);
         assert_eq!(opens.get(), 0, "explicit selection must not open the auxiliary reader");
-        let vars = all_variables(&file, &path, &unavailable, true).unwrap();
+        let h5 = LazyHdf5::new(&unavailable);
+        let vars = all_variables(&file, &path, &h5, true).unwrap();
         assert_eq!(opens.get(), 1, "a listing attempts at most one auxiliary open");
         let root = file.root_group().unwrap();
         let expected: Vec<_> = root.variables.iter().map(|v| v.name.as_str()).collect();

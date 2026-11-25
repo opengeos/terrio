@@ -266,6 +266,9 @@ mod codec {
             // A small buffer: a window's decoding reads the header of every tile part before
             // its own (skipping their data), and remote files fetch what the buffer asks for.
             let stream = opj_stream_create(16 * 1024, 1);
+            if stream.is_null() {
+                return Err(Error::InvalidData("cannot create the JPEG 2000 stream".into()));
+            }
             opj_stream_set_read_function(stream, Some(read_fn));
             opj_stream_set_skip_function(stream, Some(read_skip_fn));
             opj_stream_set_seek_function(stream, Some(read_seek_fn));
@@ -305,10 +308,10 @@ mod codec {
         unsafe {
             with_codec(r, len, j2k, preserve_band_order, |codec, _, image| {
                 let img = &*image;
-                let comps = std::slice::from_raw_parts(img.comps, img.numcomps as usize);
-                if comps.is_empty() {
+                if img.comps.is_null() || img.numcomps == 0 {
                     return Err(Error::InvalidData("JPEG 2000 image without components".into()));
                 }
+                let comps = std::slice::from_raw_parts(img.comps, img.numcomps as usize);
                 let mut info = opj_get_cstr_info(codec);
                 let (tile, tile_origin, resolutions) = if info.is_null() {
                     ((img.x1 - img.x0, img.y1 - img.y0), (img.x0, img.y0), 1)
@@ -356,6 +359,9 @@ mod codec {
                     // The decode area is on the reference grid; the image's components must
                     // know the resolution factor first (as GDAL sets them).
                     let img = &mut *image;
+                    if img.comps.is_null() || img.numcomps == 0 {
+                        return Err(Error::InvalidData("JPEG 2000 image without components".into()));
+                    }
                     for c in std::slice::from_raw_parts_mut(img.comps, img.numcomps as usize) {
                         c.factor = reduce;
                     }
@@ -367,12 +373,16 @@ mod codec {
                     return Err(Error::InvalidData("cannot decode the JPEG 2000 codestream".into()));
                 }
                 let img = &*image;
+                if img.comps.is_null() || img.numcomps == 0 {
+                    return Err(Error::InvalidData("JPEG 2000 image without components".into()));
+                }
                 let comps = std::slice::from_raw_parts(img.comps, img.numcomps as usize);
                 let (w, h) = (comps[0].w as usize, comps[0].h as usize);
+                let plane_len = w.checked_mul(h).ok_or_else(|| Error::InvalidData("JPEG 2000 component dimensions overflow".into()))?;
                 if comps.iter().any(|c| c.w as usize != w || c.h as usize != h || c.data.is_null()) {
                     return Err(Error::Unsupported("JPEG 2000 components with different sizes are not supported".into()));
                 }
-                let mut planes: Vec<&[i32]> = comps.iter().map(|c| std::slice::from_raw_parts(c.data, w * h)).collect();
+                let mut planes: Vec<&[i32]> = comps.iter().map(|c| std::slice::from_raw_parts(c.data, plane_len)).collect();
                 let mut precisions: Vec<u32> = comps.iter().map(|c| c.prec).collect();
                 let promoted: Vec<i32>;
                 if let Some(a) = alpha.filter(|&a| a < comps.len()) {
@@ -475,19 +485,25 @@ mod codec {
             }
             let codec = opj_create_compress(OPJ_CODEC_J2K);
             let stream = opj_stream_default_create(0);
-            opj_stream_set_write_function(stream, Some(write_fn));
-            opj_stream_set_skip_function(stream, Some(skip_fn));
-            opj_stream_set_seek_function(stream, Some(seek_fn));
-            opj_stream_set_user_data(stream, buffer as *mut c_void, None);
-            let ok = !codec.is_null()
-                && opj_setup_encoder(codec, &mut params, image) != 0
-                && opj_start_compress(codec, image, stream) != 0
-                && opj_encode(codec, stream) != 0
-                && opj_end_compress(codec, stream) != 0;
+            let ok = if !stream.is_null() {
+                opj_stream_set_write_function(stream, Some(write_fn));
+                opj_stream_set_skip_function(stream, Some(skip_fn));
+                opj_stream_set_seek_function(stream, Some(seek_fn));
+                opj_stream_set_user_data(stream, buffer as *mut c_void, None);
+                !codec.is_null()
+                    && opj_setup_encoder(codec, &mut params, image) != 0
+                    && opj_start_compress(codec, image, stream) != 0
+                    && opj_encode(codec, stream) != 0
+                    && opj_end_compress(codec, stream) != 0
+            } else {
+                false
+            };
             if !codec.is_null() {
                 opj_destroy_codec(codec);
             }
-            opj_stream_destroy(stream);
+            if !stream.is_null() {
+                opj_stream_destroy(stream);
+            }
             opj_image_destroy(image);
             let data = Box::from_raw(buffer).data;
             if ok { Ok(data) } else { Err(Error::InvalidData("JPEG 2000 encoding failed".into())) }
@@ -1207,6 +1223,9 @@ impl Jp2Window {
             |o: u32, p: usize, end: u32| -> u32 { o.saturating_add(u32::try_from(p).unwrap_or(u32::MAX).saturating_mul(1 << r)).min(end) };
         let area =
             [edge(x0, window.x, x1), edge(y0, window.y, y1), edge(x0, window.x + window.width, x1), edge(y0, window.y + window.height, y1)];
+        if area[2] <= area[0] || area[3] <= area[1] {
+            return Err(Error::InvalidData("empty JPEG 2000 window".into()));
+        }
         // The tiles the area covers, decoded in parallel when there are several.
         let (tw, th) = (self.header.tile.0.max(1), self.header.tile.1.max(1));
         let (tx0, ty0) = self.header.tile_origin;
@@ -1217,7 +1236,12 @@ impl Jp2Window {
             .iter()
             .flat_map(|j| {
                 cols.iter().map(move |i| {
-                    [area[0].max(tx0 + i * tw), area[1].max(ty0 + j * th), area[2].min(tx0 + (i + 1) * tw), area[3].min(ty0 + (j + 1) * th)]
+                    [
+                        area[0].max(tx0.saturating_add(i.saturating_mul(tw))),
+                        area[1].max(ty0.saturating_add(j.saturating_mul(th))),
+                        area[2].min(tx0.saturating_add(i.saturating_add(1).saturating_mul(tw))),
+                        area[3].min(ty0.saturating_add(j.saturating_add(1).saturating_mul(th))),
+                    ]
                 })
             })
             .collect();
@@ -1241,6 +1265,13 @@ impl Jp2Window {
             let (px, py) = (ceil_shift(part[0], r) - ox, ceil_shift(part[1], r) - oy);
             if px + pw > w || py + ph > h {
                 return Err(Error::InvalidData(format!("JPEG 2000 decoded {pw}x{ph} pixels at ({px}, {py}) for a {w}x{h} window")));
+            }
+            let expected_part = pw
+                .checked_mul(ph)
+                .and_then(|n| n.checked_mul(all))
+                .ok_or_else(|| Error::InvalidData("JPEG 2000 tile dimensions overflow".into()))?;
+            if data.len() != expected_part {
+                return Err(Error::InvalidData(format!("JPEG 2000 decoded {} values for a {pw}x{ph} tile of {all} bands", data.len())));
             }
             if parts.len() == 1 && (pw, ph) == (w, h) {
                 out = Some(data);
