@@ -306,6 +306,12 @@ pub(crate) fn frame_dimensions(data: &[u8]) -> Result<(usize, usize, usize)> {
 
 /// Decodes a JPEG stream.
 pub(crate) fn decode(data: &[u8], color: Color) -> Result<Image> {
+    let (width, height, comps, color) = decode_frame(data, color)?;
+    output(width, height, &comps, color)
+}
+
+/// Decodes a JPEG stream's components, each in its plane, and how they are to be delivered.
+fn decode_frame(data: &[u8], color: Color) -> Result<(usize, usize, Vec<Component>, Color)> {
     if !data.starts_with(&[0xff, 0xd8]) {
         return Err("not a JPEG stream".into());
     }
@@ -438,7 +444,7 @@ pub(crate) fn decode(data: &[u8], color: Color) -> Result<Image> {
         }
         c => c,
     };
-    output(width, height, &comps, color)
+    Ok((width, height, comps, color))
 }
 
 /// Decodes a JPEG file as libjpeg does by default, into `(width, height, components, samples)`:
@@ -605,6 +611,15 @@ fn idct_islow(coef: &[i32; 64], q: &[u16; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0i64; 64];
     for col in 0..8 {
         let x: [i64; 8] = std::array::from_fn(|r| coef[r * 8 + col] as i64 * q[r * 8 + col] as i64);
+        // A column without AC terms, as libjpeg shortcuts it: the butterfly gives its DC term
+        // times 2^PASS1_BITS on every row.
+        if x[1..].iter().all(|v| *v == 0) {
+            let dc = (x[0] << PASS1_BITS) as i32 as i64;
+            for r in 0..8 {
+                ws[r * 8 + col] = dc;
+            }
+            continue;
+        }
         let y = butterfly(x);
         for r in 0..8 {
             ws[r * 8 + col] = descale(y[r], CONST_BITS - PASS1_BITS) as i32 as i64;
@@ -612,9 +627,15 @@ fn idct_islow(coef: &[i32; 64], q: &[u16; 64], out: &mut [u8], stride: usize) {
     }
     for row in 0..8 {
         let x: [i64; 8] = std::array::from_fn(|c| ws[row * 8 + c]);
+        let o = &mut out[row * stride..row * stride + 8];
+        // A row without AC terms: one value, as the butterfly gives it.
+        if x[1..].iter().all(|v| *v == 0) {
+            o.fill(range_limit(descale(x[0], PASS1_BITS + 3) as i32));
+            continue;
+        }
         let y = butterfly(x);
         for c in 0..8 {
-            out[row * stride + c] = range_limit(descale(y[c], CONST_BITS + PASS1_BITS + 3) as i32);
+            o[c] = range_limit(descale(y[c], CONST_BITS + PASS1_BITS + 3) as i32);
         }
     }
 }
@@ -630,131 +651,341 @@ fn range_limit(v: i32) -> u8 {
     }
 }
 
-/// Upsamples the components to the image size (libjpeg's fancy upsampling) and converts colours.
+/// Upsamples the components to the image size (libjpeg's fancy upsampling) and converts colours,
+/// row by row, into the interleaved image.
 fn output(width: usize, height: usize, comps: &[Component], color: Color) -> Result<Image> {
+    use crate::dataset::fallible;
     let hmax = comps.iter().map(|c| c.h).max().unwrap_or(1);
     let vmax = comps.iter().map(|c| c.v).max().unwrap_or(1);
-    let planes: Vec<Vec<u8>> =
-        comps.iter().map(|c| upsample(c, hmax / c.h.max(1), vmax / c.v.max(1), width, height)).collect::<Result<_>>()?;
     let n = comps.len();
-    let mut data = zeroed(&[width, height, n], "a JPEG image")?;
-    for (k, p) in planes.iter().enumerate() {
-        for (i, v) in p.iter().enumerate() {
-            data[i * n + k] = *v;
+    let resource = |e: std::io::Error| DecodeError::Resource(e.to_string());
+    let len = fallible::len(&[width, height, n], "a JPEG image").map_err(resource)?;
+    let mut data = Vec::new();
+    fallible::reserve(&mut data, len, "a JPEG image").map_err(resource)?;
+    // A row of each component at the image's width, when it is not one of its plane's rows.
+    let mut bufs: Vec<Vec<u8>> = comps.iter().map(|_| zeroed(&[width], "a JPEG component")).collect::<Result<_>>()?;
+    let mut scratch = Vec::new();
+    for y in 0..height {
+        let rows: Vec<&[u8]> = comps
+            .iter()
+            .zip(&mut bufs)
+            .map(|(c, buf)| upsample_row(c, hmax / c.h.max(1), vmax / c.v.max(1), y, buf, &mut scratch))
+            .collect();
+        let start = data.len();
+        data.resize(start + width * n, 0);
+        let out = &mut data[start..];
+        match rows[..] {
+            [grey] => out.copy_from_slice(grey),
+            [a, b, c] if color == Color::Rgb => {
+                for (px, ((&y, &cb), &cr)) in out.as_chunks_mut::<3>().0.iter_mut().zip(a.iter().zip(b).zip(c)) {
+                    *px = ycc(y, cb, cr);
+                }
+            }
+            _ => {
+                for (k, row) in rows.iter().enumerate() {
+                    for (o, v) in out[k..].iter_mut().step_by(n).zip(row.iter()) {
+                        *o = *v;
+                    }
+                }
+            }
         }
-    }
-    if n == 3 && color == Color::Rgb {
-        ycc_to_rgb(&mut data);
     }
     Ok(Image { width, height, components: n, data })
 }
 
-/// A component's samples at the image's size, `width` x `height`: copied, or upsampled by
-/// `hs` x `vs` as libjpeg does by default (`jdsample.c`: triangle filters for 2x1, 2x2 and 1x2,
-/// replication otherwise), its edge rows repeated beyond the image.
-fn upsample(c: &Component, hs: usize, vs: usize, width: usize, height: usize) -> Result<Vec<u8>> {
+/// Row `y` of a component at the image's width, `buf.len()` samples: one of its plane's rows, or
+/// that row upsampled by `hs` x `vs` into `buf` as libjpeg does by default (`jdsample.c`: triangle
+/// filters for 2x1, 2x2 and 1x2, replication otherwise), its edge rows repeated beyond the image.
+/// Samples past the component's (rows past its last, when `vs` does not divide the image's
+/// sampling, or columns past `hs` times its width) are 0.
+fn upsample_row<'a>(c: &'a Component, hs: usize, vs: usize, y: usize, buf: &'a mut [u8], scratch: &mut Vec<u8>) -> &'a [u8] {
+    let width = buf.len();
     let stride = c.bw * 8;
     let (w, h) = (c.w, c.hgt);
+    let r = y / vs;
+    if r >= h {
+        buf.fill(0);
+        return buf;
+    }
     // A row of the component, its index clamped to the rows it holds.
     let row = |r: isize| -> &[u8] {
         let r = r.clamp(0, h as isize - 1) as usize;
         &c.plane[r * stride..r * stride + w]
     };
-    let mut out = zeroed(&[width, height], "a JPEG component")?;
-    let mut put_row = |r: usize, vals: &[u8]| {
-        if r < height {
-            let n = width.min(vals.len());
-            out[r * width..r * width + n].copy_from_slice(&vals[..n]);
-        }
+    if (hs, vs) == (1, 1) && w >= width {
+        return &row(r as isize)[..width];
+    }
+    // The row upsampled, `w * hs` samples: straight into `buf` when it takes them all.
+    let full = w * hs;
+    let n = width.min(full);
+    buf[n..].fill(0);
+    let o: &mut [u8] = if n == full {
+        &mut buf[..n]
+    } else {
+        scratch.clear();
+        scratch.resize(full, 0);
+        scratch
     };
     let fancy = w > 2;
     match (hs, vs) {
-        (1, 1) => (0..h).for_each(|r| put_row(r, row(r as isize))),
+        (1, 1) => o.copy_from_slice(row(r as isize)),
         (2, 1) if fancy => {
-            for r in 0..h {
-                let i = row(r as isize);
-                let mut o = Vec::with_capacity(2 * w);
-                o.push(i[0]);
-                o.push(((i[0] as u32 * 3 + i[1] as u32 + 2) >> 2) as u8);
-                for x in 1..w - 1 {
-                    let v = i[x] as u32 * 3;
-                    o.push(((v + i[x - 1] as u32 + 1) >> 2) as u8);
-                    o.push(((v + i[x + 1] as u32 + 2) >> 2) as u8);
-                }
-                o.push(((i[w - 1] as u32 * 3 + i[w - 2] as u32 + 1) >> 2) as u8);
-                o.push(i[w - 1]);
-                put_row(r, &o);
+            let i = row(r as isize);
+            o[0] = i[0];
+            o[1] = ((i[0] as u32 * 3 + i[1] as u32 + 2) >> 2) as u8;
+            for x in 1..w - 1 {
+                let v = i[x] as u32 * 3;
+                o[2 * x] = ((v + i[x - 1] as u32 + 1) >> 2) as u8;
+                o[2 * x + 1] = ((v + i[x + 1] as u32 + 2) >> 2) as u8;
             }
+            o[2 * w - 2] = ((i[w - 1] as u32 * 3 + i[w - 2] as u32 + 1) >> 2) as u8;
+            o[2 * w - 1] = i[w - 1];
         }
         (2, 2) if fancy => {
-            for r in 0..h {
-                for v in 0..2 {
-                    let i0 = row(r as isize);
-                    let i1 = row(if v == 0 { r as isize - 1 } else { r as isize + 1 });
-                    let sum = |x: usize| i0[x] as u32 * 3 + i1[x] as u32;
-                    let mut o = Vec::with_capacity(2 * w);
-                    let first = sum(0);
-                    let (mut last, mut this) = (first, sum(1));
-                    o.push(((first * 4 + 8) >> 4) as u8);
-                    o.push(((first * 3 + this + 7) >> 4) as u8);
-                    for x in 2..w {
-                        let next = sum(x);
-                        o.push(((this * 3 + last + 8) >> 4) as u8);
-                        o.push(((this * 3 + next + 7) >> 4) as u8);
-                        (last, this) = (this, next);
-                    }
-                    o.push(((this * 3 + last + 8) >> 4) as u8);
-                    o.push(((this * 4 + 7) >> 4) as u8);
-                    put_row(2 * r + v, &o);
-                }
+            let i0 = row(r as isize);
+            let i1 = row(if y.is_multiple_of(2) { r as isize - 1 } else { r as isize + 1 });
+            let sum = |x: usize| i0[x] as u32 * 3 + i1[x] as u32;
+            let first = sum(0);
+            let (mut last, mut this) = (first, sum(1));
+            o[0] = ((first * 4 + 8) >> 4) as u8;
+            o[1] = ((first * 3 + this + 7) >> 4) as u8;
+            for x in 2..w {
+                let next = sum(x);
+                o[2 * x - 2] = ((this * 3 + last + 8) >> 4) as u8;
+                o[2 * x - 1] = ((this * 3 + next + 7) >> 4) as u8;
+                (last, this) = (this, next);
             }
+            o[2 * w - 2] = ((this * 3 + last + 8) >> 4) as u8;
+            o[2 * w - 1] = ((this * 4 + 7) >> 4) as u8;
         }
         (1, 2) => {
-            for r in 0..h {
-                for v in 0..2 {
-                    let i0 = row(r as isize);
-                    let i1 = row(if v == 0 { r as isize - 1 } else { r as isize + 1 });
-                    let bias = if v == 0 { 1 } else { 2 };
-                    let o: Vec<u8> = (0..w).map(|x| ((i0[x] as u32 * 3 + i1[x] as u32 + bias) >> 2) as u8).collect();
-                    put_row(2 * r + v, &o);
-                }
+            let i0 = row(r as isize);
+            let (i1, bias) = if y.is_multiple_of(2) { (row(r as isize - 1), 1) } else { (row(r as isize + 1), 2) };
+            for (o, (a, b)) in o.iter_mut().zip(i0.iter().zip(i1)) {
+                *o = ((*a as u32 * 3 + *b as u32 + bias) >> 2) as u8;
             }
         }
         _ => {
             // Replication.
-            for r in 0..h {
-                let i = row(r as isize);
-                let o: Vec<u8> = i.iter().flat_map(|v| std::iter::repeat_n(*v, hs)).collect();
-                for k in 0..vs {
-                    put_row(r * vs + k, &o);
-                }
+            for (o, v) in o.chunks_exact_mut(hs).zip(row(r as isize)) {
+                o.fill(*v);
             }
         }
     }
-    Ok(out)
+    if n < full {
+        buf[..n].copy_from_slice(&scratch[..n]);
+    }
+    buf
 }
 
-/// Converts YCbCr samples to RGB in place, with libjpeg's fixed-point tables (`jdcolor.c`).
-pub(crate) fn ycc_to_rgb(v: &mut [u8]) {
+/// A YCbCr sample converted to RGB, with libjpeg's fixed-point tables (`jdcolor.c`).
+#[inline]
+fn ycc(y: u8, cb: u8, cr: u8) -> [u8; 3] {
     const SCALEBITS: i32 = 16;
     const ONE_HALF: i32 = 1 << (SCALEBITS - 1);
-    let fix = |x: f64| (x * (1i64 << SCALEBITS) as f64 + 0.5) as i32;
-    let (cr_r, cb_b, cr_g, cb_g) = (fix(1.40200), fix(1.77200), fix(0.71414), fix(0.34414));
-    for px in v.as_chunks_mut::<3>().0 {
-        let y = px[0] as i32;
-        let (cb, cr) = (px[1] as i32 - 128, px[2] as i32 - 128);
-        let r = y + ((cr_r * cr + ONE_HALF) >> SCALEBITS);
-        let g = y + ((-cb_g * cb + ONE_HALF - cr_g * cr) >> SCALEBITS);
-        let b = y + ((cb_b * cb + ONE_HALF) >> SCALEBITS);
-        px[0] = r.clamp(0, 255) as u8;
-        px[1] = g.clamp(0, 255) as u8;
-        px[2] = b.clamp(0, 255) as u8;
+    const fn fix(x: f64) -> i32 {
+        (x * (1i64 << SCALEBITS) as f64 + 0.5) as i32
     }
+    const CR_R: i32 = fix(1.40200);
+    const CB_B: i32 = fix(1.77200);
+    const CR_G: i32 = fix(0.71414);
+    const CB_G: i32 = fix(0.34414);
+    let y = y as i32;
+    let (cb, cr) = (cb as i32 - 128, cr as i32 - 128);
+    let r = y + ((CR_R * cr + ONE_HALF) >> SCALEBITS);
+    let g = y + ((-CB_G * cb + ONE_HALF - CR_G * cr) >> SCALEBITS);
+    let b = y + ((CB_B * cb + ONE_HALF) >> SCALEBITS);
+    [r.clamp(0, 255) as u8, g.clamp(0, 255) as u8, b.clamp(0, 255) as u8]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The decoder's output stages as first written: the reference of the faster ones.
+    mod reference {
+        use super::super::*;
+
+        /// libjpeg's slow-but-accurate integer IDCT (`jpeg_idct_islow`), with its output range limiting.
+        pub(super) fn idct_islow(coef: &[i32; 64], q: &[u16; 64], out: &mut [u8], stride: usize) {
+            const CONST_BITS: i32 = 13;
+            const PASS1_BITS: i32 = 2;
+            const F_0_298631336: i64 = 2446;
+            const F_0_390180644: i64 = 3196;
+            const F_0_541196100: i64 = 4433;
+            const F_0_765366865: i64 = 6270;
+            const F_0_899976223: i64 = 7373;
+            const F_1_175875602: i64 = 9633;
+            const F_1_501321110: i64 = 12299;
+            const F_1_847759065: i64 = 15137;
+            const F_1_961570560: i64 = 16069;
+            const F_2_053119869: i64 = 16819;
+            const F_2_562915447: i64 = 20995;
+            const F_3_072711026: i64 = 25172;
+            let descale = |x: i64, n: i32| (x + (1i64 << (n - 1))) >> n;
+            // The even and odd parts of a one-dimensional IDCT of `x` (0 to 7).
+            let butterfly = |x: [i64; 8]| -> [i64; 8] {
+                let (z2, z3) = (x[2], x[6]);
+                let z1 = (z2 + z3) * F_0_541196100;
+                let tmp2 = z1 + z3 * -F_1_847759065;
+                let tmp3 = z1 + z2 * F_0_765366865;
+                let tmp0 = (x[0] + x[4]) << CONST_BITS;
+                let tmp1 = (x[0] - x[4]) << CONST_BITS;
+                let (tmp10, tmp13, tmp11, tmp12) = (tmp0 + tmp3, tmp0 - tmp3, tmp1 + tmp2, tmp1 - tmp2);
+                let (mut t0, mut t1, mut t2, mut t3) = (x[7], x[5], x[3], x[1]);
+                let (z1, z2, z3, z4) = (t0 + t3, t1 + t2, t0 + t2, t1 + t3);
+                let z5 = (z3 + z4) * F_1_175875602;
+                t0 *= F_0_298631336;
+                t1 *= F_2_053119869;
+                t2 *= F_3_072711026;
+                t3 *= F_1_501321110;
+                let (z1, z2) = (z1 * -F_0_899976223, z2 * -F_2_562915447);
+                let (z3, z4) = (z3 * -F_1_961570560 + z5, z4 * -F_0_390180644 + z5);
+                t0 += z1 + z3;
+                t1 += z2 + z4;
+                t2 += z2 + z3;
+                t3 += z1 + z4;
+                [tmp10 + t3, tmp11 + t2, tmp12 + t1, tmp13 + t0, tmp13 - t0, tmp12 - t1, tmp11 - t2, tmp10 - t3]
+            };
+            let mut ws = [0i64; 64];
+            for col in 0..8 {
+                let x: [i64; 8] = std::array::from_fn(|r| coef[r * 8 + col] as i64 * q[r * 8 + col] as i64);
+                let y = butterfly(x);
+                for r in 0..8 {
+                    ws[r * 8 + col] = descale(y[r], CONST_BITS - PASS1_BITS) as i32 as i64;
+                }
+            }
+            for row in 0..8 {
+                let x: [i64; 8] = std::array::from_fn(|c| ws[row * 8 + c]);
+                let y = butterfly(x);
+                for c in 0..8 {
+                    out[row * stride + c] = range_limit(descale(y[c], CONST_BITS + PASS1_BITS + 3) as i32);
+                }
+            }
+        }
+
+        /// Upsamples the components to the image size (libjpeg's fancy upsampling) and converts colours.
+        pub(super) fn output(width: usize, height: usize, comps: &[Component], color: Color) -> Result<Image> {
+            let hmax = comps.iter().map(|c| c.h).max().unwrap_or(1);
+            let vmax = comps.iter().map(|c| c.v).max().unwrap_or(1);
+            let planes: Vec<Vec<u8>> =
+                comps.iter().map(|c| upsample(c, hmax / c.h.max(1), vmax / c.v.max(1), width, height)).collect::<Result<_>>()?;
+            let n = comps.len();
+            let mut data = zeroed(&[width, height, n], "a JPEG image")?;
+            for (k, p) in planes.iter().enumerate() {
+                for (i, v) in p.iter().enumerate() {
+                    data[i * n + k] = *v;
+                }
+            }
+            if n == 3 && color == Color::Rgb {
+                ycc_to_rgb(&mut data);
+            }
+            Ok(Image { width, height, components: n, data })
+        }
+
+        /// A component's samples at the image's size, `width` x `height`: copied, or upsampled by
+        /// `hs` x `vs` as libjpeg does by default (`jdsample.c`: triangle filters for 2x1, 2x2 and 1x2,
+        /// replication otherwise), its edge rows repeated beyond the image.
+        fn upsample(c: &Component, hs: usize, vs: usize, width: usize, height: usize) -> Result<Vec<u8>> {
+            let stride = c.bw * 8;
+            let (w, h) = (c.w, c.hgt);
+            // A row of the component, its index clamped to the rows it holds.
+            let row = |r: isize| -> &[u8] {
+                let r = r.clamp(0, h as isize - 1) as usize;
+                &c.plane[r * stride..r * stride + w]
+            };
+            let mut out = zeroed(&[width, height], "a JPEG component")?;
+            let mut put_row = |r: usize, vals: &[u8]| {
+                if r < height {
+                    let n = width.min(vals.len());
+                    out[r * width..r * width + n].copy_from_slice(&vals[..n]);
+                }
+            };
+            let fancy = w > 2;
+            match (hs, vs) {
+                (1, 1) => (0..h).for_each(|r| put_row(r, row(r as isize))),
+                (2, 1) if fancy => {
+                    for r in 0..h {
+                        let i = row(r as isize);
+                        let mut o = Vec::with_capacity(2 * w);
+                        o.push(i[0]);
+                        o.push(((i[0] as u32 * 3 + i[1] as u32 + 2) >> 2) as u8);
+                        for x in 1..w - 1 {
+                            let v = i[x] as u32 * 3;
+                            o.push(((v + i[x - 1] as u32 + 1) >> 2) as u8);
+                            o.push(((v + i[x + 1] as u32 + 2) >> 2) as u8);
+                        }
+                        o.push(((i[w - 1] as u32 * 3 + i[w - 2] as u32 + 1) >> 2) as u8);
+                        o.push(i[w - 1]);
+                        put_row(r, &o);
+                    }
+                }
+                (2, 2) if fancy => {
+                    for r in 0..h {
+                        for v in 0..2 {
+                            let i0 = row(r as isize);
+                            let i1 = row(if v == 0 { r as isize - 1 } else { r as isize + 1 });
+                            let sum = |x: usize| i0[x] as u32 * 3 + i1[x] as u32;
+                            let mut o = Vec::with_capacity(2 * w);
+                            let first = sum(0);
+                            let (mut last, mut this) = (first, sum(1));
+                            o.push(((first * 4 + 8) >> 4) as u8);
+                            o.push(((first * 3 + this + 7) >> 4) as u8);
+                            for x in 2..w {
+                                let next = sum(x);
+                                o.push(((this * 3 + last + 8) >> 4) as u8);
+                                o.push(((this * 3 + next + 7) >> 4) as u8);
+                                (last, this) = (this, next);
+                            }
+                            o.push(((this * 3 + last + 8) >> 4) as u8);
+                            o.push(((this * 4 + 7) >> 4) as u8);
+                            put_row(2 * r + v, &o);
+                        }
+                    }
+                }
+                (1, 2) => {
+                    for r in 0..h {
+                        for v in 0..2 {
+                            let i0 = row(r as isize);
+                            let i1 = row(if v == 0 { r as isize - 1 } else { r as isize + 1 });
+                            let bias = if v == 0 { 1 } else { 2 };
+                            let o: Vec<u8> = (0..w).map(|x| ((i0[x] as u32 * 3 + i1[x] as u32 + bias) >> 2) as u8).collect();
+                            put_row(2 * r + v, &o);
+                        }
+                    }
+                }
+                _ => {
+                    // Replication.
+                    for r in 0..h {
+                        let i = row(r as isize);
+                        let o: Vec<u8> = i.iter().flat_map(|v| std::iter::repeat_n(*v, hs)).collect();
+                        for k in 0..vs {
+                            put_row(r * vs + k, &o);
+                        }
+                    }
+                }
+            }
+            Ok(out)
+        }
+
+        /// Converts YCbCr samples to RGB in place, with libjpeg's fixed-point tables (`jdcolor.c`).
+        fn ycc_to_rgb(v: &mut [u8]) {
+            const SCALEBITS: i32 = 16;
+            const ONE_HALF: i32 = 1 << (SCALEBITS - 1);
+            let fix = |x: f64| (x * (1i64 << SCALEBITS) as f64 + 0.5) as i32;
+            let (cr_r, cb_b, cr_g, cb_g) = (fix(1.40200), fix(1.77200), fix(0.71414), fix(0.34414));
+            for px in v.as_chunks_mut::<3>().0 {
+                let y = px[0] as i32;
+                let (cb, cr) = (px[1] as i32 - 128, px[2] as i32 - 128);
+                let r = y + ((cr_r * cr + ONE_HALF) >> SCALEBITS);
+                let g = y + ((-cb_g * cb + ONE_HALF - cr_g * cr) >> SCALEBITS);
+                let b = y + ((cb_b * cb + ONE_HALF) >> SCALEBITS);
+                px[0] = r.clamp(0, 255) as u8;
+                px[1] = g.clamp(0, 255) as u8;
+                px[2] = b.clamp(0, 255) as u8;
+            }
+        }
+    }
 
     #[test]
     fn duplicate_frame_cannot_bypass_header_preflight() {
@@ -773,9 +1004,7 @@ mod tests {
     #[test]
     fn ycc_converts_as_libjpeg() {
         // Grey stays grey; saturated chroma, worked out with libjpeg's tables.
-        let mut v = [128, 128, 128, 0, 0, 255, 255, 255, 0];
-        ycc_to_rgb(&mut v);
-        assert_eq!(v, [128, 128, 128, 178, 0, 0, 76, 255, 255]);
+        assert_eq!([ycc(128, 128, 128), ycc(0, 0, 255), ycc(255, 255, 0)], [[128, 128, 128], [178, 0, 0], [76, 255, 255]]);
     }
 
     #[test]
@@ -834,6 +1063,107 @@ mod tests {
         bytes[sos + 6] = 0x44;
         let err = decode(&bytes, Color::Auto).err().unwrap();
         assert!(matches!(&err, super::DecodeError::InvalidData(message) if message.contains("selector")), "{err}");
+    }
+
+    /// Pseudo-random bytes from `seed`.
+    fn noise(n: usize, seed: u64) -> Vec<u8> {
+        let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        (0..n)
+            .map(|_| {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (state >> 56) as u8
+            })
+            .collect()
+    }
+
+    /// The IDCT, with libjpeg's shortcuts for columns and rows without AC terms, gives the full
+    /// transform's samples: on blocks of every sparsity, coefficients as far out of range as a
+    /// stream can code included.
+    #[test]
+    fn idct_shortcuts_give_the_full_transform() {
+        for seed in 0..4000u64 {
+            let bytes = noise(64 * 3 + 64, seed);
+            let mut coef = [0i32; 64];
+            let mut q = [0u16; 64];
+            for i in 0..64 {
+                // Most coefficients zero, the more so the higher the seed's class.
+                let keep = bytes[192 + i] as u64 % 8 < (seed % 8);
+                let v = i16::from_le_bytes([bytes[2 * i], bytes[2 * i + 1]]) as i32;
+                coef[i] = match seed % 5 {
+                    _ if !keep && i > 0 => 0,
+                    0 => v,
+                    1 => v % 64,
+                    // A DC term as far out as its wrapping predictor reaches.
+                    2 if i == 0 => v.wrapping_mul(70_000),
+                    _ => v % 8,
+                };
+                q[i] = if seed % 3 == 0 { u16::from_le_bytes([bytes[128 + i], bytes[i]]) } else { 1 + bytes[128 + i] as u16 % 32 };
+            }
+            let (mut ours, mut theirs) = ([0u8; 64], [0u8; 64]);
+            idct_islow(&coef, &q, &mut ours, 8);
+            reference::idct_islow(&coef, &q, &mut theirs, 8);
+            assert_eq!(ours, theirs, "seed {seed}: {coef:?} {q:?}");
+        }
+    }
+
+    /// The row-by-row output stage gives the image the plane-by-plane one gives: every sampling
+    /// factor of up to four components (those libjpeg upsamples, those it replicates, and ratios
+    /// that do not divide), images narrower and shorter than an MCU, raw and YCbCr colour.
+    #[test]
+    fn output_rows_match_the_whole_planes() {
+        let sizes: [(usize, usize); 8] = [(1, 1), (2, 3), (3, 2), (5, 7), (16, 16), (17, 9), (37, 29), (64, 33)];
+        let factors = [1, 2, 3, 4];
+        let mut seed = 0;
+        for &(width, height) in &sizes {
+            for &h0 in &factors {
+                for &v0 in &factors {
+                    for n in 1..=4usize {
+                        // The first component at (h0, v0), the others at 1x1, or at 2x1 for the
+                        // fourth, so that some frames mix several upsamplings.
+                        let fs: Vec<(usize, usize)> = (0..n)
+                            .map(|k| match k {
+                                0 => (h0, v0),
+                                3 => (2, 1),
+                                _ => (1, 1),
+                            })
+                            .collect();
+                        let hmax = fs.iter().map(|f| f.0).max().unwrap();
+                        let vmax = fs.iter().map(|f| f.1).max().unwrap();
+                        let (mcux, mcuy) = (width.div_ceil(8 * hmax), height.div_ceil(8 * vmax));
+                        let comps: Vec<Component> = fs
+                            .iter()
+                            .enumerate()
+                            .map(|(k, &(h, v))| {
+                                seed += 1;
+                                let (bw, bh) = (mcux * h, mcuy * v);
+                                let (w, hgt) = ((width * h).div_ceil(hmax), (height * v).div_ceil(vmax));
+                                Component { id: k as u8, h, v, tq: 0, bw, bh, w, hgt, plane: noise(bw * 8 * bh * 8, seed) }
+                            })
+                            .collect();
+                        for color in [Color::Raw, Color::Rgb] {
+                            let ours = output(width, height, &comps, color).unwrap();
+                            let theirs = reference::output(width, height, &comps, color).unwrap();
+                            assert_eq!(ours.data, theirs.data, "{width}x{height}, factors {fs:?}, {color:?}");
+                        }
+                    }
+                }
+            }
+        }
+        // Streams of another encoder, every subsampling it writes, decoded whole.
+        let (w, h) = (45usize, 31usize);
+        let rgb = noise(w * h * 3, 7);
+        use jpeg_encoder::SamplingFactor as F;
+        for sampling in [F::F_1_1, F::F_2_1, F::F_1_2, F::F_2_2, F::F_4_1, F::F_4_2, F::F_1_4, F::F_2_4] {
+            let mut bytes = Vec::new();
+            let mut enc = jpeg_encoder::Encoder::new(&mut bytes, 85);
+            enc.set_sampling_factor(sampling);
+            enc.encode(&rgb, w as u16, h as u16, jpeg_encoder::ColorType::Rgb).unwrap();
+            for color in [Color::Raw, Color::Rgb] {
+                let (width, height, comps, color) = decode_frame(&bytes, color).unwrap();
+                let theirs = reference::output(width, height, &comps, color).unwrap();
+                assert_eq!(decode(&bytes, color).unwrap().data, theirs.data, "{sampling:?}, {color:?}");
+            }
+        }
     }
 
     #[test]
