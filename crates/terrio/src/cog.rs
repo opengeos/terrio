@@ -3674,9 +3674,9 @@ pub(crate) fn place<T: Copy>(out: &mut [T], vals: &[T], g: &ChunkGeom, w: Window
             let out = &mut out[band * band_len + dst..][..c1 - c0];
             // Whole pixels of 2 to 4 samples, as arrays: the copy is vectorized.
             match (g.spp, pixels) {
-                (2, Some(p)) => sample_of::<T, 2>(out, p, sample),
-                (3, Some(p)) => sample_of::<T, 3>(out, p, sample),
-                (4, Some(p)) => sample_of::<T, 4>(out, p, sample),
+                (2, Some(p)) if sample < 2 => sample_of::<T, 2>(out, p, sample),
+                (3, Some(p)) if sample < 3 => sample_of::<T, 3>(out, p, sample),
+                (4, Some(p)) if sample < 4 => sample_of::<T, 4>(out, p, sample),
                 _ => {
                     let src = vals.get(first + sample..).unwrap_or_default().iter().step_by(g.spp);
                     for (o, v) in out.iter_mut().zip(src) {

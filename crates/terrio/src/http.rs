@@ -2473,7 +2473,9 @@ impl RangeReader {
     }
 
     /// Whether the last prefetch fetched all it planned in one batch, none left for reads to
-    /// reach: reads of its ranges, from any clone, then send no request while its blocks stay.
+    /// reach: reads of its ranges, from any clone, then send no request while its blocks stay in
+    /// the process-wide block cache (a concurrent read of another file can evict some, which are
+    /// then fetched again).
     pub(crate) fn prefetched_whole(&self) -> bool {
         self.lock().is_ok_and(|s| s.plan.is_empty())
     }
