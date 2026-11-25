@@ -261,23 +261,23 @@
   (`TERRIO_CACHEMAX`, 64 MiB by default) in the source's type or the copy's, whichever is wider:
   when it writes a COG in rows, a GeoTIFF larger than `TERRIO_RIO_IN_MEMORY_LIMIT`, or a file from
   the pixels it holds. A JPEG 2000 read keeps none of the tiles it decodes, and these copies cut its
-  rows of tiles across their reads: the issue's 10980 x 10980 UInt16 image was copied to a COG 512
-  rows at a time over 1024-row tiles. That copy now takes 5.17 s instead of 6.12 s, and 39.5 s of
-  CPU instead of 47.2, on 16 CPUs (9.46 s instead of 11.71 on 4), and writes the same file byte for
-  byte. A COG copy also hands its writer each tile row as a view of what it read, instead of a copy
-  it kept while the row was written. Holding a whole row of tiles while its first rows are written
-  takes half a row of tiles more memory than before: on 16 CPUs the copies' peaks are those of
-  `main` within the spread of the runs, or lower; on 4 CPUs they are up to 40 MiB higher (see
-  #1168). (#1168)
+  rows of tiles across their reads: a 10980 x 10980 UInt16 image was copied to a COG 512 rows at a
+  time over 1024-row tiles. That copy now takes 5.17 s instead of 6.12 s, and 39.5 s of CPU instead
+  of 47.2, on 16 CPUs (9.46 s instead of 11.71 on 4), and writes the same file byte for byte. A COG
+  copy also hands its writer each tile row as a view of what it read, instead of a copy it kept
+  while the row was written. Holding a whole row of tiles while its first rows are written takes
+  half a row of tiles more memory than before: on 16 CPUs the copies' peaks are those of `main`
+  within the spread of the runs, or lower; on 4 CPUs they are up to 40 MiB higher (see #1168).
+  (#1168)
 - `terrio.rio.shutil.copy(src, dst, driver="COG")` of a single-band image computes its overviews on
   the thread pool: a row of overview blocks that is a single block is now resampled in two pieces of
   its rows there, while it was resampled on the calling thread, which meanwhile gave the writer no
-  rows. On the issue's 10,980 x 4,096 `uint16` image, the copy takes 0.69 s instead of 0.84 s with
-  the same processor time (3.60 s against 3.61 s), and the calling thread's share of the overviews
-  falls from 0.57 s to 0.17 s; the 10,980 x 10,980 `uint16` JPEG 2000 copy takes 5.46 s instead of
-  5.87 s (medians of three runs on 16 CPUs, below). The file is the same byte for byte, but for the
-  sign of a NaN where an addition meets two NaN values of different signs (see #1180); peak memory
-  is the same within the spread between runs. (#1180)
+  rows. On a 10,980 x 4,096 `uint16` image, the copy takes 0.69 s instead of 0.84 s with the same
+  processor time (3.60 s against 3.61 s), and the calling thread's share of the overviews falls from
+  0.57 s to 0.17 s; the 10,980 x 10,980 `uint16` JPEG 2000 copy takes 5.46 s instead of 5.87 s
+  (medians of three runs on 16 CPUs). The file is the same byte for byte, but for the sign of a NaN
+  where an addition meets two NaN values of different signs (see #1180); peak memory is the same
+  within the spread between runs. (#1180)
 - Overviews are computed with fewer instructions again: with one thread, the overview kernels of COG
   writes, `add_overviews` and resampled reads run up to 51% fewer instructions than since #1180
   (`average`), and between 24% fewer and 3% more than before it; `terrio translate --outsize 50% 50%
@@ -393,7 +393,7 @@
   the window dropped as they are decoded, instead of being decoded whole and refused with
   `ResourceLimitError`, even for a 1 x 1 window. A nearest-neighbour read smaller than such an image
   (`read_resampled`, `terrio.rio`'s `read(out_shape=...)`) reads the rows it samples the same way,
-  the strip once; so does one of an uncompressed strip. On the issue's 16,500 x 16,500 Deflate strip
+  the strip once; so does one of an uncompressed strip. On a 16,500 x 16,500 Deflate strip
   (1,090,567 bytes on disk, 272,250,000 decoded), the three reads that raised `ResourceLimitError`
   return the pixels; a window at the end of a 32,768 x 32,768 Deflate strip (1 GiB decoded: the most
   a compressed strip read so may declare by default) peaks at 4 to 4.6 MiB of RSS (refused on
@@ -505,7 +505,7 @@
 - `terrio.rio.CRS.to_epsg()` of a compound reference
   (`urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::5720`, `EPSG:2154+5720`) now gives the compound CRS's
   EPSG code, as PROJ 9.9.0 and rasterio identify it and as `Layer.crs` reports for the same
-  reference: 5698 and 9707 for the issue's first two cases. It returned `None`. (#1160)
+  reference: 5698 and 9707 for the first two cases reported. It returned `None`. (#1160)
 - `terrio.pyogrio.read_dataframe(..., fid_as_index=True)` (and raw reads with `return_fids=True`)
   now give a GeoPackage row whose ID is `-1` the FID `-1`, as pyogrio does, instead of failing with
   `OverflowError: Python int too large to convert to C long`. (#1291)
