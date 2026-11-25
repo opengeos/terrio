@@ -263,6 +263,8 @@ one file at a time. Each format lists the ways its files vary and the ways they 
 | GeoTIFF | codec and predictor, data type, tiled or stripped, band or pixel interleave, 1–12 bands | one window, 16 windows, whole file, 8x decimated (overview), 4 threads × 4 windows |
 | Zarr | v2 or v3, codec (zlib, gzip, zstd, Blosc LZ4/Zstd with shuffle or bitshuffle, none), data type, chunk size, sharding, cube chunking | one window, 16 windows, whole array, one band of a cube, 4 threads × 4 windows |
 | GeoParquet | geometry type, WKB or GeoArrow, compression, row group size, covering bbox column, spatial sort | all columns, two columns, a bbox of 1% of the extent, 16 bboxes, 4 threads × 4 bboxes, an attribute filter |
+| GeoTIFF writes (`geotiff-write`) | codec and predictor (none, DEFLATE, LZW and ZSTD with predictor 2 or 3, RGB and YCbCr JPEG), data type, tile size, band or pixel interleave, 1–12 bands | a COG with average overviews, a COG without overviews, a tiled GeoTIFF, the COG with one thread |
+| GeoParquet writes (`geoparquet-write`) | geometry type (400,000 polygons or lines, 2,000,000 points) | WKB, a covering bbox column, Snappy, row groups of 65,536 rows |
 
 GDAL or zarr-python writes one fixture per file combination. terrio and GDAL each read every
 fixture in every way, from a local path and over HTTP from a local server that adds a 20 ms
@@ -293,6 +295,45 @@ the report lists failures, timeouts and value mismatches apart. Local byte count
 `/proc/self/io`. Local reads after the first come from the OS page cache, so the matrix measures
 decoding and I/O logic, not the disk.
 
+Writes time the write call alone. Each tool loads a lossless GeoTIFF fixture into memory first
+(terrio's `open_raster`, a GDAL `MEM` copy), writes a 256 × 256 crop of it with the case's options
+as its warm-up, then writes the whole raster to a new file on local disk: terrio with
+`terrio.write_raster`, GDAL with `gdal.Translate` and the `COG` or `GTiff` driver. Both get the
+same creation options, spelled out (compression, predictor, block size, interleave, photometric,
+`OVERVIEW_RESAMPLING=AVERAGE` and `OVERVIEWS=IGNORE_EXISTING` or `NONE`); GDAL also gets
+`NUM_THREADS` from `--threads`. ZSTD is written at level 1 (`ZSTD_LEVEL`, `LEVEL` for GDAL's COG
+driver): this build of terrio writes the levels above 4 at level 4, and at level 1 both tools
+write files of the same size. GDAL's COG driver takes no `PHOTOMETRIC`: it writes 3-band JPEG
+as YCbCr itself, so RGB JPEG is measured as a tiled GeoTIFF only. The `cog_threads1` pattern sets
+`RAYON_NUM_THREADS` and `GDAL_NUM_THREADS` to 1. `init` then includes loading the source.
+
+A write is checked against GDAL's output, not by a checksum. GDAL writes a reference output once
+per case, untimed; after each terrio sample GDAL reads terrio's output and the reference and
+compares their grid, overview sizes, geotransform (absolute tolerance `1e-8`, relative `1e-12`),
+CRS, band types, color interpretations, mask flags and nodata, then every pixel of every band and
+overview level, NaNs equal. The case is `exact` when nothing differs, `within_tol` when only
+pixels differ and none by more than the case's tolerance, and `DIFFER` otherwise; the worst
+sample decides. The tolerance is 0 except for JPEG: 24, the largest difference measured between
+the two writers' RGB JPEG of the fixture, where 1.3% of the values differ and both outputs have
+the same mean error against the source. The row keeps the comparison (values compared, differing,
+beyond the tolerance, largest and summed difference) and the two output sizes, shown as `out
+KiB`. For writes, the bytes columns are the bytes each process read during the write (GDAL's COG
+driver reads back its temporary overview file), and `need` is the source's uncompressed size.
+Each output is deleted after its sample, and the run's output directory when it ends.
+
+GeoParquet writes load a GeoParquet fixture (terrio's `open_vector`, a GDAL `MEM` copy) and write
+it with `terrio.write_vector` and with `gdal.VectorTranslate` to the Parquet driver. terrio's
+GeoParquet writer takes no options, so GDAL is given its layout: `GEOMETRY_ENCODING=WKB`,
+`WRITE_COVERING_BBOX=YES`, `COMPRESSION=SNAPPY`, `ROW_GROUP_SIZE=65536` and `SORT_BY_BBOX=NO`.
+GeoArrow, other compressions, row group sizes and sorting are therefore not measured. terrio's
+output is compared with GDAL's reference as the benchmark compares vectors (field names and
+types, CRS, every feature's attributes and normalized geometry, in any order), then by row and
+row group counts, columns, compression, geometry encoding and covering. An output whose bytes
+were already compared in the case is not compared again. The comparison runs in the sample's
+process, within `--timeout`: comparing the 2,000,000 points takes about a minute on a desktop.
+For this reason `/perf-matrix` with no format leaves `geoparquet-write` out: request it by name,
+with a longer timeout (`/perf-matrix geoparquet-write --timeout 600`).
+
 The GeoParquet `where` request is reported separately as `where/sql-vs-filter`: Terrio uses
 `terrio.sql`, while GDAL uses `pyogrio.read_arrow(where=...)`. This compares complete filtering
 workflows, including their different execution paths. Unsupported HTTP SQL inputs appear as
@@ -318,6 +359,8 @@ python scripts/perf_matrix.py fixtures --format geotiff      # 0.9 GB in ~/.cach
 python scripts/perf_matrix.py run --format geotiff           # every case; 30 to 60 minutes per format
 python scripts/perf_matrix.py fixtures --format zarr
 python scripts/perf_matrix.py run --format zarr --only shard --access window --quick
+python scripts/perf_matrix.py run --format geotiff-write      # the GeoTIFF fixtures, written
+python scripts/perf_matrix.py run --format geoparquet-write   # the GeoParquet fixtures, written
 # `run` prints its results file path; report summarizes one again:
 python scripts/perf_matrix.py report "$HOME/.cache/terrio-bench/matrix/geotiff/results-20261124-120000.jsonl"
 # Run the matrix's regression tests:
@@ -342,8 +385,8 @@ the base's wheel with `pip install --no-deps --target DIR terrio-*.whl`.
 On a pull request, a maintainer's comment `/perf-matrix` runs the matrix on a GitHub runner
 (`.github/workflows/perf-matrix.yml`): the pull request's terrio, its base branch's and GDAL
 3.13.3, with the base branch's harness, and posts the report. With no arguments it runs every
-format with one sample per tool; `/perf-matrix geoparquet --only geoarrow` runs one format with
-the options of `run`. Runner timings vary more than a quiet desktop's, but each comparison is
+format but `geoparquet-write` with one sample per tool; `/perf-matrix geoparquet --only geoarrow`
+runs one format with the options of `run`. Runner timings vary more than a quiet desktop's, but each comparison is
 made within one run on one runner. The Actions tab runs the same workflow for a pull request
 number. Each format runs in its own job, in parallel.
 
@@ -353,5 +396,5 @@ base build and GDAL reference as well as their own build. The posted measurement
 independent security check of pull request code.
 
 `perf_matrix.py touched` reads changed file paths on standard input and prints the formats whose
-reads go through them (`PATHS` in the script; shared I/O files and `Cargo.lock` count for every
-format).
+reads or writes go through them (`PATHS` in the script; shared I/O files and `Cargo.lock` count
+for every format).
