@@ -1181,7 +1181,12 @@ def run(args: argparse.Namespace) -> None:
         fmt = FORMATS[args.format]
         data = args.dir
         _Handler.latency = args.latency_ms / 1000
-        server = ThreadingHTTPServer(("127.0.0.1", 0), lambda *a, **k: _Handler(*a, directory=str(data), **k))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), lambda *a, **k: _Handler(*a, directory=str(data), **k), bind_and_activate=False)
+        # Eight reading threads connect at once: with socketserver's backlog of 5, a dropped
+        # connection waits a 1 s SYN retransmission, which the case would time as its read.
+        server.request_queue_size = 128
+        server.server_bind()
+        server.server_activate()
         server.daemon_threads = True
         cleanup.callback(server.server_close)
         threading.Thread(target=server.serve_forever, daemon=True).start()

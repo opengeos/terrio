@@ -527,6 +527,7 @@ def test_quick_runs_rotate_tools_between_cases_and_close_the_server(tmp_path, mo
     perf_matrix.run(args)
     assert calls == ["terrio", "gdal", "base", "gdal", "base", "terrio"]
     assert servers[0].socket.fileno() == -1
+    assert servers[0].request_queue_size >= 64  # the threaded reads' connections are not dropped
 
 
 def test_a_fixture_filter_matching_nothing_is_an_error(tmp_path, monkeypatch):
