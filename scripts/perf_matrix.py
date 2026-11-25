@@ -1123,7 +1123,7 @@ class GeoPackage:
         "point_rtree_unsorted": ("point", 2_000_000, True, False),
     }
     # GeoParquet's: every column; the geometry and two attributes; a bbox of 1% of the extent; 16
-    # bboxes; 4 threads reading 4 of the 16 each; the attribute filter `id < 4000`.
+    # bboxes; N threads sharing the 16 (`THREAD_COUNTS`); the attribute filter `id < 4000`.
     ACCESS = ["full", "columns", "bbox", "bbox16", "threads4", "where"]
     EXT = ".gpkg"
     LAYER = "data"
@@ -1671,7 +1671,7 @@ class GeoTiffWrite:
             for x, y in zip(levels(a.GetRasterBand(i)), levels(b.GetRasterBand(i)), strict=True):
                 xa, ya = x.ReadAsArray().astype("float64"), y.ReadAsArray().astype("float64")
                 d = np.abs(xa - ya)
-                d[np.isnan(xa) & np.isnan(ya)] = 0
+                d[(xa == ya) | (np.isnan(xa) & np.isnan(ya))] = 0  # equal values, infinities included
                 d[np.isnan(d)] = np.inf  # NaN against a number
                 c["n"] += d.size
                 c["differing"] += int(np.count_nonzero(d))
