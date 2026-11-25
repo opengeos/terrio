@@ -1002,8 +1002,8 @@ impl ChunkCodec {
 
     /// A single blob's samples (all of the chunk's) as the result when they are of the image's
     /// type, without a conversion: floating-point ones NaN where the mask says invalid, as through
-    /// `f64` (but for signaling NaNs, kept as stored, as libtiff keeps them). Other types are given
-    /// back.
+    /// `f64` (but for signaling NaNs, kept as stored: the bits as decoded; GDAL's behaviour for
+    /// them was not compared). Other types are given back.
     #[cfg(feature = "lerc")]
     fn lerc_native(&self, pixels: lerc_core::PixelData, mask: Option<&[u8]>) -> Result<DecodingResult, lerc_core::PixelData> {
         use lerc_core::PixelData as P;
@@ -1907,8 +1907,7 @@ mod tests {
     }
 
     /// Floating-point samples of the image's type keep their bits, signaling NaNs included (the
-    /// conversion through `f64` this path skips quieted them, which libtiff does not), and masked
-    /// pixels become NaN.
+    /// conversion through `f64` this path skips quieted them), and masked pixels become NaN.
     #[cfg(feature = "lerc")]
     #[test]
     fn lerc_native_samples_keep_signaling_nan_bits_and_mask_to_nan() {
