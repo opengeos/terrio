@@ -70,10 +70,11 @@
   (#1129)
 - The npm package gains `terrio-js/cog`, a module that reads GeoTIFFs and COGs over HTTP and nothing
   else: `openCog(url, { blockSize, cacheSize, fetch, headers })`, then `read({ window, bands,
-  overview })` returns one typed array per band. It is 2.37 MB (0.65 MB Brotli) against 2.56 MB
-  Brotli for `terrio-js/core`, the smallest module that read COGs before. A read sends the requests
-  `openUrl` sends for it. Its CRS is the EPSG code of the GeoKeys; the CRS engine is not linked.
-  (#1053)
+  overview })` returns one typed array per band. It is 1.00 MB (0.30 MB Brotli; #1054) against 2.56
+  MB Brotli for `terrio-js/core`, the smallest module that read COGs before. A read sends the
+  requests `openUrl` sends for it. Its CRS is the EPSG code of the GeoKeys; the CRS engine is not
+  linked. It does not read JPEG XL GeoTIFFs: one opens, but its reads fail with "built without the
+  `jxl` feature"; `terrio-js`, `terrio-js/core`, the CLI and Python read them. (#1053, #1054)
 - The npm package gains `terrio-js/geoparquet`, a module that reads GeoParquet files over HTTP and
   nothing else: `openGeoParquet(url, { blockSize, cacheSize, fetch, headers })`, then `read({
   rowGroups, bbox, columns })` returns the GeoJSON FeatureCollection that
@@ -140,7 +141,7 @@
   `VectorDataset::ogr_type(&layer, i)` (also `FeatureReader::ogr_type` for streams) returns it.
   `export-schema` reports these list types as `gdal vector export-schema` does, and gives boolean
   fields of GeoJSON layers GDAL's width of 1. This addresses #614 for GeoJSON; the GDAL fallback's
-  lists remain (see Limitations). (#1047)
+  lists remain (see #1047). (#1047)
 - A `STACIT:` mosaic now warns, once and with a count, when it leaves out assets that lack the proj
   metadata to place them (GDAL drops them silently), and its bands carry the description, colour
   interpretation and metadata items that the asset's `bands`/`eo:bands` declare, as GDAL's STACIT
@@ -209,7 +210,7 @@
   long runs share the 8 request slots instead of each splitting into 8 pieces. A 512 × 512 px window
   of a 128-band COG on S3 now takes one round of 8–12 requests instead of one round of 8 requests
   per row of tiles: with 128 and 256 px tiles it is now read faster than GDAL (64 px tiles: see
-  Limitations). (#1241)
+  #1241). (#1241)
 - A parallel HTTP range fetch now starts its next request as soon as one is answered with its range,
   instead of waiting until that response's run is stored in order: one slow response no longer holds
   up every request queued behind it. A failure or a whole-file answer still stops new requests at
@@ -231,10 +232,6 @@
   remote keeps in flight, and a block two reads need is fetched once. A 1600 x 900 Leaflet view of a
   COG behind 150 ms of latency loads in 1.2 s instead of 5.0 s, with the same requests and bytes.
   (#1192)
-- `terrio-js/cog` no longer reads JPEG XL GeoTIFFs and is less than half the size: 1.00 MB (0.30 MB
-  Brotli), down from 2.38 MB (0.65 MB Brotli). A JPEG XL GeoTIFF now opens but its reads fail with
-  "built without the `jxl` feature". The full and core modules (`terrio-js`, `terrio-js/core`), the
-  CLI and Python read JPEG XL as before. (#1054)
 - terrio-js opens vector files 1.7–4× faster: the WebAssembly memory now grows a quarter at a time
   instead of 64 KiB at a time. Opening 90,000 polygons from bytes takes 195 ms instead of 789 ms
   (FlatGeobuf), 302 ms instead of 1278 ms (GeoPackage) and 959 ms instead of 1624 ms (Shapefile).
@@ -271,7 +268,7 @@
   it kept while the row was written. Holding a whole row of tiles while its first rows are written
   takes half a row of tiles more memory than before: on 16 CPUs the copies' peaks are those of
   `main` within the spread of the runs, or lower; on 4 CPUs they are up to 40 MiB higher (see
-  Limitations). (#1168)
+  #1168). (#1168)
 - `terrio.rio.shutil.copy(src, dst, driver="COG")` of a single-band image computes its overviews on
   the thread pool: a row of overview blocks that is a single block is now resampled in two pieces of
   its rows there, while it was resampled on the calling thread, which meanwhile gave the writer no
@@ -279,8 +276,8 @@
   the same processor time (3.60 s against 3.61 s), and the calling thread's share of the overviews
   falls from 0.57 s to 0.17 s; the 10,980 x 10,980 `uint16` JPEG 2000 copy takes 5.46 s instead of
   5.87 s (medians of three runs on 16 CPUs, below). The file is the same byte for byte, but for the
-  sign of a NaN where an addition meets two NaN values of different signs (see Behaviour); peak
-  memory is the same within the spread between runs. (#1180)
+  sign of a NaN where an addition meets two NaN values of different signs (see #1180); peak memory
+  is the same within the spread between runs. (#1180)
 - Overviews are computed with fewer instructions again: with one thread, the overview kernels of COG
   writes, `add_overviews` and resampled reads run up to 51% fewer instructions than since #1180
   (`average`), and between 24% fewer and 3% more than before it; `terrio translate --outsize 50% 50%
@@ -303,16 +300,16 @@
 - A local GRIB file opened to be read by window (`terrio.rio.open`, `open_raster(..., lazy=True)`)
   is no longer read into memory: the dataset reads each message's header at open and a band's
   message when the band is read, as a remote GRIB file is read by range (of two kinds of message it
-  reads more at open, and keeps none of it: see Behaviour and Limitations). The bands it decodes are
-  kept as decoded in the process-wide block cache, under `TERRIO_CACHEMAX` (64 MiB by default),
-  instead of up to 256 MiB of Float64 bands in each open dataset: whole when they fit, otherwise the
-  rows a read needs and those nearest them. On Unix, the datasets open at once on one version of a
-  file that has gone unchanged for 2 seconds, including the spare readers Python opens to read a
-  raster from several threads, share them. GRIB bytes opened from memory are no longer copied. Four
-  datasets of the issue's 64 MiB file held 256 MiB once opened and 768 MiB after a one-pixel read of
-  each; they now hold nothing once opened and 64 MiB after the reads, in the cache. Opening the file
-  and reading a first window takes less time than on `main`, with the default cache and with one
-  that holds the band. (#1163)
+  reads more at open, and keeps none of it: see #1163). The bands it decodes are kept as decoded in
+  the process-wide block cache, under `TERRIO_CACHEMAX` (64 MiB by default), instead of up to 256
+  MiB of Float64 bands in each open dataset: whole when they fit, otherwise the rows a read needs
+  and those nearest them. On Unix, the datasets open at once on one version of a file that has gone
+  unchanged for 2 seconds, including the spare readers Python opens to read a raster from several
+  threads, share them. GRIB bytes opened from memory are no longer copied. Four datasets of the
+  issue's 64 MiB file held 256 MiB once opened and 768 MiB after a one-pixel read of each; they now
+  hold nothing once opened and 64 MiB after the reads, in the cache. Opening the file and reading a
+  first window takes less time than on `main`, with the default cache and with one that holds the
+  band. (#1163)
 - Opening a GRIB file no longer reads the data of a message's fields, and a remote dataset no longer
   keeps the GRIB1 messages it reads whole to work out their nodata. In a GRIB2 message of several
   fields, each field's sections come after the data of the field before it: to reach them, the open
@@ -492,9 +489,6 @@
   `zarr.json` (any case), `..` or starting with `__` an array name of its own instead of failing or
   breaking the store, and writes an integer field with nulls as int64 with the fill value `i64::MIN`
   instead of float64 with NaN, so values beyond 2^53 are no longer rounded. (#1149)
-- A zonal cube's Zarr array names no longer end in a period: a field named `..` gets the array
-  `field__` (it was `field..`, which Windows cannot create), and other trailing periods become `_`.
-  (#1164)
 - Opening a Golden Software Surfer 6 binary grid (`DSBB`) whose header declares a negative or zero
   column or row count now fails with an error, as GDAL's GSBG driver refuses it. It panicked with
   "capacity overflow" before: the reader read the header's signed 16-bit sizes as unsigned. (#1174)
