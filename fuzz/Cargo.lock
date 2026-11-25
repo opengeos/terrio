@@ -1649,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "terrio"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "encoding_rs",
  "fdeflate",
@@ -1704,7 +1704,7 @@ dependencies = [
 
 [[package]]
 name = "terrio-crs"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "geographiclib-rs",
  "libc",

@@ -1,5 +1,878 @@
 # Changelog
 
+## 0.10.0 (2026-11-24)
+
+### Behavior changes
+
+- **Rust API:** public structs gain fields: `VectorDataset::list_types` (#1047),
+  `RasterWriteOptions::overview_data` and `metadata` (#1268), `VectorWriteOptions::preserve_fid`
+  (#1227) and `WarpOptions::periodic_longitude` (#1099). A struct literal naming every field needs
+  the new ones, or `..Default::default()` for the options.
+- PROJ strings with ellipsoid, datum or unit names PROJ does not know (`+ellps=foo`, `+units=feet`),
+  or with unreadable origin parameters, are now refused instead of being read as WGS 84, metres or 0
+  (#1062).
+- A deprecated EPSG code keeps its own definition, as PROJ gives it, instead of its replacement's
+  (#1040). A WKT's declared root code is kept only when the WKT's content is that CRS (#1051).
+- The CRS tables move to the EPSG dataset v13.102 (PROJ 9.9.0), and CRSs are identified as PROJ
+  9.9.0 identifies them (#1077, #1119).
+- New external `.ovr` images of several bands are written band-separate (`INTERLEAVE=BAND`), as GDAL
+  writes them (#1045).
+- Without `libzstd`, Zstandard goes through `zrip`, and `ZSTD_LEVEL` now takes effect up to level 4
+  instead of always writing the fastest level (#1247).
+- A zonal cube's Zarr array names no longer end in a period (`..` becomes `field__`) (#1164).
+
+### Features
+
+- The `.terrio` xarray accessor runs terrio's raster operations: `dem`, `sieve`, `proximity`,
+  `fill_nodata`, `reclassify` and `viewshed` return a DataArray on the input's grid (on a Dataset,
+  each spatial variable), `polygonize`, `contour`, `footprint` and `zonal_stats` return a
+  `terrio.Layer`, and `terrio.xarray.rasterize(src, like)` burns vectors on the grid of a DataArray
+  or Dataset. Before, these operations took only paths or `terrio.Raster` objects, so xarray users
+  wrote the array to a file first. (#1043)
+- `.terrio.clip` (DataArray and Dataset) accepts a GeoDataFrame or GeoSeries, a vector file path or
+  a one-layer `terrio.open_vector` result, a GeoJSON Feature or FeatureCollection, or a single
+  geometry, besides an iterable of geometries and a terrio `Layer`. GeoPandas objects and files clip
+  from their own CRS. Before, a GeoDataFrame or a FeatureCollection dict was iterated (yielding
+  column names or keys) and failed, a GeoSeries lost its CRS, and a single shapely geometry raised.
+  (#1044)
+- Operations that take vector data now accept it in any form. Before, a `str` was always a path, and
+  only Layers, VectorDatasets, GeoPandas objects, Arrow data and GeoJSON dicts worked. Now they also
+  accept a `pathlib.Path`, a Shapely geometry or a list of geometries or Features, WKT/EWKT text,
+  and `(xmin, ymin, xmax, ymax)` bounds. This covers `zonal_stats` zones, `warp`'s `cutline`,
+  `rasterize`, `render`, the vector operations, `pixel_info`'s `position_dataset` and
+  `PointCloud.overlay`, which before took only a path, `Layer` or `VectorDataset`. `clip_vector` and
+  `update_raster` take a Shapely geometry or a GeoJSON dict as `geometry`. In `terrio.xarray`,
+  `zonal_stats` and `rasterize` take any vector input, `clip` also takes WKT, bounds and Arrow data,
+  and geometries without a CRS of their own are read in the array's CRS, as `clip` already read
+  them. In JavaScript, `fromGeoJSON` and every operation's vector input take WKT, bounds arrays and
+  geometry arrays. On the CLI and MCP, `warp --cutline` and the processing commands' vector input
+  take WKT or GeoJSON text, as `gdalwarp -cutline` takes WKT. (#1067)
+- `terrio.xarray`: `.terrio.zonal_stats` reduces cubes. On an array with dimensions besides its
+  spatial ones (`time`, `band`...), it reduces every 2-D slice and returns a DataArray of dims
+  `(geometry, ..., statistic)`. The `geometry` dimension is indexed by the zones' Shapely geometries
+  in their own CRS, which is written as the grid mapping (`.terrio.crs`), and the zones' attributes
+  are coordinates along it. A Dataset gives one such variable per spatial variable, all sharing
+  `geometry`. Before, a 3-D array went to `terrio.zonal_stats` as bands, and a 4-D one raised. 2-D
+  arrays and Datasets of 2-D variables still return `terrio.zonal_stats`'s `Layer`. (#1068)
+- `terrio zonal-stats` writes zonal statistics as a cube: with an output ending in `.zarr` (or `-f
+  Zarr`), it writes a Zarr v3 store with one variable, named after the store, of dims `(geometry,
+  time, band, statistic)`, instead of one column per date, band and statistic. The zones are stored
+  as CF-1.8 polygon geometries, with a CF grid mapping of their CRS, and their fields and FIDs are
+  coordinates along `geometry`. xarray opens the store, and cf_xarray and xvec decode its
+  geometries. In Rust, `terrio::ops::zonal_cube::zonal_cube` builds the cube from the zonal engine's
+  labelled inputs, and `ZonalCube::write_zarr` writes it. Before this, statistics over a time series
+  came only as wide columns such as `2024_07_01_B04_mean`. (#1071)
+- Rasterization can now edit an existing DEM with elevation attributes from lines or polygons while
+  preserving original pixels across the full raster extent. The new `--background RASTER` option
+  copies the source pixels before burning attribute elevations in stored sample units; `--add`
+  applies signed offsets to raise or lower existing heights. The same capability is available
+  through CLI/MCP, Python (`background=`), JavaScript (`background`) and Rust (`rasterize_on`).
+  (#1129)
+- The npm package gains `terrio-js/cog`, a module that reads GeoTIFFs and COGs over HTTP and nothing
+  else: `openCog(url, { blockSize, cacheSize, fetch, headers })`, then `read({ window, bands,
+  overview })` returns one typed array per band. It is 2.37 MB (0.65 MB Brotli) against 2.56 MB
+  Brotli for `terrio-js/core`, the smallest module that read COGs before. A read sends the requests
+  `openUrl` sends for it. Its CRS is the EPSG code of the GeoKeys; the CRS engine is not linked.
+  (#1053)
+- The npm package gains `terrio-js/geoparquet`, a module that reads GeoParquet files over HTTP and
+  nothing else: `openGeoParquet(url, { blockSize, cacheSize, fetch, headers })`, then `read({
+  rowGroups, bbox, columns })` returns the GeoJSON FeatureCollection that
+  `openUrl(url).read(options).toGeoJSON()` gives, with the same requests for `.parquet` URLs. It
+  reads every codec terrio reads (Snappy, gzip, Brotli, LZ4, ZSTD), and its CRS is the EPSG code the
+  file's `crs` names; the CRS engine is not linked. It is 3.27 MB (0.91 MB Brotli), against 7.85 MB
+  Brotli for `terrio-js`, the only module with GeoParquet before. (#1246)
+- `OVERVIEW_RESAMPLING=AREA_MATCHED` (`overview_resampling="area_matched"`, and `AREA_MATCHED_MODE`
+  for categorical rasters) is a new Terrio overview method for rasters with nodata. It builds COG
+  overviews, and GeoTIFF overviews at factors, whose valid cells cover the valid area of the
+  full-resolution image. GDAL's `average` instead makes a cell valid when any of its source pixels
+  is valid, so a thin or ragged extent grows at every level. A kept cell holds the mean of its valid
+  pixels (or the most frequent valid class of the cells at the preceding level, with each child
+  counted once). Each band records what its levels keep in two default-domain metadata items,
+  `OVERVIEW_AREA_RATIOS` and `OVERVIEW_BASE_VALID_PIXELS`, which GDAL's COG and GTiff drivers copy
+  along with the band. An unattainable rounded valid-cell target is refused rather than silently
+  underfilled. These methods require one shared nodata value across all bands. Distinct per-band
+  nodata declarations are refused because the overview TIFF images declare one shared sentinel. A
+  raster without nodata is refused, as is one with a per-dataset mask, an alpha band, complex
+  samples or source overviews to copy. Every other overview method writes the same bytes as before.
+  (#1253)
+- GeoTIFF and COG writes accept caller-supplied overview pixels through Rust, Python and JavaScript,
+  and preserve explicit dataset metadata overrides even when source metadata domains are filtered.
+  `OVERVIEWS=FORCE_USE_EXISTING` writes no generated levels when none are supplied or copied, and
+  Python copies a VRT source's existing levels through arrays. (#1268)
+- GeoPackage writes can preserve the numeric feature IDs supplied by a reader or Rust caller as
+  SQLite integer primary keys. Enable `VectorWriteOptions::preserve_fid` in Rust, `--preserve-fid`
+  in `terrio convert`, `preserve_fid=True` in Python, or `preserveFid: true` in JavaScript. The
+  option defaults to off. (#1227)
+- `terrio::signed_fid(&feature)` returns a feature's ID as the signed 64-bit integer of its source,
+  so a GeoPackage row whose rowid is `-1` reads back as `-1` rather than `18446744073709551615`.
+  (#1079)
+- `terrio simplify` takes `--method douglas-peucker`, a port of JTS 1.20.0's
+  `DouglasPeuckerSimplifier` without its repair step, alongside the existing topology-preserving
+  default, with `--collapse keep|drop` for rings left with fewer than four points. Python's
+  `terrio.simplify` and JavaScript's `simplify` take the same `method` and `collapse` options. The
+  new `terrio.simplify_wkb` (Python), `simplifyWkb` (JavaScript) and
+  `terrio::ops::simplify_dp::simplify_wkb_many` (Rust) simplify WKB directly, in parallel over
+  features. Python accepts Arrow binary arrays or sequences of bytes. Each geometry keeps its byte
+  order, ISO/EWKB type code, SRID, Z and M. Existing `simplify` calls behave as before. (#1254)
+- `terrio.rio.env.defenv(**options)` starts a thread's default GDAL environment unless one is
+  active, as `rasterio.env.defenv` does. The environment stays active until `delenv()`, and an
+  environment that is already active keeps its options. Code that calls `rasterio.env.defenv()`,
+  such as odc-stac in each of its read threads, previously failed with an `AttributeError` on
+  `terrio.rio`. (#1175)
+- `terrio.rio`'s `calculate_default_transform`, `WarpedVRT` and `reproject` from a band now accept a
+  source that has a geotransform and no CRS: it is warped without reprojection, its geotransform
+  mapping straight into the destination CRS, instead of raising `CRSError`. (#1080)
+- Warps gain a `periodic_longitude` option. A geographic source covering exactly one turn of
+  longitude stays periodic by default; with the option off, interpolation neighbours stay inside its
+  stored columns, as for a regional source, so a field that is not continuous across the stored edge
+  (longitudes, class codes, per-tile products) is no longer blended there. (#1099)
+- Python, JavaScript and the CLI can now write the PROJ string GDAL writes for a CRS:
+  `terrio._terrio.crs_to_proj4_gdal(crs)`, `crsToProj4Gdal(crs)` and `terrio crs CRS --proj4-gdal`,
+  which call terrio-crs's `SpatialRef::to_proj4_gdal` (#1098). It is the string of
+  `crs_to_proj4`/`crsToProj4` without `+type=crs`, and for an EPSG or ESRI code (or a WKT whose root
+  names one) it adds what GDAL 3.13.3's `OSRExportToProj4` adds: the `+towgs84` of the CRS's single
+  transformation to WGS 84, and a compound CRS's geoid model. `None`/`undefined` where
+  `crs_to_proj4` is. The `terrio` crate's `crs::SpatialRef` gains `to_proj4_gdal` for them. (#1111)
+- GeoJSON and GeoJSON text sequence properties holding arrays are now typed as GDAL's GeoJSON reader
+  types them: `IntegerList`, `Integer64List`, `RealList`, `StringList`, or `IntegerList` of the
+  `Boolean` subtype. Their values are JSON arrays of that type, converted as GDAL converts them. The
+  new `VectorDataset::list_types` record holds each list field's type, and
+  `VectorDataset::ogr_type(&layer, i)` (also `FeatureReader::ogr_type` for streams) returns it.
+  `export-schema` reports these list types as `gdal vector export-schema` does, and gives boolean
+  fields of GeoJSON layers GDAL's width of 1. This addresses #614 for GeoJSON; the GDAL fallback's
+  lists remain (see Limitations). (#1047)
+- A `STACIT:` mosaic now warns, once and with a count, when it leaves out assets that lack the proj
+  metadata to place them (GDAL drops them silently), and its bands carry the description, colour
+  interpretation and metadata items that the asset's `bands`/`eo:bands` declare, as GDAL's STACIT
+  driver gives them; `raster:bands` members are added as band metadata items and `unit` as the
+  band's unit. (#1289)
+- Rust callers can opt into GDAL integer-window nearest-neighbour resampling for whole-pixel
+  windows. `WindowSampling::Integer` rounds and clamps the source window at each overview, including
+  when a read descends through an external `.ovr` pyramid. Existing reads keep fractional sampling,
+  including when all four window coordinates are whole numbers. (#1224)
+- Add `RegionWarp::set_dst_gt`, which re-targets one warp to another destination grid while keeping
+  the source and its transformer — the equivalent of `GDALSetGenImgProjTransformerDstGeoTransform()`
+  re-targeting one GenImgProj transformer, as tile pipelines do per tile. Source windows and warps
+  of regions of the new grid come out identical to a fresh `RegionWarp` made with that grid. (#1198)
+- Let `RegionWarp::with_rpc` accept `impl Into<Arc<RpcTransformer>>`, so several warps share one
+  transformer and one DEM load instead of each warp taking the transformer by value and reloading
+  the DEM. A plain `RpcTransformer` is still accepted and wrapped in an `Arc`. (#1199)
+- Add `RegionWarp::with_src_scale((f64, f64))`: the full-resolution source pixels each pixel of the
+  warped source stands for, `(W / w, H / h)` for a `w` x `h` overview of a `W` x `H` raster. A GCP-
+  or RPC-georeferenced source scales its pixel coordinates by it before transforming, as the warp of
+  an overview level does; a geotransform source is unaffected. Invalid scales (non-positive,
+  non-finite) are rejected by `warp()` before any output is allocated. (#1200)
+- Expose `LazyRaster::geotransform_present()` and fix `has_geo_transform` for in-memory and windowed
+  sources: a plain PNG/JPEG with no world file no longer reports a geotransform (previously `true`
+  whenever GCPs were absent), matching `RasterDataset.geotransform_present` as set by the PNG
+  driver. (#1201)
+- Expose `LazyRaster::alpha_band()` and add `LazyRaster::read_band_mask(band, window, overview)`,
+  which returns the mask GDAL's `GetMaskBand` would give for the band: internal/`.msk` masks where
+  they exist, and for RGBA the alpha band as `alpha != 0` (`GMF_ALPHA` semantics) — previously
+  `read_mask` only covered internal and `.msk` masks and `alpha_band()` was crate-private. (#1202)
+
+### Performance
+
+- `terrio warp` and `terrio.warp` are 2–3.5x faster per core: on one CPU, a 7200 × 7200 Copernicus
+  DEM to UTM takes 0.55 s instead of 1.96 s with nearest, 2.7 s instead of 6.1 s with bilinear and
+  3.1 s instead of 6.8 s with cubic. Outputs are unchanged, bit for bit. Single-thread warps had
+  become 4–5x slower between 0.8.0 and 0.9.0, mostly from the per-pixel work of stable sampling
+  (#847) and of the longitude rules added after it. (#1050)
+- Cache the computed source window on `RegionWarp` and let `warp()` reuse it for the same region
+  under the current destination grid, instead of transforming the region's pixels a second time,
+  while still validating the window the caller passes. (#1207)
+- Compute the four bilinear taps' source indexes from one base (`row0 + dy * width + x`) instead of
+  calling `index()` twice per tap, once for the validity check and once for the value. Warp sampling
+  behavior is preserved. (#1208)
+- Reading Float32 and Float64 GeoTIFFs compressed with Deflate and the floating-point predictor
+  (`PREDICTOR=3`, how Copernicus GLO-30 and many other DEMs are stored) is about 1.8–2x faster on
+  one core, on par with GDAL. Values are unchanged. (#1052)
+- Reading LZW-compressed GeoTIFFs is 1.2–1.3x faster on one core: a USGS 3DEP 1-arc-second tile
+  (Float32, `PREDICTOR=3`) now reads in 0.134 s instead of 0.175 s, against 0.120 s for GDAL. Values
+  are unchanged. (#1055)
+- Zstandard is decoded and written with `zrip` instead of `ruzstd` when `libzstd` is off, as in the
+  default builds and in WebAssembly: GeoTIFF chunks and strips, GeoParquet pages, Zarr chunks,
+  PMTiles tiles, EPT tiles and the bundled CRS tables. ZSTD GeoTIFFs read 2.5 to 3.2 times as fast,
+  `ZSTD_LEVEL` now takes effect up to level 4 (higher levels write level 4) instead of always
+  writing `ruzstd`'s fastest level, and the first CRS lookup takes 13.6 ms instead of 26.6 ms.
+  (#1247)
+- TIFF and COG writes with LZW compression use a specialized encoder with reusable scratch storage.
+  Compressed bytes remain identical to the previous weezl 0.2.1 TIFF encoder, while predictors,
+  packed samples, sparse blocks, masks, overviews and the public writer options retain their
+  existing behavior. Writer memory admission now includes the encoder's retained witness arrays.
+  (#1288)
+- Opening a local GeoTIFF now reads about 25 KB instead of 410 KB, and opening a local JPEG 2000
+  file about 37 KB instead of 2.1 MB; a JPEG 2000 tile read reads about a third of what it did. The
+  readers no longer read the same header bytes again after each seek. (#1101)
+- Remote window reads of a COG now fetch all of a window's tiles in one round of requests when they
+  fit in the block cache (`TERRIO_HTTP_CACHE_SIZE`), wherever its rows of tiles sit in the file, and
+  long runs share the 8 request slots instead of each splitting into 8 pieces. A 512 × 512 px window
+  of a 128-band COG on S3 now takes one round of 8–12 requests instead of one round of 8 requests
+  per row of tiles: with 128 and 256 px tiles it is now read faster than GDAL (64 px tiles: see
+  Limitations). (#1241)
+- A parallel HTTP range fetch now starts its next request as soon as one is answered with its range,
+  instead of waiting until that response's run is stored in order: one slow response no longer holds
+  up every request queued behind it. A failure or a whole-file answer still stops new requests at
+  once. (#1190)
+- `terrio-js/cog`: `openCog` returns as soon as a COG's header has arrived, rather than once the
+  whole 64 KiB first block has: over a distant connection an open is about 200–300 ms faster, with
+  the same requests and pixels. (#1137)
+- `terrio-js` `openUrl`: a remote GeoParquet file opens in one request rather than two or three (110
+  ms rather than 318 ms over a 100 ms link), and a GeoTIFF, PMTiles, COPC or FlatGeobuf file opens
+  as soon as its header has arrived, rather than once the whole 64 KiB first block has. (#1147)
+- In a browser (page or web worker), terrio-js range requests are now sent with `cache: "no-store"`,
+  through the default `fetch` or a caller's own. Chrome's HTTP cache lets one request for a URL
+  through at a time, so the range requests of one file went out one after another, a round trip
+  each, however many terrio-js had in flight. The blocks read still stay in terrio's own cache
+  (`cacheSize`); a later page load fetches them again. Node, Deno, Bun and Cloudflare Workers
+  requests are unchanged. (#1191)
+- terrio-js reads of one remote file (`openUrl`, `openCog`, `openZarr`) awaited together now run
+  together: a map asking for 32 tiles of one COG sends their requests at once, within the twelve a
+  remote keeps in flight, and a block two reads need is fetched once. A 1600 x 900 Leaflet view of a
+  COG behind 150 ms of latency loads in 1.2 s instead of 5.0 s, with the same requests and bytes.
+  (#1192)
+- `terrio-js/cog` no longer reads JPEG XL GeoTIFFs and is less than half the size: 1.00 MB (0.30 MB
+  Brotli), down from 2.38 MB (0.65 MB Brotli). A JPEG XL GeoTIFF now opens but its reads fail with
+  "built without the `jxl` feature". The full and core modules (`terrio-js`, `terrio-js/core`), the
+  CLI and Python read JPEG XL as before. (#1054)
+- terrio-js opens vector files 1.7–4× faster: the WebAssembly memory now grows a quarter at a time
+  instead of 64 KiB at a time. Opening 90,000 polygons from bytes takes 195 ms instead of 789 ms
+  (FlatGeobuf), 302 ms instead of 1278 ms (GeoPackage) and 959 ms instead of 1624 ms (Shapefile).
+  Any read that allocates a lot in wasm gains too. (#1150)
+- terrio-js `toGeoJSON()` is about 1.6× faster on polygon layers: each chunk's geometries are made
+  in one JavaScript call. For 90,000 polygons it takes 446 ms instead of 707 ms (FlatGeobuf), 472 ms
+  instead of 766 ms (GeoPackage) and 441 ms instead of 730 ms (Shapefile). The output is unchanged.
+  (#1151)
+- `terrio.rio.warp.reproject()` given a band (`rio.band(ds, ...)`) and a destination grid
+  (`dst_transform` and a destination array) now reads only the source window that grid covers, as
+  GDAL's warper does, instead of reading the whole band first. Outputs are unchanged. Other cases
+  read the whole band as before: `sum` resampling, GCP or RPC sources, a source without
+  georeferencing, and extra warp options such as `SOURCE_EXTRA` or `SAMPLE_STEPS`. (#1176)
+- `terrio.rio.shutil.copy` now copies a source with a dataset mask (internal or `.msk`) to a COG, or
+  to a GeoTIFF larger than `TERRIO_RIO_IN_MEMORY_LIMIT`, a row of tiles or a slab at a time, reading
+  the mask with the pixels, where it held both until the copy closed; the file is the same.
+  `_terrio.CogWriter(..., mask=True)` takes each slab's `(rows, width)` mask in `write(array,
+  mask)`. A mask that fails to read now raises `RasterioIOError` in every copy and from
+  `dataset_mask` and `read_masks`, as pixels do, where it raised `TerrioIOError`: code catching
+  `TerrioIOError` there should catch `OSError`, which both are. A COG written in rows whose tiles
+  fail to compress or to be written now refuses every later write and its close, leaving its file
+  empty. A masked COG's row write is checked, before it starts, for the most it can allocate at
+  once, and the strips an operation writes to a COG are checked as row writes are; such a write is
+  refused with `ResourceLimit` when that is more than the memory the process can use. (#1158)
+- `terrio.rio.shutil.copy` reads a JPEG 2000 source a whole row of its tiles at a time, so that each
+  tile is decoded once, whenever that row's decoded pixels fit in the block cache's size
+  (`TERRIO_CACHEMAX`, 64 MiB by default) in the source's type or the copy's, whichever is wider:
+  when it writes a COG in rows, a GeoTIFF larger than `TERRIO_RIO_IN_MEMORY_LIMIT`, or a file from
+  the pixels it holds. A JPEG 2000 read keeps none of the tiles it decodes, and these copies cut its
+  rows of tiles across their reads: the issue's 10980 x 10980 UInt16 image was copied to a COG 512
+  rows at a time over 1024-row tiles. That copy now takes 5.17 s instead of 6.12 s, and 39.5 s of
+  CPU instead of 47.2, on 16 CPUs (9.46 s instead of 11.71 on 4), and writes the same file byte for
+  byte. A COG copy also hands its writer each tile row as a view of what it read, instead of a copy
+  it kept while the row was written. Holding a whole row of tiles while its first rows are written
+  takes half a row of tiles more memory than before: on 16 CPUs the copies' peaks are those of
+  `main` within the spread of the runs, or lower; on 4 CPUs they are up to 40 MiB higher (see
+  Limitations). (#1168)
+- `terrio.rio.shutil.copy(src, dst, driver="COG")` of a single-band image computes its overviews on
+  the thread pool: a row of overview blocks that is a single block is now resampled in two pieces of
+  its rows there, while it was resampled on the calling thread, which meanwhile gave the writer no
+  rows. On the issue's 10,980 x 4,096 `uint16` image, the copy takes 0.69 s instead of 0.84 s with
+  the same processor time (3.60 s against 3.61 s), and the calling thread's share of the overviews
+  falls from 0.57 s to 0.17 s; the 10,980 x 10,980 `uint16` JPEG 2000 copy takes 5.46 s instead of
+  5.87 s (medians of three runs on 16 CPUs, below). The file is the same byte for byte, but for the
+  sign of a NaN where an addition meets two NaN values of different signs (see Behaviour); peak
+  memory is the same within the spread between runs. (#1180)
+- Overviews are computed with fewer instructions again: with one thread, the overview kernels of COG
+  writes, `add_overviews` and resampled reads run up to 51% fewer instructions than since #1180
+  (`average`), and between 24% fewer and 3% more than before it; `terrio translate --outsize 50% 50%
+  -r bilinear` runs 6 to 7% fewer. Every value written is the same. Where an `average` overview of a
+  `float32` band adds two NaN values of different signs, the sign of the NaN written can differ from
+  #1180's build, as Rust leaves it unspecified. (#1204)
+- Run overlapping outside data-parallel calls serially on their calling threads while the lone
+  outside caller uses Terrio's worker pool. Calls already on pool workers continue using that pool;
+  serial fallback does not enter Rayon's global pool. (#1210)
+- A `STACIT:` mosaic of remote items now reads a window's items up to eight at a time instead of one
+  after another. A 2048 × 2048 window of eight Sentinel-2 COGs on Earth Search took 31 s and now
+  takes 12 s, with the same pixels. Local items are read as before. (#1179)
+- A STACIT mosaic window is now built in the mosaic's data type rather than in Float64 and converted
+  at the end. A local mosaic window of 4096 × 4096 UInt16 pixels peaks at 211 MB instead of 307 MB.
+  Pixels are byte-identical. (#1184)
+- A STAC catalog or collection that lists its items as `rel=item` links now fetches those item
+  documents sixteen at a time instead of one after another. A STACIT mosaic of a 300-item collection
+  served with 50 ms latency opens in 3.2 s instead of 29.0 s, with the same requests and the same
+  result. (#1188)
+- A local GRIB file opened to be read by window (`terrio.rio.open`, `open_raster(..., lazy=True)`)
+  is no longer read into memory: the dataset reads each message's header at open and a band's
+  message when the band is read, as a remote GRIB file is read by range (of two kinds of message it
+  reads more at open, and keeps none of it: see Behaviour and Limitations). The bands it decodes are
+  kept as decoded in the process-wide block cache, under `TERRIO_CACHEMAX` (64 MiB by default),
+  instead of up to 256 MiB of Float64 bands in each open dataset: whole when they fit, otherwise the
+  rows a read needs and those nearest them. On Unix, the datasets open at once on one version of a
+  file that has gone unchanged for 2 seconds, including the spare readers Python opens to read a
+  raster from several threads, share them. GRIB bytes opened from memory are no longer copied. Four
+  datasets of the issue's 64 MiB file held 256 MiB once opened and 768 MiB after a one-pixel read of
+  each; they now hold nothing once opened and 64 MiB after the reads, in the cache. Opening the file
+  and reading a first window takes less time than on `main`, with the default cache and with one
+  that holds the band. (#1163)
+- Opening a GRIB file no longer reads the data of a message's fields, and a remote dataset no longer
+  keeps the GRIB1 messages it reads whole to work out their nodata. In a GRIB2 message of several
+  fields, each field's sections come after the data of the field before it: to reach them, the open
+  read that data (48 of the 64 MiB of a message of four 16 MiB fields), and a remote dataset kept it
+  for as long as it was open. The open now skips the bodies of the data, bitmap and local use
+  sections by their lengths, on both readers. That message's remote open now fetches 0.02 MiB in 4
+  requests, where it fetched 48.00 MiB in 22; its local open reads 0.02 MiB, where it read 48.01
+  MiB. A GRIB1 message whose nodata depends on its values is still read whole at open to work out
+  its nodata, and is then dropped: eight such messages of 4.2 MiB held 33.7 MiB after a remote open
+  and now hold 0.1 MiB, and a read of one of their bands fetches its message again. (#1264)
+- GeoParquet spatial filters now skip row groups using native GEOMETRY and GEOGRAPHY bounding-box
+  statistics, including files without covering columns. Parquet streaming conversions prune
+  attribute predicates with row group min/max statistics, read predicate columns first, and fetch
+  payload only from groups containing matching rows. Remote Parquet conversions use this streaming
+  path. (#1031)
+- GeoParquet files with GeoArrow point geometries read in time linear in the number of rows: a bbox,
+  filter or threaded read of 2 million points took over 120 s and now takes about 1 s. GeoArrow
+  coordinates and covering bbox columns are read as numbers directly, not through a JSON value per
+  number. (#1270)
+- GeoParquet files with GeoArrow geometries and no covering bbox column skip the row groups a bbox
+  read cannot touch, from the min/max statistics of their `x` and `y` coordinate columns, as GDAL
+  does. Sixteen bboxes on a 2-million-point file read 539 MB instead of 1.28 GB, and one bbox over
+  HTTP transfers what GDAL does (33 MB instead of 50 MB). (#1281)
+- `terrio.pyogrio.read_arrow(path, bbox=...)` and the Arrow export of `terrio.open_stream(path,
+  bbox=...)` read a GeoParquet file's row bounding boxes once instead of twice: bbox reads are 35%
+  faster on average (geometric mean over 40 cases), up to 8x for 16 bboxes over HTTP. (#1280)
+- `terrio.pyogrio.read_arrow` and `terrio.open_stream` read a GeoParquet file whose stored CRS
+  terrio identifies as a known code (an EPSG code as PROJJSON, as GeoParquet writers store it)
+  without importing pyproj. Before, the stored PROJJSON was validated by pyproj, imported for that
+  alone: about 23 ms of a process's first read. (#1290)
+- `terrio.sql(path, ...)` and `terrio sql` on a local GeoParquet file now pass a single-layer
+  query's WHERE clause to the reader: row groups whose column min/max statistics exclude it are
+  skipped, and the other columns are decoded for matching rows only. `id < 4000` on the matrix files
+  is 1.5–2.8x faster, and an unsorted file reads 22 MB instead of 83 MB. `IN` lists now prune by
+  statistics too. (#1294)
+- The Python wheels now install about a third smaller on Linux and macOS: the extension module drops
+  from 114 to 76 MB on Linux x86_64 and from 95 to 62 MB on macOS arm64. They are built without
+  symbols and with whole-program LTO, through a new `wheel` Cargo profile. The API and behavior are
+  unchanged. (#1130)
+- Read an alpha band mask through `read_geotiff_samples` for GeoTIFF sources instead of building a
+  throwaway `RasterDataset` via `read_window`, and fall back to `read_window` for other formats.
+  Pure performance: the mask bytes are unchanged. (#1203)
+
+### Fixes
+
+- An unknown `TERRIO_WARP_GRID` value now reaches Python callers as a `UserWarning` naming the
+  variable and the ignored value, instead of being silently dropped. (#1039)
+- A new `terrio.rio` dataset now reports the color interpretation its writer gives the bands when
+  none is set, the one its file reads back if the file keeps the dataset's number of bands: red,
+  green and blue (the fourth band undefined) for a JPEG 2000 dataset of three or four bands, RGB or
+  RGBA for PNG and WebP, undefined for the bands of Zarr (but a single one) and GRIB, and
+  `photometric` and `alpha` change only GeoTIFF and COG datasets, whose writer takes them. Datasets
+  of every other format reported gray, then undefined, so a JPEG 2000 dataset given the color
+  interpretation it reported (`dst.colorinterp = dst.colorinterp`, or the last of four bands made
+  alpha) was written grayscale with unspecified channels and read back undefined; it is now written
+  sRGB, with an opacity channel for the alpha band. A gray first band set on a Zarr dataset of
+  several bands is now written gray, not undefined. (#1088)
+- A `terrio.rio` GeoTIFF or COG writer larger than `TERRIO_RIO_IN_MEMORY_LIMIT` (512 MiB by default)
+  keeps its pixels in a temporary file beside the output, mapped in memory. That file now has no
+  name, so a writer killed before `close()` leaves nothing behind, where it left
+  `<output>.terrio-<hex>.tmp` at the raster's full size; a nonzero nodata is no longer written to
+  all of it when the dataset is opened; and `close()` reads back only the blocks written, making the
+  others of nodata (or 0) without touching the file. Writing one 512 x 512 window into a 20,000 x
+  20,000 uint16 GeoTIFF peaked at about 850 MiB of RSS and, with nodata 65535, allocated 800 MB of
+  temporary file at `open()`; it now peaks at about 128 MiB and allocates 2.6 MB. Dense writes take
+  the same time and write the same files, byte for byte. (#1128)
+- `terrio.GeoTiffWriter.write` refuses a mask that is not shaped `(rows, width)` for the rows it
+  comes with, and a mask given to a writer created without `mask=True`, with `InvalidArgumentError`,
+  before it takes the rows, as `CogWriter.write` does since #1158. Before, it flattened the mask and
+  the core's GeoTIFF row writer compared only the number of values, so a transposed mask of the same
+  size masked other pixels; and the core dropped a mask given for a GeoTIFF without one, which was
+  then written without a mask. Neither raised. A closed writer now says that it is closed before it
+  looks at the rows and the mask. (#1232)
+- GeoTIFF writers now honor `SPARSE_OK=YES` (`sparse_ok=True` in `terrio.rio`), omitting
+  full-resolution blocks whose samples are all nodata, or zero without nodata. Omitted blocks have
+  zero offsets and byte counts and read back as nodata or zero through whole-file, windowed and
+  remote reads. COGs continue to store every tile and warn when sparse output is requested. (#1139)
+- A window of a GeoTIFF stored as one compressed strip that decodes to more than the chunk limit
+  (256 MiB by default, `TERRIO_TIFF_MAX_CHUNK_BYTES`), and to at most four times it, can now be
+  read: the strip is decoded as a stream from its start to the window's last row, the rows before
+  the window dropped as they are decoded, instead of being decoded whole and refused with
+  `ResourceLimitError`, even for a 1 x 1 window. A nearest-neighbour read smaller than such an image
+  (`read_resampled`, `terrio.rio`'s `read(out_shape=...)`) reads the rows it samples the same way,
+  the strip once; so does one of an uncompressed strip. On the issue's 16,500 x 16,500 Deflate strip
+  (1,090,567 bytes on disk, 272,250,000 decoded), the three reads that raised `ResourceLimitError`
+  return the pixels; a window at the end of a 32,768 x 32,768 Deflate strip (1 GiB decoded: the most
+  a compressed strip read so may declare by default) peaks at 4 to 4.6 MiB of RSS (refused on
+  `main`, or about 1 GiB with the limit raised). A compressed strip that declares more is refused at
+  once, as before, and so is a read that would decode more by rows in all, summed over the strips
+  and bands it reads: that bounds the decoding a read does. Each read decodes such a strip from its
+  start to the window's last row: at the default limit, a read of the last pixel of a 1 GiB strip of
+  zeros takes 0.2 to 0.4 s, less than a window over four tiles at the limit takes on `main` (0.28 to
+  1.8 s, from files as small). For files you do not trust, `TERRIO_MAX_DECLARED_BYTES` bounds what a
+  raster may declare. (#1166)
+- A window of a GeoTIFF stored as one uncompressed strip larger than the chunk limit (256 MiB by
+  default) can now be read: the strip is read by the rows the window needs, at their offsets in the
+  file, instead of being refused with `ResourceLimitError`. (#1100)
+- GeoTIFF and COG writes with `LERC`, `LERC_DEFLATE` or `LERC_ZSTD` now leave the padding of partial
+  right and bottom edge tiles out of the LERC valid-pixel mask when a chunk holds one floating-point
+  sample per pixel (one band, or `INTERLEAVE=BAND`), as GDAL does. Terrio encoded that padding as
+  valid zeros, so its edge-tile masks were not GDAL's. With `MAX_Z_ERROR` > 0, the zeros also
+  entered the statistics of the edge tiles' LERC blocks, so the decoded values there differed from
+  GDAL's, each still within `MAX_Z_ERROR` of the source. Lossless pixels are unchanged. Integer and
+  pixel-interleaved LERC tiles, and the other compressions, keep GDAL's unmasked zero padding.
+  (#1248)
+- COG writes now read `PREDICTOR` as GDAL's COG driver does. `YES`, `ON` and `TRUE` select the
+  floating-point predictor (3) for Float32 and Float64 data and horizontal differencing (2) for
+  integers. `STANDARD` means 2, `FLOATING_POINT` means 3, and `FALSE` and `OFF` mean no predictor.
+  Terrio wrote 2 for `YES` whatever the data type, and refused `STANDARD`, `FLOATING_POINT`, `ON`,
+  `TRUE`, `FALSE` and `OFF`. GeoTIFF writes are unchanged. (#1256)
+- COG row writes without a mask now account for compression and overview working memory before
+  accepting a slab, rather than checking only the input rows and their copies. A call whose estimate
+  exceeds usable memory returns `ResourceLimit` before taking its rows, and can be retried.
+  Compression-job bookkeeping scales with band count for masked and unmasked writes. (#1242)
+- `validate_cog` (and `terrio validate-cog`) now reports a striped image or overview larger than 512
+  pixels on either side as not tiled, in its default rio-cogeo mode, as rio-cogeo 7.0.3 and later
+  and GDAL's validation script do. Since #541 it skipped images larger than 512 on one side only. A
+  2100 x 1500 striped GeoTIFF with overviews of 2 and 4 therefore passed its 525 x 375 overview,
+  which rio-cogeo 7.0.4 reports as "Overview of index 1 is not tiled". GDAL mode is unchanged.
+  (#1250)
+- Average (and other non-nearest) external overviews of rasters of several pixel-interleaved bands
+  are now computed as GDAL computes them, so `.ovr` levels whose decimation ratio is not an integer
+  (such as 2601 × 703 → 1301 × 352) are bit-identical to `gdaladdo -ro`. Before, one overview row at
+  each of GDAL's chunk boundaries averaged one source row too many (up to 25 % off), and every
+  coarser level inherited the error. New `.ovr` images of several bands are now written
+  band-separate (`INTERLEAVE=BAND`), as GDAL writes them. (#1045)
+- Terrio builds nearest and average overviews for complex GeoTIFF bands, internally or in an
+  external `.ovr`, instead of returning `Unsupported`. Whole refreshes preserve readable complex
+  samples and keep predictor metadata consistent with the replacement chunks. (#1236)
+- External overviews of a GeoTIFF with a per-dataset `.msk` sidecar now build the mask's overviews
+  in `<file>.msk.ovr`, as GDAL does with `gdaladdo -ro`, and the `.ovr` levels read those as their
+  masks: both GDAL and terrio now see the overview's validity instead of treating it as all valid.
+  Terrio also reads the `.msk.ovr` of pyramids GDAL built. (#1259)
+- Terrio can build external `.flt.ovr` overviews beside read-only EHdr rasters and read overview
+  windows from sidecars created by either Terrio or GDAL. Overview masks are exposed at their stored
+  levels, including `.ovr.msk` sidecars. Cancelling a rebuild preserves the existing sidecar byte
+  for byte. (#1228)
+- In the chunk-dependent sampling (`grid_invariant=False`, or `TERRIO_WARP_GRID=GDAL`) with the 3.12
+  kernel scales (the default of `TERRIO_GDAL_COMPAT`), a chunk of a geographic source covering one
+  turn of longitude, periodic as it is by default, whose sampled points cross the 180° meridian
+  takes its kernel scale from the arc of source columns those points span across the meridian. It
+  took it from the distance between their least and greatest columns, which runs the long way round:
+  in #1086's two UPS North windows that mirror each other across the meridian, a column of ones
+  beside it reached 15 destination columns of the west window, with a largest weight of 0.171, and 4
+  of the east one (0.785). It now reaches 4 of each (0.785), and 4 of each of the two windows
+  reaching 1 km across the meridian, which both got the wider kernel. With
+  `periodic_longitude=False` (#1099) the source's stored edges are a regional source's, and such a
+  chunk keeps the scale of the stored columns between them, as before. (#1141)
+- Regional geographic warps using GDAL 3.12 chunk-dependent kernel scales now keep matching kernel
+  widths across the 180-degree meridian. Whole-turn footprints retain their continuous source span
+  when endpoint sampling collapses their circular arc, so coarse one-column windows do not get a
+  zero-width kernel. (#1239)
+- `terrio warp` and `terrio convert --t-srs` now keep the source's color table in their output, as
+  `gdalwarp` does. Before this, a paletted raster such as ESA WorldCover came out as plain gray.
+  (#1194)
+- A `STACIT:` mosaic read at a reduced size (`translate --outsize`, previews, `read_resampled`) now
+  reads each item from its overviews, as GDAL's STACIT driver does. It used to decode every item at
+  full resolution and sample the result. The pixels now match GDAL's: a whole Sentinel-2 tile at 60
+  m differed from GDAL at 99.4% of its pixels and is now identical. The same read is 35× faster
+  (13.8 s → 0.39 s; GDAL takes 1.3 s). (#1182)
+- A STACIT mosaic of more items than the process may open files now reads instead of failing with
+  "Too many open files". It keeps at most a quarter of the open-file limit (the soft limit of
+  `/proc/self/limits`) of its items' files open (an item may hold a second descriptor, its `.msk`
+  sidecar), and closes the most recently read one beyond that. Under the default limits (1024 on
+  Linux, 256 on macOS) a mosaic of up to 256 items reads as before on Linux; elsewhere (no `/proc`)
+  the bound is 64. (#1186)
+- A spatial filter given with its corners swapped (`(10, 10, 0, 0)` for `(0, 0, 10, 10)`) now reads
+  the features of the rectangle its corners span, in every vector reader that searches by bounding
+  box, as the spatial filter applied after the read already took it: GeoParquet (stream, sparse and
+  Arrow readers), FlatGeobuf (index search, whole and streamed), GeoPackage (R-tree and per-feature
+  checks) and PMTiles/MBTiles vector tiles. Before, these readers compared rows, index nodes or tile
+  ranges against the corners as given and returned few or no features. It applies to `open_vector`,
+  streams, Python and terrio-js's `openUrl(...).read({ bbox })`. A PROJJSON EPSG code above
+  `u32::MAX` in a GeoParquet `crs` now gives no code instead of wrapping to another one (2^32 + 4326
+  read as 4326). (#1240)
+- `ZonalCube::write_zarr` (and a `.zarr` output of `terrio zonal`) now gives a zone field named
+  `zarr.json` (any case), `..` or starting with `__` an array name of its own instead of failing or
+  breaking the store, and writes an integer field with nulls as int64 with the fill value `i64::MIN`
+  instead of float64 with NaN, so values beyond 2^53 are no longer rounded. (#1149)
+- A zonal cube's Zarr array names no longer end in a period: a field named `..` gets the array
+  `field__` (it was `field..`, which Windows cannot create), and other trailing periods become `_`.
+  (#1164)
+- Opening a Golden Software Surfer 6 binary grid (`DSBB`) whose header declares a negative or zero
+  column or row count now fails with an error, as GDAL's GSBG driver refuses it. It panicked with
+  "capacity overflow" before: the reader read the header's signed 16-bit sizes as unsigned. (#1174)
+- On x86-64 and AArch64 CPUs without the features `rustls-graviola` needs, HTTPS requests now fail
+  with an error naming the missing features instead of panicking at the first handshake. That covers
+  x86-64 CPUs without AVX2, ADX or BMI2: Intel before Haswell or Broadwell, AMD before Zen, many
+  Atom, Celeron and Pentium parts, and virtual machines that hide those flags. Plain HTTP keeps
+  working on those CPUs. A new opt-in `ring-fallback` feature uses `ring` on such CPUs instead. It
+  needs a C compiler, so it is off by default and the default builds stay free of C. Supported CPUs
+  keep `rustls-graviola`, as before. (#1255)
+- terrio-js: a streamed open (`openCog` from a URL) that fails while its first block arrives now
+  counts its request and the bytes it received in the fetcher's `stats()`, as the background path
+  already did. (#1155)
+- `terrio.rio.CRS.to_epsg()` of a compound reference
+  (`urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::5720`, `EPSG:2154+5720`) now gives the compound CRS's
+  EPSG code, as PROJ 9.9.0 and rasterio identify it and as `Layer.crs` reports for the same
+  reference: 5698 and 9707 for the issue's first two cases. It returned `None`. (#1160)
+- `terrio.pyogrio.read_dataframe(..., fid_as_index=True)` (and raw reads with `return_fids=True`)
+  now give a GeoPackage row whose ID is `-1` the FID `-1`, as pyogrio does, instead of failing with
+  `OverflowError: Python int too large to convert to C long`. (#1291)
+- NetCDF and HDF5 reader updates can now ship independently of HEC-RAS engine releases. Terrio's
+  direct `netcdf-reader` and `hdf5-reader` move together to 0.13.0, while `ras-commander-fast-hdf`
+  0.5.0 retains its own pinned 0.12.1 reader. HEC-RAS stays enabled by default. (#1114)
+
+### CRS engine (terrio-crs 0.3.0)
+
+- `terrio-crs` 0.3.0 adds `Transformer::has_non_ballpark_operation`, `SpatialRef::to_proj4_gdal`,
+  `helmert_to_wgs84` and the list of grids a point's transformation needs, moves to EPSG v13.102
+  (PROJ 9.9.0), computes `isea` and the Transverse Mercator Zoned Grid System, and reads WKT through
+  one CRS model, fixing many readings to match PROJ 9.9.0.
+- terrio-crs now carries the EPSG dataset v13.102 (PROJ 9.9.0's database, 2026-08-27) instead of
+  v12.029: 281 more EPSG CRSs, such as SIRGAS-Chile 2025 / UTM zone 19S (EPSG:11476,
+  opengeos/RustGIS#2335), with the transformations PROJ 9.9.0 uses. `EPSG_VERSION` is `v13.102`. The
+  ESRI table moves from PROJ 9.7.1 to 9.9.0. CI checks every EPSG CRS's transformations against GDAL
+  3.13.3 / PROJ 9.9.0 reference points. The raster and vector comparisons stay on GDAL 3.12.2 / PROJ
+  9.8.1. (#1077)
+- terrio identifies CRSs more as PROJ 9.9.0 does. (#1119)
+- terrio-crs: a deprecated EPSG code now keeps its own definition, as PROJ gives it
+  (`CRS.from_epsg`), instead of its replacement's, which GDAL substitutes by default
+  (`OSR_USE_NON_DEPRECATED=YES`). GDAL's behaviour is available as
+  `SpatialRef::from_epsg_non_deprecated`, alongside `SpatialRef::is_deprecated` and
+  `epsg_replacements`, and `list_crs` entries gain `replaced_by` in the CLI, Python and JavaScript.
+  Item 9 of #1012. (#1040)
+- terrio-crs reads a WKT by its own nodes, as PROJ 9.8.1 reads it, not by a root `AUTHORITY` or `ID`
+  that is not its CRS; the declared code is kept only when the WKT's content is that CRS. Before,
+  the code replaced the content: British National Grid declaring the geographic EPSG:4277 was read
+  as geographic, a valid WKT declaring a code that does not exist (EPSG:1) could not be used, and a
+  2D CRS in degrees declaring the compound EPSG:7400 was read in grads with latitude first.
+  South-orientated Transverse Mercator now subtracts its false easting and northing (EPSG method
+  9808); terrio was 4.5 km off. (#1051)
+- terrio-crs reads PROJ strings as PROJ 9.8.1 reads them. Angles use PROJ's spellings (`40D30'N`,
+  `40°30'`, `0.7rW`), and text after an angle is refused (`9d-30`). Ellipsoid, datum and unit names
+  PROJ does not know (`+ellps=foo`, `+units=feet`) are refused; before, they were read as WGS 84 or
+  metres. Origin parameters (`+lat_0`, `+lon_0`, `+x_0`, `+y_0`) that cannot be read are refused for
+  the methods PROJ uses them for; before, they were read as 0 (`+lat_0=40D30'N` put a point 4,500 km
+  away). (#1062)
+- The ellipsoid of a CRS given by a PROJ string is now read as PROJ 9.8.1 reads it. A named
+  ellipsoid or datum keeps its shape under `+f`, `+es` and `+e`: `+proj=laea +lat_0=45 +lon_0=-100
+  +ellps=WGS84 +f=0` is on WGS 84, where terrio used a sphere, about 4 km off. Under `+a`, it keeps
+  its flattening: `+datum=WGS84 +a=6400000` is no longer a sphere, also about 4 km off. An ellipsoid
+  PROJ defines by its semi-minor axis (`+ellps=clrk66`, `+ellps=sphere`) keeps that axis; a datum's
+  ellipsoid, NAD27's Clarke 1866 too, is defined by its inverse flattening (`+datum=NAD27 +rf=300`
+  has b = 6356945.712). Only the first of `+rf`, `+f`, `+es`, `+e` and `+b` counts, where terrio
+  took `+b` first. Ellipsoid parameters beside `+datum` drop the datum: `+datum=NAD27 +rf=300` no
+  longer gets NAD27's transformation, about 33 m. `+R_V`, `+R_a`, `+R_g`, `+R_h`, `+R_lat_a` and
+  `+R_lat_g` now make spheres; terrio ignored them. A shape parameter without a size (`+proj=merc
+  +rf=300`) is refused, as PROJ refuses it. (#1026)
+- A WKT 1 or WKT 2 prime meridian that PROJ 9.8.1 knows by name (Paris RGS, Ferro, Lisbon and ten
+  others; not Copenhagen) is now read in degrees when its value is given in degrees or in EPSG's
+  sexagesimal degrees, whatever its unit, as PROJ reads it. A WKT 2
+  `PRIMEM["Ferro",-17.4,ANGLEUNIT["degree",...]]`, was 0.27° off. A WKT 2 prime meridian without its
+  own unit is now in its CRS's or base CRS's unit when PROJ takes that unit for an angle (an
+  `ANGLEUNIT`, or a `UNIT` named `degree` or `grad`), else in degrees, and never in its axes' unit.
+  ATF (Paris) / Nord de Guerre (EPSG:27500), as GDAL and ESRI write it, has its Paris RGS meridian
+  in degrees beside grads. terrio read it in grads, 17 km off. ESRI's WKT of ATF (Paris) (EPSG:4901)
+  and of Nord de Guerre is now identified as its code, where it had none, 17.8 km off. ESRI's Krovak
+  `XY_Plane_Rotation` is now read in the CRS's angular unit: Krovak East North in grads (100 grads)
+  is east-north. Before, it was south-west, with its axes swapped and negated, and was identified as
+  EPSG:5513. A prime meridian within 1e-10 radians of one of PROJ's named meridians is now that
+  meridian, as PROJ's transformations between CRSs use it. NTF (Paris)'s 2.33722917° is `+pm=paris`
+  (2.337229166667°), where terrio was 0.25 mm off PROJ for every NTF (Paris) CRS. (#1024)
+- A WKT 1 projected CRS with ESRI's `Mercator_Variant_A` method, or with EPSG's name `Mercator
+  (variant A)`, is now read as Mercator (1SP), as PROJ 9.8.1 reads it. Before, terrio refused both.
+  One such CRS is EPSG Guidance Note 7-2's example, Makassar / NEIEZ (EPSG:3002), as an ESRI `.prj`
+  writes it. It now places 3°S 120°E at the guidance note's E = 5 009 726.58 m, N = 569 150.82 m, is
+  identified as EPSG:3002, and goes to WGS 84 by Makassar's transformation, as in PROJ. WKT with a
+  node whose keyword has characters other than letters, digits and `_` (`rustgis:unapplied["..."]`,
+  `a-b["..."]`, `a"b c"["..."]`) is now read past that node, as PROJ and GDAL read it. Before,
+  terrio refused the whole WKT. This holds for WKT 1 and WKT 2 alike. (#1023)
+- terrio-crs reads a WKT 1 whose parameters have EPSG's names, as PROJ 9.8.1 does: Albers and
+  Equidistant Conic keep their "Latitude/Longitude of false origin" (the Albers false origin was 800
+  km off), Polar Stereographic variant B its "Latitude of standard parallel", and Hotine variant B
+  its projection centre and "Angle from Rectified to Skew Grid". A `PROJCS` with two `UNIT` nodes is
+  in the first, and GeoTIFF GeoKeys projection parameters are read as libgeotiff reads them. (#1059)
+- A WKT 2 `BOUNDCRS` with a Helmert transformation to a CRS other than WGS 84 (ED50, OSGB36) now
+  places points as PROJ 9.8.1 does. Before, its transformation was dropped, and a bound CRS from
+  Bessel to ED50 was about 208 m off. It is now that shift, followed by each of the target CRS's own
+  transformations to WGS 84, as PROJ concatenates them. Into a CRS on the target's datum, the shift
+  alone is applied, as PROJ applies it. A scale difference given as a ratio in unity (`1.0000067`,
+  as PROJ writes it) is now read as a ratio, where terrio read it as parts per million, about 10 km
+  off. A bound shift over a source CRS terrio identifies as an EPSG code now wins over the code's
+  own transformations, as in PROJ: about 6 m for OSGB36 with its EPSG:4277 id. (#1022)
+- terrio-crs: a WKT 2 `BOUNDCRS` now places points as PROJ 9.8.1 does in three cases where terrio
+  was wrong. (#1049)
+- A WKT 2 `BOUNDCRS` whose target is a WKT 1 `GEOGCS` with its own `TOWGS84` is again placed by a
+  ballpark, as PROJ 9.8.1 places it. Since #1060, a Bessel source bound to an ED50 target
+  (`European_Datum_1950`) was given ED50's transformation on Bessel, about 100 m from PROJ. Esri's
+  `Mercator_Auxiliary_Sphere` on a datum found by its name, on an altered ellipsoid, now keeps the
+  datum's transformation, as in PROJ. (#1061)
+- A geographic CRS that names a datum PROJ finds by its name, on another ellipsoid than the datum's,
+  now keeps the datum's transformation, run on the file's own ellipsoid, as PROJ 9.8.1 does. Esri's
+  Monte_Mario_Italy_1 on an International 1924 ellipsoid of another axis was placed by a ballpark,
+  about 80 m from PROJ; it now goes through "Monte Mario to WGS 84 (4)" as in PROJ. A datum named
+  with spaces (its official name or an EPSG alias, as PROJ's own WKT writes them) is still placed by
+  a ballpark, as PROJ places it. (#1060)
+- ESRI's `GCS_Monte_Mario_Rome` (EPSG:4806) now goes through Monte Mario, 72 m from before. (#1029)
+- `Transformer::operation_at` now reports EPSG's null transformations (such as "SWEREF99 to WGS 84
+  (1)" and "ETRS89 to WGS 84 (1)") and their concatenations by name, with their accuracy, as PROJ
+  9.8.1 does. Before, they were reported as "Ballpark geographic offset". A CRS that PROJ doesn't
+  resolve to its EPSG code, such as ESRI's ONGD14 WKT, is now placed through PROJ's datum pivot, as
+  PROJ places it. (#1063)
+- An Esri or WKT 1 geographic CRS can name an EPSG datum but sit on another ellipsoid than the
+  datum's. If the datum's transformation to WGS 84 is a null transformation ("TWD97 to WGS 84 (1)",
+  RDN2008, IGM95, MAGNA-SIRGAS), terrio now applies it geocentrically, from the WKT's ellipsoid to
+  WGS 84's, as PROJ 9.8.1 does. Before, it returned the point unchanged, up to 70 m from PROJ (TWD97
+  on International 1924). (#1064)
+- `SpatialRef::geographic_code()` gives GR96, EPSG:4747, for ESRI's `GCS_Greenland_1996` (on
+  `D_Greenland_1996`) and the projected CRSs on it, as PROJ 9.8.1 identifies it by name. The CRS
+  itself keeps no code and its own datum's ballpark to WGS 84, as PROJ places it. (#1065)
+- A CRS that carries its own datum shift (a WKT's `TOWGS84` or a `BOUNDCRS` to WGS 84, a PROJ
+  string's `+towgs84`) is now written to GeoTIFF GeoKeys with GeogTOWGS84GeoKey. It is never written
+  as a code it is only identified as. Before, ESRI's British_National_Grid with
+  `TOWGS84[375,-111,431,0,0,0,0]` (identified as EPSG:27700, as GDAL identifies it) was written as
+  ProjectedCSTypeGeoKey 27700 alone, so it read back 3.1 m from where the WKT places it (#1012 item
+  62, reported by RustGIS). (#1069)
+- A Web Mercator WKT with its own `TOWGS84` (ESRI's WGS_1984_Web_Mercator_Auxiliary_Sphere with
+  `TOWGS84[0,0,0,0,0,0,0]`, zero or not) is now placed as EPSG:3857, as PROJ 9.8.1 places it.
+  Before, terrio identified it as 3857 and then applied the shift through geocentric coordinates on
+  the projection's sphere, which put 45°N 30.2 km and 60°N 37.1 km north of PROJ, with an inexact
+  inverse (#1012 item 63, reported by RustGIS). (#1070)
+- A GeoTIFF that terrio writes for a CRS with a datum shift of its own, and with an EPSG code its
+  WKT declares, now reads back with that shift. Before, it was read as the bare code and placed by
+  the code's own transformations: up to several metres away, where the shift differs from them.
+  (#1126)
+- A CRS identified as an EPSG code but carrying its own `TOWGS84` (a WKT, or GeoKeys with
+  GeogTOWGS84GeoKey beside the code) now transforms into a CRS on the code's own datum with no datum
+  shift, as PROJ does. A LAS file in NAD83 / UTM zone 16N with `TOWGS84[0,0,0]` reprojected to NAD83
+  (EPSG:4269) is the inverse projection alone again, not a route through WGS 84 that could pick up a
+  grid and move points 0.2 m. (#1187)
+- terrio-crs: a WKT 1 with `TOWGS84` and no EPSG code now goes into a CRS on its own datum without
+  the shift, as PROJ does. A custom Transverse Mercator on NAD83 with `TOWGS84[100,0,0,0,0,0,0]`
+  goes into EPSG:4269 by the inverse projection alone, where it used to go through WGS 84 with the
+  shift. A WKT 1 on a datum whose name resolves to none keeps the shift. (#1195)
+- terrio-crs can now say which datum shift grids a point's transformation needs, missing ones
+  included, with where to get them: `Transformer::best_operation_grids_at(x, y, z)` returns each
+  grid's name on the PROJ CDN, its URL, whether the URL gives the file and whether the grid has an
+  open licence (from PROJ's database, as PROJ's `proj_coordoperation_get_grid_used` reports them),
+  and whether terrio finds it now. `default_grid_search_paths()` gives the directories grids are
+  looked up in by default. A PROJ string naming a grid by its name before PROJ 7 (`+nadgrids=conus`)
+  now finds it under its current name (`us_noaa_conus.tif`), as PROJ does, and the `ONLY_BEST=YES`
+  error for a missing grid names it. (#1075)
+- terrio-crs gains `SpatialRef::to_proj4_gdal()`, the PROJ string GDAL writes for a CRS
+  (`OSRExportToProj4`, GDAL 3.13.3 on PROJ 9.9.0). It is `to_proj4()` without `+type=crs`. For an
+  EPSG or ESRI code's own definition it also adds what GDAL adds: the `+towgs84` of the CRS bound to
+  WGS 84 and, for a compound CRS, the geoid model (`+geoidgrids=… +geoid_crs=…`). RustGIS asked for
+  it so that its `.prj`/PROJ exports keep GDAL's datum shift. (#1098)
+- terrio-crs gets `helmert_to_wgs84(code)`, the datum shift to WGS 84 of an EPSG geographic CRS, as
+  `+towgs84` carries it. For a projected or compound CRS, it is that of the base geographic CRS. The
+  shift is the first transformation that needs no grid in PROJ 9.9.0's order, when PROJ runs it as a
+  single 3- or 7-parameter Helmert transformation: metres, arc-seconds in the position vector
+  convention, and ppm. (#1105)
+- terrio-crs now carries ESRI:102151 (Tokyo_UTM_Zone_51N, deprecated) and ESRI:102964
+  (GGRS87_TM87_(Kastellorizo)). Until now, `SpatialRef::from_esri`, `list-crs` and `to_proj4_gdal`
+  didn't know them, although PROJ 9.9.0 and GDAL 3.13.3 do. (#1106)
+- New: `Transformer::has_non_ballpark_operation()` tells whether any transformation but PROJ's
+  ballpark links two CRSs, within the two CRSs' extents, as PROJ 9.9.0's candidate operations
+  (`proj_create_operations`) do. So a caller can say that a datum has no transformation to WGS 84
+  without sampling `operation_at` at many points. It is false when only the ballpark links them (a
+  datum known by its ellipsoid alone, or EPSG:8987 SIRGAS-CON SIR17P01, whose only transformation
+  needs a grid the PROJ CDN does not serve). It is true between CRSs of one datum. Requested by
+  RustGIS; refs #1012 (item 15). (#1244)
+- terrio-crs now computes the Transverse Mercator Zoned Grid System (EPSG method 9824), ported from
+  PROJ 9.9.0's `tmerczoned`. EPSG v13's WGS 84 / UTM grid system (EPSG:32600 northern, 32700
+  southern), which `from_epsg` refused since #1077, now resolves, transforms and is listed. Its
+  points match GDAL 3.13.3 / PROJ 9.9.0 within 1 cm, as every other EPSG CRS's do. (#1096)
+- `+proj=isea` is now computed as PROJ 9.9.0 computes it: PROJ's new polyhedral Snyder equal-area
+  projection, ported in `crates/terrio-crs/src/projections/polyhedral.rs`. It replaces terrio's port
+  of PROJ 9.8.1's `isea.cpp`, and its results match GDAL 3.13.3 / PROJ 9.9.0 within 40 nm forward,
+  with the inverse defined at every point. (#1097)
+- A WKT's own EPSG code is now recognised wherever its root `ID` or `AUTHORITY` stands, as PROJ
+  9.9.0 reads it: before a `REMARK` (as in PROJ's own WKT 2 of EPSG:4073 or 6986) or `AXIS` nodes,
+  with a `URI` or `CITATION` of its own, or in a WKT written with `(`/`)` brackets. Such a WKT on a
+  datum terrio cannot identify by content (WGS 84 on PROJ's placeholder datum `unknown`) now gets
+  its code, and a GeoTIFF of EPSG:6986 written by terrio reads back as EPSG:6986. Of several root
+  identifiers, the one PROJ's `to_epsg()` takes counts. (#1112)
+- terrio-crs reads the rest of a WKT as PROJ 9.9.0 does where it read part of it. A WKT 2 ellipsoid
+  is in its `LENGTHUNIT`: `metres_per_unit` and `semi_major_axis` of PROJ's WKT 2 of EPSG:4157
+  (Clarke 1858 in Clarke's feet) were 3.28 times PROJ's. ESRI's `VERTCS` is a vertical CRS, with
+  `PARAMETER["Direction",-1]` an axis down, and ESRI's `GEOGCS[…],VERTCS[…]` (its WKT of EPSG:9707)
+  a compound CRS; terrio read the latter as a 2D WGS 84. A vertical CRS without a code is identified
+  by its name, datum, unit and direction, as PROJ identifies it (ESRI's `EGM96_height` is
+  EPSG:5773). `has_north_east_axis_order` of a `BOUNDCRS` goes by its source CRS, as `axis_order`
+  does. Of two datum, ellipsoid or base CRS nodes, the first in the WKT's order counts, whatever its
+  keyword (terrio had a fixed keyword order, about 100 m off on British National Grid). #1058 step
+  1b, the rest after #1112; #1012 items 58, 59 and 60. (#1113)
+- terrio-crs reads GDAL's `PROJ4_GRIDS` extension of a vertical CRS where PROJ 9.9.0 does. In the
+  vertical datum, where GDAL writes it, it makes the CRS its grids, of no EPSG code, even with a
+  declared `AUTHORITY` (PROJ reads a bound CRS of no code); terrio kept the declared code and its
+  geoid models and dropped the grids, while its PROJ string wrote them. It also wins over one at the
+  root. One at the root, which PROJ ignores, is ignored beside a declared code of the CRS's unit and
+  direction, and read as before otherwise. The PROJ string writer takes the same grids instead of
+  the first `PROJ4_GRIDS` in the text. Follow-up to #1113 (#1058 step 1b). (#1115)
+- terrio-crs reads a WKT's ellipsoid and datum where PROJ 9.9.0 reads them, not as the first one
+  found anywhere in the text. A bound CRS written with its target first now has its source's
+  ellipsoid and datum, as in PROJ, where it had its target's. Nothing else changes; the registry
+  corpus gives the same results. (#1124)
+- terrio-crs writes a southern UTM zone's conversion with its EPSG code, 16100 + zone (EPSG:16133
+  for UTM zone 33S), in both PROJJSON forms. Before, it wrote 17000 + zone: 17033, which no
+  conversion in the EPSG dataset has, or another conversion's (zone 1S's 17001 is "TM 1 NW"). And
+  `SpatialRef::to_projjson` no longer writes a conversion code inside a CRS that has its own
+  (EPSG:32633's or EPSG:32733's), as PROJ 9.9.0 writes them. (#1132)
+- `SpatialRef::to_projjson` writes a PROJ string's projection as PROJ 9.9.0 does in four more cases.
+  Two of them placed coordinates wrongly when the PROJJSON was read back. An oblique Mercator given
+  by `+lon_0` without `+lonc` was written centred on `lon_0`, and was placed about 13,000 km away.
+  PROJ and terrio both ignore `lon_0` there and centre it on 0°. Mercator with `+lat_ts=0` and a
+  `+k` was written as variant A with that scale, 1 % off. PROJ and terrio both ignore `k` when
+  `lat_ts` is given. (#1134)
+- The WKT 1 writer writes LCC with a second standard parallel given as
+  `Lambert_Conformal_Conic_2SP`, as PROJ 9.9.0 does, also when it equals the first and the latitude
+  of origin. Before, `+lat_0=45 +lat_1=45 +lat_2=45` was written as 1SP. The two describe the same
+  projection, so no coordinates move. And `describe()`, which the GeoKeys writer uses, takes
+  south-orientated Transverse Mercator for the same axes as the WKT 1 writer: `+axis=wsd` as well as
+  `wsu`. (#1135)
+- A WKT 1 with GDAL's `Mercator_1SP` and a `latitude_of_origin` other than 0 is now read as Mercator
+  with that latitude as its standard parallel (`+lat_ts`), as PROJ 9.9.0 and GDAL read it (GDAL
+  #3026). Before, terrio ignored the latitude and placed points hundreds of kilometres away. With
+  latitude 30° and central meridian 10° on WGS 84, (12°, 40°) is (192972.56, 4193749.94) in PROJ,
+  and was (222639, 4838471) in terrio, 645 km away. (#1142)
+- A WKT 1 with GDAL's `Lambert_Conformal_Conic_2SP`, or `Lambert_Conformal_Conic_2SP_Belgium`, and a
+  `scale_factor` is now read without that scale, as PROJ 9.9.0 reads it. These 2SP methods have no
+  scale parameter. Before, terrio applied the scale and placed points kilometres away: 0.99 on NAD27
+  at (-96°, 40°) is about 19 km off in northing. ESRI's `Lambert_Conformal_Conic` keeps applying its
+  `Scale_Factor`, as PROJ does (2SP Michigan). (#1144)
+- An ESRI WKT 1 with `Lambert_Conformal_Conic`, one `Standard_Parallel_1` and a different
+  `Latitude_Of_Origin` is now read as PROJ 9.9.0 and GDAL read it: LCC 1SP at the latitude of origin
+  (`+lat_1 = +lat_0 = Latitude_Of_Origin`), with its `Scale_Factor`. Before, terrio took
+  `Standard_Parallel_1` as the cone's parallel. That placed points hundreds of metres from PROJ's:
+  about 300 m for a parallel of 42° against an origin of 40°. (#1146)
+- Hotine Oblique Mercator variant A with an azimuth and a rectified grid angle of 90° is now read as
+  the Swiss oblique Mercator (`+proj=somerc`), as PROJ 9.9.0 and GDAL 3.13.3 read it. This covers
+  WKT 1's `Hotine_Oblique_Mercator` and ESRI's `Hotine_Oblique_Mercator_Azimuth_Natural_Origin`,
+  where a missing grid angle counts as the azimuth, WKT 2's EPSG method 9812, and GeoTIFF's
+  ProjCoordTransGeoKey 3. terrio already read variant B at 90°/90° that way. Variant A was read as
+  `+proj=omerc +no_uoff`, which places points thousands of kilometres from PROJ: centre (10°, 40°),
+  point (11°, 41°), y = 111521.96 in PROJ against 10097004.54 in terrio. (#1148)
+- terrio-crs now reads a WKT 2 projected CRS whose CS has an axis along neither east-west nor
+  north-south (`south, up`, `west, up`, `northNorthEast, eastSouthEast`), or one direction twice,
+  east then north, as PROJ 9.9.0 reads it. terrio read `south, up` as `+axis=esu`, which put 18.5°E
+  33.9°S on Transverse Mercator at y = 3,752,682 instead of PROJ's −3,752,682, about 7,500 km apart.
+  Part of #1012 item 31 (#1058 step 5c). (#1152)
+- terrio-crs now reads Krovak's axes in WKT 1 as PROJ 9.9.0 does. In ESRI's dialect without ESRI's
+  east-north scale and rotation of the plane, they are south-west whatever the `AXIS` nodes say;
+  west-south is the one exception. PROJ guesses that dialect from a `GEOGCS` named `GCS_…` or a
+  `DATUM` named `D_…`. In every other case the `AXIS` nodes decide, also when ESRI's plane
+  parameters are present. 57 of the 120 combinations recorded from PROJ put a point elsewhere in
+  terrio before, by up to about 2,500 km. An ESRI `.prj` without `AXIS`, the usual case, was already
+  right and is unchanged. Part of #1012 item 31 (#1058 step 5c). (#1153)
+- terrio-crs's WKT 1 of a Krovak PROJ string now writes the pseudo standard parallel as 78.5, as
+  PROJ 9.9.0 writes it, whatever `+lat_ts` says. terrio wrote the `+lat_ts` value instead:
+  `+lat_ts=78` gave `pseudo_standard_parallel_1` 78, a WKT 1 that PROJ cannot transform. PROJ and
+  terrio both compute Krovak on 78.5 and ignore `+lat_ts`, so the value written described a
+  projection neither applies. terrio's PROJJSON already wrote 78.5. Part of #1012 item 31 (#1058
+  step 5c); this was the item's "cause not found" part. (#1156)
+- terrio-crs's WKT 2 reader now reads five more EPSG methods, as PROJ 9.9.0 reads them. Before, a
+  CRS of one of them was read only through its `ID`. Without one, it was refused: in a `BOUNDCRS`'s
+  source, or in WKT 2 written by tools that drop the code. (#1159)
+- terrio-crs's PROJJSON writer now writes four more projection methods, as PROJ 9.9.0 writes them:
+  Hyperbolic Cassini-Soldner (EPSG method 9833), Guam Projection (9831), Krovak Modified and its
+  north-orientated form (1042, 1043), and Colombia Urban (1052). terrio has read and computed these
+  since #1159, but `to_projjson` refused them ("no PROJJSON for the parameter +hyperbolic", "for the
+  projection +proj=col_urban"). Their EPSG CRSs (3139, 3993, 5224, 5225, 5515, 5516, and the
+  Colombia Urban CRSs 6244 to 6275) now have a PROJJSON. Follows #1012 item 43 (#1058 step 5c),
+  whose note named this writer gap. (#1169)
+- terrio-crs's `to_gdal_projjson(false)` (the PROJJSON GDAL writes for a CRS read from its WKT,
+  behind terrio.rio's `CRS.to_dict(projjson=True)`) now reads WKT 1 projection parameters under
+  their EPSG names too, as PROJ 9.9.0 and terrio's own WKT 1 reader do. It read only GDAL's names,
+  and wrote the default for any other: an Albers WKT 1 with `Latitude of false origin` 40 was
+  written with 0. A `Polar_Stereographic` with no latitude of origin, which `from_wkt` refuses, is
+  refused too, where it was written as variant B. #1012 item 52 (#1058 step 5). (#1170)
+- Six kinds of unusual WKT now give the PROJ string PROJ 9.9.0 gives them: an ellipsoid in its own
+  unit (`+a=6378137.001384`, not 20925646.33 feet taken as metres), a prime meridian in its own unit
+  (`+pm=9` for 10 grads, not 10°), WKT 2's long `PRIMEMERIDIAN` keyword (`+pm=2`, not Greenwich), a
+  parameter in a time unit or in a length and then an angle unit, and a rotated pole's CS unit after
+  its axes. terrio-crs now builds a WKT CRS's PROJ string from its CRS model. (#1211)
+- `wkt_proj` and the method lookup of a WKT definition take their PROJ string from the CRS model
+  too, so they agree with the definition as PROJ 9.9.0 reads the text: the unusual WKT of #1211, a
+  `PROJCRS` with a WKT 1 `GEOGCS` before its `BASEGEOGCRS` (on the first), and a `CONVERSION` with
+  WKT 1's `PROJECTION` for its `METHOD` (now read; it was refused). (#1214)
+- `SpatialRef::to_proj4` of a PROJ string with `+datum=NAD27` and another semi-major axis now keeps
+  the datum's flattening, as PROJ 9.9.0 writes it. `+proj=longlat +datum=NAD27 +a=6378000` was
+  written `+a=6378000 +b=6356583.8`, with Clarke 1866's semi-minor axis, an ellipsoid with a
+  semi-minor axis 206 m off. It is now `+a=6378000 +rf=294.978698213898`, which is PROJ's string.
+  Reading was right and stays as it was. #1012 item 38. (#1231)
+- `SpatialRef::to_proj4` now writes numbers as PROJ 9.9.0 does: a value within 1e-8 of a tenth is
+  written as that tenth, and a value whose 15 significant digits hold ten nines in a row is written
+  with 14. A WKT 2 `BOUNDCRS`'s scale difference given as a ratio (1.000007) was written
+  `+towgs84=…,7.00000000009027` and is now `7`, as PROJ writes it. Likewise `+lat_0=45.000000001
+  +lon_0=9.29999999999 +k=0.99999999999` is written `+lat_0=45 +lon_0=9.3 +k=1`. Only the written
+  string changes: terrio reads, identifies and transforms every CRS as before. Refs #1012 (item 45,
+  with the readings below kept). (#1233)
+- A WKT 2 `BOUNDCRS` to another CRS than WGS 84 now places points outside that CRS's transformations
+  as PROJ 9.9.0 does: by the bound shift and the CRS's ballpark (no further shift), not by one of
+  its transformations far from its area. A Bessel `BOUNDCRS` to DHDN moves (14.1°, 47.8°) to
+  (14.098264, 47.798542) in WGS 84, as PROJ, where terrio was 161 m away (716 m at (-100°, 40°);
+  CH1903 211 m, Tokyo 922 m, NTF 17 m). Into a CRS whose area none of the other CRS's
+  transformations reaches, PROJ applies no shift at all, and so does terrio now (a bound CRS to
+  OSGB36, into UTM zone 33N, was 217 m away). Refs #1012 (item 22). (#1237)
+- A CRS bound to a hub CRS (a PROJ string with `+towgs84`, or a WKT 2 `BOUNDCRS`) now goes into a
+  CRS that has transformations of its own as PROJ 9.9.0 takes it there: its shift, then each of
+  PROJ's transformations from the hub CRS to the other CRS. terrio picked one transformation on each
+  side separately and left the point unshifted where neither covered it. `+proj=longlat
+  +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7` into OSGB 1936 at (10°, 50°) is
+  now (9.998814, 49.998857), as in PROJ, where terrio left the point unchanged (153 m). A Bessel
+  `BOUNDCRS` to ED50 into OSGB 1936 now uses ED50's direct transformation to OSGB36, as PROJ does
+  (1.2 m before). A bound CRS to DHDN into ETRS89 now uses DHDN's own transformations to ETRS89 (up
+  to 167 m before). Refs #1012 (item 21). (#1243)
+- A WKT 2 `BOUNDCRS` whose transformation terrio does not apply now warns, through each transformer
+  using it (its warning handler, by default `take_warnings`). Before, its points were placed by the
+  ballpark without a word. The warning names the transformation and why: its target CRS is a
+  `BOUNDCRS` itself, its target is a WKT 1 `GEOGCS` terrio does not read, or it is not a Helmert
+  transformation (an NTv2 grid). A `BOUNDCRS` to a `BOUNDCRS` is no longer chained through: PROJ
+  9.9.0 links such CRSs by its ballpark, and (10°, 50°) stays (10°, 50°) into WGS 84, ED50 and
+  ETRS89, where terrio applied both shifts. Requested by RustGIS; refs #1012 (item 12). (#1258)
+- A WKT whose datum has an EPSG ID under another name (`DATUM["Local datum",...,ID["EPSG",6806]]`)
+  is now transformed as PROJ 9.9.0 transforms it. PROJ reaches the datum's CRSs from it by its
+  ballpark, of unknown accuracy, and then searches through other datums. Before, terrio placed such
+  a CRS by its code's transformations. A renamed Monte Mario (Rome) now goes through Monte Mario, 72
+  m from EPSG:4806's own transformation. A renamed Tokyo 1892 goes through Tokyo (390 m), a renamed
+  Georgia Geodetic Datum through Pulkovo 1942 (7 m), and a renamed ATRF2014 through GDA94 (1.7 m).
+  PROJ's datum pivot is now also followed into a target CRS it cannot find by its name (ONGD14
+  renamed, 1.2 m), and under the code's name it takes only the first of the datum's CRSs with
+  transformations. Refs #1012 (item 7). (#1266)
+- Points between a compound CRS and ellipsoidal heights are now placed as PROJ 9.9.0 places them
+  when no geoid grid is found. PROJ then goes between the heights by its ballpark vertical
+  transformation, which keeps them. Chained with it, every horizontal transformation is of unknown
+  accuracy, so PROJ uses the one of the smallest area that holds the point. From WGS 84 (3D) into
+  OSGB36 / British National Grid + ODN height (EPSG:7405), (-2°, 54°) now goes through OSGB36 to WGS
+  84 (3), as in PROJ, not (6), 5.2 m away. From WGS 84 (2D), which has no heights, (6) is still
+  used. Heights PROJ moves by a geoid model without grid (from Saba and Sint Eustatius heights, up
+  to 42 m) are now moved, and ETRS89 + EVRF2000 Austria height (EPSG:9500) to ETRS89 + NN2000:2018
+  height (EPSG:5942) is no longer 314 m from PROJ outside Austria. Refs #1012 (item 47). (#1282)
+- Points between a CRS without heights (WGS 84 (2D), a projected CRS) and a geocentric or geographic
+  3D CRS are now placed as PROJ 9.9.0 places them. PROJ keeps the height through the datum shift
+  then (`push v_3` before it, `pop v_3` after) and converts it to or from geocentric coordinates on
+  the geocentric CRS's own ellipsoid; terrio ran the shift on geocentric coordinates, as PROJ does
+  only from WGS 84 (3D). WGS 84 (2D) at (0°, 0°, 0 m) is now X = 6378136 m in PZ-90 (geocentric)
+  (EPSG:4922), as in PROJ, not 6378137 (1 m off; up to 4.4 m for WGS 72BE, 48 m for LUREF), and back
+  into WGS 84 (2D) the height is PROJ's (102.843 m from WGS 72BE, not 100 m). Transformations PROJ
+  runs between geocentric CRSs (PZ-90 to PZ-90.11 (1), ETRS89-GBR [OSNet v2009] to Xrail84 (1))
+  still move it, and so does a CRS's own `+towgs84` into a geocentric CRS, as before. Refs #1012
+  (item 8). (#1295)
+- terrio-crs builds a CRS's internal definition once per `SpatialRef` and reuses it, so the
+  accessors that need it (`is_geographic`, `has_height`, `geographic_code`,
+  `has_north_east_axis_order` and about 20 more) no longer re-read the WKT or PROJ string on every
+  call. In a release build, seven accessors on ESRI's British_National_Grid WKT take 7.6 µs instead
+  of 220 µs; on EPSG:27700, 11.7 µs instead of 69 µs; on a PROJ string, 12.7 µs instead of 86 µs.
+  Results do not change. (#1072)
+- A WKT CRS keyword with only its name, such as `GEOGCS[x]` or `PROJCRS["WGS 84"]`, is now refused
+  as a CRS definition. `SpatialRef::parse`/`parse_literal`, the CLI's CRS options and Python's
+  `CRS.from_user_input`, `CRS.from_wkt` and `CRS.from_string` raise an error naming the keyword, as
+  they already do for `FOO[x]`. (#1041)
+
+### Other
+
+- CITATION.cff, the How to Cite docs page and the README citation list Qiusheng Wu, Dominik Strebel,
+  Guillermo Morales Sanchez, Nicolas Karasiak and Mavrick Fitzgerald as authors, in that order.
+  Dominik Strebel's entry includes his ORCID. (#1185)
+
 ## 0.9.0 (2026-11-14)
 
 ### Breaking changes

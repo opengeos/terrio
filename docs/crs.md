@@ -210,10 +210,10 @@ than Terrio's raster/vector library:
 
 ```toml
 [dependencies]
-terrio-crs = "0.2.4"
+terrio-crs = "0.3.0"
 ```
 
-The [published crate](https://crates.io/crates/terrio-crs/0.2.4) works offline by
+The [published crate](https://crates.io/crates/terrio-crs/0.3.0) works offline by
 default. Enable `wbprojection-fallback` when Terrio's wider projection coverage
 is required; the feature matrix below describes the supported configurations.
 Since 0.2.4, Eckert IV and Natural Earth are in the default build; 0.2.3 and earlier
@@ -790,8 +790,7 @@ there, the next operation's grids come up. Between compound CRSs, the grid of th
 between their vertical CRSs (VERTCON...) is listed too, but geoid models are not (`+geoidgrids`, nor
 those of a geoid model's CRS, from a geographic 3D CRS too), and between CRSs with heights the
 horizontal grids listed are those between their geographic CRSs. With `ONLY_BEST=YES`, the error for
-a missing grid names it too. (Not in terrio-crs 0.2.4: on `main`, as a git dependency, until the
-next release.)
+a missing grid names it too. (Since terrio-crs 0.3.0.)
 
 ```rust
 use terrio_crs::{SpatialRef, Transformer, register_grid};
