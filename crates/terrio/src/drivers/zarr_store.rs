@@ -98,6 +98,25 @@ fn local_node(p: &Path) -> bool {
     crate::memfs::is_dir(p) && METADATA_FILES.iter().any(|f| crate::memfs::is_file(&p.join(f)))
 }
 
+fn safe_key(key: &str, local: bool, remote_url: bool) -> bool {
+    if key.is_empty() {
+        return true;
+    }
+    if key.contains(['\\', '\0']) || (remote_url && key.contains(['?', '#'])) {
+        return false;
+    }
+    for seg in key.split('/') {
+        let bytes = seg.as_bytes();
+        if seg == ".."
+            || (local && cfg!(windows) && bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+            || (remote_url && (seg.eq_ignore_ascii_case("%2e%2e") || seg.eq_ignore_ascii_case(".%2e") || seg.eq_ignore_ascii_case("%2e.")))
+        {
+            return false;
+        }
+    }
+    true
+}
+
 impl Store {
     fn new(backend: Backend, name: String) -> Self {
         Self {
@@ -113,6 +132,14 @@ impl Store {
 
     /// Reads a key: `None` when there is no such object.
     pub(crate) fn get(&self, key: &str, range: Range) -> Result<Option<Vec<u8>>> {
+        let local = matches!(self.backend, Backend::Local(_));
+        #[cfg(remote)]
+        let remote_url = matches!(self.backend, Backend::Remote { base: RemoteBase::Url { .. }, .. });
+        #[cfg(not(remote))]
+        let remote_url = false;
+        if !safe_key(key, local, remote_url) {
+            return Err(crate::Error::InvalidData(format!("Zarr: invalid store key '{key}'")));
+        }
         match &self.backend {
             Backend::Local(root) => {
                 use std::io::{Read, Seek, SeekFrom};
@@ -519,5 +546,18 @@ mod tests {
         assert_eq!(join_key("a/b", "/c/./d"), "c/d");
         assert_eq!(join_key("", "c/.zarray"), "c/.zarray");
         assert_eq!(join_key("a", ".."), "");
+        assert!(safe_key("a/b/c.0", false, true));
+        assert!(safe_key("2026-01-01T00:00:00/0", false, true));
+        assert!(!safe_key(r"..\..\secret", true, false));
+        assert_eq!(safe_key("C:secret", true, false), !cfg!(windows));
+        assert!(safe_key("x:1", false, true));
+        assert!(!safe_key("%2e%2e/secret", false, true));
+        assert!(!safe_key(".%2E/secret", false, true));
+        assert!(!safe_key("a?sig=1", false, true));
+        assert!(safe_key("a?sig=1", true, false));
+        assert!(safe_key("a#?", false, false));
+        assert!(!safe_key("a#frag", false, true));
+        assert!(safe_key("a#frag", true, false));
+        assert!(!safe_key("../escape", true, false));
     }
 }

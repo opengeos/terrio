@@ -16,9 +16,13 @@
 //! names from Esri's projection engine data (Apache-2.0). See `NOTICE`.
 
 use super::datum::{Op, parse_steps};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
+/// The EPSG table, which WebAssembly modules hold compressed: native builds embed it decompressed
+/// ([`epsg_text`]).
+#[cfg(any(target_family = "wasm", test))]
 static DATA: &[u8] = include_bytes!("../data/epsg.tsv.zst");
 static ESRI_DATA: &[u8] = include_bytes!("../data/esri.tsv.zst");
 /// Transformations between EPSG vertical CRSs (`scripts/gen_vertical_table.py`).
@@ -128,10 +132,9 @@ struct PairLists {
     lists: OpLists,
 }
 
-/// The table: its text, decompressed once, and an index of its lines. Entries are parsed on
-/// first use.
+/// The table: its text and an index of its lines, built once. Entries are parsed on first use.
 struct Table {
-    text: String,
+    text: Cow<'static, str>,
     crs: HashMap<u32, Lazy<Option<Entry>>>,
     ops: HashMap<u32, Lazy<Option<Arc<Op>>>>,
     /// Direct transformations between geographic CRSs, by (source, target) code.
@@ -190,24 +193,33 @@ pub(crate) fn decompress(data: &[u8]) -> String {
     zrip::decompress(data).ok().and_then(|bytes| String::from_utf8(bytes).ok()).unwrap_or_default()
 }
 
+/// The EPSG table's text. Native builds embed it decompressed (`build.rs`, 7.7 MB of read-only
+/// data), so that the first lookup of a process indexes it without decompressing it first.
+/// WebAssembly modules keep it compressed and decompress it on first use.
+fn epsg_text() -> Cow<'static, str> {
+    #[cfg(not(target_family = "wasm"))]
+    return Cow::Borrowed(include_str!(concat!(env!("OUT_DIR"), "/epsg.tsv")));
+    #[cfg(target_family = "wasm")]
+    Cow::Owned(decompress(DATA))
+}
+
 fn table() -> &'static Table {
     static TABLE: OnceLock<Table> = OnceLock::new();
-    TABLE.get_or_init(|| load(DATA))
+    TABLE.get_or_init(|| load(epsg_text()))
 }
 
 fn vertical_table() -> &'static Table {
     static TABLE: OnceLock<Table> = OnceLock::new();
-    TABLE.get_or_init(|| load(VERTICAL_DATA))
+    TABLE.get_or_init(|| load(decompress(VERTICAL_DATA).into()))
 }
 
 fn esri_table() -> &'static Table {
     static TABLE: OnceLock<Table> = OnceLock::new();
-    TABLE.get_or_init(|| load(ESRI_DATA))
+    TABLE.get_or_init(|| load(decompress(ESRI_DATA).into()))
 }
 
-/// Decompresses a table and indexes its lines.
-fn load(data: &[u8]) -> Table {
-    let text = decompress(data);
+/// Indexes the lines of a table's text.
+fn load(text: Cow<'static, str>) -> Table {
     let (mut crs, mut ops, mut pairs) = (HashMap::new(), HashMap::new(), HashMap::new());
     let (mut verticals, mut compounds, mut geoids) = (HashMap::new(), HashMap::new(), HashMap::<u32, Vec<_>>::new());
     let mut vertical_ops = HashMap::new();
@@ -1137,6 +1149,15 @@ mod tests {
             (10919, 10918),
         ];
         assert_eq!(fallbacks, expected);
+    }
+
+    /// The embedded table is the compressed one's text, so every lookup gives what it did when the
+    /// table was decompressed on first use.
+    #[test]
+    fn embedded_table_is_the_compressed_table() {
+        let text = epsg_text();
+        assert!(text.len() > 1_000_000);
+        assert!(text == decompress(DATA));
     }
 
     #[test]

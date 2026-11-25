@@ -175,12 +175,12 @@ pub fn proximity(ds: &RasterDataset, o: &ProximityOptions) -> Result<RasterDatas
         Some(d) => d / dist_mult,
         None => (w + h) as f64,
     };
-    let src_nodata = if o.use_input_nodata { ds.nodata() } else { None };
+    let src_nodata = if o.use_input_nodata { ds.band_nodata(o.band) } else { None };
     let fill = o.nodata.unwrap_or(65535.0) as f32;
     // GDAL keeps the first pass in the output band when its type is signed, in a temporary
     // Float32 band otherwise.
     let work_type = match o.output_type {
-        DataType::U8 | DataType::U16 | DataType::U32 => DataType::F32,
+        DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64 => DataType::F32,
         t => t,
     };
     let src: Vec<i32> = read_ints(ds, o.band, DataType::I32).into_iter().map(|v| v as i32).collect();

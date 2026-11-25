@@ -36,5 +36,9 @@ wbprojection-fallback = ["dep:wbprojection"]
 # A transport supplied by an embedding application; no networking dependency.
 grid-transport = []
 
+[build-dependencies]
+# Decompresses the EPSG table that native builds embed (build.rs).
+zrip.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
