@@ -931,7 +931,11 @@ impl ChunkCodec {
             // In one pass, into a buffer of the stream's size, rather than read as a stream.
             2 => match zrip::decompress_with_limit(&raw, bound) {
                 Ok(out) => check(out.len()).map(|_| out)?,
-                Err(zrip::DecompressError::OutputTooSmall) => return Err(check(bound).expect_err("past both bounds")),
+                // Past `bound`, so past the blob's size or the limit: `check` says which.
+                Err(zrip::DecompressError::OutputTooSmall) => {
+                    check(bound)?;
+                    return Err(TiffError::LimitsExceeded);
+                }
                 Err(e) => return Err(invalid(format!("LERC: Zstandard: {e}"))),
             },
             other => return Err(invalid(format!("unknown LERC compression wrapper {other}"))),
