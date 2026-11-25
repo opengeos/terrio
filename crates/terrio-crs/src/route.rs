@@ -35,6 +35,8 @@ pub(crate) struct Used {
     pub accuracy: f64,
     pub grids: Vec<String>,
     pub ballpark: bool,
+    /// Whether it runs datum steps on the point (a shift, not a null transformation).
+    pub shifts: bool,
 }
 
 thread_local! {
@@ -95,14 +97,15 @@ pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
                     names.join(" + ")
                 };
                 // One PROJ frames with its ballpark has a ballpark step.
-                Used { name, accuracy: op.accuracy, grids: op.grids().into_iter().map(|(g, _)| g).collect(), ballpark: op.framed }
+                let shifts = !op.steps.is_empty();
+                Used { name, accuracy: op.accuracy, grids: op.grids().into_iter().map(|(g, _)| g).collect(), ballpark: op.framed, shifts }
             }
             _ => {
                 let name = match kind {
                     OpKind::Datum => "Ballpark geographic offset",
                     OpKind::Vertical => "Ballpark vertical transformation",
                 };
-                Used { name: name.into(), accuracy: -1.0, grids: Vec::new(), ballpark: true }
+                Used { name: name.into(), accuracy: -1.0, grids: Vec::new(), ballpark: true, shifts: false }
             }
         });
     });

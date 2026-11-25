@@ -2859,6 +2859,26 @@ PROJ_CASES = {
             "GDAL 3.12.2 (libgeotiff GTIFFetchProjParms, GTIFGetDefn): within 1 mm",
         ),
     },
+    "proj_edge_values": {
+        "longitudes_beyond_ten_radians_are_refused_into_a_shift_or_projection": (
+            "Longitudes beyond 10 radians", TOLERANCE, "PROJ 9.9.0: refused into a shift or projection, kept through a ballpark",
+        ),
+        "conversion_parameters_near_an_integer_are_that_integer": (
+            "Conversion parameters within 1e-8 of an integer", TOLERANCE, "PROJ 9.9.0: within 1e-9 m",
+        ),
+        "krovak_refuses_another_cone_axis": (
+            "Krovak's +alpha (co-latitude of the cone axis)", TOLERANCE, "PROJ 9.9.0: within 1 mm; another refused",
+        ),
+        "the_ellipsoidal_cea_inverse_fails_past_the_pole_line": (
+            "Ellipsoidal cea inverse past the pole line", TOLERANCE, "PROJ 9.9.0: refused (NaN); within 1e-9 degrees",
+        ),
+        "polar_laea_has_polar_axes_and_a_vertical_crs_no_body": (
+            "Polar LAEA axis order, vertical CRS body", IDENTICAL, "PROJ 9.9.0 (pyproj 3.8.0)",
+        ),
+        "over_keeps_longitudes_past_the_antimeridian": (
+            "+over in Eckert IV and Van der Grinten", TOLERANCE, "PROJ 9.9.0: within 1e-9",
+        ),
+    },
     "wkt_axes_and_units": {
         "a_wkt1_geographic_crs_follows_its_axis_directions": (
             "WKT 1 GEOGCS AXIS directions (west, south, in their order)", TOLERANCE, "PROJ 9.9.0 (always_xy): within 1e-9 degrees",
@@ -2891,7 +2911,7 @@ PROJ_CASES = {
             "PROJ 9.8.1 (pyproj 3.8.0): within 1 mm, or refused as PROJ refuses",
         ),
         "a_wkt_proj4_extension_is_read_as_a_pipeline_step": (
-            "WKT PROJ4 extensions with unreadable values, angle prefixes, fractions and unknown names (11 cases)", TOLERANCE,
+            "WKT PROJ4 extensions with unreadable values, angle prefixes, fractions and unknown names (14 cases: 9 read, 5 refused)", TOLERANCE,
             "PROJ 9.8.1 (pyproj 3.8.0): within 1 mm",
         ),
         "an_overflowing_angle_is_refused_and_a_fraction_reads_beside_a_geoid": (

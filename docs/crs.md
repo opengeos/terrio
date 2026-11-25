@@ -512,6 +512,17 @@ Flags combined with `+init=epsg:N`, except the metadata switches `no_defs` and
 `wktext`, are refused because that path cannot apply overrides to the registry
 definition. Use an expanded `+proj` definition when changing these flags.
 
+As PROJ 9.9.0's CRS parser stores them, a conversion parameter within 1e-8 of an integer is that
+integer (angles in degrees, false eastings and northings in the CRS's unit): `+lat_0=45.000000001`
+is 45. Krovak's `+alpha` is the co-latitude of the cone axis, which PROJ reads but whose Krovak has
+no other than 30.2881397° (within 1e-7): a transformer with another is refused, as PROJ has no
+pipeline for it. `+over` keeps longitudes past the antimeridian, unwrapped, as PROJ keeps them (Eckert
+IV's inverse at (3, 0.5) on `+R=1` is 211.337°, which it refuses without `+over`; Van der Grinten
+beyond ±180° takes the other side's branch). A geographic longitude beyond 10 radians (572.96°) is
+refused going into a projection or a datum shift, as PROJ's `fwd_prepare()` refuses it, but not
+through a null transformation or a ballpark. The ellipsoidal `cea` inverse (ESRI's Behrmann) past
+the pole line fails, as PROJ gives no latitude there, not the pole.
+
 A value PROJ 9.9.0 cannot read is refused when the method reads the parameter, as PROJ refuses it
 ("invalid value for lat_ts"), rather than taken as the parameter's default: `+proj=eqc +lat_ts=abc`,
 an unreadable `+towgs84` or `+pm`. A `towgs84` list must contain three or seven numeric values.
@@ -1303,6 +1314,10 @@ axes, planetocentric latitudes (`+geoc`, a spherical coordinate system) as a `Ge
 spherical coordinate system, IAU_2015 CRSs with their `IAU`/2015 identifier. Differences from
 PROJ's output:
 
+- a datum's `anchor_epoch` is written for a WKT 2 CRS, from its `ANCHOREPOCH` (and from PROJ
+  9.9.0's database for the EPSG vertical CRS of a compound one), as PROJ writes it (#1012 item 65),
+  but not for an EPSG code, whose registry WKT is GDAL's WKT 1, though PROJ writes it from its
+  database there;
 - no `scope`, `area`, `bbox` or `usages`;
 - the WGS 84 and ETRS89 ensembles are written as their datum, without members (so GDAL's
   `IsSame` with the EPSG CRS is false; coordinates are the same);
@@ -1435,8 +1450,9 @@ and the `Axis order`, `Body` and `Method` lines of `terrio crs CRS` (and its MCP
   - otherwise the WKT's `AXIS` nodes give the order. Without them, a WKT 1 geographic CRS with an
     EPSG code is in that code's order, and any other CRS east then north.
 
-  Geocentric and vertical CRSs, Polar Stereographic (whose axes point along meridians, unless a
-  WKT states others) and axes other than north and east (`northEast`, `south`) are `Other`.
+  Geocentric and vertical CRSs, Polar Stereographic and polar Lambert azimuthal equal-area (at a
+  pole, within 1e-10°: their axes point along meridians, unless a WKT states others) and axes
+  other than north and east (`northEast`, `south`) are `Other`.
   `has_north_east_axis_order()` goes by the CRS's WKT instead, for GML's authority order (a
   bound CRS's by its source CRS, as `axis_order()`).
 - `projection_params()` gives the method (the `+proj` name PROJ writes: `etmerc` is `tmerc`,
@@ -1460,7 +1476,8 @@ and the `Axis order`, `Body` and `Method` lines of `terrio crs CRS` (and its MCP
   an IAU_2015 CRS (`Mars`), and for another ellipsoid, `Earth` within 0.7% of the Earth's mean
   radius, else the body of PROJ's table whose semi-major axis is within 0.7% of the ellipsoid's
   (`+R=3396190` is on Mars). It gives `None` for an ellipsoid that matches no body, or bodies of
-  several names (PROJ's `Non-Earth body`). `is_earth()` is `body() == Some("Earth")`.
+  several names (PROJ's `Non-Earth body`), and for a vertical CRS (EPSG:5773), which has no
+  ellipsoid. `is_earth()` is `body() == Some("Earth")`.
 
 `tests/crs_accessors.rs` compares them with PROJ 9.9.0 (pyproj 3.8.0) on 777 CRSs, frozen by
 `scripts/gen_crs_accessors.py`:

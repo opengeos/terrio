@@ -206,13 +206,14 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
             });
             let datum = if cites_wgs84 && k.short(2050) == Some(USER_DEFINED) { Some(6326) } else { k.short(2050) };
             let citation = k.text(1026).or_else(|| k.text(3073));
-            // And of the keys' own conversion, when they give one: a citation naming EPSG:2048
-            // over keys with another false easting is not EPSG:2048 (#1012 item 49).
-            let own = user_defined_proj4(&k).and_then(|p| crate::def::Def::from_proj(&p).ok());
+            // And of the keys' own conversion parameters, when they give them (whatever their
+            // ellipsoid): a citation naming EPSG:2048 over keys with another false easting is not
+            // EPSG:2048 (#1012 item 49).
+            let own = user_defined_proj4(&k).and_then(|p| SpatialRef::from_proj4(&p).ok()).and_then(|s| s.projection_params());
             user_defined_projected(k.short(3074), k.short(2048), datum, citation).filter(|code| {
                 SpatialRef::from_epsg(*code).is_ok_and(|s| {
                     (s.metres_per_unit() / size - 1.0).abs() < 1e-9
-                        && own.as_ref().is_none_or(|own| crate::def::Def::new(&s).is_ok_and(|d| d.same_conversion(own)))
+                        && own.as_ref().is_none_or(|own| s.projection_params().is_some_and(|p| same_conversion(own, &p)))
                 })
             })
         }
@@ -924,6 +925,19 @@ fn units(k: &GeoKeys) -> (String, f64) {
         },
         None => ("+units=m".into(), 1.0),
     }
+}
+
+/// Whether two projections have the same method (UTM as Transverse Mercator) and origin, scale and
+/// false easting and northing, whatever their ellipsoids.
+fn same_conversion(a: &crate::ProjParams, b: &crate::ProjParams) -> bool {
+    let method = |m: &str| if m == "utm" { "tmerc".to_string() } else { m.to_string() };
+    let close = |x: f64, y: f64, tolerance: f64| (x - y).abs() <= tolerance;
+    method(&a.method) == method(&b.method)
+        && close(a.lat_0, b.lat_0, 1e-9)
+        && close(a.lon_0, b.lon_0, 1e-9)
+        && close(a.k_0, b.k_0, 1e-12)
+        && close(a.x_0, b.x_0, 1e-6)
+        && close(a.y_0, b.y_0, 1e-6)
 }
 
 /// The registry's projected CRS `target` in the linear unit of GeoKeys stating `code` alone, when

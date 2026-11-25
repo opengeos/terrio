@@ -60,6 +60,9 @@ pub(crate) struct Def {
     to_deg: f64,
     /// The prime meridian, in radians east of Greenwich.
     pm: f64,
+    /// `+over`: longitudes are not wrapped to ±180° around the central meridian, as PROJ keeps
+    /// them (#1012 item 42).
+    over: bool,
     /// The axis directions (`enu`, `wsu`, `neu`...).
     axis: [u8; 2],
     /// Datum transformations to WGS 84, in the order they are tried; empty for WGS 84 itself or a
@@ -72,6 +75,10 @@ pub(crate) struct Def {
     /// The EPSG geographic CRS that a CRS on a datum no CRS is on is identified as by its name
     /// ([`Def::registered_datum`]). Its transformations are not those of that CRS.
     named_geog: Option<u32>,
+    /// Why PROJ 9.9.0 has no pipeline for the CRS, which it reads: a Krovak of another co-latitude
+    /// of the cone axis than Krovak's (`conversion.cpp`, within 1e-7 of 30.2881397°, #1012 item
+    /// 39). Transformers using it are refused.
+    pub(crate) no_pipeline: Option<Arc<str>>,
     /// All the operations of a datum found by its name ([`Def::datum_by_name`]), those whose
     /// grids are missing included, as `geog`'s registry entry gives them otherwise.
     all_ops: Option<Vec<Arc<Op>>>,
@@ -747,7 +754,12 @@ impl Def {
     /// transformation.
     pub fn from_proj(s: &str) -> Result<Self> {
         let p = Params::parse(s);
-        let d = Self::from_params(s, &p, false);
+        let d = Self::from_params(s, &p, false).map(|mut d| {
+            if matches!(p.str("proj"), Some("krovak" | "mod_krovak")) && p.degrees("alpha").is_some_and(|a| (a - 30.2881397).abs() > 1e-7) {
+                d.no_pipeline = Some(Arc::from("PROJ has no Krovak of another co-latitude of the cone axis (+alpha) than 30.2881397°"));
+            }
+            d
+        });
         // As PROJ refuses a value it cannot read, where terrio would take the parameter's default.
         match p.invalid().into_iter().find(|key| !unchecked(&p, key)) {
             Some(key) => Err(Error::Crs(format!("invalid value for {key} in '{s}'"))),
@@ -1023,11 +1035,13 @@ impl Def {
             to_meter,
             to_deg: p.f64("to_deg").unwrap_or(1.0),
             pm: proj_prime_meridian(pm).to_radians(),
+            over: p.has("over"),
             axis,
             ops: Vec::new(),
             datum: None,
             geog: None,
             named_geog: None,
+            no_pipeline: None,
             all_ops: None,
             three_d: false,
             dynamic: false,
@@ -1495,11 +1509,13 @@ impl Def {
                 to_meter: wkt_linear_unit(w).filter(|_| !geographic).unwrap_or(1.0),
                 to_deg: 1.0,
                 pm: 0.0,
+                over: false,
                 axis: *b"en",
                 ops: Vec::new(),
                 datum: None,
                 geog: None,
                 named_geog: None,
+                no_pipeline: None,
                 all_ops: None,
                 three_d: false,
                 dynamic: false,
@@ -1684,7 +1700,7 @@ impl Def {
         if !lam.is_finite() || !phi.is_finite() {
             return None;
         }
-        Some((adjlon(lam + self.pm), phi))
+        Some((if self.over { lam + self.pm } else { adjlon(lam + self.pm) }, phi))
     }
 
     /// The longitude and latitude in degrees (east of Greenwich) of coordinates in a geographic
@@ -1707,8 +1723,10 @@ impl Def {
         let (e, n) = match &self.proj {
             None => {
                 let (lam, phi) = match &self.rot {
-                    Some(r) => r.fwd(adjlon(lon - self.lam0), lat),
-                    None => (adjlon(lon - self.lam0), if self.ocentric { ((1.0 - self.ell.es) * lat.sin()).atan2(lat.cos()) } else { lat }),
+                    Some(r) => r.fwd(self.wrap(lon - self.lam0), lat),
+                    None => {
+                        (self.wrap(lon - self.lam0), if self.ocentric { ((1.0 - self.ell.es) * lat.sin()).atan2(lat.cos()) } else { lat })
+                    }
                 };
                 if self.inverted_degrees {
                     // The forward step went from degrees to radians, with this factor.
@@ -1724,7 +1742,7 @@ impl Def {
                 }
                 // PROJ's `fwd_prepare()` clamps the latitude to the poles.
                 let lat = lat.clamp(-HALFPI, HALFPI);
-                let (x, y) = p.fwd(adjlon(lon - self.lam0), lat)?;
+                let (x, y) = p.fwd(self.wrap(lon - self.lam0), lat)?;
                 ((x * self.projection_a + self.x0) / self.to_meter, (y * self.projection_a + self.y0) / self.to_meter)
             }
         };
@@ -1732,6 +1750,11 @@ impl Def {
             return None;
         }
         Some(self.axis(e, n))
+    }
+
+    /// A longitude about the central meridian, wrapped to ±180° unless `+over` keeps it.
+    fn wrap(&self, lon: f64) -> f64 {
+        if self.over { lon } else { adjlon(lon) }
     }
 
     /// Whether both CRSs are on the same datum, so that no datum transformation is needed.

@@ -1184,9 +1184,10 @@ impl SpatialRef {
             (b'n', b'e') => AxisOrder::NorthEast,
             _ => AxisOrder::Other,
         };
-        // PROJ's Polar Stereographic has both axes pointing south (or north) along meridians,
-        // unless a WKT states others.
-        let polar = def.params().is_some_and(|p| p.method == "stere" && p.lat_0.abs() == 90.0);
+        // PROJ's Polar Stereographic and polar Lambert azimuthal equal-area (`io.cpp`, within
+        // 1e-10 of a pole) have both axes pointing south (or north) along meridians, unless a WKT
+        // states others (#1012 item 41).
+        let polar = def.params().is_some_and(|p| matches!(p.method.as_str(), "stere" | "laea") && (p.lat_0.abs() - 90.0).abs() < 1e-10);
         // A PROJ string's axes (one from the WKT of an IAU_2015 CRS goes by the WKT, as PROJ
         // reads it).
         let iau = self.wkt.as_deref().and_then(iau::declared).is_some();
@@ -1288,6 +1289,11 @@ impl SpatialRef {
     /// # Ok::<(), terrio_crs::Error>(())
     /// ```
     pub fn body(&self) -> Option<&'static str> {
+        // A vertical CRS has no ellipsoid, and PROJ no body for it (#1012 item 41).
+        let vertical_wkt = self.wkt.as_deref().is_some_and(|w| keywords::is(keywords::root_key(w), keywords::VERTICAL_CRS));
+        if self.epsg.and_then(epsg::vertical).is_some() || vertical_wkt {
+            return None;
+        }
         let def = Def::shared(self).ok()?;
         if let Some(code) = def.declared_body() {
             return bodies::NAIF.binary_search_by_key(&code, |(c, _)| *c).ok().map(|i| bodies::NAIF[i].1);
@@ -2563,6 +2569,9 @@ impl Transformer {
     /// epoch when both are dynamic and both epochs are given.
     pub fn with_options(src: &SpatialRef, dst: &SpatialRef, opts: &TransformOptions) -> Result<Self> {
         let (mut s, mut d) = (Def::new(src)?, Def::new(dst)?);
+        if let Some(why) = s.no_pipeline.as_ref().or(d.no_pipeline.as_ref()) {
+            return Err(Error::Crs(why.to_string()));
+        }
         s.compatible_body(&d)?;
         // Why a `BOUNDCRS`'s transformation is not applied, for the warning (#1012 item 12).
         let unapplied: Vec<String> = [s.unapplied(), d.unapplied()].into_iter().flatten().map(str::to_string).collect();
@@ -2981,7 +2990,27 @@ impl Transformer {
 
     /// The 2D transformation of a point, with its height kept (or, for transformations PROJ runs
     /// without keeping heights, transformed).
+    /// Whether a geographic source longitude is beyond 10 radians (572.96°), which PROJ's
+    /// `fwd_prepare()` refuses going into a projection, a conversion to geocentric coordinates or
+    /// a datum shift's, but not through a null transformation or a ballpark, which keep it (#1012
+    /// item 23).
+    fn beyond_ten_radians(&self, x: f64, y: f64) -> bool {
+        self.cartesian_src.is_none() && self.src.source_degrees(x, y).is_some_and(|(lon, _)| lon.to_radians().abs() > 10.0)
+    }
+
     fn transform_2d(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {
+        if self.beyond_ten_radians(x, y) {
+            let fail = || Error::Crs(format!("cannot transform ({x}, {y})"));
+            if !self.dst.is_geographic() {
+                return Err(fail());
+            }
+            let (result, used) = route::recording(|| self.transform_2d_unchecked(x, y, z, t));
+            return if used.iter().any(|u| u.shifts) { Err(fail()) } else { result };
+        }
+        self.transform_2d_unchecked(x, y, z, t)
+    }
+
+    fn transform_2d_unchecked(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {
         let fail = || Error::Crs(format!("cannot transform ({x}, {y})"));
         if self.web_mercator_to_wgs84 {
             let (lon, lat) = mercator_sphere_inverse(x, y).ok_or_else(fail)?;
@@ -3187,6 +3216,9 @@ impl Transformer {
 
     fn transform_at(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {
         let fail = || Error::Crs(format!("cannot transform ({x}, {y}, {z})"));
+        if self.cartesian_dst.is_some() && self.beyond_ten_radians(x, y) {
+            return Err(fail());
+        }
         if self.cartesian_src.is_some() || self.cartesian_dst.is_some() {
             if !x.is_finite() || !y.is_finite() || !z.is_finite() {
                 return Err(fail());

@@ -166,7 +166,27 @@ impl Params {
 
     /// The parameter's numeric value.
     pub fn f64(&self, key: &str) -> Option<f64> {
-        self.read(key, |v| v.trim().parse().ok())
+        self.read(key, |v| v.trim().parse().ok()).map(|v| self.rounded(key, v))
+    }
+
+    /// A conversion parameter as PROJ 9.9.0's CRS parser stores it (`io.cpp`,
+    /// `PROJStringParser::Private::buildProjectedCRS`): the nearest integer when within 1e-8 of it,
+    /// angles in degrees, false eastings and northings in the CRS's unit (`+lat_0=45.000000001` is
+    /// 45, #1012 item 39). Not in a WKT's `PROJ4` extension, which PROJ reads as a pipeline step.
+    fn rounded(&self, key: &str, v: f64) -> f64 {
+        let near = |x: f64| if (x - x.round()).abs() < 1e-8 { x.round() } else { x };
+        if self.angle_prefixes || !v.is_finite() {
+            return v;
+        }
+        match key {
+            "lat_0" | "lon_0" | "lat_1" | "lat_2" | "lat_ts" | "lonc" | "alpha" | "gamma" | "k" | "k_0" => near(v),
+            "x_0" | "y_0" => {
+                let unit = self.str("units").and_then(crate::math::unit_to_meter);
+                let m = unit.or_else(|| self.str("to_meter").and_then(|t| t.trim().parse().ok())).filter(|m: &f64| *m > 0.0).unwrap_or(1.0);
+                near(v / m) * m
+            }
+            _ => v,
+        }
     }
 
     /// The parameter as an angle, in radians: decimal degrees, PROJ's DMS (`40d30'15"N`), or
@@ -177,7 +197,7 @@ impl Params {
 
     /// The parameter as an angle in degrees, as [`Self::angle`] reads it.
     pub fn degrees(&self, key: &str) -> Option<f64> {
-        if self.angle_prefixes { self.read(key, |v| dms(v, false)) } else { self.read(key, parse_dms) }
+        if self.angle_prefixes { self.read(key, |v| dms(v, false)) } else { self.read(key, parse_dms).map(|v| self.rounded(key, v)) }
     }
 
     /// The parameter as a comma-separated list of numbers.
@@ -260,7 +280,7 @@ fn dms(s: &str, whole: bool) -> Option<f64> {
     };
     // PROJ's `HUGE_VAL` for a malformed angle (`40d30d`): no angle for a CRS's value; for a
     // pipeline step's, an infinite one, which the parameter's own check refuses, as PROJ does.
-    let error = (!whole).then_some(f64::INFINITY);
+    let huge_val = (!whole).then_some(f64::INFINITY);
     // In degrees, as PROJ sums them: degrees, minutes and seconds.
     const UNITS: [f64; 3] = [1.0, 1.0 / 60.0, 1.0 / 3600.0];
     let (mut degrees, mut radians) = (0.0, None);
@@ -280,7 +300,7 @@ fn dms(s: &str, whole: bool) -> Option<f64> {
             Some('r' | 'R') => {
                 // Radians only as the first number: else PROJ's `HUGE_VAL`, an error (see below).
                 if next > 0 {
-                    return error;
+                    return huge_val;
                 }
                 radians = Some(v);
                 i += 1;
@@ -294,7 +314,7 @@ fn dms(s: &str, whole: bool) -> Option<f64> {
         };
         // Units in order (not minutes after seconds).
         if unit < next {
-            return error;
+            return huge_val;
         }
         degrees += v * UNITS[unit];
         i += 1;
