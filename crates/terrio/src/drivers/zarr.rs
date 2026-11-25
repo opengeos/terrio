@@ -823,7 +823,7 @@ fn blosc_block(src: &[u8], mut pos: usize, nsplits: usize, compressor: u8, dst: 
     for (k, part) in dst.chunks_exact_mut(neblock).enumerate() {
         let cbytes = le_u32_at(src, pos).ok_or_else(|| bad("Blosc: truncated block"))?;
         pos += 4;
-        let stream = src.get(pos..pos + cbytes).ok_or_else(|| bad("Blosc: truncated stream"))?;
+        let stream = pos.checked_add(cbytes).and_then(|end| src.get(pos..end)).ok_or_else(|| bad("Blosc: truncated stream"))?;
         pos += cbytes;
         // Each into at most the `neblock` bytes it stands for.
         let put = |part: &mut [u8], decoded: Vec<u8>| -> Result<usize> {
@@ -3477,9 +3477,8 @@ mod tests {
                         .collect();
                     let mut out = vec![0xA5; bsize];
                     interleave(&block, &mut out, typesize, nelems);
-                    out[nelems * typesize..].copy_from_slice(&block[nelems * typesize..]);
                     let expected: Vec<u8> = (0..bsize)
-                        .map(|i| if i < nelems * typesize { block[(i % typesize) * nelems + i / typesize] } else { block[i] })
+                        .map(|i| if i < nelems * typesize { block[(i % typesize) * nelems + i / typesize] } else { 0xA5 })
                         .collect();
                     assert_eq!(out, expected, "{typesize} {nelems} {extra}");
                 }
