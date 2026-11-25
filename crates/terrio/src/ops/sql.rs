@@ -558,7 +558,11 @@ fn compare(a: &Value, b: &Value) -> Option<Ordering> {
     }
 }
 
-/// Strict total ordering for `ORDER BY` sorting (including `NaN`, mixed numeric types, and `-0.0`).
+/// Strict total ordering for `ORDER BY` sorting.
+///
+/// Values are ordered as `NULL < NaN < finite/infinite numbers < Text < Blob < Geometry`.
+/// Within numbers, `-0.0` compares equal to `0.0`, and `Int`/`Float` pairs are compared by
+/// exact mathematical value so `ORDER BY` never violates `Ord` transitivity or panics on `NaN`.
 fn compare_order(a: &Value, b: &Value) -> Ordering {
     fn rank(v: &Value) -> u8 {
         match v {

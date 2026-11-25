@@ -737,17 +737,10 @@ fn image_line<T: Pixel>(b: &mut Burner<T>, nx: i32, ny: i32, p: &Parts) {
                     continue;
                 }
                 if skip > 0 {
-                    let s = i128::from(skip) * i128::from(x_error) - i128::from(dx);
-                    let denom = i128::from(dx) * 2;
-                    let (m, u) = if s <= 0 {
-                        (0i128, s)
-                    } else {
-                        let m = (s - 1) / denom + 1;
-                        (m, s - m * denom)
-                    };
+                    let (minor_steps, next_error) = advance_bresenham(skip, dy, dx);
                     ix += skip * x_step;
-                    iy += (m as i64) * y_step;
-                    error = (u as i64) + x_error;
+                    iy += minor_steps * y_step;
+                    error = next_error;
                     rem -= skip;
                 }
                 while rem >= 0 {
@@ -785,17 +778,10 @@ fn image_line<T: Pixel>(b: &mut Burner<T>, nx: i32, ny: i32, p: &Parts) {
                     continue;
                 }
                 if skip > 0 {
-                    let s = i128::from(skip) * i128::from(x_error) - i128::from(dy);
-                    let denom = i128::from(dy) * 2;
-                    let (m, u) = if s <= 0 {
-                        (0i128, s)
-                    } else {
-                        let m = (s - 1) / denom + 1;
-                        (m, s - m * denom)
-                    };
+                    let (minor_steps, next_error) = advance_bresenham(skip, dx, dy);
                     iy += skip * y_step;
-                    ix += (m as i64) * x_step;
-                    error = (u as i64) + x_error;
+                    ix += minor_steps * x_step;
+                    error = next_error;
                     rem -= skip;
                 }
                 while rem >= 0 {
@@ -818,6 +804,28 @@ fn image_line<T: Pixel>(b: &mut Burner<T>, nx: i32, ny: i32, p: &Parts) {
         }
         n += size;
     }
+}
+
+/// Fast-forwards Bresenham's error accumulator across `skip` major-axis steps, returning
+/// `(minor_steps, next_error)` identical to executing the stepwise loop `skip` times.
+///
+/// Starting from `error = 2 * minor_delta - major_delta`, each step adds `2 * minor_delta` and
+/// subtracts `2 * major_delta` whenever `error > 0`, incrementing the minor axis once per
+/// subtraction. After `skip` steps, the final pre-increment error is congruent to
+/// `s = skip * 2 * minor_delta - major_delta (mod 2 * major_delta)` and lies in
+/// `(-2 * major_delta, 0]`, giving the exact count `m` of minor steps taken.
+fn advance_bresenham(skip: i64, minor_delta: i64, major_delta: i64) -> (i64, i64) {
+    debug_assert!(skip > 0 && major_delta > 0 && minor_delta >= 0);
+    let minor_err = minor_delta << 1;
+    let s = i128::from(skip) * i128::from(minor_err) - i128::from(major_delta);
+    let denom = i128::from(major_delta) * 2;
+    let (m, u) = if s <= 0 {
+        (0i128, s)
+    } else {
+        let m = (s - 1) / denom + 1;
+        (m, s - m * denom)
+    };
+    (m as i64, (u as i64) + minor_err)
 }
 
 /// GDAL's `GDALdllImageLineAllTouched`: every pixel a segment passes through.
@@ -1275,5 +1283,30 @@ mod tests {
         assert_eq!(cast(2.5, DataType::U8), 3.0);
         assert_eq!(cast(-2.5, DataType::I16), -3.0);
         assert_eq!(cast(300.0, DataType::U8), 255.0);
+    }
+
+    #[test]
+    fn advance_bresenham_matches_stepwise_loop() {
+        for major in 1..=25i64 {
+            for minor in 0..=major {
+                let minor_err = minor << 1;
+                let major_err = minor_err - (major << 1);
+                let mut error = minor_err - major;
+                let mut minor_steps = 0i64;
+                for skip in 1..=major {
+                    if error > 0 {
+                        minor_steps += 1;
+                        error += major_err;
+                    } else {
+                        error += minor_err;
+                    }
+                    assert_eq!(
+                        advance_bresenham(skip, minor, major),
+                        (minor_steps, error),
+                        "mismatch for major={major}, minor={minor}, skip={skip}"
+                    );
+                }
+            }
+        }
     }
 }

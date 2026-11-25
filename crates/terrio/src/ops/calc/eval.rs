@@ -698,22 +698,25 @@ fn bool_binary(op: Ibin, a: &Arr, b: &Arr) -> Result<Arr> {
     Ok(Arr { dt: DType::Bool, data: Data::B(v) })
 }
 
+fn int_overflow() -> Error {
+    Error::InvalidArgument("integer overflow".into())
+}
+
 /// Python's arithmetic on two Python numbers.
 fn python_binary(op: BinOp, a: &Val, b: &Val) -> Result<Val> {
     let zero = || Error::InvalidArgument("division by zero".into());
-    let overflow = || Error::InvalidArgument("integer overflow".into());
     if let (Val::Int(x), Val::Int(y)) = (a, b) {
         let (x, y) = (*x, *y);
         return Ok(match op {
-            BinOp::Add => Val::Int(x.checked_add(y).ok_or_else(overflow)?),
-            BinOp::Sub => Val::Int(x.checked_sub(y).ok_or_else(overflow)?),
-            BinOp::Mul => Val::Int(x.checked_mul(y).ok_or_else(overflow)?),
+            BinOp::Add => Val::Int(x.checked_add(y).ok_or_else(int_overflow)?),
+            BinOp::Sub => Val::Int(x.checked_sub(y).ok_or_else(int_overflow)?),
+            BinOp::Mul => Val::Int(x.checked_mul(y).ok_or_else(int_overflow)?),
             BinOp::Div if y == 0 => return Err(zero()),
             BinOp::Div => Val::Float(x as f64 / y as f64),
             BinOp::FloorDiv | BinOp::Mod if y == 0 => return Err(zero()),
             BinOp::FloorDiv => {
-                let q = x.checked_div_euclid(y).ok_or_else(overflow)?;
-                let r = x.checked_rem_euclid(y).ok_or_else(overflow)?;
+                let q = x.checked_div_euclid(y).ok_or_else(int_overflow)?;
+                let r = x.checked_rem_euclid(y).ok_or_else(int_overflow)?;
                 Val::Int(q - if y < 0 && r != 0 { 1 } else { 0 })
             }
             BinOp::Mod => {
@@ -722,7 +725,7 @@ fn python_binary(op: BinOp, a: &Val, b: &Val) -> Result<Val> {
                 Val::Int(if r != 0 && ((r < 0) != (y < 0)) { r + y } else { r })
             }
             BinOp::Pow if y < 0 => Val::Float((x as f64).powf(y as f64)),
-            BinOp::Pow => Val::Int(x.checked_pow(u32::try_from(y).map_err(|_| overflow())?).ok_or_else(overflow)?),
+            BinOp::Pow => Val::Int(x.checked_pow(u32::try_from(y).map_err(|_| int_overflow())?).ok_or_else(int_overflow)?),
             BinOp::BitAnd => Val::Int(x & y),
             BinOp::BitOr => Val::Int(x | y),
             BinOp::BitXor => Val::Int(x ^ y),
@@ -859,7 +862,7 @@ impl From<Arr> for Val {
 fn unary_op(op: UnaryOp, v: &Val) -> Result<Val> {
     Ok(match (op, v) {
         (UnaryOp::Pos, v) => v.clone(),
-        (UnaryOp::Neg, Val::Int(i)) => Val::Int(i.checked_neg().ok_or_else(|| Error::InvalidArgument("integer overflow".into()))?),
+        (UnaryOp::Neg, Val::Int(i)) => Val::Int(i.checked_neg().ok_or_else(int_overflow)?),
         (UnaryOp::Neg, Val::Float(f)) => Val::Float(-f),
         (UnaryOp::Invert, Val::Int(i)) => Val::Int(!i),
         (UnaryOp::Invert, Val::Float(_)) => return Err(Error::InvalidArgument("~ needs an integer".into())),
@@ -1057,10 +1060,8 @@ impl Evaluator<'_> {
                                 .map(|&x| {
                                     let q = x.div_euclid(p);
                                     let r = x.rem_euclid(p);
-                                    let scaled = q
-                                        .checked_add(i128::from(r > p - r))
-                                        .and_then(|v| v.checked_mul(p))
-                                        .ok_or_else(|| Error::InvalidArgument("integer overflow".into()))?;
+                                    let scaled =
+                                        q.checked_add(i128::from(r > p - r)).and_then(|v| v.checked_mul(p)).ok_or_else(int_overflow)?;
                                     Ok(wrap(scaled, a.dt))
                                 })
                                 .collect::<Result<Vec<_>>>()?

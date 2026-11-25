@@ -106,7 +106,16 @@ fn sql_three_valued_logic_and_order_by_with_nan() {
     let projected = query(&[layer.clone()], "SELECT (b = 1 OR a = 1) AS ok FROM t WHERE b = 1").unwrap();
     assert_eq!(projected.features[0].attributes[0], FieldValue::Integer(1));
 
-    // ORDER BY with many finite floats and NaNs must not panic in driftsort.
+    // NULL AND FALSE is FALSE, so NOT (NULL AND FALSE) is TRUE and fid 1 must be included.
+    let null_and_false = query(&[layer.clone()], "SELECT a, b FROM t WHERE NOT (a = 1 AND b = 0)").unwrap();
+    let fids_naf: Vec<u64> = null_and_false.features.iter().map(|f| f.fid).collect();
+    assert_eq!(fids_naf, vec![1, 2, 3]);
+
+    // NULL OR FALSE is NULL.
+    let null_or_false = query(&[layer], "SELECT (a = 1 OR b = 0) AS res FROM t ORDER BY b").unwrap();
+    assert_eq!(null_or_false.features[0].attributes[0], FieldValue::Null);
+
+    // ORDER BY with many finite floats and NaNs must not panic in driftsort, and ranks NaN before numbers.
     let mut many = Layer::new("m");
     many.add_field(FieldDef::new("grp", FieldType::Text));
     many.add_field(FieldDef::new("val", FieldType::Float));
@@ -124,6 +133,17 @@ fn sql_three_valued_logic_and_order_by_with_nan() {
     }
     let ordered = query(&[many.clone()], "SELECT val FROM m ORDER BY val").unwrap();
     assert_eq!(ordered.features.len(), 40);
+    // 8 rows have NaN (i = 0, 5, ..., 35); they sort first, followed by ascending numeric values.
+    let ordered_vals: Vec<f64> = ordered
+        .features
+        .iter()
+        .map(|f| match f.attributes[0] {
+            FieldValue::Float(v) => v,
+            ref other => panic!("expected float, got {other:?}"),
+        })
+        .collect();
+    assert!(ordered_vals[..8].iter().all(|v| v.is_nan()));
+    assert!(ordered_vals[8..].windows(2).all(|w| !w[0].is_nan() && !w[1].is_nan() && w[0] <= w[1]));
     let grouped = query(&[many], "SELECT grp, SUM(val) AS s FROM m GROUP BY grp ORDER BY s DESC").unwrap();
     assert_eq!(grouped.features.len(), 40);
 }
