@@ -1288,14 +1288,15 @@ class GeoParquetWrite:
         mismatch = next(iter(compare_vectors(ogr.Open(str(path)), ogr.Open(str(ref)))), None)
 
         def geo(md):
-            return json.loads(md.metadata[b"geo"])["columns"]["geometry"]
+            # A file without GeoParquet metadata differs from GDAL's rather than failing the check.
+            return json.loads((md.metadata or {}).get(b"geo", b"{}")).get("columns", {}).get("geometry", {})
 
         for what, f in (
             ("rows", lambda md: md.num_rows),
             ("row groups", lambda md: md.num_row_groups),
             ("columns", lambda md: [md.schema.column(i).path for i in range(md.num_columns)]),
             ("compression", lambda md: sorted({md.row_group(0).column(i).compression for i in range(md.num_columns)})),
-            ("geometry encoding", lambda md: geo(md)["encoding"]),
+            ("geometry encoding", lambda md: geo(md).get("encoding")),
             ("covering", lambda md: geo(md).get("covering")),
         ):
             if mismatch is None and f(a) != f(b):

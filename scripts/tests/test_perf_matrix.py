@@ -689,7 +689,7 @@ def test_write_cases_give_both_writers_the_same_options():
     assert all(src in perf_matrix.GeoTiff.FIXTURES and w.axes(name) for name, (src, *_) in w.FIXTURES.items())
 
 
-def test_geoparquet_write_comparison_checks_features_and_file_layout(tmp_path):
+def test_geoparquet_write_comparison_checks_features_and_file_layout(tmp_path, monkeypatch):
     """Equal files, a changed attribute, and GDAL's options other than terrio's."""
     gdal = pytest.importorskip("osgeo.gdal")
     ogr = pytest.importorskip("osgeo.ogr")
@@ -720,6 +720,13 @@ def test_geoparquet_write_comparison_checks_features_and_file_layout(tmp_path):
     assert groups["mismatch"] == "row groups 3 vs GDAL's 1"
     zstd = perf_matrix.GeoParquetWrite.compare(write("zstd.parquet", lco=["COMPRESSION=ZSTD"]), ref)
     assert zstd["mismatch"] == "compression ['ZSTD'] vs GDAL's ['SNAPPY']"
+    pq = pytest.importorskip("pyarrow.parquet")
+    table = pq.read_table(tmp_path / "same.parquet")
+    pq.write_table(table.replace_schema_metadata({}), tmp_path / "plain.parquet")
+    # Even when the features compare equal, a file without GeoParquet metadata is labelled.
+    monkeypatch.setattr(sys.modules["benchmark_validation"], "compare_vectors", lambda a, b: [])
+    plain = perf_matrix.GeoParquetWrite.compare(tmp_path / "plain.parquet", ref)
+    assert plain["mismatch"] == "geometry encoding None vs GDAL's WKB"
 
 
 def test_gdal_cog_writes_get_the_cog_drivers_option_names(monkeypatch, tmp_path):
