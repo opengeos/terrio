@@ -874,7 +874,13 @@ shift too, as PROJ keeps it (`push v_3` and `pop v_3`), and converted to or from
 coordinates on the geocentric CRS's own ellipsoid: WGS 84 (2D) at (0°, 0°, 0 m) is
 X = 6378136 m in PZ-90 (geocentric) (`EPSG:4922`), on PZ-90's ellipsoid, and 6378137 m from
 WGS 84 (3D). Transformations PROJ runs between geocentric CRSs (PZ-90 to PZ-90.11 (1)) still
-move it.
+move it. Between 3D CRSs too, PROJ keeps it across a transformation registered between 2D CRSs at
+the WGS 84 end of a chain (PZ-90 to WGS 84 (1) into PZ-90.11, 1 m), and so does terrio.
+A geographic 3D or geocentric CRS goes by the transformations PROJ 9.9.0 lists for it in each
+direction, which can differ: from a geocentric CRS PROJ ranks them otherwise than from its
+geographic 3D CRS (GDA94 (geocentric) through WGS 84 (G1762)), from WGS 84 otherwise than into it
+(ONGD14 to WGS 84 (2) into ONGD14, (1) out of it, 1.2 m apart), and beside WGS 84 (2D) otherwise
+than beside WGS 84 (3D) (LUREF to WGS 84 (4) before (3), 2 mm).
 An exception is a 2D CRS's own unnamed `+towgs84` operation beside a geocentric CRS: it still
 runs on geocentric coordinates and can change the ellipsoidal height.
 With `TransformOptions { promote_to_3d: true, .. }` (Rust), the heights of 2D CRSs are ellipsoidal

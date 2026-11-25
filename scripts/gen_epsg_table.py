@@ -20,7 +20,8 @@ Writes ``crates/terrio-crs/data/epsg.tsv.zst``, a zstd-compressed text table wit
   area, ``b``: ballpark, ``c``: a concatenation PROJ makes, rather than one PROJ's database
   registers, ``h`` and ``g``: one PROJ's database registers between geographic 3D or
   geocentric CRSs, ``p``: one PROJ prefers among those of equal accuracy, ``z``: the pipeline
-  keeps heights between 2D CRSs) and PROJ's name for it, the names of its steps joined by `` + ``
+  keeps heights between 2D CRSs, ``k``: from a geographic 3D or geocentric CRS into WGS 84 (3D),
+  PROJ keeps heights across its leg at the WGS 84 end, one registered between 2D CRSs) and PROJ's name for it, the names of its steps joined by `` + ``
   (``NTF (Paris) to NTF (1) + NTF to WGS 84 (1)``), by which PROJ breaks the last ties when it
   sorts the chains it makes, and for a concatenation PROJ's database registers with another
   accuracy or area than its steps', the sum of their accuracies and the intersection of their
@@ -33,7 +34,14 @@ Writes ``crates/terrio-crs/data/epsg.tsv.zst``, a zstd-compressed text table wit
   grids are available (empty when it is the same), flags (``d``: a dynamic CRS, ``3``: a
   geographic 3D CRS, ``x``: a deprecated CRS), its area of use (``west,south,east,north`` in
   degrees, which PROJ intersects with the transformations' areas), the PROJ string of its
-  coordinate conversion and the WKT GDAL writes for it.
+  coordinate conversion and the WKT GDAL writes for it. A geocentric CRS has the same row, with
+  the transformations PROJ lists from it into WGS 84 (3D), run on geographic coordinates of its
+  ellipsoid.
+- ``L<TAB>code<TAB>direction<TAB>ops<TAB>grid ops``: for a geographic 3D or geocentric CRS
+  (``C``), the transformations PROJ lists in another direction than into WGS 84 (3D), when they
+  differ (only in their order, or others): ``f3`` from WGS 84 (3D), ``t2`` into WGS 84 (2D),
+  ``f2`` from WGS 84 (2D), as ``O`` rows of the CRS's lists or of its geographic 2D CRS's in the
+  direction into WGS 84.
 - ``P<TAB>geog1<TAB>geog2<TAB>ops<TAB>grid ops``: the transformations GDAL lists between two
   geographic CRSs whose datums have direct transformations between them in the EPSG dataset,
   without and with grids, in the direction geog1 to geog2.
@@ -317,7 +325,23 @@ def interpolation_crs(doc):
     return ""
 
 
-def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, vertical=False):
+def keeps_wgs84_leg(definition):
+    """Whether a pipeline keeps heights across its leg at the target's end only.
+
+    Args:
+        definition: A PROJ pipeline, without ``+`` signs.
+
+    Returns:
+        Whether it has ``push v_3`` and no datum step after its last ``pop v_3``.
+    """
+    names = [name for _, name, _ in parse_steps(definition)]
+    if "push" not in names or "pop" not in names:
+        return False
+    last = len(names) - 1 - names[::-1].index("pop")
+    return not any(name in DATUM_STEPS or name in GRID_STEPS for name in names[last + 1 :])
+
+
+def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, vertical=False, source_steps=""):
     """List the datum transformations GDAL would try between two CRSs.
 
     Runs ``projinfo`` with the options ``proj_create_crs_to_crs`` (which GDAL uses) passes to
@@ -333,6 +357,8 @@ def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, vertical
         grids: Whether to list the operations GDAL uses when grids are available.
         vertical: For transformations between vertical CRSs: keep their axis swaps to depths
             and add each one's interpolation CRS (see ``interpolation_crs``) to its row.
+        source_steps: Steps to run before each pipeline (from a geocentric source, the
+            conversion of geographic coordinates to geocentric ones on its ellipsoid).
 
     Returns:
         ``[(steps, (west, south, east, north), accuracy, flags, name, steps accuracy, steps
@@ -355,6 +381,7 @@ def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, vertical
         steps = datum_steps(proj.replace("+", ""), pm, target_pm, z_flips=vertical)
         if steps is None:
             continue
+        steps = ";".join(s for s in (source_steps, steps) if s)
         doc = json.loads(js)
         usage = (doc.get("usages") or [doc])[0]
         b = usage.get("bbox")
@@ -381,6 +408,9 @@ def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, vertical
         flags += ("h" if "geographic 3D" in kinds else "") + ("g" if "geocentric" in kinds else "")
         flags += "p" if any(p in doc.get("name", "") for p in PRIORITY_OPS) else ""
         flags += "z" if re.search(r"\bproj=push v_3\b", proj.replace("+", "")) else ""
+        # Between 3D CRSs too, PROJ keeps heights across a leg registered between 2D CRSs at the
+        # WGS 84 end (PZ-90 to WGS 84 (1) in PZ-90.11's chain, LUREF to WGS 84 (4)).
+        flags += "k" if target == "EPSG:4979" and keeps_wgs84_leg(proj.replace("+", "")) else ""
         # PROJ's name for the operation: its steps' names, as PROJ names the concatenations it
         # makes (those PROJ chains it into too), without the (inverse) projection of a projected
         # source, which PROJ does not chain. Ballparks, which terrio does not chain, go without.
@@ -986,27 +1016,76 @@ def grid_alternatives(names):
     return sorted({("A", a, b) for a, b in rows if a in names and b and b != a})
 
 
-def geocentric_rows(base):
-    """Cartesian endpoint definitions, reusing the datum's geographic 3D operation lists.
+def geocentric_crss(base):
+    """The EPSG geocentric CRSs.
 
-    Datum steps in Terrio run in geographic coordinates: Cartesian conversion is
-    performed by the endpoint, not duplicated in the stored operations.
+    Args:
+        base: The ``C`` rows of the geographic CRSs, by code.
+
+    Returns:
+        ``[(code, the code GDAL reads it as, its ellipsoid's PROJ parameters, its geographic 3D
+        CRS's row (or ``None``), its ``C`` row without transformations)]``.
     """
+    out = []
     for code in sorted(map(int, pyproj.get_codes("EPSG", PJType.GEOCENTRIC_CRS, allow_deprecated=True))):
         srs = osr.SpatialReference()
         srs.ImportFromEPSG(code)
         requested = pyproj.CRS.from_epsg(code)
-        crs = pyproj.CRS.from_epsg(int(srs.GetAuthorityCode(None) or code))
+        actual = int(srs.GetAuthorityCode(None) or code)
+        crs = pyproj.CRS.from_epsg(actual)
         datum = str(crs.datum.to_json_dict().get("id", {}).get("code", ""))
         candidates = [r for r in base.values() if str(r[3]) == datum and str(r[9]).startswith("+proj=longlat")]
         candidates.sort(key=lambda r: ("3" not in str(r[7]), r[2] != crs.name, int(r[1])))
         proxy = candidates[0] if candidates else None
         area = crs.area_of_use
         bounds = ",".join(repr(round(v, 6)) for v in (area.west, area.south, area.east, area.north)) if area else ""
-        yield ("C", code, requested.name.replace("\t", " "), datum, proxy[4] if proxy else "",
-               proxy[5] if proxy else "", proxy[6] if proxy else "",
-               "3" + ("d" if srs.IsDynamic() else "") + ("x" if requested.is_deprecated else ""), bounds,
-               normalize_proj(srs.ExportToProj4(), crs, "en"), srs.ExportToWkt())
+        proj = normalize_proj(srs.ExportToProj4(), crs, "en")
+        ellps = " ".join(t[1:] for t in proj.split() if t.split("=")[0] in ("+ellps", "+a", "+b", "+rf", "+R"))
+        flags = "3" + ("d" if srs.IsDynamic() else "") + ("x" if requested.is_deprecated else "")
+        row = ("C", code, requested.name.replace("\t", " "), datum, proxy[4] if proxy else "", None, None, flags, bounds, proj, srs.ExportToWkt())
+        out.append((code, actual, ellps, proxy, row))
+    return out
+
+
+def same_named(transfos, candidates, reverse, label):
+    """The ids of the transformations of the same names as others.
+
+    Args:
+        transfos: The transformations from ``transformations``.
+        candidates: Ids by ``name_key`` (into WGS 84).
+        reverse: Whether ``transfos`` run from WGS 84.
+        label: What they are, for the message when one is not found.
+
+    Returns:
+        The ids in their order, without repeats, or ``None`` when one is not found.
+    """
+    out = []
+    for t in transfos:
+        i = candidates.get(name_key(t[4], reverse))
+        if i is None:
+            print(f"{label}: no transformation named {t[4]!r}")
+            return None
+        if i not in out:
+            out.append(i)
+    return out
+
+
+def name_key(name, reverse):
+    """The transformations an operation's name chains, in the direction into WGS 84.
+
+    Args:
+        name: PROJ's name for the operation (empty for a ballpark).
+        reverse: Whether it runs from WGS 84.
+
+    Returns:
+        The names of its transformations without conversions and null offsets, and without
+        ``Inverse of``.
+    """
+    parts = [p.strip() for p in name.split(" + ")] if name else []
+    if reverse:
+        parts.reverse()
+    skip = ("Conversion from", "Null geographic offset", "Null geocentric translation", "Ballpark")
+    return tuple(p.removeprefix("Inverse of ") for p in parts if not p.startswith(skip))
 
 
 def rows():
@@ -1110,13 +1189,70 @@ def rows():
 
     grids_used = set()
     base = {}
+    lists = {}
     for (_, _, _, _, (code, name, datum, geog, flags, area, proj, wkt)), transfos, transfos_grids in zip(crss, found, found_grids):
         ids, gids, new = both(transfos, transfos_grids)
         yield from new
         row = ("C", code, name, datum, geog, ",".join(map(str, ids)), ",".join(map(str, gids)), flags, area, proj, wkt)
         base[code] = row
+        lists[code] = (ids, gids)
         yield row
-    yield from geocentric_rows(base)
+
+    # Geocentric CRSs: the transformations PROJ lists from them, which it ranks otherwise than
+    # from their geographic 3D CRS (GDA94 (geocentric) through WGS 84 (G1762)), run on
+    # geographic coordinates of their ellipsoid; their geographic 3D CRS's when PROJ lists none
+    # terrio runs.
+    geocentric = geocentric_crss(base)
+
+    def from_geocentric(g, grids):
+        _, actual, ellps, _, _ = g
+        return transformations(f"EPSG:{actual}", "EPSG:4979", grids=grids, source_steps=f"cart {ellps}")
+
+    with ThreadPoolExecutor(os.cpu_count()) as pool:
+        found = list(pool.map(lambda g: from_geocentric(g, False), geocentric))
+        found_grids = list(pool.map(lambda g: from_geocentric(g, True), geocentric))
+    for (code, _, _, proxy, row), transfos, transfos_grids in zip(geocentric, found, found_grids):
+        if transfos:
+            ids, gids, new = both(transfos, transfos_grids)
+            yield from new
+            row = row[:5] + (",".join(map(str, ids)), ",".join(map(str, gids))) + row[7:]
+        else:
+            row = row[:5] + ((proxy[5], proxy[6]) if proxy else ("", "")) + row[7:]
+        lists[code] = tuple([int(i) for i in str(f).split(",") if i] for f in row[5:7])
+        yield row
+
+    # The lists PROJ gives in the other directions, where they differ (ONGD14 from WGS 84 (3D),
+    # LUREF beside WGS 84 (2D)), as the transformations of the CRS's lists (or its geographic 2D
+    # CRS's) of the same names.
+    names = {i: key[4] for key, i in ops.items()}
+    directed = [(code, actual, geog) for actual, _, _, three_d, (code, _, _, geog, *_) in crss if three_d]
+    directed += [(code, actual, proxy[4] if proxy else "") for code, actual, _, proxy, _ in geocentric]
+    directions = (("f3", "EPSG:4979", True), ("t2", "EPSG:4326", False), ("f2", "EPSG:4326", True))
+
+    def other_way(c, d, grids):
+        _, actual, _ = c
+        _, wgs84, reverse = d
+        source, target = (wgs84, f"EPSG:{actual}") if reverse else (f"EPSG:{actual}", wgs84)
+        return transformations(source, target, grids=grids)
+
+    jobs = [(c, d) for c in directed for d in directions]
+    with ThreadPoolExecutor(os.cpu_count()) as pool:
+        found = list(pool.map(lambda j: other_way(*j, False), jobs))
+        found_grids = list(pool.map(lambda j: other_way(*j, True), jobs))
+    for ((code, _, geog), (direction, _, reverse)), transfos, transfos_grids in zip(jobs, found, found_grids):
+        ids, gids = lists[code]
+        candidates = {}
+        geog_ids, geog_gids = lists.get(int(geog), ((), ())) if geog else ((), ())
+        for i in [*ids, *gids, *geog_ids, *geog_gids]:
+            candidates.setdefault(name_key(names[i], False), i)
+        other, other_grids = (same_named(t, candidates, reverse, f"EPSG:{code} {direction}") for t in (transfos, transfos_grids))
+        # None found, or none PROJ lists (RRAF 1991 geocentric, which PROJ does not transform):
+        # the CRS keeps its lists.
+        if not other or other_grids is None:
+            continue
+        other_grids = [] if other_grids == other else other_grids
+        if (other, other_grids or other) != (ids, gids or ids):
+            yield ("L", code, direction, ",".join(map(str, other)), ",".join(map(str, other_grids)))
 
     # Direct transformations between datums other than WGS 84.
     geogs = {}
