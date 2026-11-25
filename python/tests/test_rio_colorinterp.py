@@ -1,9 +1,11 @@
 """The color interpretation `terrio.rio` writes (rasterio not needed).
 
 A dataset's color interpretation, set with `colorinterp`, copied by `shutil.copy` or kept by an
-update, reads back as it was set. Given no `PHOTOMETRIC`, which a COG never takes and an update
-passes only for an RGB file, the GeoTIFF writer gives three Byte bands, or four compressed with
-WebP, the red, green and blue interpretation unless told otherwise, as it does with
+update, reads back as it was set, but in YCbCr, as GDAL writes it: a GeoTIFF given
+`PHOTOMETRIC=YCBCR` reads back red, green and blue on its first three bands, and a COG of three JPEG
+Byte bands on those of them set `undefined`. Given no `PHOTOMETRIC`, which a COG never takes and an
+update passes only for an RGB file, the GeoTIFF writer gives three Byte bands, or four compressed
+with WebP, the red, green and blue interpretation unless told otherwise, as it does with
 `PHOTOMETRIC=YCBCR`; `terrio.rio` sends it each band whose interpretation differs from that.
 
 Such bands came back with red, green or blue on every band whose interpretation was not sent:
@@ -203,15 +205,14 @@ def test_an_update_keeps_the_color_interpretation_of_three_byte_bands(
     [None, (U, U, U), (GRAY, U, U), (B, G, R)],
     ids=lambda c: "default" if c is None else "-".join(i.name for i in c),
 )
-def test_jpeg_ycbcr_bands_read_back_their_color_interpretation(tmp_path, colorinterp):
-    """A GeoTIFF of three Byte bands compressed with JPEG in YCbCr (`photometric="ycbcr"`) is
-    red, green and blue by default, as the dataset says before it is written, and keeps any
-    other interpretation set."""
+def test_jpeg_ycbcr_bands_read_back_red_green_and_blue(tmp_path, colorinterp):
+    """A GeoTIFF of three Byte bands compressed with JPEG in YCbCr (`photometric="ycbcr"`) reads
+    back red, green and blue whatever interpretation was set, as GDAL 3.13.3 writes it (its
+    GDAL_METADATA holds none); the dataset says what was set before it is written."""
     path = tmp_path / "a.tif"
     before = _write(path, "GTiff", colorinterp, exact=False, compress="jpeg", photometric="ycbcr")
-    expected = (R, G, B) if colorinterp is None else colorinterp
-    assert before == expected
-    assert _read_back(path) == expected
+    assert before == ((R, G, B) if colorinterp is None else colorinterp)
+    assert _read_back(path) == (R, G, B)
 
 
 def _case(driver, extension, count, dtype="uint8", **options):

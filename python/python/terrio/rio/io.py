@@ -2912,6 +2912,7 @@ class DatasetWriter(DatasetReader):
             # GDAL's defaults: RGB for three or four Byte bands, the fourth as alpha.
             if "PHOTOMETRIC" not in out and self._dtype == "uint8" and self._count in (3, 4):
                 out["PHOTOMETRIC"] = "RGB"
+                self._default_rgb = True
                 if self._count == 4:
                     out.setdefault("ALPHA", "YES")
         return out
@@ -3048,6 +3049,7 @@ class DatasetWriter(DatasetReader):
             opts["INTERLEAVE"] = "BAND"
         if s.colorinterp[:3] == [ColorInterp.red, ColorInterp.green, ColorInterp.blue]:
             opts["PHOTOMETRIC"] = "RGB"
+            self._default_rgb = True
         if self.structure.alpha_band() is not None:
             opts["ALPHA"] = "YES"
         self._options = opts
@@ -3592,6 +3594,15 @@ class DatasetWriter(DatasetReader):
             except Exception as err:
                 raise RasterioIOError(f"Write failed: {err}") from err
         driver = self._out_driver
+        if getattr(self, "_default_rgb", False) and s.colorinterp[:3] != [
+            ColorInterp.red,
+            ColorInterp.green,
+            ColorInterp.blue,
+        ]:
+            # GDAL makes three or four Byte bands RGB unless PHOTOMETRIC is given, and MINISBLACK
+            # once their first three are set otherwise (`GTiffRasterBand::SetColorInterpretation`);
+            # the writer keeps those then, where it ignores them under a PHOTOMETRIC=RGB given.
+            self._options.pop("PHOTOMETRIC", None)
         opts = dict(self._options)
         compress = opts.pop("COMPRESS", None)
         band_md: list[dict[str, Any]] = []
@@ -3602,6 +3613,13 @@ class DatasetWriter(DatasetReader):
         explicit_jp2_roles = (
             self._colorinterp_set or bool(inherited_associations)
         ) and _terrio.canonical_driver_name(driver) == "JP2"
+        # GDAL 3.13.3 ignores the interpretations set on the first three bands of a YCbCr
+        # GeoTIFF it creates: they read red, green and blue, where the writer, as GDAL's
+        # CreateCopy, keeps those other than Undefined.
+        ycbcr = (
+            _terrio.canonical_driver_name(driver) == "GTIFF"
+            and opts.get("PHOTOMETRIC", "").upper() == "YCBCR"
+        )
         for b in range(self._count):
             md: dict[str, Any] = {}
             if s.descriptions[b]:
@@ -3616,7 +3634,7 @@ class DatasetWriter(DatasetReader):
                 md["items"] = dict(s.band_tags[b])
             ci = s.colorinterp[b]
             if (ci != defaults[b] or explicit_jp2_roles) and not (
-                ci == ColorInterp.palette and s.colormap
+                (ci == ColorInterp.palette and s.colormap) or (ycbcr and b < 3)
             ):
                 md["color_interp"] = _tiff.COLOR_INTERP_NAMES.get(ci, "Undefined")
             if b < len(inherited_associations) and inherited_associations[b] is not None:

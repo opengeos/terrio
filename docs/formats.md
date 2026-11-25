@@ -240,10 +240,21 @@ under every compression terrio reads: terrio decodes them itself (the `tiff` cra
 
 GeoTIFF and COG Deflate chunks (`DEFLATE`, `LERC_DEFLATE`) are compressed at the `ZLEVEL`
 creation option, from 1 (the least effort) to 9 (the most), 6 by default, and Zstandard chunks
-(`ZSTD`, `LERC_ZSTD`) at `ZSTD_LEVEL`, from 1 to 22, 9 by default. `ZSTD_LEVEL` has an effect only
-with the `libzstd` feature: without it, as in the default build and in WebAssembly, Zstandard
-chunks are compressed at the one level their encoder has. A level out of range is refused,
-whatever the compression.
+(`ZSTD`, `LERC_ZSTD`) at `ZSTD_LEVEL`, from 1 to 22, 9 by default. Without the `libzstd` feature,
+as in the default build and in WebAssembly, the Zstandard encoder takes levels 1 to 4 and
+compresses higher ones at 4. A `ZLEVEL` or `ZSTD_LEVEL` out of range is refused, whatever the
+compression. A COG also takes GDAL's COG option `LEVEL`, ahead of either: the Deflate
+level of `DEFLATE` and `LERC_DEFLATE`, the Zstandard level of `ZSTD` and `LERC_ZSTD`; other
+compressions ignore it, as GDAL does.
+
+A COG of three Byte bands compressed with JPEG is written in YCbCr, subsampled as with
+`PHOTOMETRIC=YCBCR`, as GDAL's COG driver writes it; `PHOTOMETRIC=RGB` (an option GDAL's COG driver
+does not have) keeps it RGB. A GeoTIFF's JPEG stays RGB unless `PHOTOMETRIC=YCBCR` is given. As
+GDAL copies a raster, with `PHOTOMETRIC=RGB` given the first three bands read as red, green and
+blue whatever the source's colour interpretations; in YCbCr, so do those of them that are
+Undefined, and others, such as Gray, are kept. On a GeoTIFF that `terrio.rio` writes with
+`photometric="ycbcr"`, the first three read back as red, green and blue whatever was set, as with
+GDAL.
 
 `SPARSE_OK=YES` leaves out of a GeoTIFF the blocks of its full-resolution image whose samples are
 all nodata, or 0 without nodata, in every band the block holds: every band of the file, or, with
