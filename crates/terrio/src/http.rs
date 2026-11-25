@@ -2627,10 +2627,10 @@ impl Shared {
     /// long-lived reader whose cache is full still fetches the plan in one batch. Blocks the
     /// ranges cover stay; those the scan reaches move to the newest end, to be read before they
     /// would be evicted. When the plan cannot fit beside them, nothing is dropped for nothing.
-    /// Returns whether it fits.
     /// The plan counts as its requests' blocks, the cached gaps they fetch again included (at
     /// most `PLAN_GAP` a join): they are held while the responses are stored, and fetch_planned's
     /// budget counts them the same way, so the plan made room for is fetched in one batch.
+    /// Returns whether the plan fits.
     fn make_room(&mut self, plan: &[u64], ranges: &[(u64, u64)]) -> bool {
         let bs = self.block_size;
         let covered = |b: u64| ranges.iter().any(|&(off, len)| len > 0 && b >= off / bs && b <= (off.saturating_add(len) - 1) / bs);
