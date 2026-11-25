@@ -105,6 +105,92 @@ def test_geoparquet_without_statistics_counts_all_row_groups(tmp_path):
     assert perf_matrix.GeoParquet.meta(path, "bbox")["need_bytes"] == expected
 
 
+def test_geopackage_pages_come_from_the_table_b_tree_and_the_r_tree(tmp_path):
+    """Find every table page from the interior pages, and an R-tree's rows as SQLite does.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+    """
+    import sqlite3
+
+    path = tmp_path / "t.gpkg"
+    con = sqlite3.connect(path)
+    con.execute("PRAGMA page_size = 1024")
+    con.execute("CREATE TABLE data (fid INTEGER PRIMARY KEY, geom BLOB)")
+    con.executemany("INSERT INTO data VALUES (?, ?)", [(i, b"x" * 200) for i in range(1, 3001)])
+    con.commit()
+    pages = con.execute("PRAGMA page_count").fetchone()[0]
+    with open(path, "rb") as f:
+        leaves = perf_matrix.GeoPackage.leaves(f, 1024, 2)
+    interior = {p for _, _, up in leaves for p in up}
+    # Two levels of interior pages; every page but the schema's belongs to the table.
+    assert max(len(up) for _, _, up in leaves) == 2
+    assert len(leaves) + len(interior) == pages - 1
+    assert [hi for hi, _, _ in leaves] == sorted(hi for hi, _, _ in leaves) and leaves[-1][0] == float("inf")
+    try:
+        con.execute("CREATE VIRTUAL TABLE rtree_data_geom USING rtree(id, minx, maxx, miny, maxy)")
+    except sqlite3.OperationalError:
+        pytest.skip("SQLite without the R-tree module")
+    con.executemany("INSERT INTO rtree_data_geom VALUES (?, ?, ?, ?, ?)",
+                    [(i, i % 100, i % 100 + 1.5, i // 100, i // 100 + 1.5) for i in range(1, 3001)])
+    con.commit()
+    boxes = [(10, 3, 20, 7), (95, 25, 99, 28)]
+    ids, nodes = perf_matrix.GeoPackage.rtree(con, "rtree_data_geom", boxes)
+    expected = {i for b in boxes for (i,) in con.execute(
+        "SELECT id FROM rtree_data_geom WHERE minx <= ? AND maxx >= ? AND miny <= ? AND maxy >= ?", (b[2], b[0], b[3], b[1]))}
+    assert ids == expected and len(ids) > 50
+    total = con.execute("SELECT sum(length(data)) FROM rtree_data_geom_node").fetchone()[0]
+    assert 0 < nodes < total
+
+
+def test_geopackage_needed_bytes_read_a_fixture_under_a_directory_with_a_hash(tmp_path):
+    """Open a fixture by its path, even when a directory's name holds a URI fragment's `#`.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+    """
+    ogr = pytest.importorskip("osgeo.ogr")
+    path = tmp_path / "matrix#1" / "t.gpkg"
+    path.parent.mkdir()
+    ds = ogr.GetDriverByName("GPKG").CreateDataSource(str(path))
+    lyr = ds.CreateLayer(perf_matrix.GeoPackage.LAYER, None, ogr.wkbPoint)
+    for i in range(3):
+        f = ogr.Feature(lyr.GetLayerDefn())
+        f.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT ({i} {i})"))
+        lyr.CreateFeature(f)
+    lyr = ds = None
+    need = perf_matrix.GeoPackage.meta(path, "full")["need_bytes"]
+    assert 0 < need <= path.stat().st_size
+
+
+def test_http_ranges_larger_than_a_piece_are_served_whole_and_counted(tmp_path, monkeypatch):
+    """Serve a range across several 1 MiB pieces, and count its bytes once.
+
+    Args:
+        tmp_path: Isolated served directory.
+        monkeypatch: Scoped handler latency.
+    """
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    data = bytes(range(256)) * (3 * 4096 + 7)
+    (tmp_path / "f.bin").write_bytes(data)
+    monkeypatch.setattr(perf_matrix._Handler, "latency", 0)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), lambda *a, **k: perf_matrix._Handler(*a, directory=str(tmp_path), **k))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with perf_matrix._lock:
+            perf_matrix._log.clear()
+        request = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}/f.bin", headers={"Range": "bytes=100-"})
+        with urllib.request.urlopen(request) as answer:
+            assert answer.read() == data[100:]
+        assert [x[2] for x in perf_matrix._settled_log()] == [len(data) - 100]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_flatgeobuf_needed_bytes_come_from_the_spatial_index(tmp_path, monkeypatch):
     """Count the header, the index nodes visited and the features found by a bbox.
 
@@ -562,10 +648,12 @@ def test_changed_files_choose_the_formats_to_measure():
     """A format's own file picks it; a shared one picks every format; others pick none."""
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
-    assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "flatgeobuf"]
+    assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "flatgeobuf", "geopackage"]
+    assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
+    assert perf_matrix.touched(["crates/terrio/src/ops/sql/select.rs"]) == ["geopackage"]
     assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == ["flatgeobuf"]
-    assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf"]
+    assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
     assert perf_matrix.touched(["docs/benchmarks.md"]) == []
 
 
