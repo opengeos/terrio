@@ -2776,6 +2776,11 @@ def report(rows: list[dict]) -> str:
         The report's text.
     """
     heads = [r["machine"] for r in rows if "machine" in r]
+    # The results file of each row (its machine line comes first), so thread counts pair within a run.
+    run_of, run = {}, 0
+    for r in rows:
+        run += "machine" in r
+        run_of[id(r)] = run
     rows = [r for r in rows if "machine" not in r]
     lines = []
     for h in heads:
@@ -2818,11 +2823,11 @@ def report(rows: list[dict]) -> str:
     by_case: dict[tuple, dict[int, dict]] = {}
     for r in ok:
         if threads(r["access"]):
-            by_case.setdefault((r["format"], r["fixture"], r["source"]), {})[threads(r["access"])] = r
+            by_case.setdefault((r["format"], r["fixture"], r["source"], run_of.get(id(r))), {})[threads(r["access"])] = r
     scaling = []
-    for fmt, source in sorted({(f, s) for f, _, s in by_case}):
+    for fmt, source in sorted({(f, s) for f, _, s, _ in by_case}):
         for n in sorted({n for c in by_case.values() for n in c if n > 1}):
-            pairs = [(c[1], c[n]) for (f, _, s), c in by_case.items() if (f, s) == (fmt, source) and 1 in c and n in c]
+            pairs = [(c[1], c[n]) for (f, _, s, _), c in by_case.items() if (f, s) == (fmt, source) and 1 in c and n in c]
             if pairs:
                 speedup = {t: math.exp(statistics.fmean(math.log(one[t]["total_s"] / r[t]["total_s"]) for one, r in pairs)) for t in ("terrio", "gdal")}
                 ratio = math.exp(statistics.fmean(math.log(r["time_ratio"]) for _, r in pairs))
