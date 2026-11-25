@@ -562,6 +562,21 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
             crate::declared::check_bytes(cols, rows, bands, size, false)?;
         }
     }
+    let fill_attribute = attr_f64(var, "_FillValue").or_else(|| attr_f64(var, "missing_value"));
+    // netCDF-4 variables written without fill values (`_NoFill`): HDF5 datasets whose fill value
+    // is undefined, as the netCDF library reads them. Looked for only without a fill value
+    // attribute, as netCDF-4 files are opened again for it, and before the values are read: the
+    // auxiliary HDF5 handle (in memory, a copy of the input) is released first.
+    let no_fill = || {
+        attr_str(var, "_NoFill").is_some_and(|v| v.eq_ignore_ascii_case("true"))
+            || (!matches!(f.format(), NcFormat::Classic | NcFormat::Offset64 | NcFormat::Cdf5)
+                && h5
+                    .get()
+                    .and_then(|h| h.dataset(&format!("/{}", var_ref.read_path())).ok())
+                    .is_some_and(|d| d.fill_value().is_none_or(|fv| !fv.defined)))
+    };
+    let default_fill = fill_attribute.is_none() && !unsigned && complex.is_none() && !no_fill();
+    drop(h5);
     let data = match (var.dtype(), unsigned) {
         _ if complex.is_some() => {
             let part = complex.unwrap_or(wbraster::DataType::F32);
@@ -706,20 +721,10 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
             None => {}
         }
     }
-    let mut nodata = attr_f64(var, "_FillValue").or_else(|| attr_f64(var, "missing_value"));
-    // Without one, netCDF's default fill value of the type (not for bytes), as GDAL reports it.
-    // netCDF-4 variables written without fill values (`_NoFill`): HDF5 datasets whose fill value
-    // is undefined, as the netCDF library reads them.
-    // Looked for only without a fill value attribute: netCDF-4 files are opened again for it.
-    let no_fill = || {
-        attr_str(var, "_NoFill").is_some_and(|v| v.eq_ignore_ascii_case("true"))
-            || (!matches!(f.format(), NcFormat::Classic | NcFormat::Offset64 | NcFormat::Cdf5)
-                && h5
-                    .get()
-                    .and_then(|h| h.dataset(&format!("/{}", var_ref.read_path())).ok())
-                    .is_some_and(|d| d.fill_value().is_none_or(|fv| !fv.defined)))
-    };
-    if nodata.is_none() && !unsigned && complex.is_none() && !no_fill() {
+    let mut nodata = fill_attribute;
+    // Without one, netCDF's default fill value of the type (not for bytes), as GDAL reports it,
+    // unless the variable is written without fill values (`default_fill`, above).
+    if default_fill {
         nodata = match var.dtype() {
             NcType::Short => Some(-32767.0),
             NcType::Int => Some(-2147483647.0),

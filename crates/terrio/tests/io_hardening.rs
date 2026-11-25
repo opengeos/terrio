@@ -90,3 +90,39 @@ fn tar_gz_decompression_enforces_zip_max_size() {
     assert!(matches!(terrio::vsi::stat(&vpath_member), Err(terrio::Error::ResourceLimit(_))));
     assert!(matches!(terrio::vsi::read(&vpath_member), Err(terrio::Error::ResourceLimit(_))));
 }
+
+/// Tar framing (a 512-byte header per member, payload padding) is allowed beyond
+/// `TERRIO_ZIP_MAX_SIZE` for the entries read: an archive of many small members within the entry
+/// and payload limits reads as `.tar.gz` as it does as `.tar`.
+#[test]
+fn tar_gz_framing_of_many_small_members_is_within_the_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("many.tar.gz");
+    let mut gz = GzEncoder::new(std::fs::File::create(&archive).unwrap(), Compression::fast());
+    {
+        let mut tar = tar::Builder::new(&mut gz);
+        for i in 0..1000 {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(1);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, format!("m{i:04}.txt"), &b"x"[..]).unwrap();
+        }
+        tar.finish().unwrap();
+    }
+    gz.finish().unwrap().flush().unwrap();
+
+    struct ScopeGuard;
+    impl Drop for ScopeGuard {
+        fn drop(&mut self) {
+            terrio::config::pop_scope();
+        }
+    }
+    // 1000 bytes of members, about 1 MiB of tar stream.
+    terrio::config::push_scope(std::collections::HashMap::from([("TERRIO_ZIP_MAX_SIZE".to_string(), Some("65536".to_string()))]));
+    let _guard = ScopeGuard;
+    let root = format!("/vsitar/{}", archive.display());
+    let listed = terrio::vsi::list(&root, &Default::default()).unwrap();
+    assert_eq!(listed.len(), 1000);
+    assert_eq!(terrio::vsi::read(&format!("{root}/m0999.txt")).unwrap(), b"x");
+}

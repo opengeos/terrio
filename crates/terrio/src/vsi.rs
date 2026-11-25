@@ -971,17 +971,43 @@ fn tar_entry<R: Read>(entry: &tar::Entry<'_, R>) -> Option<Entry> {
 struct LimitedGz<R: Read> {
     inner: flate2::read::MultiGzDecoder<R>,
     read: u64,
-    limit: u64,
+    max_size: u64,
+    /// [`TAR_ENTRIES_READ`] when the stream was opened.
+    entries_before: u64,
+}
+
+/// The framing of a tar stream allowed beyond `TERRIO_ZIP_MAX_SIZE`: the end-of-archive blocks
+/// and the first header, then for each entry read its payload's padding, the next header and a
+/// GNU long-name or pax extension of up to one block.
+#[cfg(not(target_family = "wasm"))]
+const TAR_FRAMING_BASE: u64 = 4096;
+#[cfg(not(target_family = "wasm"))]
+const TAR_FRAMING_PER_ENTRY: u64 = 2048;
+
+#[cfg(not(target_family = "wasm"))]
+thread_local! {
+    /// The tar entries [`TarLimits::count`] has counted on this thread: a `.tar.gz` stream's
+    /// framing allowance grows with the entries read from it, which `TERRIO_ZIP_MAX_ENTRIES`
+    /// bounds, so payload past `TERRIO_ZIP_MAX_SIZE` is never decompressed.
+    static TAR_ENTRIES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(not(target_family = "wasm"))]
 impl<R: Read> LimitedGz<R> {
     fn new(reader: R) -> Self {
-        let limits = crate::vfs::ZipLimits::from_config();
-        // Allow tar header/alignment framing headroom above payload `max_size` so exact payload
-        // limits in `TarLimits` fire first on small archives while still bounding gzip bombs.
-        let framing = limits.max_entries.min(64).saturating_mul(1024).saturating_add(2048);
-        Self { inner: flate2::read::MultiGzDecoder::new(reader), read: 0, limit: limits.max_size.saturating_add(framing) }
+        Self {
+            inner: flate2::read::MultiGzDecoder::new(reader),
+            read: 0,
+            max_size: crate::vfs::ZipLimits::from_config().max_size,
+            entries_before: TAR_ENTRIES_READ.get(),
+        }
+    }
+
+    /// The decompressed bytes allowed so far: the members' limit and the framing of the entries
+    /// read.
+    fn limit(&self) -> u64 {
+        let entries = TAR_ENTRIES_READ.get().saturating_sub(self.entries_before);
+        self.max_size.saturating_add(TAR_FRAMING_BASE).saturating_add(entries.saturating_mul(TAR_FRAMING_PER_ENTRY))
     }
 }
 
@@ -1004,10 +1030,11 @@ impl<R: Read> Read for LimitedGz<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.inner.read(buf)?;
         self.read = self.read.saturating_add(n as u64);
-        if self.read > self.limit {
+        let limit = self.limit();
+        if self.read > limit {
             return Err(std::io::Error::other(GzLimitExceeded(format!(
-                "tar.gz: decompressed stream exceeds the {} byte limit (TERRIO_ZIP_MAX_SIZE)",
-                self.limit
+                "tar.gz: decompressed stream exceeds {limit} bytes: the {} bytes allowed (TERRIO_ZIP_MAX_SIZE) and the tar framing of the entries read",
+                self.max_size
             ))));
         }
         Ok(n)
@@ -1074,6 +1101,7 @@ impl TarLimits {
     /// Counts one more entry of the archive, within the entries allowed.
     fn count(&mut self) -> Result<()> {
         self.entries += 1;
+        TAR_ENTRIES_READ.set(TAR_ENTRIES_READ.get().saturating_add(1));
         if self.entries > self.limits.max_entries {
             return Err(Error::ResourceLimit(format!(
                 "tar: the archive lists more than the {} entries allowed (TERRIO_ZIP_MAX_ENTRIES)",

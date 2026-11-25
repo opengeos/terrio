@@ -1492,7 +1492,9 @@ geometry-column options to distinguish it from coordinate-like attributes.
   opened from memory (Python and JavaScript byte reads) read their members within the same
   archive limits; an archive in another's member shares its `TERRIO_ZIP_MAX_SIZE`, and archives
   nest at most 8 deep. Gzip-compressed tar archives read through `/vsitar/` (`.tar.gz`, `.tgz`)
-  also enforce `TERRIO_ZIP_MAX_SIZE` (default 4 GiB) across the decompressed stream.
+  also cap the decompressed stream, skipped members included, at `TERRIO_ZIP_MAX_SIZE` (default
+  4 GiB) plus the tar framing of the entries read (2 KiB each for headers and padding, and 4 KiB
+  more), which `TERRIO_ZIP_MAX_ENTRIES` bounds.
 - **KML styles** (`<Style>`, `<StyleMap>`) are read into an `OGR_STYLE` field holding GDAL's style
   strings (`PEN(c:#FF0000FF,w:2.000000px);BRUSH(fc:#00FF0040)`), and written back as KML styles;
   OGR's null brush (`BRUSH(id:"ogr-brush-1")`) and null pen (`PEN(id:"ogr-pen-1")`) are written as
