@@ -1246,7 +1246,9 @@ def rows():
         for i in [*ids, *gids, *geog_ids, *geog_gids]:
             candidates.setdefault(name_key(names[i], False), i)
         other, other_grids = (same_named(t, candidates, reverse, f"EPSG:{code} {direction}") for t in (transfos, transfos_grids))
-        if other is None or other_grids is None:
+        # None found, or none PROJ lists (RRAF 1991 geocentric, which PROJ does not transform):
+        # the CRS keeps its lists.
+        if not other or other_grids is None:
             continue
         other_grids = [] if other_grids == other else other_grids
         if (other, other_grids or other) != (ids, gids or ids):

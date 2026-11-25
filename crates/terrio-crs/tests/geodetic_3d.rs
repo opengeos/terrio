@@ -141,3 +141,14 @@ fn heights_beside_wgs_84_2d_are_kept_through_the_shift() {
         assert!((x - want.0).abs() < 1e-3 && (y - want.1).abs() < 1e-3 && (z - want.2).abs() < 1e-3, "{src} -> {dst}: {x} {y} {z}");
     }
 }
+
+/// A CRS PROJ lists no transformation for from WGS 84 (RRAF 1991 geocentric, which PROJ 9.9.0
+/// does not transform) keeps its registered ones in that direction.
+#[test]
+fn a_crs_proj_lists_nothing_for_keeps_its_transformations() {
+    offline();
+    for (src, dst) in [(4326, 4384), (4979, 4384), (4326, 4972)] {
+        let op = transformer(src, dst).operation_at(-61.5, 16.2, 0.0).unwrap().unwrap();
+        assert!(!op.ballpark && op.name.contains("RRAFG to WGS 84"), "EPSG:{src} -> {dst}: {op:?}");
+    }
+}
