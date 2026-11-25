@@ -81,7 +81,7 @@
   `openUrl(url).read(options).toGeoJSON()` gives, with the same requests for `.parquet` URLs. It
   reads every codec terrio reads (Snappy, gzip, Brotli, LZ4, ZSTD), and its CRS is the EPSG code the
   file's `crs` names; the CRS engine is not linked. It is 3.27 MB (0.91 MB Brotli), against 7.85 MB
-  Brotli for `terrio-js`, the only module with GeoParquet before. (#1246)
+  Brotli for `terrio-js` 0.9.0 from npm, the only module with GeoParquet before. (#1246)
 - `OVERVIEW_RESAMPLING=AREA_MATCHED` (`overview_resampling="area_matched"`, and `AREA_MATCHED_MODE`
   for categorical rasters) is a new Terrio overview method for rasters with nodata. It builds COG
   overviews, and GeoTIFF overviews at factors, whose valid cells cover the valid area of the
@@ -525,7 +525,6 @@
   ESRI table moves from PROJ 9.7.1 to 9.9.0. CI checks every EPSG CRS's transformations against GDAL
   3.13.3 / PROJ 9.9.0 reference points. The raster and vector comparisons stay on GDAL 3.12.2 / PROJ
   9.8.1. (#1077)
-- terrio identifies CRSs more as PROJ 9.9.0 does. (#1119)
 - terrio-crs: a deprecated EPSG code now keeps its own definition, as PROJ gives it
   (`CRS.from_epsg`), instead of its replacement's, which GDAL substitutes by default
   (`OSR_USE_NON_DEPRECATED=YES`). GDAL's behaviour is available as
@@ -592,7 +591,13 @@
   off. A bound shift over a source CRS terrio identifies as an EPSG code now wins over the code's
   own transformations, as in PROJ: about 6 m for OSGB36 with its EPSG:4277 id. (#1022)
 - terrio-crs: a WKT 2 `BOUNDCRS` now places points as PROJ 9.8.1 does in three cases where terrio
-  was wrong. (#1049)
+  was wrong: a source CRS that is a WKT 1 `GEOGCS` or `PROJCS`, as GDAL writes one, is read (it was
+  refused), with the bound transformation replacing the source's own `TOWGS84`; a Helmert
+  transformation by any of the 25 methods PROJ applies is applied (terrio dropped the shift of all
+  but three, about 140 m off for a time-dependent coordinate frame transformation); and geocentric
+  translations given rotations apply only the translations, as PROJ does (terrio was about 12 m
+  off). A time-specific Helmert transformation and a `BOUNDCRS` without its transformation are
+  refused, as PROJ refuses them. (#1049)
 - A WKT 2 `BOUNDCRS` whose target is a WKT 1 `GEOGCS` with its own `TOWGS84` is again placed by a
   ballpark, as PROJ 9.8.1 places it. Since #1060, a Bessel source bound to an ED50 target
   (`European_Datum_1950`) was given ED50's transformation on Bessel, about 100 m from PROJ. Esri's
