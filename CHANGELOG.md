@@ -517,8 +517,8 @@
 
 - `terrio-crs` 0.3.0 adds `Transformer::has_non_ballpark_operation`, `SpatialRef::to_proj4_gdal`,
   `helmert_to_wgs84` and the list of grids a point's transformation needs, moves to EPSG v13.102
-  (PROJ 9.9.0), computes `isea` and the Transverse Mercator Zoned Grid System, and reads WKT through
-  one CRS model, fixing many readings to match PROJ 9.9.0.
+  (PROJ 9.9.0), computes `isea` as PROJ 9.9.0 does and the Transverse Mercator Zoned Grid System,
+  and reads WKT through one CRS model, fixing many readings to match PROJ 9.9.0.
 - terrio-crs now carries the EPSG dataset v13.102 (PROJ 9.9.0's database, 2026-08-27) instead of
   v12.029: 281 more EPSG CRSs, such as SIRGAS-Chile 2025 / UTM zone 19S (EPSG:11476,
   opengeos/RustGIS#2335), with the transformations PROJ 9.9.0 uses. `EPSG_VERSION` is `v13.102`. The
@@ -866,7 +866,7 @@
   `CRS.from_user_input`, `CRS.from_wkt` and `CRS.from_string` raise an error naming the keyword, as
   they already do for `FOO[x]`. (#1041)
 
-### Other
+### Other changes
 
 - CITATION.cff, the How to Cite docs page and the README citation list Qiusheng Wu, Dominik Strebel,
   Guillermo Morales Sanchez, Nicolas Karasiak and Mavrick Fitzgerald as authors, in that order.

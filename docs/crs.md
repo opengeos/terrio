@@ -218,8 +218,9 @@ default. Enable `wbprojection-fallback` when Terrio's wider projection coverage
 is required; the feature matrix below describes the supported configurations.
 Since 0.2.4, Eckert IV and Natural Earth are in the default build; 0.2.3 and earlier
 provide them only through that feature. The native method counts in the matrix below
-describe 0.3.0 and are unchanged from 0.2.4: the methods 0.3.0 adds (`isea` and the Transverse
-Mercator Zoned Grid System) are outside the 117-method test corpus.
+describe 0.3.0 and are unchanged from 0.2.4: the method 0.3.0 adds (the Transverse Mercator
+Zoned Grid System) and `isea`, which now follows PROJ 9.9.0's algorithm, are not in the 117-method
+test corpus.
 
 ```rust
 use terrio_crs::{SpatialRef, Transformer};
