@@ -2974,7 +2974,12 @@ PROJ_CASES = {
         ),
         "an_exact_or_evaluation_point_shift_to_an_unread_target_is_left_out": (
             "WKT 2 BOUNDCRS: a full-matrix or evaluation-point shift to a target terrio cannot convert", NOT_COMPARED,
-            "left out with its target, as a `+towgs84` one is: placed as the source CRS alone (PROJ 9.8.1 reads a WKT 1 target)",
+            "left out with its WKT 1 target, as PROJ 9.9.0 leaves it out: placed as the source CRS alone",
+        ),
+        "a_wkt1_target_is_chained_through_its_own_transformations": (
+            "WKT 2 BOUNDCRS to a WKT 1 GEOGCS target (ESRI's D_Monte_Mario, or with its codes)", TOLERANCE,
+            "PROJ 9.9.0 (no grids): within 1 mm; the shift then Monte Mario to WGS 84 (4), and back; with a TOWGS84 on the "
+            "target, its ballpark",
         ),
         "an_unapplied_transformation_method_is_refused": (
             "WKT 2 BOUNDCRS: a transformation method terrio does not apply", EXPECTED_REJECTION,

@@ -1373,7 +1373,10 @@ impl Def {
                     }));
                     return Ok(source);
                 };
-                t.registered_datum(target, None);
+                // A WKT 1 `GEOGCS` target by its text, as a WKT 1 CRS's own datum is found (by its
+                // name: ESRI's `D_Monte_Mario`, #1012 item 53).
+                let wkt1_target = target.geogcs.key.eq_ignore_ascii_case("GEOGCS").then(|| target.geogcs.to_wkt());
+                t.registered_datum(target, wkt1_target.as_deref());
                 let to_target = match helmert {
                     Some(step) => datum::helmert_steps_with(d.ell, t.ell, step),
                     None => datum::helmert_steps(d.ell, t.ell, shift),

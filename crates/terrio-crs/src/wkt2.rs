@@ -54,12 +54,13 @@ pub(crate) struct Wkt2Bound {
     pub transformation: Wkt2Transformation,
     /// Whether its target is WGS 84 (EPSG:4326 or 4979, or its datum WGS 84 by code or name).
     pub to_wgs84: bool,
-    /// Its target's input, when the reader converts it.
-    pub target: Option<Wkt2Root>,
+    /// Its target's input, when the reader converts it: a WKT 2 CRS, or a WKT 1 `GEOGCS` without a
+    /// `TOWGS84`.
+    pub target: Option<Wkt2Source>,
 }
 
-/// A `BOUNDCRS`'s source CRS: a WKT 2 CRS, or a WKT 1 one as GDAL writes it, without the
-/// `TOWGS84` of its datum.
+/// A `BOUNDCRS`'s source or target CRS: a WKT 2 CRS, or a WKT 1 one as GDAL writes it (a source
+/// without the `TOWGS84` of its datum).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Wkt2Source {
     Wkt2(Wkt2Root),
@@ -155,10 +156,17 @@ pub(crate) fn convert_root(input: &Wkt2Root, root: &Node) -> Result<Converted> {
             match b.target.as_ref().zip(node) {
                 // A target bound itself (a `BOUNDCRS`): PROJ 9.9.0 does not chain through it and
                 // links the CRSs by its ballpark.
-                Some((Wkt2Root::Bound(_), _)) => not_applied(format!(
+                Some((Wkt2Source::Wkt2(Wkt2Root::Bound(_)), _)) => not_applied(format!(
                     "its target CRS \"{target_name}\" is bound to another CRS itself, which PROJ does not chain through either"
                 )),
-                Some((input, node)) => match convert_root(input, node) {
+                // A WKT 1 `GEOGCS` (#1012 item 53), for a shift `+towgs84` stands for: PROJ 9.9.0
+                // leaves a full-matrix or evaluation-point one to it out, placing the source CRS as
+                // without the `BOUNDCRS`.
+                Some((Wkt2Source::Wkt1(_), _)) if helmert.is_some() => not_applied(format!("its target CRS \"{target_name}\" is not read")),
+                Some((input, node)) => match match input {
+                    Wkt2Source::Wkt2(input) => convert_root(input, node),
+                    Wkt2Source::Wkt1(input) => super::wkt1::convert(input, node).ok_or_else(|| bad("a target CRS terrio cannot read")),
+                } {
                     Ok(target) => {
                         c.bound = Some(Box::new(BoundTo { target, shift: t, name: name.clone(), target_name }));
                         c.helmert = helmert;
