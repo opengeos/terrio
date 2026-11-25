@@ -3401,9 +3401,9 @@ mod tests {
     }
 
     /// A chunk of blocks larger than the scratch kept (zeroed by the allocator, not kept)
-    /// unshuffles each block as a chunk of small blocks does: bit and byte shuffle, stored streams.
+    /// unshuffles each block as the bit and byte unshuffle definitions do, from stored streams.
     #[test]
-    fn blosc_blocks_larger_than_the_scratch_kept_unshuffle_as_small_ones() {
+    fn blosc_blocks_larger_than_the_scratch_kept_unshuffle_as_their_definition() {
         let (typesize, bsize) = (4usize, 3 << 19);
         let data: Vec<u8> = (0..2 * bsize).map(|i| (i * 31 % 251) as u8).collect();
         for shuffle in [0x04u8, 0x01] {
