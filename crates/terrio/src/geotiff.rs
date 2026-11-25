@@ -2234,6 +2234,74 @@ mod tests {
         assert_eq!(write(1, Cog, None).0, Some(1));
     }
 
+    /// A repeated COMPRESS is read as the writer reads it, the last one winning: LZW then JPEG
+    /// writes the YCbCr COG of JPEG's default.
+    #[test]
+    fn a_cog_takes_the_last_compress_for_its_photometric() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = wbraster::RasterConfig { cols: 64, rows: 64, bands: 3, data_type: wbraster::DataType::U8, ..Default::default() };
+        let data = (0..3 * 64 * 64).map(|i| (i % 251) as u8).collect();
+        let mut ds =
+            crate::RasterDataset::new(wbraster::Raster::from_data_native(cfg, wbraster::raster::RasterData::U8(data)).unwrap(), false);
+        ds.band_metadata =
+            ["Red", "Green", "Blue"].map(|c| crate::BandMetadata { color_interp: Some(c.into()), ..Default::default() }).to_vec();
+        let out = dir.path().join("lzw-then-jpeg.tif");
+        let creation_options = vec![("COMPRESS".to_string(), "LZW".to_string()), ("COMPRESS".to_string(), "JPEG".to_string())];
+        let options = crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::Cog), creation_options, ..Default::default() };
+        crate::write_raster_dataset(&ds, out.to_str().unwrap(), &options).unwrap();
+        let mut dec = tiff::decoder::Decoder::new(std::fs::File::open(&out).unwrap()).unwrap();
+        assert_eq!(dec.find_tag_unsigned::<u16>(tiff::tags::Tag::Compression).unwrap(), Some(7));
+        assert_eq!(dec.find_tag_unsigned::<u16>(tiff::tags::Tag::PhotometricInterpretation).unwrap(), Some(6));
+    }
+
+    /// Under PHOTOMETRIC=RGB the third band is blue whatever its source interpretation, so its
+    /// overviews are averaged as a colour band, not weighted as an alpha band, with nodata in
+    /// effect: a source Alpha third band gives the overviews of a source Blue one.
+    #[test]
+    fn rgb_photometric_overviews_average_a_source_alpha_third_band_as_blue() {
+        let dir = tempfile::tempdir().unwrap();
+        let overview = |third: &str| {
+            let cfg = wbraster::RasterConfig {
+                cols: 64,
+                rows: 64,
+                bands: 3,
+                data_type: wbraster::DataType::U8,
+                nodata: 255.0,
+                ..Default::default()
+            };
+            // Zeros in the third band, which an alpha weighting drops, and some nodata.
+            let data = (0..3 * 64 * 64)
+                .map(|i| {
+                    if i % 7 == 0 {
+                        0
+                    } else if i % 97 == 0 {
+                        255
+                    } else {
+                        (i % 200) as u8
+                    }
+                })
+                .collect();
+            let mut ds =
+                crate::RasterDataset::new(wbraster::Raster::from_data_native(cfg, wbraster::raster::RasterData::U8(data)).unwrap(), true);
+            ds.band_metadata =
+                ["Red", "Green", third].map(|c| crate::BandMetadata { color_interp: Some(c.into()), ..Default::default() }).to_vec();
+            let out = dir.path().join(format!("{third}.tif"));
+            let creation_options = [("COMPRESS", "DEFLATE"), ("PHOTOMETRIC", "RGB"), ("BLOCKSIZE", "16")]
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .to_vec();
+            let options =
+                crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::Cog), creation_options, ..Default::default() };
+            crate::write_raster_dataset(&ds, out.to_str().unwrap(), &options).unwrap();
+            let mut dec = tiff::decoder::Decoder::new(std::fs::File::open(&out).unwrap()).unwrap();
+            dec.next_image().unwrap();
+            match dec.read_image().unwrap() {
+                tiff::decoder::DecodingResult::U8(v) => v,
+                _ => unreachable!("Byte overview"),
+            }
+        };
+        assert_eq!(overview("Alpha"), overview("Blue"));
+    }
+
     /// Three Byte bands of Undefined colour interpretation written with PHOTOMETRIC=RGB or YCBCR
     /// read as red, green and blue, as GDAL 3.13.3 writes them: the photometric given overrides the
     /// source's colour interpretations, which are left out of GDAL_METADATA.

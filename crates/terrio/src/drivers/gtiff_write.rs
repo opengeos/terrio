@@ -1706,11 +1706,15 @@ fn mask_levels(
 /// overviews weight by itself (`IsMaskBand`), and whether it is the other bands' mask band too
 /// (two or four bands, Byte or UInt16: `GDALRasterBand::GetMaskBand`).
 fn alpha_weights(opts: &TiffOptions, bands: usize, t: DataType) -> (Option<usize>, bool) {
-    let last_is_alpha = opts
-        .band_metadata
-        .get(bands.wrapping_sub(1))
-        .and_then(|b| b.color_interp.as_deref())
-        .is_some_and(|c| c.eq_ignore_ascii_case("alpha"));
+    // PHOTOMETRIC=RGB given makes the first three bands red, green and blue whatever their source
+    // interpretations (see `plan`), so a third band read as Alpha in the source is blue here.
+    let rgb_band = bands <= 3 && opts.photometric == Some(2);
+    let last_is_alpha = !rgb_band
+        && opts
+            .band_metadata
+            .get(bands.wrapping_sub(1))
+            .and_then(|b| b.color_interp.as_deref())
+            .is_some_and(|c| c.eq_ignore_ascii_case("alpha"));
     let alpha = (opts.alpha || last_is_alpha).then(|| bands - 1);
     (alpha, alpha.is_some() && matches!(bands, 2 | 4) && matches!(t, DataType::U8 | DataType::U16))
 }

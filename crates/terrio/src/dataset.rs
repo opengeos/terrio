@@ -1951,7 +1951,9 @@ pub(crate) fn color_options(ds: &RasterDataset, path: &str, options: &RasterWrit
         return None;
     }
     let interps_given = options.band_metadata.iter().any(|b| b.color_interp.is_some());
-    let given = |k: &str| options.creation_options.iter().find(|(o, _)| o.eq_ignore_ascii_case(k)).map(|(_, v)| v.to_ascii_uppercase());
+    // The last of a repeated option wins, as in the writer.
+    let given =
+        |k: &str| options.creation_options.iter().rev().find(|(o, _)| o.eq_ignore_ascii_case(k)).map(|(_, v)| v.to_ascii_uppercase());
     let ci = |b: usize| ds.band_metadata.get(b).and_then(|m| m.color_interp.as_deref()).map(str::to_ascii_lowercase);
     let bands = ds.raster.bands;
     let photometric = given("PHOTOMETRIC");
