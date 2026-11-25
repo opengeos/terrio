@@ -1,5 +1,5 @@
-//! `terrio translate` and `terrio convert` with `--co ZLEVEL=` and `--co ZSTD_LEVEL=`: the level
-//! reaches the PNG and GeoTIFF writers, changing the bytes written but not the pixels read back,
+//! `terrio translate` and `terrio convert` with `--co ZLEVEL=`, `--co ZSTD_LEVEL=` and, for a COG,
+//! `--co LEVEL=`: the level reaches the PNG and GeoTIFF writers, changing the bytes written but not the pixels read back,
 //! and a level out of range is refused.
 
 use std::path::Path;
@@ -59,4 +59,24 @@ fn translate_and_convert_pass_the_compression_level_to_the_writer() {
             assert!(!result.status.success() && stderr.contains(&format!("invalid {key} '{value}'")), "{command} {option}: {stderr}");
         }
     }
+}
+
+/// `terrio translate --format COG --co LEVEL=` sets the Deflate level as `ZLEVEL` does, as GDAL
+/// 3.13.3's COG driver takes it, and a level out of range is refused.
+#[test]
+fn translate_passes_the_cog_level_to_the_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    source(dir.path());
+    let write = |out: &str, option: &str| {
+        let args = ["translate", "src.tif", out, "--format", "COG", "--co", "COMPRESS=DEFLATE", "--co", option];
+        let result = terrio(dir.path(), &args);
+        assert!(result.status.success(), "{args:?}: {}", String::from_utf8_lossy(&result.stderr));
+        std::fs::read(dir.path().join(out)).unwrap()
+    };
+    assert_eq!(write("level.tif", "LEVEL=1"), write("zlevel.tif", "ZLEVEL=1"));
+    assert_ne!(write("level.tif", "LEVEL=1"), write("level9.tif", "LEVEL=9"));
+    let result =
+        terrio(dir.path(), &["translate", "src.tif", "bad.tif", "--format", "COG", "--co", "COMPRESS=DEFLATE", "--co", "LEVEL=10"]);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(!result.status.success() && stderr.contains("invalid LEVEL '10'"), "{stderr}");
 }
