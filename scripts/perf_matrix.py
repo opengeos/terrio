@@ -244,7 +244,7 @@ class GeoTiff:
         "f64_deflate_p3": ("float64", 1, 4096, "DEFLATE", 3, "cog", "BAND", 512),
     }
     # One window off the tile grid, 16 scattered windows through one handle, the whole raster, the
-    # whole raster decimated 8x (an overview), 4 threads reading 4 of the 16 windows each.
+    # whole raster decimated 8x (an overview), N threads sharing the 16 windows (`THREAD_COUNTS`).
     ACCESS = ["window", "windows16", "full", "overview", "threads4"]
     EXT = ".tif"
 
@@ -634,7 +634,7 @@ class GeoParquet:
         "line_wkb_rg64k_zstd_bbox_sorted": ("line", 400_000, 65536, "ZSTD", "WKB", True, True),
     }
     # Every column; the geometry and two attributes; a bbox of 1% of the extent; 16 such bboxes
-    # through one handle (a reader of tiles); 4 threads reading 4 of the 16 each; an attribute
+    # through one handle (a reader of tiles); N threads sharing the 16 (`THREAD_COUNTS`); an attribute
     # filter `id < 4000`: 1% of polygons and lines, 0.2% of points.
     ACCESS = ["full", "columns", "bbox", "bbox16", "threads4", "where"]
     EXT = ".parquet"
@@ -1016,6 +1016,35 @@ def rounds(log: list[tuple[float, float, int, str]]) -> int:
     return n
 
 
+# A format's `threads4` access is measured with each of these numbers of reading threads, as
+# `threads1` to `threads8`: each thread opens its own handle and reads every Nth of the 16 parts.
+THREAD_COUNTS = (1, 2, 4, 8)
+
+
+def accesses(fmt) -> list[str]:
+    """A format's access patterns, with its `threads4` expanded to one per `THREAD_COUNTS`.
+
+    Args:
+        fmt: The format's class.
+
+    Returns:
+        The names of the access patterns `run` measures by default and accepts.
+    """
+    return [a for x in fmt.ACCESS for a in ([f"threads{n}" for n in THREAD_COUNTS] if x == "threads4" else [x])]
+
+
+def threads(access: str) -> int:
+    """The number of reading threads of an access pattern.
+
+    Args:
+        access: The access pattern, such as `threads8`.
+
+    Returns:
+        N for `threadsN`, 0 for a read in the calling thread.
+    """
+    return int(access.removeprefix("threads")) if access.startswith("threads") else 0
+
+
 # =============================================================================================
 # Worker: one fresh process per sample, so caches, pools and counters start empty.
 
@@ -1054,22 +1083,24 @@ def worker(spec: dict) -> dict:
     local = src.startswith("/")
     # `base` is another terrio build, found first on PYTHONPATH
     tool = "terrio" if spec["tool"] == "base" else spec["tool"]
+    n_threads = threads(access)
     ti = time.perf_counter()
-    open_, items, check, (warm_open, warm_read) = fmt.reader(tool, access, spec["meta"])
+    # A format reads its 16 parts for `threads4`; any thread count reads the same parts.
+    open_, items, check, (warm_open, warm_read) = fmt.reader(tool, "threads4" if n_threads else access, spec["meta"])
     # A process's first open and read pays one-time costs (library initialization, thread pools):
     # measured on a tiny file apart from the case, as `init`.
     warm_read(warm_open(src.rsplit("/", 1)[0] + "/_warmup" + fmt.EXT))
     r0 = _rchar(local)
     t0 = time.perf_counter()
-    if access == "threads4":  # four handles, opened in the threads and timed as the read
+    if n_threads:  # a handle per thread, opened in the threads and timed as the read
 
         def job(k):
             d = open_(src)  # a handle per thread: GDAL datasets are not thread-safe
-            return [(i, items[i](d)) for i in range(k, len(items), 4)]
+            return [(i, items[i](d)) for i in range(k, len(items), n_threads)]
 
         t1, r1 = t0, r0
-        with ThreadPoolExecutor(4) as pool:  # a job's exception is raised here
-            out = [res for _, res in sorted((x for part in pool.map(job, range(4)) for x in part), key=lambda x: x[0])]
+        with ThreadPoolExecutor(n_threads) as pool:  # a job's exception is raised here
+            out = [res for _, res in sorted((x for part in pool.map(job, range(n_threads)) for x in part), key=lambda x: x[0])]
     else:
         ds = open_(src)
         t1, r1 = time.perf_counter(), _rchar(local)
@@ -1194,11 +1225,11 @@ def run(args: argparse.Namespace) -> None:
         cleanup.callback(out_file.close)
         out_file.write(json.dumps(head) + "\n")
         rows = []
-        for case_index, (name, access, source) in enumerate(itertools.product(names, args.access or fmt.ACCESS, sources)):
+        for case_index, (name, access, source) in enumerate(itertools.product(names, args.access or accesses(fmt), sources)):
             path = data / f"{name}{fmt.EXT}"
             label = "where/sql-vs-filter" if args.format == "geoparquet" and access == "where" else access
             try:
-                meta = fmt.meta(path, access)
+                meta = fmt.meta(path, "threads4" if threads(access) else access)
             except Exception as exc:
                 row = {"format": args.format, "fixture": name, "access": label, "source": source,
                        "meta_error": f"{type(exc).__name__}: {exc}", **fmt.axes(name)}
@@ -1393,6 +1424,21 @@ def report(rows: list[dict]) -> str:
             groups.setdefault(r[axis], []).append(r["time_ratio"])
         cells = sorted(((math.exp(statistics.fmean(map(math.log, v))), k, len(v)) for k, v in groups.items()), reverse=True)
         lines.append(f"{axis:7} " + "  ".join(f"{k} x{gm:.2f}({n})" for gm, k, n in cells))
+    by_case: dict[tuple, dict[int, dict]] = {}
+    for r in ok:
+        if threads(r["access"]):
+            by_case.setdefault((r["format"], r["fixture"], r["source"]), {})[threads(r["access"])] = r
+    scaling = []
+    for fmt, source in sorted({(f, s) for f, _, s in by_case}):
+        for n in sorted({n for c in by_case.values() for n in c if n > 1}):
+            pairs = [(c[1], c[n]) for (f, _, s), c in by_case.items() if (f, s) == (fmt, source) and 1 in c and n in c]
+            if pairs:
+                speedup = {t: math.exp(statistics.fmean(math.log(one[t]["total_s"] / r[t]["total_s"]) for one, r in pairs)) for t in ("terrio", "gdal")}
+                ratio = math.exp(statistics.fmean(math.log(r["time_ratio"]) for _, r in pairs))
+                scaling.append(f"{fmt} {source:5} threads{n:<2} terrio x{speedup['terrio']:.2f}  gdal x{speedup['gdal']:.2f}  terrio/gdal time x{ratio:.2f}  ({len(pairs)})")
+    if scaling:
+        lines.append("\n## Thread scaling (time with 1 reading thread / time with N; geometric means, cases in brackets)\n")
+        lines += scaling
     http = [r for r in ok if r["source"] == "http"]
     more_rounds = [r for r in http if r["terrio"]["rounds"] > r["gdal"]["rounds"]]
     more_bytes = [r for r in ok if _bytes(r["terrio"]) > 1.25 * _bytes(r["gdal"]) + 65536]
@@ -1426,7 +1472,7 @@ def main() -> None:
     r.add_argument("--only", nargs="*", help="fixture name substrings")
     r.add_argument("--access", nargs="*", help="access patterns (default: all of the format's)")
     r.add_argument("--source", nargs="*", choices=["local", "http"])
-    r.add_argument("--threads", type=int, default=4, help="RAYON_NUM_THREADS and GDAL_NUM_THREADS")
+    r.add_argument("--threads", type=int, default=4, help="RAYON_NUM_THREADS and GDAL_NUM_THREADS, for every access")
     r.add_argument("--latency-ms", type=float, default=20, help="simulated round-trip time of the HTTP source")
     r.add_argument("--samples", type=int, default=3, help="samples per tool, in alternating order; the median")
     r.add_argument("--quick", action="store_true", help="one sample per tool")
@@ -1449,8 +1495,8 @@ def main() -> None:
     if a.cmd == "report":
         print(report([json.loads(line) for f in a.results for line in f.read_text().splitlines() if line.strip()]))
         return
-    if a.cmd == "run" and a.access and (bad := set(a.access) - set(FORMATS[a.format].ACCESS)):
-        p.error(f"--access {' '.join(sorted(bad))}: {a.format} reads are {' '.join(FORMATS[a.format].ACCESS)}")
+    if a.cmd == "run" and a.access and (bad := set(a.access) - set(accesses(FORMATS[a.format]))):
+        p.error(f"--access {' '.join(sorted(bad))}: {a.format} reads are {' '.join(accesses(FORMATS[a.format]))}")
     a.dir = a.dir.expanduser().resolve() / a.format  # absolute: the readers take a relative path as a URL
     a.dir.mkdir(parents=True, exist_ok=True)
     if a.cmd == "fixtures":

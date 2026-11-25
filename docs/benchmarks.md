@@ -260,9 +260,9 @@ one file at a time. Each format lists the ways its files vary and the ways they 
 
 | Format | Files vary by | Reads |
 |---|---|---|
-| GeoTIFF | codec and predictor, data type, tiled or stripped, band or pixel interleave, 1–12 bands | one window, 16 windows, whole file, 8x decimated (overview), 4 threads × 4 windows |
-| Zarr | v2 or v3, codec (zlib, gzip, zstd, Blosc LZ4/Zstd with shuffle or bitshuffle, none), data type, chunk size, sharding, cube chunking | one window, 16 windows, whole array, one band of a cube, 4 threads × 4 windows |
-| GeoParquet | geometry type, WKB or GeoArrow, compression, row group size, covering bbox column, spatial sort | all columns, two columns, a bbox of 1% of the extent, 16 bboxes, 4 threads × 4 bboxes, an attribute filter |
+| GeoTIFF | codec and predictor, data type, tiled or stripped, band or pixel interleave, 1–12 bands | one window, 16 windows, whole file, 8x decimated (overview), 1, 2, 4 and 8 threads sharing 16 windows |
+| Zarr | v2 or v3, codec (zlib, gzip, zstd, Blosc LZ4/Zstd with shuffle or bitshuffle, none), data type, chunk size, sharding, cube chunking | one window, 16 windows, whole array, one band of a cube, 1, 2, 4 and 8 threads sharing 16 windows |
+| GeoParquet | geometry type, WKB or GeoArrow, compression, row group size, covering bbox column, spatial sort | all columns, two columns, a bbox of 1% of the extent, 16 bboxes, 1, 2, 4 and 8 threads sharing 16 bboxes, an attribute filter |
 
 GDAL or zarr-python writes one fixture per file combination. terrio and GDAL each read every
 fixture in every way, from a local path and over HTTP from a local server that adds a 20 ms
@@ -321,7 +321,7 @@ request can fix all the cases of that area, with the matrix's numbers before and
 # PyArrow (GeoParquet) and zarr-python 3 (Zarr fixtures).
 (cd python && maturin develop --release)
 python scripts/perf_matrix.py fixtures --format geotiff      # 0.9 GB in ~/.cache/terrio-bench/matrix
-python scripts/perf_matrix.py run --format geotiff           # every case; 30 to 60 minutes per format
+python scripts/perf_matrix.py run --format geotiff           # every case; 50 to 100 minutes per format
 python scripts/perf_matrix.py fixtures --format zarr
 python scripts/perf_matrix.py run --format zarr --only shard --access window --quick
 # `run` prints its results file path; report summarizes one again:
@@ -332,6 +332,13 @@ python -m pytest -q scripts/tests/test_perf_matrix.py
 
 Fixture names identify fixed specifications. Use an empty fixture directory after changing a
 specification or fixture generation code, since existing files are reused by name.
+
+The threaded reads, `threads1` to `threads8`, open one handle in each of N threads, which read
+every Nth of the 16 windows or bboxes; opening is timed as part of the read. The report's thread
+scaling section gives each tool's time with one thread divided by its time with N, per source, over
+the cases measured with both. `--access threads4` selects one thread count, as before. These counts
+are reading threads: the libraries' own pools stay at `--threads` for every access, so `threads1`
+is one reading thread, not a single-threaded process; `--threads 1` measures that.
 
 `--threads` sets `RAYON_NUM_THREADS` and `GDAL_NUM_THREADS` (4 by default), `--latency-ms` the
 simulated round-trip time, `--samples` the samples per tool, and `--quick` takes one. A read that

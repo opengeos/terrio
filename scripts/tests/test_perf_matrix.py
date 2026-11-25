@@ -636,3 +636,82 @@ def test_benchmark_request_rejects_a_read_only_collaborator(tmp_path):
     assert result.returncode == 1
     assert "Repository write permission is required" in result.stdout
     assert not (tmp_path / "outputs").exists()
+
+
+def test_threads4_is_measured_with_each_thread_count():
+    """Expand a format's `threads4` to 1, 2, 4 and 8 threads, and keep the explicit name valid."""
+    assert perf_matrix.accesses(perf_matrix.GeoTiff) == ["window", "windows16", "full", "overview",
+                                                         "threads1", "threads2", "threads4", "threads8"]
+    assert [perf_matrix.threads(a) for a in ("threads1", "threads8", "windows16", "bbox16")] == [1, 8, 0, 0]
+    assert perf_matrix.accesses(SimpleNamespace(ACCESS=["full"])) == ["full"]
+
+
+@pytest.mark.parametrize("access,ok", [(["threads4"], True), (["threads8", "window"], True), (["threads3"], False)])
+def test_run_accepts_only_the_measured_thread_counts(tmp_path, monkeypatch, access, ok):
+    """Accept `threads4` as before and the other measured counts, and reject any other count.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped argument and runner replacements.
+        access: The `--access` values.
+        ok: Whether the command line is accepted.
+    """
+    ran = []
+    monkeypatch.setattr(perf_matrix, "run", ran.append)
+    monkeypatch.setattr(sys, "argv", ["perf_matrix.py", "run", "--dir", str(tmp_path), "--access", *access])
+    if ok:
+        perf_matrix.main()
+        assert ran[0].access == access
+    else:
+        with pytest.raises(SystemExit) as exc:
+            perf_matrix.main()
+        assert exc.value.code == 2 and not ran
+
+
+@pytest.mark.parametrize("n", [1, 2, 8])
+def test_threaded_reads_open_a_handle_per_thread_and_keep_the_parts_in_order(monkeypatch, n):
+    """Read a format's 16 `threads4` parts with N handles in N threads, in the parts' order.
+
+    Args:
+        monkeypatch: Scoped format replacement.
+        n: The number of reading threads.
+    """
+    import threading
+
+    opened, given = [], []
+
+    def reader(_tool, access, _meta):
+        """Give 16 parts that record the thread reading them.
+
+        Args:
+            _tool: Reader backend.
+            access: Read pattern the format is asked for.
+            _meta: Fixture metadata.
+
+        Returns:
+            Reader operations and validation.
+        """
+        given.append(access)
+
+        def open_(path):
+            opened.append(threading.get_ident())
+            return path
+
+        items = [lambda _d, i=i: [i] for i in range(16)]
+        return open_, items, perf_matrix.checksum, (lambda p: p, lambda _d: None)
+
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", SimpleNamespace(EXT=".tif", reader=reader))
+    result = perf_matrix.worker({"format": "fake", "tool": "gdal", "src": "http://localhost/f.tif",
+                                 "access": f"threads{n}", "meta": {}})
+    assert given == ["threads4"] and len(opened) == n
+    assert result["digest"] == perf_matrix.digest([[i] for i in range(16)])
+
+
+def test_report_gives_each_tools_speedup_over_one_thread():
+    """Compare each thread count with one thread, per tool, over the cases that have both."""
+    rows = [summarize({**_row(terrio=[_sample(t)], gdal=[_sample(g)]), "access": f"threads{n}"})
+            for n, t, g in ((1, 8.0, 4.0), (2, 4.0, 2.0), (8, 4.0, 1.0))]
+    other = summarize({**_row(terrio=[_sample(1.0)], gdal=[_sample(1.0)]), "format": "zarr", "access": "threads8"})
+    text = report([*rows, other])  # a zarr case without one thread is not mixed into GeoTIFF's
+    assert "geotiff local threads2  terrio x2.00  gdal x2.00  terrio/gdal time x2.00  (1)" in text
+    assert "geotiff local threads8  terrio x2.00  gdal x4.00  terrio/gdal time x4.00  (1)" in text
