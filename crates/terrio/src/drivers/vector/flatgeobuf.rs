@@ -316,7 +316,7 @@ pub struct FlatGeobufInfo {
 
 /// Reads a FlatGeobuf file's header, and the features whose bounding box intersects `bbox`
 /// `(min_x, min_y, max_x, max_y)`, found with the packed R-tree spatial index: only the index
-/// nodes on the way and those features are read. All features without a filter. Without an index
+/// nodes on the way and those features are read. Without a filter, all features are read. Without an index
 /// (`index_size` is then 0), every feature is read and those whose bounding box does not intersect
 /// `bbox` are dropped. Callers filter the matches by their geometries. Feature ids are the
 /// features' positions in the file, as in GDAL.
