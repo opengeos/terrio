@@ -960,13 +960,18 @@ fn units(k: &GeoKeys) -> (String, f64) {
 }
 
 /// Whether two PROJ strings give the same standard parallels, latitude of true scale and oblique
-/// (and Laborde) azimuths, where both give them (not in [`crate::ProjParams`]).
+/// (and Laborde) azimuths, where both give them, a value PROJ implies when left out filled in (not
+/// in [`crate::ProjParams`]).
 fn same_parallels(a: &str, b: &str) -> bool {
     let (a, b) = (crate::params::Params::parse(a), crate::params::Params::parse(b));
-    // Mercator's latitude of true scale left out is the equator; a second standard parallel left
-    // out is the first, as PROJ takes them (a polar stereographic one left out is the pole's).
+    // Mercator's latitude of true scale left out is the equator, a polar stereographic one's the
+    // pole (its scale there), and a second standard parallel left out is the first, as PROJ takes
+    // them.
     let value = |p: &crate::params::Params, key: &str| match key {
         "lat_ts" if p.str("proj") == Some("merc") => Some(p.degrees(key).unwrap_or(0.0)),
+        "lat_ts" if p.str("proj") == Some("stere") && p.degrees("lat_0").is_some_and(|l| (l.abs() - 90.0).abs() < 1e-9) => {
+            p.degrees(key).or_else(|| p.degrees("lat_0"))
+        }
         "lat_2" => p.degrees(key).or_else(|| p.degrees("lat_1")),
         _ => p.degrees(key),
     };
@@ -1006,8 +1011,12 @@ fn in_keys_unit(k: &GeoKeys, code: u32, target: u32) -> Option<SpatialRef> {
         return None;
     }
     // The GeoKeys' shift (GeogTOWGS84GeoKey) beside it, the CRS's own, as beside the code
-    // (`with_towgs84`).
-    let towgs84 = k.doubles(2062).filter(|t| matches!(t.len(), 3 | 7) && t.iter().all(|v| v.is_finite()) && t.iter().any(|v| *v != 0.0));
+    // (`with_towgs84`): a zero shift is none on the WGS 84 datum, and kept on another (VN-2000),
+    // the datum of the CRS it is written onto.
+    let on_wgs84 = crate::epsg::get(target).is_some_and(|e| e.datum == 6326);
+    let towgs84 = k
+        .doubles(2062)
+        .filter(|t| matches!(t.len(), 3 | 7) && t.iter().all(|v| v.is_finite()) && (!on_wgs84 || t.iter().any(|v| *v != 0.0)));
     if let Some(c) = rescaled_wkt(k, code, &crs, size, towgs84) {
         return Some(c);
     }

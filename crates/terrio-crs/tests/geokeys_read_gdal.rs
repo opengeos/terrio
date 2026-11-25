@@ -20,7 +20,7 @@ use terrio_crs::{SpatialRef, Transformer};
 fn user_defined_geokeys_are_read_as_gdal_reads_them() {
     let data: Value = serde_json::from_str(include_str!("data/geokeys_read_gdal.json")).unwrap();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 26);
+    assert_eq!(cases.len(), 27);
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     for case in cases {
         let name = case["name"].as_str().unwrap();
@@ -242,6 +242,61 @@ fn a_citation_names_its_mercator_only_for_the_same_latitude_of_true_scale() {
     assert_eq!(read(0.0), Some(3395));
 }
 
+/// With wbprojection, a citation does not name a polar stereographic CRS of another latitude of
+/// true scale: keys at the north pole with a scale of 1 there (variant A) citing WGS 84 / NSIDC Sea
+/// Ice Polar Stereographic North (EPSG:3413, true scale at 70°) give no EPSG:3413; at a natural
+/// origin latitude of 70°, which GDAL 3.12.2 reads as that latitude of true scale, EPSG:3413.
+#[cfg(feature = "wbprojection-fallback")]
+#[test]
+fn a_citation_names_its_polar_stereographic_only_for_the_same_latitude_of_true_scale() {
+    let citation = b"WGS 84 / NSIDC Sea Ice Polar Stereographic North|\0";
+    let directory = [
+        1u16,
+        1,
+        0,
+        9,
+        1024,
+        0,
+        1,
+        1,
+        1025,
+        0,
+        1,
+        1,
+        1026,
+        34737,
+        citation.len() as u16 - 1,
+        0,
+        2048,
+        0,
+        1,
+        4326,
+        3072,
+        0,
+        1,
+        32767,
+        3075,
+        0,
+        1,
+        15,
+        3081,
+        34736,
+        1,
+        0,
+        3092,
+        34736,
+        1,
+        1,
+        3095,
+        34736,
+        1,
+        2,
+    ];
+    let read = |lat: f64| terrio_crs::geokeys::read(&directory, &[lat, 1.0, -45.0], citation).crs.and_then(|c| c.epsg);
+    assert_eq!(read(90.0), None);
+    assert_eq!(read(70.0), Some(3413));
+}
+
 /// A Stereographic CRS's scale in ProjScaleAtCenterGeoKey alone, as terrio wrote it before, keeps
 /// that scale (GDAL 3.12.2 reads 1): a file terrio wrote reads back as it was. The writer puts it
 /// in ProjScaleAtNatOriginGeoKey, as GDAL does.
@@ -262,6 +317,23 @@ fn a_stereographic_scale_terrio_wrote_at_the_centre_is_kept() {
     assert!((at_centre.0 - 151_459.646_927_064_8).abs() < 1e-3, "{at_centre:?}");
     let written = SpatialRef::from_proj4("+proj=stere +lat_0=40 +lon_0=10 +k=0.9 +datum=WGS84").unwrap().to_geokeys().unwrap();
     assert!(written.doubles.iter().any(|(id, v)| *id == 3092 && *v == 0.9), "{written:?}");
+}
+
+/// A projected code alone in another linear unit with a zero GeogTOWGS84GeoKey on a datum other
+/// than WGS 84 keeps that zero shift, as beside the code in its own unit: EPSG:27700 in feet with
+/// `TOWGS84[0,0,0]` is OSGB36 shifted by nothing, not by OSGB36's registered transformations
+/// (GDAL 3.12.2 reads such keys without the shift; terrio keeps it, as for the code in its own
+/// unit). On WGS 84 (EPSG:32633 in feet) a zero shift is none.
+#[test]
+fn a_code_in_another_unit_keeps_a_zero_shift_off_wgs84() {
+    let crs = |code: u16| {
+        let directory = [1u16, 1, 0, 4, 1024, 0, 1, 1, 2062, 34736, 3, 0, 3072, 0, 1, code, 3076, 0, 1, 9002];
+        SpatialRef::from_geokeys(&directory, &[0.0, 0.0, 0.0], b"").unwrap()
+    };
+    let wkt = crs(27700).to_wkt().unwrap();
+    assert!(wkt.contains("OSGB") && wkt.contains("TOWGS84[0,0,0"), "{wkt}");
+    let wkt = crs(32633).to_wkt().unwrap();
+    assert!(!wkt.contains("TOWGS84"), "{wkt}");
 }
 
 /// A projected code alone in another linear unit, with VerticalCSTypeGeoKey, keeps its vertical
