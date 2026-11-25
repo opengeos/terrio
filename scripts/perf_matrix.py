@@ -172,7 +172,10 @@ def digest(results) -> str:
                 if isinstance(col.type, pa.BaseExtensionType):
                     col = pa.chunked_array([c.storage for c in col.chunks], col.type.storage_type)
                 cols.append(col.cast(_arrow_canonical(col.type)).combine_chunks())
-            h.update(pa.RecordBatch.from_arrays(cols, names=names).serialize())
+            batch = pa.RecordBatch.from_arrays(cols, names=names)
+            # A serialized batch holds no schema: the names and canonical types are hashed apart.
+            h.update(batch.schema.serialize())
+            h.update(batch.serialize())
         else:
             a = np.ascontiguousarray(res)
             h.update(a.dtype.str.encode())

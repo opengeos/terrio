@@ -82,6 +82,7 @@ def test_digest_compares_values_not_their_layout():
     wide = t.set_column(0, "id", t.column("id").cast(pa.int64())).select(["wkb", "geometry", "class", "id"])
     assert perf_matrix.digest([t]) == perf_matrix.digest([padded]) == perf_matrix.digest([(None, wide)])
     assert perf_matrix.digest([t]) != perf_matrix.digest([t.set_column(0, "id", pa.array([2, 1], pa.int32()))])
+    assert perf_matrix.digest([t]) != perf_matrix.digest([t.rename_columns(["ie", "class", "geometry", "wkb"])])
 
 
 def test_report_lists_mismatches_and_failures_apart_and_warns_on_mixed_machines():
