@@ -240,10 +240,10 @@ pub(crate) fn parse_directory(bytes: &[u8]) -> Result<Vec<Entry>> {
         e.tile_id = last_id;
     }
     for e in entries.iter_mut() {
-        e.run_length = read_uvarint(bytes, &mut pos)? as u32;
+        e.run_length = u32::try_from(read_uvarint(bytes, &mut pos)?).map_err(|_| bad("directory run_length overflow"))?;
     }
     for e in entries.iter_mut() {
-        e.length = read_uvarint(bytes, &mut pos)? as u32;
+        e.length = u32::try_from(read_uvarint(bytes, &mut pos)?).map_err(|_| bad("directory length overflow"))?;
     }
     for i in 0..n {
         let v = read_uvarint(bytes, &mut pos)?;
@@ -272,11 +272,6 @@ pub(crate) fn compress(data: &[u8], codec: u8) -> Result<Vec<u8>> {
     }
 }
 
-/// Decompresses with a PMTiles codec (none, gzip or zstd).
-pub(crate) fn decompress(data: &[u8], codec: u8) -> Result<Vec<u8>> {
-    decompress_with_limit(data, codec, None, "PMTiles payload")
-}
-
 fn read_decoded(mut reader: impl Read, limit: Option<usize>, resource: &'static str) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let Some(limit) = limit else {
@@ -298,7 +293,8 @@ fn read_decoded(mut reader: impl Read, limit: Option<usize>, resource: &'static 
     }
 }
 
-fn decompress_with_limit(data: &[u8], codec: u8, limit: Option<usize>, resource: &'static str) -> Result<Vec<u8>> {
+/// Decompresses with a PMTiles codec (none, gzip or zstd), bounded by `limit` when given.
+pub(crate) fn decompress_with_limit(data: &[u8], codec: u8, limit: Option<usize>, resource: &'static str) -> Result<Vec<u8>> {
     match codec {
         COMPRESSION_NONE | 0 => {
             if let Some(limit) = limit
