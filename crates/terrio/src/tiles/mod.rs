@@ -56,6 +56,8 @@ pub(crate) mod source;
 mod validity;
 #[cfg(feature = "tiles")]
 pub(crate) mod vector;
+#[cfg(all(feature = "tiles", not(target_family = "wasm")))]
+pub(crate) mod vector_stream;
 
 #[cfg(feature = "tiles")]
 pub use archive::*;
@@ -218,6 +220,10 @@ pub struct TileWriteOptions {
     pub max_size: usize,
     /// Vectors: the most features in a tile (default 200000).
     pub max_features: usize,
+    /// Vectors: per-layer configuration (`CONF`), as GDAL's MVT/PMTiles driver accepts it: a JSON
+    /// object (or path to a JSON file) mapping source layer names to `target_name`, `description`,
+    /// `minzoom`, and `maxzoom`.
+    pub conf: Option<String>,
 }
 
 impl Default for TileWriteOptions {
@@ -238,6 +244,7 @@ impl Default for TileWriteOptions {
             simplification_max_zoom: None,
             max_size: 500_000,
             max_features: 200_000,
+            conf: None,
         }
     }
 }
@@ -245,8 +252,8 @@ impl Default for TileWriteOptions {
 impl TileWriteOptions {
     /// Sets an option by GDAL's name (`MINZOOM`, `MAXZOOM`, `ZOOM_LEVEL_STRATEGY`, `RESAMPLING`,
     /// `TILE_FORMAT`, `QUALITY`, `NAME`, `DESCRIPTION`, `TYPE`, `EXTENT`, `BUFFER`,
-    /// `SIMPLIFICATION`, `SIMPLIFICATION_MAX_ZOOM`, `MAX_SIZE`, `MAX_FEATURES`). Returns whether the
-    /// key is one of them.
+    /// `SIMPLIFICATION`, `SIMPLIFICATION_MAX_ZOOM`, `MAX_SIZE`, `MAX_FEATURES`, `CONF`). Returns
+    /// whether the key is one of them.
     pub fn set(&mut self, key: &str, value: &str) -> Result<bool> {
         let num = |v: &str| v.trim().parse::<f64>().map_err(|_| Error::InvalidArgument(format!("invalid value '{v}' for {key}")));
         let zoom = |v: &str| {
@@ -268,6 +275,7 @@ impl TileWriteOptions {
             "SIMPLIFICATION_MAX_ZOOM" => self.simplification_max_zoom = Some(num(value)?),
             "MAX_SIZE" => self.max_size = num(value)?.max(1.0) as usize,
             "MAX_FEATURES" => self.max_features = num(value)?.max(1.0) as usize,
+            "CONF" => self.conf = Some(value.to_string()),
             // GDAL options that make no difference here.
             "FORMAT" | "COMPRESS" | "BLOCKSIZE" | "ZLEVEL" | "BOUNDS" | "WRITE_BOUNDS" => {}
             _ => return Ok(false),

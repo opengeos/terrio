@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, HashMap};
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer, Ring};
 
 /// The size of a tile at zoom `z`, in metres.
-fn tile_dim(z: u8) -> f64 {
+pub(crate) fn tile_dim(z: u8) -> f64 {
     2.0 * MAX_GM / (1u64 << z) as f64
 }
 
@@ -477,11 +477,11 @@ fn encode_attributes(l: &Layer, f: &Feature) -> Vec<(String, MvtValue)> {
     out
 }
 
-fn int_value(i: i64) -> MvtValue {
+pub(crate) fn int_value(i: i64) -> MvtValue {
     if i < 0 { MvtValue::SInt(i) } else { MvtValue::UInt(i as u64) }
 }
 
-fn double_value(d: f64) -> MvtValue {
+pub(crate) fn double_value(d: f64) -> MvtValue {
     if d >= 0.0 && d <= u64::MAX as f64 && d == (d as u64) as f64 {
         MvtValue::UInt(d as u64)
     } else if d < 0.0 && d >= i64::MIN as f64 && d == (d as i64) as f64 {
@@ -696,12 +696,12 @@ fn encode_polygons(polys: &[Vec<Vec<Pt>>], f: &TileFrame, extent: u32) -> Result
 /// A place where a polygonal geometry is invalid in a way GEOS's overlay cannot handle: a point,
 /// the bounding boxes of the two parts that conflict there, and whether they belong to different
 /// polygons (overlapping parts of a multipolygon).
-type Crossing = (Pt, Rect, Rect, bool);
+pub(crate) type Crossing = (Pt, Rect, Rect, bool);
 
 /// Where a polygonal geometry is invalid in ways that make GEOS fail to clip it to a tile when
 /// they are near the tile: segments of its rings crossing, segments overlapping with the
 /// interior on the same side (overlapping parts), and parts inside other parts.
-fn ring_crossings(polys: &[Vec<Vec<Pt>>]) -> Vec<Crossing> {
+pub(crate) fn ring_crossings(polys: &[Vec<Vec<Pt>>]) -> Vec<Crossing> {
     // Segments: (ring id, index, segment count, from, to, interior on the left).
     let mut segs: Vec<(usize, usize, usize, Pt, Pt, bool)> = Vec::new();
     for (pi, p) in polys.iter().enumerate() {
@@ -797,7 +797,7 @@ fn clip_fails(polys: &[Vec<Vec<Pt>>], crossings: &[Crossing], env: Rect, r: Rect
 }
 
 /// The rings of a polygon or multipolygon, by polygon, closed.
-fn polygon_rings(g: &Geometry) -> Option<Vec<Vec<Vec<Pt>>>> {
+pub(crate) fn polygon_rings(g: &Geometry) -> Option<Vec<Vec<Vec<Pt>>>> {
     let ring = |r: &Ring| {
         let mut v: Vec<Pt> = r.0.iter().map(|c| (c.x, c.y)).collect();
         if v.len() > 1 && v.first() != v.last() {
@@ -812,10 +812,53 @@ fn polygon_rings(g: &Geometry) -> Option<Vec<Vec<Vec<Pt>>>> {
     }
 }
 
+/// Encodes pre-extracted polygon rings for one tile, lazily computing `ring_crossings` only when
+/// the polygon actually crosses the tile's buffered boundary (skipping crossing detection on the
+/// common case where the polygon lies wholly inside the tile).
+pub(crate) fn encode_polygons_for_tile(
+    polys: &[Vec<Vec<Pt>>],
+    all: Rect,
+    crossings: &mut Option<Vec<Crossing>>,
+    f: &TileFrame,
+    extent: u32,
+    buffer: f64,
+    tolerance: f64,
+) -> Result<Option<(u32, Vec<u32>)>> {
+    let r: Rect = (f.top_x - buffer, f.top_y - f.dim - buffer, f.top_x + f.dim + buffer, f.top_y + buffer);
+    let inside = clip::contains(r, all);
+    if !inside {
+        let cs = crossings.get_or_insert_with(|| ring_crossings(polys));
+        if clip_fails(polys, cs, all, r) {
+            return Ok(None);
+        }
+    }
+    if inside && tolerance <= 0.0 {
+        return Ok(encode_polygons(polys, f, extent)?.map(|out| (mvt::POLYGON, out)));
+    }
+    let simplify = |pts: Vec<Pt>| if tolerance > 0.0 { clip::simplify(&pts, tolerance) } else { pts };
+    let mut parts: Vec<Vec<Vec<Pt>>> = Vec::new();
+    for p in polys {
+        if inside {
+            parts.push(p.iter().map(|ring| simplify(ring.clone())).collect());
+        } else {
+            let mut p = p.clone();
+            if p.len() > 1 {
+                // GEOS's overlay leaves out holes outside their exterior.
+                let exterior = p.remove(0);
+                p.retain(|h| h.iter().any(|v| clip::point_in_ring(*v, &exterior)));
+                p.insert(0, exterior);
+            }
+            let clipped: Vec<Vec<Vec<Pt>>> = clip::clip_polygon(&p, r);
+            parts.extend(clipped.into_iter().map(|rings| rings.into_iter().map(simplify).collect()));
+        }
+    }
+    Ok(encode_polygons(&parts, f, extent)?.map(|out| (mvt::POLYGON, out)))
+}
+
 /// A feature's geometry, prepared for one tile: clipped to the buffered tile, simplified and
 /// encoded. `None` when nothing is left, or when GEOS would fail to clip it (`crossings`, where
 /// its rings cross, are near the tile).
-fn encode_for_tile(
+pub(crate) fn encode_for_tile(
     g: &Geometry,
     f: &TileFrame,
     extent: u32,
@@ -888,21 +931,148 @@ fn encode_for_tile(
     })
 }
 
+/// Per-layer configuration parsed from GDAL's `CONF` option.
+#[derive(Debug, Clone)]
+pub(crate) struct LayerTileConf {
+    pub target_name: Option<String>,
+    pub description: Option<String>,
+    pub min_zoom: Option<u8>,
+    pub max_zoom: Option<u8>,
+}
+
+/// Parses GDAL's `CONF` option (inline JSON object or path to a JSON file) into per-layer settings.
+pub(crate) fn parse_layer_conf(conf: Option<&str>) -> Result<HashMap<String, LayerTileConf>> {
+    let Some(raw) = conf.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(HashMap::new());
+    };
+    let text = if raw.starts_with('{') {
+        raw.to_string()
+    } else {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            std::fs::read_to_string(raw).map_err(|e| Error::InvalidArgument(format!("cannot read CONF '{raw}': {e}")))?
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            return Err(Error::InvalidArgument(format!("CONF must be a JSON object in WebAssembly builds (got '{raw}')")));
+        }
+    };
+    let value: Json = serde_json::from_str(&text).map_err(|e| Error::InvalidArgument(format!("invalid CONF JSON: {e}")))?;
+    let obj =
+        value.as_object().ok_or_else(|| Error::InvalidArgument("CONF must be a JSON object mapping layer names to options".into()))?;
+    let parse_zoom = |layer: &str, key: &str, v: &Json| -> Result<u8> {
+        let z = v
+            .as_u64()
+            .and_then(|n| u8::try_from(n).ok())
+            .filter(|&z| z <= 30)
+            .ok_or_else(|| Error::InvalidArgument(format!("CONF layer '{layer}': invalid {key} (must be 0..=30)")))?;
+        Ok(z)
+    };
+    let mut out = HashMap::with_capacity(obj.len());
+    for (name, entry) in obj {
+        let map = entry.as_object().ok_or_else(|| Error::InvalidArgument(format!("CONF layer '{name}': expected a JSON object")))?;
+        let target_name = match map.get("target_name") {
+            Some(v) => Some(
+                v.as_str()
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| Error::InvalidArgument(format!("CONF layer '{name}': target_name must be a non-empty string")))?
+                    .to_string(),
+            ),
+            None => None,
+        };
+        let description = match map.get("description") {
+            Some(v) => Some(
+                v.as_str().ok_or_else(|| Error::InvalidArgument(format!("CONF layer '{name}': description must be a string")))?.to_string(),
+            ),
+            None => None,
+        };
+        let min_zoom = map.get("minzoom").map(|v| parse_zoom(name, "minzoom", v)).transpose()?;
+        let max_zoom = map.get("maxzoom").map(|v| parse_zoom(name, "maxzoom", v)).transpose()?;
+        if let (Some(lo), Some(hi)) = (min_zoom, max_zoom)
+            && lo > hi
+        {
+            return Err(Error::InvalidArgument(format!("CONF layer '{name}': minzoom {lo} is above maxzoom {hi}")));
+        }
+        out.insert(name.clone(), LayerTileConf { target_name, description, min_zoom, max_zoom });
+    }
+    Ok(out)
+}
+
 /// Statistics of a layer, for the metadata.
 #[derive(Default)]
-struct LayerStats {
-    count: usize,
-    geom_counts: [usize; 4],
+pub(crate) struct LayerStats {
+    pub count: usize,
+    pub geom_counts: [usize; 4],
     /// Per field: count, and the distinct values (up to 1000) and numeric bounds.
-    attrs: BTreeMap<usize, AttrStats>,
+    pub attrs: BTreeMap<usize, AttrStats>,
+}
+
+/// Hashable key for O(1) distinct-value tracking in [`AttrStats`].
+#[derive(Hash, PartialEq, Eq)]
+enum AttrValueKey {
+    Int(i64),
+    FloatBits(u64),
+    Bool(bool),
+    Str(String),
 }
 
 #[derive(Default)]
-struct AttrStats {
-    count: usize,
-    values: Vec<Json>,
-    min: Option<f64>,
-    max: Option<f64>,
+pub(crate) struct AttrStats {
+    pub count: usize,
+    pub values: Vec<Json>,
+    seen: std::collections::HashSet<AttrValueKey>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+}
+
+/// Builds the `vector_layers` and `tilestats` JSON entries for one layer.
+pub(crate) fn layer_metadata_json(
+    target_name: &str,
+    description: &str,
+    min_zoom: u8,
+    max_zoom: u8,
+    schema: &wbvector::Schema,
+    stats: &LayerStats,
+) -> (Json, Json) {
+    let mut fields = serde_json::Map::new();
+    for def in schema.fields() {
+        let t = match def.field_type {
+            FieldType::Integer | FieldType::Float => "Number",
+            FieldType::Boolean => "Boolean",
+            _ => "String",
+        };
+        fields.insert(def.name.clone(), json!(t));
+    }
+    let vector_layer = json!({
+        "id": target_name, "description": description, "minzoom": min_zoom, "maxzoom": max_zoom, "fields": fields,
+    });
+    let geom = ["", "Point", "LineString", "Polygon"][(1..4).max_by_key(|&i| stats.geom_counts[i]).unwrap_or(3)];
+    let attributes: Vec<Json> = stats
+        .attrs
+        .iter()
+        .filter_map(|(&i, a)| {
+            let def = schema.fields().get(i)?;
+            let t = match def.field_type {
+                FieldType::Integer | FieldType::Float => "number",
+                FieldType::Boolean => "boolean",
+                _ => "string",
+            };
+            let mut o = json!({ "attribute": def.name, "count": a.count, "type": t, "values": a.values });
+            if t == "number" {
+                let n = |v: f64| if v.fract() == 0.0 && v.abs() < 9e15 { json!(v as i64) } else { json!(v) };
+                if let (Some(mn), Some(mx)) = (a.min, a.max) {
+                    o["min"] = n(mn);
+                    o["max"] = n(mx);
+                }
+            }
+            Some(o)
+        })
+        .collect();
+    let stat_layer = json!({
+        "layer": target_name, "count": stats.count, "geometry": geom,
+        "attributeCount": attributes.len(), "attributes": attributes,
+    });
+    (vector_layer, stat_layer)
 }
 
 /// Vector layers cut into tiles: `(z, x, y, tile bytes)` (uncompressed MVT), and the metadata
@@ -934,22 +1104,41 @@ struct CutLayers {
     max_zoom: u8,
 }
 
+/// Resolves effective `(min_zoom, max_zoom)` for a layer given global options and optional `CONF`.
+pub(crate) fn resolve_layer_zooms(layer_name: &str, global_min: u8, global_max: u8, conf: Option<&LayerTileConf>) -> Result<(u8, u8)> {
+    let lo = conf.and_then(|c| c.min_zoom).unwrap_or(global_min);
+    let hi = conf.and_then(|c| c.max_zoom).unwrap_or(global_max);
+    if lo > hi {
+        return Err(Error::InvalidArgument(format!("layer '{layer_name}': minimum zoom level {lo} is above maximum {hi}")));
+    }
+    Ok((lo, hi))
+}
+
 /// The tiles' layers of [`make_tiles`], not yet encoded.
 fn cut_layers(layers: &[Layer], o: &TileWriteOptions) -> Result<CutLayers> {
-    let min_zoom = o.min_zoom.unwrap_or(0);
-    let max_zoom = o.max_zoom.unwrap_or(5);
-    if min_zoom > 30 || max_zoom > 30 {
-        return Err(Error::InvalidArgument(format!("zoom levels must be at most 30 (got {min_zoom}..={max_zoom})")));
+    let global_min = o.min_zoom.unwrap_or(0);
+    let global_max = o.max_zoom.unwrap_or(5);
+    if global_min > 30 || global_max > 30 {
+        return Err(Error::InvalidArgument(format!("zoom levels must be at most 30 (got {global_min}..={global_max})")));
     }
-    if min_zoom > max_zoom {
-        return Err(Error::InvalidArgument(format!("the minimum zoom level {min_zoom} is above the maximum {max_zoom}")));
+    if global_min > global_max {
+        return Err(Error::InvalidArgument(format!("the minimum zoom level {global_min} is above the maximum {global_max}")));
     }
+    let layer_confs = parse_layer_conf(o.conf.as_deref())?;
     let web = crate::crs::SpatialRef::from_epsg(3857)?;
     let mut tiles: BTreeMap<(u8, u32, u32), Vec<MvtLayer>> = BTreeMap::new();
     let mut env: Option<Rect> = None;
     let mut vector_layers = Vec::new();
     let mut stat_layers = Vec::new();
+    let mut archive_min: Option<u8> = None;
+    let mut archive_max: Option<u8> = None;
     for layer in layers {
+        let conf = layer_confs.get(&layer.name);
+        let (layer_min, layer_max) = resolve_layer_zooms(&layer.name, global_min, global_max, conf)?;
+        let target_name = conf.and_then(|c| c.target_name.as_deref()).unwrap_or(&layer.name);
+        let description = conf.and_then(|c| c.description.as_deref()).unwrap_or("");
+        archive_min = Some(archive_min.map_or(layer_min, |m| m.min(layer_min)));
+        archive_max = Some(archive_max.map_or(layer_max, |m| m.max(layer_max)));
         let l = match crate::crs::SpatialRef::from_layer(layer) {
             s if s.is_unknown() || s.epsg == Some(3857) => layer.clone(),
             _ => crate::vector::reproject_layer(layer, &web)?,
@@ -979,7 +1168,7 @@ fn cut_layers(layers: &[Layer], o: &TileWriteOptions) -> Result<CutLayers> {
                         add_attr_stat(&mut stats, i, v);
                     }
                 }
-                for z in min_zoom..=max_zoom {
+                for z in layer_min..=layer_max {
                     let dim = tile_dim(z);
                     let buffer = dim * o.buffer as f64 / o.extent as f64;
                     let n = (1u64 << z) as i64 - 1;
@@ -987,7 +1176,7 @@ fn cut_layers(layers: &[Layer], o: &TileWriteOptions) -> Result<CutLayers> {
                     let ty0 = (((MAX_GM - bb.3 - buffer) / dim) as i64).max(0);
                     let tx1 = (((bb.2 + MAX_GM + buffer) / dim) as i64).min(n);
                     let ty1 = (((MAX_GM - bb.1 + buffer) / dim) as i64).min(n);
-                    let simpl = if z == max_zoom { o.simplification_max_zoom.unwrap_or(o.simplification) } else { o.simplification };
+                    let simpl = if z == layer_max { o.simplification_max_zoom.unwrap_or(o.simplification) } else { o.simplification };
                     let tol = dim / o.extent as f64 * simpl;
                     for tx in tx0..=tx1 {
                         for ty in ty0..=ty1 {
@@ -1004,59 +1193,28 @@ fn cut_layers(layers: &[Layer], o: &TileWriteOptions) -> Result<CutLayers> {
                             };
                             stats.geom_counts[geom_type as usize] += 1;
                             let layers = tiles.entry((z, tx as u32, ty as u32)).or_default();
-                            let tl = match layers.iter_mut().position(|t| t.name == l.name) {
+                            let tl = match layers.iter_mut().position(|t| t.name == target_name) {
                                 Some(i) => &mut layers[i],
                                 None => {
-                                    layers.push(MvtLayer { name: l.name.clone(), extent: o.extent, features: Vec::new() });
+                                    layers.push(MvtLayer { name: target_name.to_string(), extent: o.extent, features: Vec::new() });
                                     layers.last_mut().expect("just pushed")
                                 }
                             };
                             // Like `ogr2ogr` without `-preserve_fid`, GDAL's writer leaves feature ids out.
-                            let size = mvt::decode_geometry(geom_type, &geometry).map_or(0.0, |g| mvt::geometry_size(&g));
+                            let size = if geom_type == mvt::POINT {
+                                0.0
+                            } else {
+                                mvt::decode_geometry(geom_type, &geometry).map_or(0.0, |g| mvt::geometry_size(&g))
+                            };
                             tl.features.push(MvtFeature { id: None, geom_type, geometry, tags: tags.clone(), size });
                         }
                     }
                 }
             }
         }
-        let mut fields = serde_json::Map::new();
-        for def in l.schema.fields() {
-            let t = match def.field_type {
-                FieldType::Integer | FieldType::Float => "Number",
-                FieldType::Boolean => "Boolean",
-                _ => "String",
-            };
-            fields.insert(def.name.clone(), json!(t));
-        }
-        vector_layers.push(json!({
-            "id": l.name, "description": "", "minzoom": min_zoom, "maxzoom": max_zoom, "fields": fields,
-        }));
-        let geom = ["", "Point", "LineString", "Polygon"][(1..4).max_by_key(|&i| stats.geom_counts[i]).unwrap_or(3)];
-        let attributes: Vec<Json> = stats
-            .attrs
-            .iter()
-            .filter_map(|(&i, a)| {
-                let def = l.schema.fields().get(i)?;
-                let t = match def.field_type {
-                    FieldType::Integer | FieldType::Float => "number",
-                    FieldType::Boolean => "boolean",
-                    _ => "string",
-                };
-                let mut o = json!({ "attribute": def.name, "count": a.count, "type": t, "values": a.values });
-                if t == "number" {
-                    let n = |v: f64| if v.fract() == 0.0 && v.abs() < 9e15 { json!(v as i64) } else { json!(v) };
-                    if let (Some(mn), Some(mx)) = (a.min, a.max) {
-                        o["min"] = n(mn);
-                        o["max"] = n(mx);
-                    }
-                }
-                Some(o)
-            })
-            .collect();
-        stat_layers.push(json!({
-            "layer": l.name, "count": stats.count, "geometry": geom,
-            "attributeCount": attributes.len(), "attributes": attributes,
-        }));
+        let (vl, sl) = layer_metadata_json(target_name, description, layer_min, layer_max, &l.schema, &stats);
+        vector_layers.push(vl);
+        stat_layers.push(sl);
     }
     let (x0, y0, x1, y1) = env.ok_or_else(|| Error::InvalidArgument("no geometries to write as vector tiles".into()))?;
     let (lon0, lat0) = super::mercator_to_lonlat(x0, y0);
@@ -1065,6 +1223,8 @@ fn cut_layers(layers: &[Layer], o: &TileWriteOptions) -> Result<CutLayers> {
         "vector_layers": vector_layers,
         "tilestats": { "layerCount": stat_layers.len(), "layers": stat_layers },
     });
+    let min_zoom = archive_min.unwrap_or(global_min);
+    let max_zoom = archive_max.unwrap_or(global_max);
     Ok(CutLayers { tiles, json, bounds: [lon0, lat0, lon1, lat1], min_zoom, max_zoom })
 }
 
@@ -1237,6 +1397,65 @@ fn reduce(layers: &[MvtLayer], from: u32, extent: u32) -> Vec<MvtLayer> {
 }
 
 /// Encodes a tile within GDAL's limits (`MAX_FEATURES` features, `MAX_SIZE` bytes once
+/// compressed) and returns both the uncompressed MVT bytes and their gzipped form (avoiding
+/// double compression when callers need gzipped tiles).
+pub(crate) fn encode_limited_gz(mut layers: Vec<MvtLayer>, o: &TileWriteOptions) -> Result<Vec<u8>> {
+    let compress = |b: &[u8]| super::pmtiles::compress(b, super::pmtiles::COMPRESSION_GZIP);
+    // Features beyond the cap are not read, in order.
+    let mut left = o.max_features;
+    let mut too_many = false;
+    for l in &mut layers {
+        if l.features.len() >= left {
+            l.features.truncate(left);
+            too_many = true;
+        }
+        left -= l.features.len();
+    }
+    let raw = mvt::encode(&layers);
+    let gz = compress(&raw)?;
+    let ratio = gz.len() as f64 / raw.len().max(1) as f64;
+    let mut too_big = gz.len() > o.max_size;
+    if !too_big && !too_many {
+        return Ok(gz);
+    }
+    let mut extent = o.extent;
+    let mut current_gz = gz;
+    while too_big && !too_many && extent >= 256 {
+        extent /= 2;
+        let encoded = mvt::encode(&reduce(&layers, o.extent, extent));
+        current_gz = compress(&encoded)?;
+        too_big = current_gz.len() > o.max_size;
+    }
+    if !too_big && !too_many {
+        return Ok(current_gz);
+    }
+    // Lazily compute geometry sizes at the original extent only when size-based feature dropping
+    // is actually needed (skipping geometry decoding on normal tiles).
+    for l in &mut layers {
+        for f in &mut l.features {
+            if f.size == 0.0 && f.geom_type != mvt::POINT {
+                f.size = mvt::decode_geometry(f.geom_type, &f.geometry).map_or(0.0, |g| mvt::geometry_size(&g));
+            }
+        }
+    }
+    let source = if extent < o.extent { reduce(&layers, o.extent, extent) } else { layers };
+    let mut all: Vec<(usize, &MvtFeature)> = source.iter().enumerate().flat_map(|(i, l)| l.features.iter().map(move |f| (i, f))).collect();
+    all.sort_by(|a, b| b.1.size.total_cmp(&a.1.size));
+    let total = all.len();
+    let step = (total / 100).max(1);
+    let mut kept: Vec<MvtLayer> =
+        source.iter().map(|l| MvtLayer { name: l.name.clone(), extent: l.extent, features: Vec::new() }).collect();
+    for (n, (i, f)) in all.into_iter().enumerate() {
+        kept[i].features.push(f.clone());
+        let count = n + 1;
+        if (count == total || (too_big && count % step == 0)) && mvt::encode(&kept).len() as f64 * ratio > o.max_size as f64 {
+            break;
+        }
+    }
+    compress(&mvt::encode(&kept))
+}
+
+/// Encodes a tile within GDAL's limits (`MAX_FEATURES` features, `MAX_SIZE` bytes once
 /// compressed): a tile too large is encoded at lower resolutions (the extent halved down to 256),
 /// then, if still too large, keeps its largest features (by area or length) that fit.
 fn encode_limited(mut layers: Vec<MvtLayer>, o: &TileWriteOptions) -> Vec<u8> {
@@ -1285,32 +1504,60 @@ fn encode_limited(mut layers: Vec<MvtLayer>, o: &TileWriteOptions) -> Vec<u8> {
     mvt::encode(&kept)
 }
 
-fn add_attr_stat(stats: &mut LayerStats, i: usize, v: &FieldValue) {
+pub(crate) fn add_attr_stat(stats: &mut LayerStats, i: usize, v: &FieldValue) {
     let a = stats.attrs.entry(i).or_default();
-    let j = match v {
-        FieldValue::Null => return,
+    let track_values = a.values.len() < 1000;
+    let (key, j) = match v {
+        FieldValue::Null | FieldValue::Blob(_) => return,
         FieldValue::Integer(n) => {
             let x = *n as f64;
             a.min = Some(a.min.map_or(x, |m| m.min(x)));
             a.max = Some(a.max.map_or(x, |m| m.max(x)));
-            json!(n)
+            if track_values { (Some(AttrValueKey::Int(*n)), Some(json!(n))) } else { (None, None) }
         }
         FieldValue::Float(x) => {
             a.min = Some(a.min.map_or(*x, |m| m.min(*x)));
             a.max = Some(a.max.map_or(*x, |m| m.max(*x)));
-            if x.fract() == 0.0 && x.abs() < 9e15 { json!(*x as i64) } else { json!(x) }
+            if track_values {
+                if x.fract() == 0.0 && x.abs() < 9e15 {
+                    let n = *x as i64;
+                    (Some(AttrValueKey::Int(n)), Some(json!(n)))
+                } else {
+                    let normalized = if *x == 0.0 { 0.0f64 } else { *x };
+                    (Some(AttrValueKey::FloatBits(normalized.to_bits())), Some(json!(x)))
+                }
+            } else {
+                (None, None)
+            }
         }
-        FieldValue::Boolean(b) => json!(b),
-        FieldValue::Text(s) | FieldValue::Date(s) | FieldValue::DateTime(s) => json!(s),
-        FieldValue::Blob(_) => return,
+        FieldValue::Boolean(b) => {
+            if track_values {
+                (Some(AttrValueKey::Bool(*b)), Some(json!(b)))
+            } else {
+                (None, None)
+            }
+        }
+        FieldValue::Text(s) | FieldValue::Date(s) | FieldValue::DateTime(s) => {
+            if track_values {
+                (Some(AttrValueKey::Str(s.clone())), Some(json!(s)))
+            } else {
+                (None, None)
+            }
+        }
     };
     a.count += 1;
-    if a.values.len() < 1000 && !a.values.contains(&j) {
+    if let (Some(k), Some(j)) = (key, j)
+        && a.seen.insert(k)
+    {
         a.values.push(j);
+        if a.values.len() == 1000 {
+            a.seen.clear();
+            a.seen.shrink_to_fit();
+        }
     }
 }
 
-fn collect_points(g: &Geometry, out: &mut Vec<Pt>) {
+pub(crate) fn collect_points(g: &Geometry, out: &mut Vec<Pt>) {
     match g {
         Geometry::Point(c) => out.push((c.x, c.y)),
         Geometry::LineString(cs) | Geometry::MultiPoint(cs) => out.extend(cs.iter().map(|c| (c.x, c.y))),
@@ -1325,14 +1572,24 @@ fn collect_points(g: &Geometry, out: &mut Vec<Pt>) {
 /// `version`, `minzoom`, `maxzoom`, `center`, `bounds`, `type`, `format`), plus `json` (MBTiles)
 /// or the JSON members themselves (PMTiles).
 pub(crate) fn metadata_items(vt: &VectorTiles, o: &TileWriteOptions, name: &str) -> Vec<(String, String)> {
-    let b = vt.bounds;
+    metadata_items_parts(vt.bounds, vt.min_zoom, vt.max_zoom, o, name)
+}
+
+pub(crate) fn metadata_items_parts(
+    bounds: [f64; 4],
+    min_zoom: u8,
+    max_zoom: u8,
+    o: &TileWriteOptions,
+    name: &str,
+) -> Vec<(String, String)> {
+    let b = bounds;
     vec![
         ("name".into(), o.name.clone().unwrap_or_else(|| name.to_string())),
         ("description".into(), o.description.clone().unwrap_or_default()),
         ("version".into(), "2".into()),
-        ("minzoom".into(), vt.min_zoom.to_string()),
-        ("maxzoom".into(), vt.max_zoom.to_string()),
-        ("center".into(), format!("{:.7},{:.7},{}", (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0, vt.min_zoom)),
+        ("minzoom".into(), min_zoom.to_string()),
+        ("maxzoom".into(), max_zoom.to_string()),
+        ("center".into(), format!("{:.7},{:.7},{}", (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0, min_zoom)),
         ("bounds".into(), format!("{:.7},{:.7},{:.7},{:.7}", b[0], b[1], b[2], b[3])),
         ("type".into(), o.tileset_type.clone()),
         ("format".into(), "pbf".into()),

@@ -1009,7 +1009,7 @@ trait FeatureSink: Send {
 /// writer finishes).
 pub fn can_write_stream(driver: VectorDriver) -> bool {
     driver.missing_feature().is_none()
-        && matches!(
+        && (matches!(
             driver,
             VectorDriver::GeoJSON
                 | VectorDriver::GeoJSONSeq
@@ -1018,7 +1018,16 @@ pub fn can_write_stream(driver: VectorDriver) -> bool {
                 | VectorDriver::Shapefile
                 | VectorDriver::FlatGeobuf
                 | VectorDriver::Parquet
-        )
+        ) || {
+            #[cfg(all(feature = "tiles", not(target_family = "wasm")))]
+            {
+                matches!(driver, VectorDriver::PMTiles | VectorDriver::MBTiles | VectorDriver::MVT)
+            }
+            #[cfg(not(all(feature = "tiles", not(target_family = "wasm"))))]
+            {
+                false
+            }
+        })
 }
 
 /// Narrows `reader` to the fields `-select` keeps when its source then reads only those (a
@@ -1122,6 +1131,16 @@ impl FeatureWriter {
                 let writer = enc.writer(BufWriter::with_capacity(1 << 20, File::create(path)?))?;
                 Box::new(ParquetSink::new(writer, enc))
             }
+            #[cfg(all(feature = "tiles", not(target_family = "wasm")))]
+            (true, VectorDriver::PMTiles | VectorDriver::MBTiles | VectorDriver::MVT, _) => {
+                let writer = crate::tiles::vector_stream::VectorTileStreamWriter::create(
+                    path,
+                    driver,
+                    std::slice::from_ref(&schema),
+                    &options.tiles,
+                )?;
+                Box::new(VectorTileSink { writer })
+            }
             _ => unreachable!("every streamed driver is handled"),
         };
         Ok(Self { sink })
@@ -1141,6 +1160,27 @@ impl FeatureWriter {
     /// Completes the file.
     pub fn finish(self) -> Result<()> {
         self.sink.finish()
+    }
+}
+
+/// A PMTiles, MBTiles, or MVT vector tile archive written chunk by chunk via external run spilling.
+#[cfg(all(feature = "tiles", not(target_family = "wasm")))]
+struct VectorTileSink {
+    writer: crate::tiles::vector_stream::VectorTileStreamWriter,
+}
+
+#[cfg(all(feature = "tiles", not(target_family = "wasm")))]
+impl FeatureSink for VectorTileSink {
+    fn write(&mut self, chunk: &Layer) -> Result<()> {
+        self.writer.write_chunk(0, chunk.clone())
+    }
+
+    fn write_owned(&mut self, chunk: Layer) -> Result<()> {
+        self.writer.write_chunk(0, chunk)
+    }
+
+    fn finish(self: Box<Self>) -> Result<()> {
+        self.writer.finish()
     }
 }
 
@@ -2099,9 +2139,29 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
             })();
             return remove_on_error(dst, driver, written);
         }
+        #[cfg(all(feature = "tiles", not(target_family = "wasm")))]
+        _ if matches!(driver, VectorDriver::PMTiles | VectorDriver::MBTiles | VectorDriver::MVT) => {
+            for r in &mut readers {
+                r.set_chunk_bytes(AHEAD_CHUNK_BYTES);
+                select_early(r, &options.translate)?;
+            }
+            let mut translators = readers.iter().map(|r| Translator::new(r.layer(), &options.translate)).collect::<Result<Vec<_>>>()?;
+            let schemas: Vec<Layer> = translators.iter().map(|t| t.schema().clone()).collect();
+            let mut writer = crate::tiles::vector_stream::VectorTileStreamWriter::create(dst, driver, &schemas, &options.write.tiles)?;
+            let written = (|| {
+                for (k, (reader, translator)) in readers.iter_mut().zip(&mut translators).enumerate() {
+                    let next =
+                        || if translator.is_done() { Ok(None) } else { reader.read_chunk(chunk)?.map(|c| translator.apply(c)).transpose() };
+                    write_ahead(next, |c| writer.write_chunk(k, c))?;
+                }
+                writer.finish()
+            })();
+            return if driver == VectorDriver::MVT { written } else { remove_on_error(dst, driver, written) };
+        }
         _ => return Err(one_layer_only(driver)),
     }
-    let ahead = matches!(driver, VectorDriver::GPKG | VectorDriver::FlatGeobuf);
+    let ahead =
+        matches!(driver, VectorDriver::GPKG | VectorDriver::FlatGeobuf | VectorDriver::PMTiles | VectorDriver::MBTiles | VectorDriver::MVT);
     let chunk_bytes = if ahead { AHEAD_CHUNK_BYTES } else { CHUNK_BYTES };
     let mut reader = readers.remove(0);
     reader.set_chunk_bytes(chunk_bytes);
@@ -2284,6 +2344,23 @@ fn convert_sorted_osm(data: &mut File, src: &str, dst: &str, options: &ConvertOp
             sink.finish()
         })();
         return remove_on_error(dst, driver, written);
+    }
+    #[cfg(all(feature = "tiles", not(target_family = "wasm")))]
+    if matches!(driver, VectorDriver::PMTiles | VectorDriver::MBTiles | VectorDriver::MVT) {
+        let out: Vec<Layer> = translators.iter().map(|t| t.schema().clone()).collect();
+        let mut writer = crate::tiles::vector_stream::VectorTileStreamWriter::create(dst, driver, &out, &options.write.tiles)?;
+        let written = (|| {
+            osm::read_sorted_pbf(data, wanted, &mut |l, features| {
+                let Some(k) = selected.iter().position(|&s| s == l) else { return Ok(()) };
+                if translators[k].is_done() {
+                    return Ok(());
+                }
+                let c = translators[k].apply(chunk_of(l, features))?;
+                writer.write_chunk(k, c)
+            })?;
+            writer.finish()
+        })();
+        return if driver == VectorDriver::MVT { written } else { remove_on_error(dst, driver, written) };
     }
     let [l] = selected[..] else { return Err(one_layer_only(driver)) };
     let profile = if needs_profile(driver, translators[0].schema()) {

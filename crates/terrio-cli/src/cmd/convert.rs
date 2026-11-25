@@ -68,7 +68,7 @@ pub struct Args {
     /// ID_FIELD, ID_TYPE; GeoJSONSeq:
     /// ID_FIELD, ID_TYPE; vector tiles:
     /// MINZOOM, MAXZOOM, EXTENT, BUFFER, SIMPLIFICATION,
-    /// SIMPLIFICATION_MAX_ZOOM, NAME, DESCRIPTION, TYPE).
+    /// SIMPLIFICATION_MAX_ZOOM, MAX_SIZE, MAX_FEATURES, CONF, NAME, DESCRIPTION, TYPE).
     #[arg(long = "lco", value_name = "KEY=VALUE")]
     creation_options: Vec<String>,
     /// A dataset creation option of a GDAL vector driver (`ogr2ogr -dsco`): `KEY=VALUE`. Builds
@@ -146,6 +146,7 @@ fn stream_options(a: &Args) -> terrio::Result<Option<terrio::stream::ConvertOpti
     if a.preserve_fid
         || a.srcwin.is_some()
         || a.overview.is_some()
+        || !a.dataset_options.is_empty()
         || a.vector.write_mode() != WriteMode::Create
         || terrio::tiles::is_archive(&a.input)
     {
@@ -166,9 +167,11 @@ fn stream_options(a: &Args) -> terrio::Result<Option<terrio::stream::ConvertOpti
     }
     // KMZ resources are packed by the whole-archive writer, and XLSX, with its own creation
     // options, is written whole.
-    if !a.kmz_resources.is_empty() || matches!(driver.or_else(|| VectorDriver::for_extension(&a.output)), Some(VectorDriver::XLSX)) {
+    let out_driver = driver.or_else(|| VectorDriver::for_extension(&a.output));
+    if !a.kmz_resources.is_empty() || matches!(out_driver, Some(VectorDriver::XLSX)) {
         return Ok(None);
     }
+    let tiles_out = matches!(out_driver, Some(VectorDriver::MBTiles | VectorDriver::PMTiles | VectorDriver::MVT));
     let mut write = VectorWriteOptions {
         driver,
         cityjson_version: a.cityjson_version.as_deref().map(str::parse).transpose()?,
@@ -176,8 +179,15 @@ fn stream_options(a: &Args) -> terrio::Result<Option<terrio::stream::ConvertOpti
         citygml_lod0_surface: a.citygml_lod0_surface.as_deref().map(str::parse).transpose()?,
         ..Default::default()
     };
+    if tiles_out {
+        write.tiles.min_zoom = a.minzoom;
+        write.tiles.max_zoom = a.maxzoom;
+    } else if a.minzoom.is_some() || a.maxzoom.is_some() {
+        return Ok(None);
+    }
     for (k, v) in key_values(&a.creation_options)? {
-        if !(write.csv.set(k, v)? || write.geojson.set(k, v)?) {
+        let known = if tiles_out { write.tiles.set(k, v)? } else { write.csv.set(k, v)? || write.geojson.set(k, v)? };
+        if !known {
             return Ok(None);
         }
     }
@@ -522,5 +532,40 @@ mod tests {
         let mapped = format!("icons/pin.png={}", source.to_str().unwrap());
         let got = kmz_resources(&[named.clone(), mapped]).unwrap();
         assert_eq!(got, vec![(named, b"blue".to_vec()), ("icons/pin.png".to_string(), b"red".to_vec())]);
+    }
+
+    #[test]
+    fn stream_options_enables_streaming_for_pmtiles_with_conf_and_zooms() {
+        use clap::Parser;
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            args: super::Args,
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("in.gpkg");
+        let dst = dir.path().join("out.pmtiles");
+        let conf = dir.path().join("conf.json");
+        std::fs::write(&conf, r#"{"a":{"minzoom":4,"maxzoom":6}}"#).unwrap();
+        let cli = Cli::parse_from([
+            "convert",
+            "-f",
+            "PMTiles",
+            "--minzoom",
+            "3",
+            "--maxzoom",
+            "6",
+            "--lco",
+            &format!("CONF={}", conf.display()),
+            "--lco",
+            "SIMPLIFICATION=1.0",
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+        ]);
+        let opts = super::stream_options(&cli.args).unwrap().expect("PMTiles from GPKG must stream");
+        assert_eq!(opts.write.tiles.min_zoom, Some(3));
+        assert_eq!(opts.write.tiles.max_zoom, Some(6));
+        assert_eq!(opts.write.tiles.simplification, 1.0);
+        assert_eq!(opts.write.tiles.conf.as_deref(), Some(conf.to_str().unwrap()));
     }
 }
