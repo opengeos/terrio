@@ -2332,6 +2332,8 @@ struct Shared {
     /// ([`Shared::fetch_planned`]), the next batch when a read reaches one not cached. A deque, so
     /// that taking batches from its front does not shift the rest.
     plan: VecDeque<u64>,
+    /// Whether the last prefetch's blocks, fetched and already cached, fit in the cache together.
+    prefetch_fits: bool,
     response_origin: Option<String>,
     mixed_origins: bool,
 }
@@ -2374,6 +2376,7 @@ impl RangeReader {
             whole: None,
             prefix: None,
             plan: VecDeque::new(),
+            prefetch_fits: false,
             response_origin: None,
             mixed_origins: false,
         };
@@ -2464,20 +2467,22 @@ impl RangeReader {
         let wanted: Vec<u64> = planned.into_iter().collect();
         // A prefetch of cached blocks keeps the plan of an earlier one that is still being read.
         if wanted.is_empty() {
+            s.prefetch_fits = true;
             return Ok(());
         }
-        s.make_room(&wanted, ranges);
+        s.prefetch_fits = s.make_room(&wanted, ranges);
         s.plan = wanted.into();
         let budget = s.fit_budget();
         s.fetch_planned(0, budget)
     }
 
     /// Whether the last prefetch fetched all it planned in one batch, none left for reads to
-    /// reach: reads of its ranges, from any clone, then send no request while its blocks stay in
+    /// reach, its blocks and the cached ones its ranges cover fitting in the cache together:
+    /// reads of its ranges, from any clone, then send no request while its blocks stay in
     /// the process-wide block cache (a concurrent read of another file can evict some, which are
     /// then fetched again).
     pub(crate) fn prefetched_whole(&self) -> bool {
-        self.lock().is_ok_and(|s| s.plan.is_empty())
+        self.lock().is_ok_and(|s| s.plan.is_empty() && s.prefetch_fits)
     }
 
     fn lock(&self) -> io::Result<std::sync::MutexGuard<'_, Shared>> {
@@ -2622,15 +2627,16 @@ impl Shared {
     /// long-lived reader whose cache is full still fetches the plan in one batch. Blocks the
     /// ranges cover stay; those the scan reaches move to the newest end, to be read before they
     /// would be evicted. When the plan cannot fit beside them, nothing is dropped for nothing.
+    /// Returns whether it fits.
     /// The plan counts as its requests' blocks, the cached gaps they fetch again included (at
     /// most `PLAN_GAP` a join): they are held while the responses are stored, and fetch_planned's
     /// budget counts them the same way, so the plan made room for is fetched in one batch.
-    fn make_room(&mut self, plan: &[u64], ranges: &[(u64, u64)]) {
+    fn make_room(&mut self, plan: &[u64], ranges: &[(u64, u64)]) -> bool {
         let bs = self.block_size;
         let covered = |b: u64| ranges.iter().any(|&(off, len)| len > 0 && b >= off / bs && b <= (off.saturating_add(len) - 1) / bs);
         let need = Self::fetched_blocks(plan) as usize;
         if need + self.blocks.keys().filter(|&&b| covered(b)).count() > self.max_blocks {
-            return;
+            return false;
         }
         let mut kept = Vec::new();
         while self.blocks.len() + need > self.max_blocks
@@ -2643,6 +2649,7 @@ impl Shared {
             }
         }
         self.order.extend(kept);
+        true
     }
 
     /// Drops the oldest blocks until the cache is within its size. Called before a read or a
@@ -4166,7 +4173,12 @@ mod tests {
         let s = r.lock().unwrap();
         assert!((10..30).chain(40..50).all(|b| s.blocks.contains_key(&b)), "no block of the earlier read dropped, the new ones fetched");
         drop(s);
+        // Fetched in one batch, but not held together by the cache: reads on several threads
+        // would evict each other's blocks.
+        assert!(!r.prefetched_whole(), "a plan that does not fit beside its cached blocks is not whole");
         assert_eq!(read_range(&mut r, 40 * 4096, 10 * 4096), data[40 * 4096..50 * 4096]);
+        r.prefetch(&[(40 * 4096, 10 * 4096)]).unwrap();
+        assert!(r.prefetched_whole(), "blocks all cached are whole");
     }
 
     // A plan over the cache's room but under the cache, with room past half the cache, is
