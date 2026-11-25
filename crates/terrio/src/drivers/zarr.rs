@@ -730,35 +730,33 @@ fn blosc_decompress(src: &[u8], most: usize) -> Result<Vec<u8>> {
     let byte_shuffle = flags & 0x01 != 0 && typesize > 1;
     let bit_shuffle = flags & 0x01 == 0 && flags & 0x04 != 0;
     let mut out = crate::dataset::fallible::filled_now(nbytes, 0u8, "a Blosc chunk")?;
-    // The decompressed block before its unshuffle, and a bit shuffle's byte planes: this thread's,
-    // reused from chunk to chunk rather than allocated and zeroed for each.
-    let (mut block, mut planes) = BLOSC_SCRATCH.take();
+    // A byte-shuffled block before its unshuffle, or a bit-shuffled one's byte planes: this
+    // thread's, reused from chunk to chunk rather than allocated and zeroed for each.
+    let mut block = BLOSC_SCRATCH.take();
     let size = blocksize.min(nbytes);
-    for (buf, used) in [(&mut block, byte_shuffle || bit_shuffle), (&mut planes, bit_shuffle)] {
-        if used && buf.len() < size {
-            crate::dataset::fallible::reserve(buf, size - buf.len(), "a Blosc block")?;
-            buf.resize(size, 0);
-        }
+    if (byte_shuffle || bit_shuffle) && block.len() < size {
+        let more = size - block.len();
+        crate::dataset::fallible::reserve(&mut block, more, "a Blosc block")?;
+        block.resize(size, 0);
     }
-    let decoded = blosc_blocks(src, flags, typesize, blocksize, nblocks, (byte_shuffle, bit_shuffle), &mut out, &mut block, &mut planes);
-    // Kept for the next chunk only when small: a chunk of large blocks does not leave them held.
-    if block.capacity().max(planes.capacity()) <= BLOSC_SCRATCH_KEPT {
-        BLOSC_SCRATCH.set((block, planes));
+    let decoded = blosc_blocks(src, flags, typesize, blocksize, nblocks, (byte_shuffle, bit_shuffle), &mut out, &mut block);
+    // Kept for the next chunk only when small: a chunk of large blocks does not leave it held.
+    if block.capacity() <= BLOSC_SCRATCH_KEPT {
+        BLOSC_SCRATCH.set(block);
     }
     decoded.map(|()| out)
 }
 
-/// The most bytes each of a thread's Blosc scratch blocks keeps between chunks.
+/// The most bytes a thread's Blosc scratch block keeps between chunks.
 const BLOSC_SCRATCH_KEPT: usize = 1 << 20;
 
 thread_local! {
-    /// This thread's Blosc scratch blocks: see [`blosc_decompress`].
-    static BLOSC_SCRATCH: std::cell::Cell<(Vec<u8>, Vec<u8>)> = const { std::cell::Cell::new((Vec::new(), Vec::new())) };
+    /// This thread's Blosc scratch block: see [`blosc_decompress`].
+    static BLOSC_SCRATCH: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
 }
 
 /// Decompresses the `nblocks` blocks of a Blosc chunk `src` into `out`, unshuffling them
-/// (`shuffles`: byte, bit) through the scratch `block` and `planes`, at least a block long when
-/// used.
+/// (`shuffles`: byte, bit) through the scratch `block`, at least a block long when used.
 #[allow(clippy::too_many_arguments)]
 fn blosc_blocks(
     src: &[u8],
@@ -769,7 +767,6 @@ fn blosc_blocks(
     (byte_shuffle, bit_shuffle): (bool, bool),
     out: &mut [u8],
     block: &mut [u8],
-    planes: &mut [u8],
 ) -> Result<()> {
     let compressor = flags >> 5;
     let u32_at = |i: usize| src.get(i..i + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
@@ -780,8 +777,9 @@ fn blosc_blocks(
         let nsplits = if split { typesize } else { 1 };
         let pos = u32_at(16 + 4 * j).ok_or_else(|| bad("Blosc: truncated block offsets"))?;
         if bit_shuffle && bsize >= typesize {
-            blosc_block(src, pos, nsplits, compressor, &mut block[..bsize])?;
-            bit_unshuffle(&block[..bsize], dst, &mut planes[..bsize], typesize, src[0]);
+            // Decompressed in place, its byte planes in the scratch block, interleaved back.
+            blosc_block(src, pos, nsplits, compressor, dst)?;
+            bit_unshuffle(dst, &mut block[..bsize], typesize, src[0]);
         } else if byte_shuffle {
             blosc_block(src, pos, nsplits, compressor, &mut block[..bsize])?;
             // The block holds byte 0 of every element, then byte 1...
@@ -803,7 +801,7 @@ fn blosc_block(src: &[u8], mut pos: usize, nsplits: usize, compressor: u8, dst: 
     let neblock = bsize / nsplits;
     let short = |n: usize| bad(format!("Blosc: a block decompressing to {n} bytes, {bsize} expected"));
     if neblock == 0 || neblock * nsplits != bsize {
-        return Err(short(neblock * nsplits));
+        return Err(bad(format!("Blosc: a block of {bsize} bytes in {nsplits} streams")));
     }
     for (k, part) in dst.chunks_exact_mut(neblock).enumerate() {
         let cbytes = src
@@ -863,20 +861,18 @@ fn interleave(planes: &[u8], out: &mut [u8], typesize: usize, n: usize) {
     }
 }
 
-/// Undoes Blosc's bit shuffle of `block` into `out` (of the block's size), with `planes` (as
-/// large) as scratch: bit `kk` of byte `j` of element `i` is stored at bit `(j * 8 + kk) * n + i`
+/// Undoes Blosc's bit shuffle of `block` in place, with `planes` (as large) as scratch: bit `kk` of byte `j` of element `i` is stored at bit `(j * 8 + kk) * n + i`
 /// (least significant bit first), over a multiple `n` of 8 elements (Blosc format version 2
-/// leaves blocks of other sizes as they are; later versions copy the rest).
+/// leaves blocks of other sizes as they are; later versions leave the rest in place).
 ///
 /// Eight elements at a time: bits `kk` of byte `j` of elements `8g..8g + 8` are byte `g` of bit
 /// row `j * 8 + kk`, so the eight rows' bytes `g` are an 8 x 8 bit matrix whose transpose holds
 /// byte `j` of the eight elements, written to byte plane `j`; the planes are then interleaved. A
 /// bit at a time, 4.7 MB of int8 TESSERA embeddings took about 100 ms in WebAssembly.
-fn bit_unshuffle(block: &[u8], out: &mut [u8], planes: &mut [u8], typesize: usize, version: u8) {
-    let bsize = out.len();
+fn bit_unshuffle(block: &mut [u8], planes: &mut [u8], typesize: usize, version: u8) {
+    let bsize = block.len();
     let nelems = bsize / typesize;
     if version <= 2 && !nelems.is_multiple_of(8) {
-        out.copy_from_slice(block);
         return;
     }
     let n = nelems - nelems % 8;
@@ -888,8 +884,8 @@ fn bit_unshuffle(block: &[u8], out: &mut [u8], planes: &mut [u8], typesize: usiz
             *dst = transpose_bits_8x8(x).to_le_bytes();
         }
     }
-    interleave(planes, out, typesize, n);
-    out[n * typesize..].copy_from_slice(&block[n * typesize..bsize]);
+    // The bytes past the last 8 elements are left in place.
+    interleave(planes, block, typesize, n);
 }
 
 /// Transposes an 8 x 8 bit matrix held in a `u64`, byte `i` its row `i` and bit `j` of a byte its
@@ -3334,8 +3330,8 @@ mod tests {
 
     /// [`bit_unshuffle`] of a whole block, into a new buffer.
     fn bit_unshuffled(block: &[u8], typesize: usize, version: u8) -> Vec<u8> {
-        let (mut out, mut planes) = (vec![0xA5; block.len()], vec![0x5A; block.len()]);
-        bit_unshuffle(block, &mut out, &mut planes, typesize, version);
+        let (mut out, mut planes) = (block.to_vec(), vec![0x5A; block.len()]);
+        bit_unshuffle(&mut out, &mut planes, typesize, version);
         out
     }
 
