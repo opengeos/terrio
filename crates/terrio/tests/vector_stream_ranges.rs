@@ -244,7 +244,7 @@ fn flatgeobuf_bbox_reads_keep_the_same_features_with_or_without_an_index() {
     let mut layer = grid();
     layer.features[399].geometry = None;
     terrio::write_vector(&[layer], unindexed.to_str().unwrap(), &Default::default()).unwrap();
-    // x in 3..=6 and y in 4..=5: in the file's order (the indexed file sorts its features).
+    // x in 3..=6 and y in 4..=5, compared sorted: the indexed file reorders its features.
     let mut expected: Vec<String> = (4..=5).flat_map(|y| (3..=6).map(move |x| (y * 20 + x).to_string())).collect();
     expected.sort();
     // The same rectangle given by its other two corners selects the same features.
