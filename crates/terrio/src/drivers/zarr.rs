@@ -861,7 +861,8 @@ fn interleave(planes: &[u8], out: &mut [u8], typesize: usize, n: usize) {
     }
 }
 
-/// Undoes Blosc's bit shuffle of `block` in place, with `planes` (as large) as scratch: bit `kk` of byte `j` of element `i` is stored at bit `(j * 8 + kk) * n + i`
+/// Undoes Blosc's bit shuffle of `block` in place, with `planes` (as large) as scratch: bit `kk`
+/// of byte `j` of element `i` is stored at bit `(j * 8 + kk) * n + i`
 /// (least significant bit first), over a multiple `n` of 8 elements (Blosc format version 2
 /// leaves blocks of other sizes as they are; later versions leave the rest in place).
 ///
