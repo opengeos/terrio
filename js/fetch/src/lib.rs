@@ -229,18 +229,7 @@ impl Fetcher {
 
     /// URL with userinfo, query string, and fragment stripped so signed URL tokens cannot leak into errors.
     fn safe_url(&self) -> String {
-        let base = self.url.split(['?', '#']).next().unwrap_or(&self.url);
-        if let Some((scheme, rest)) = base.split_once("://") {
-            let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, _)| (a, &rest[a.len()..]));
-            let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-            return format!("{scheme}://{host}{path}");
-        }
-        if let Some(rest) = base.strip_prefix("//") {
-            let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, _)| (a, &rest[a.len()..]));
-            let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-            return format!("//{host}{path}");
-        }
-        base.to_string()
+        redact_url(&self.url)
     }
 
     /// Waits for a response and reads it: an error unless its status is 2xx.
@@ -397,7 +386,7 @@ impl Fetcher {
                         objects.insert(key, *range, None);
                         return Ok(());
                     }
-                    return Err(JsError::new(&format!("{base}/{key}: HTTP status {status}")));
+                    return Err(JsError::new(&format!("{}/{key}: HTTP status {status}", redact_url(base))));
                 }
                 let data = self.read_body(&response, readers).await?;
                 if failed.get() {
@@ -432,12 +421,14 @@ impl Fetcher {
                                         .map_err(|_| JsError::new("object range exceeds address space"))?,
                             )
                             .map(<[u8]>::to_vec)
-                            .ok_or_else(|| JsError::new(&format!("{base}/{key}: bytes {o}+{n} past the end of the object")))?,
+                            .ok_or_else(|| {
+                                JsError::new(&format!("{}/{key}: bytes {o}+{n} past the end of the object", redact_url(base)))
+                            })?,
                     ),
                     (200, ObjectRange::Suffix(n)) => {
                         Some(f.data[f.data.len().saturating_sub(usize::try_from(n).unwrap_or(usize::MAX))..].to_vec())
                     }
-                    (status, _) => return Err(JsError::new(&format!("{base}/{key}: HTTP status {status}"))),
+                    (status, _) => return Err(JsError::new(&format!("{}/{key}: HTTP status {status}", redact_url(base)))),
                 };
                 objects.insert(key, *range, data);
                 Ok(())
@@ -714,7 +705,7 @@ impl Fetcher {
             (206, None) => self.head_len().await?.ok_or_else(|| {
                 JsError::new(&format!(
                     "{}: the server's response has no Content-Range (cross-origin servers must expose it) and no Content-Length",
-                    self.url.split(['?', '#']).next().unwrap_or(&self.url)
+                    self.safe_url()
                 ))
             })?,
             (200..300, _) => last.data.len() as u64,
@@ -744,8 +735,8 @@ impl Fetcher {
                 None => {
                     return Err(JsError::new(&format!(
                         "{}: the server's response has no Content-Range (cross-origin servers must expose it) and no Content-Length",
-                        // Without the query, which may hold a signed URL's credentials.
-                        self.url.split(['?', '#']).next().unwrap_or(&self.url)
+                        // Without userinfo or query, which may hold a signed URL's credentials.
+                        self.safe_url()
                     )));
                 }
             },
@@ -776,6 +767,22 @@ async fn next_chunk(reader: &JsValue) -> Result<Option<js_sys::Uint8Array>, JsEr
     let promise = call(reader, "read", &[])?.dyn_into::<js_sys::Promise>().map_err(|_| JsError::new("no body"))?;
     let chunk = JsFuture::from(promise).await.map_err(js_error)?;
     Ok((!get(&chunk, "done").is_truthy()).then(|| js_sys::Uint8Array::new(&get(&chunk, "value"))))
+}
+
+/// Strips userinfo, query string, and fragment from a URL before including it in errors.
+fn redact_url(url: &str) -> String {
+    let base = url.split(['?', '#']).next().unwrap_or(url);
+    if let Some((scheme, rest)) = base.split_once("://") {
+        let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, _)| (a, &rest[a.len()..]));
+        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        return format!("{scheme}://{host}{path}");
+    }
+    if let Some(rest) = base.strip_prefix("//") {
+        let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, _)| (a, &rest[a.len()..]));
+        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        return format!("//{host}{path}");
+    }
+    base.to_string()
 }
 
 fn append(data: &mut Vec<u8>, chunk: &js_sys::Uint8Array) {
