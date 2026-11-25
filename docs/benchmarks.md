@@ -302,8 +302,8 @@ as its warm-up, then writes the whole raster to a new file on local disk: terrio
 same creation options, spelled out (compression, predictor, block size, interleave, photometric,
 `OVERVIEW_RESAMPLING=AVERAGE` and `OVERVIEWS=IGNORE_EXISTING` or `NONE`); GDAL also gets
 `NUM_THREADS` from `--threads`. ZSTD is written at level 1 (`ZSTD_LEVEL`, `LEVEL` for GDAL's COG
-driver): this build of terrio writes the levels above 4 at level 4, and at level 1 both tools
-write files of the same size. GDAL's COG driver takes no `PHOTOMETRIC`: it writes 3-band JPEG
+driver): this build of terrio writes the levels above 4 at level 4. At level 1 the UInt16 files
+match GDAL's in size, while terrio's Float32 predictor-3 files are about 3% larger. GDAL's COG driver takes no `PHOTOMETRIC`: it writes 3-band JPEG
 as YCbCr itself, so RGB JPEG is measured as a tiled GeoTIFF only. The `cog_threads1` pattern sets
 `RAYON_NUM_THREADS` and `GDAL_NUM_THREADS` to 1. `init` then includes loading the source.
 

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import benchmark_validation
 import perf_matrix
 from perf_matrix import WIN, Zarr, report, rounds, summarize, windows
 
@@ -735,12 +736,16 @@ def test_geoparquet_write_comparison_checks_features_and_file_layout(tmp_path, m
     table = pq.read_table(tmp_path / "same.parquet")
     pq.write_table(table.replace_schema_metadata({}), tmp_path / "plain.parquet")
     # Even when the features compare equal, a file without GeoParquet metadata is labelled.
-    monkeypatch.setattr(sys.modules["benchmark_validation"], "compare_vectors", lambda a, b: [])
+    monkeypatch.setattr(benchmark_validation, "compare_vectors", lambda a, b: [])
     plain = perf_matrix.GeoParquetWrite.compare(tmp_path / "plain.parquet", ref)
     # A runner without GEOS or sort fails the check rather than labelling the output.
     no_geos = ["vector validation requires GDAL built with GEOS for geometry normalization"]
-    monkeypatch.setattr(sys.modules["benchmark_validation"], "compare_vectors", lambda a, b: no_geos)
+    monkeypatch.setattr(benchmark_validation, "compare_vectors", lambda a, b: no_geos)
     with pytest.raises(RuntimeError, match="requires GDAL built with GEOS"):
+        perf_matrix.GeoParquetWrite.compare(tmp_path / "same.parquet", ref)
+    sort_failed = ["vector validation sort failed (requires -S/-T support): sort: invalid option"]
+    monkeypatch.setattr(benchmark_validation, "compare_vectors", lambda a, b: sort_failed)
+    with pytest.raises(RuntimeError, match="sort failed"):
         perf_matrix.GeoParquetWrite.compare(tmp_path / "same.parquet", ref)
     assert plain["mismatch"] == "geometry encoding None vs GDAL's WKB"
 

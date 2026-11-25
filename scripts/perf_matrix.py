@@ -1191,8 +1191,8 @@ class GeoParquetWrite:
 
     terrio's GeoParquet writer takes no options: it writes WKB with a covering bbox column,
     Snappy compression and row groups of 65536 rows, in the features' order. GDAL is given the
-    same (`ogr2ogr -f Parquet -lco ...`). The time is the write call's, from the source loaded in
-    memory beforehand (terrio's `open_vector`, a GDAL `MEM` copy). After each terrio sample, the
+    same (`gdal.VectorTranslate` with `layerCreationOptions`). The time is the write call's, from
+    the source loaded in memory beforehand (terrio's `open_vector`, a GDAL `MEM` copy). After each terrio sample, the
     output is compared with GDAL's reference: every feature's attributes and normalized geometry,
     field names and types and the CRS (`benchmark_validation.compare_vectors`), then the row and
     row group counts, columns, compression, geometry encoding and covering. An output whose bytes
@@ -1286,7 +1286,7 @@ class GeoParquetWrite:
 
         a, b = pq.ParquetFile(path).metadata, pq.ParquetFile(ref).metadata
         mismatch = next(iter(compare_vectors(ogr.Open(str(path)), ogr.Open(str(ref)))), None)
-        if mismatch and mismatch.startswith("vector validation requires"):  # the runner, not the output
+        if mismatch and mismatch.startswith("vector validation "):  # the runner's GEOS or sort, not the output
             raise RuntimeError(mismatch)
 
         def geo(md):
