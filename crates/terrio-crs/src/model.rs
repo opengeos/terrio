@@ -464,7 +464,29 @@ fn wkt1_kind_input(m: &Model, kind: wkt1::Wkt1Kind) -> Option<wkt1::Wkt1Input> {
         axes: None,
         has_axis: false,
     };
-    let Some(c) = conversion else { return Some(input) };
+    let Some(c) = conversion else {
+        // A `GEOGCS`'s `AXIS` directions, which PROJ 9.9.0 reads (`buildCS`), as a WKT 2
+        // geographic CRS's: two along east-west and north-south, one of them west or south, in
+        // their order (#1012 item 26).
+        if kind == Wkt1Kind::Geographic && cs.explicit {
+            let letter = |a: &Axis| match a.direction.as_str() {
+                "east" => Some(b'e'),
+                "west" => Some(b'w'),
+                "north" => Some(b'n'),
+                "south" => Some(b's'),
+                _ => None,
+            };
+            input.axes = match cs.axes.iter().map(letter).collect::<Option<Vec<u8>>>().as_deref() {
+                Some(&[a, b])
+                    if matches!(a, b'e' | b'w') != matches!(b, b'e' | b'w') && (a == b'w' || a == b's' || b == b'w' || b == b's') =>
+                {
+                    Some([a, b])
+                }
+                _ => None,
+            };
+        }
+        return Some(input);
+    };
     input.params = c.params.iter().map(|p| (wkt1::norm(&p.ident.name), p.value)).filter(|(k, _)| !k.is_empty()).collect();
     input.method = Some(c.method.name.clone()).filter(|n| !n.is_empty());
     input.method_epsg = first_epsg(&c.method);

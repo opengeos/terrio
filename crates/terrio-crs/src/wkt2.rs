@@ -336,7 +336,7 @@ pub(crate) fn convert(input: &Wkt2Input, base: &Node) -> Result<Converted> {
         Wkt2Kind::Derived { method, grid_ang } => return derived(geog, method, *grid_ang),
     };
     let generic = proj_method(method, geog.ang, to_meter)?;
-    let p = if generic.is_some() { Params::default() } else { Params::read(&method.params, geog.ang, to_meter)? };
+    let p = if generic.is_some() { Params::default() } else { Params::read(&method.params)? };
     let (name, code) = (norm(&method.name), method.epsg);
     let is = |names: &[&str], codes: &[u32]| names.contains(&name.as_str()) || code.is_some_and(|c| codes.contains(&c));
 
@@ -1117,7 +1117,9 @@ pub(crate) fn parameter_info(name: &str, code: Option<u32>) -> Option<(u32, &'st
 }
 
 impl Params {
-    fn read(params: &[Wkt2Param], ang: f64, to_meter: f64) -> Result<Self> {
+    /// A parameter without a unit is in degrees, metres or unity, as PROJ 9.9.0 reads it, not in
+    /// the CS's or base CRS's unit (#1012 item 27).
+    fn read(params: &[Wkt2Param]) -> Result<Self> {
         let mut values = Vec::new();
         for n in params {
             let name = n.name.as_str();
@@ -1127,8 +1129,8 @@ impl Params {
             let v = n.value;
             let unit = n.size(&UNIT_KEYS);
             let v = match param.kind {
-                Kind::Angle => v * unit.map(degrees).unwrap_or(ang),
-                Kind::Length => v * unit.unwrap_or(to_meter),
+                Kind::Angle => v * unit.map(degrees).unwrap_or(1.0),
+                Kind::Length => v * unit.unwrap_or(1.0),
                 Kind::Scale => v * unit.unwrap_or(1.0),
             };
             values.push((param.code, name.to_string(), v));

@@ -73,7 +73,10 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   CRS's `AXIS` nodes give its axes in WKT 1 as in WKT 2, as GDAL and PROJ read them in GIS order:
   `AXIS["Y",WEST],AXIS["X",SOUTH]` counts coordinates west and south, and northing then easting is
   read as easting then northing; south-orientated Transverse Mercator is west and south but for
-  north-east axes (south and west), and Krovak without them south and west. South-orientated
+  north-east axes (south and west), and Krovak without them south and west. A WKT 1 `GEOGCS`'s
+  `AXIS` directions count longitudes west and latitudes south as WKT 2's do (west-positive
+  planetary longitudes), and a WKT 2 parameter without a unit is in degrees or metres, not in its
+  CS's or base CRS's unit, as PROJ 9.9.0 reads them. South-orientated
   Transverse Mercator subtracts its false easting and northing (EPSG method 9808: W = FE - x,
   S = FN - y); PROJ 9.9.0 refuses one with offsets, and terrio writes it no PROJ string. A world
   projection given a latitude of natural origin its method has no use for (Robinson, Sinusoidal)

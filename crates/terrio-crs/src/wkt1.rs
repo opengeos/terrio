@@ -585,6 +585,9 @@ pub(crate) fn convert(input: &Wkt1Input, geogcs: &Node) -> Option<Converted> {
     }
     if input.kind == Wkt1Kind::Geographic {
         out.push("+proj=longlat".to_string());
+        if let Some([a, b]) = input.axes {
+            out.push(format!("+axis={}{}u", a as char, b as char));
+        }
         if (ang - 1.0).abs() > 1e-12 {
             tail.push(format!("+to_deg={ang}"));
         }
