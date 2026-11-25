@@ -141,10 +141,10 @@ def _arrow_canonical(t):
 def digest(results) -> str:
     """A hash of every value a case read, in order, to compare two tools' reads exactly.
 
-    A raster's hash covers its data type and its bytes in C order, not its shape: a band read as
-    `(1, h, w)` and as `(h, w)` hash the same. A table's covers its columns by name, each cast to a
-    canonical type (`int32` and `int64` columns of the same values hash the same, as do chunked
-    and sliced copies) and serialized as Arrow IPC; top-level extension columns hash as their
+    A raster's hash covers its data type, its shape without leading 1s (a band read as `(1, h, w)`
+    and as `(h, w)` hash the same) and its bytes in C order. A table's covers its columns by name,
+    each cast to a canonical type (`int32` and `int64` columns of the same values hash the same, as
+    do chunked and sliced copies; `uint64` stays apart, so its values past 2**63 hash) and serialized as Arrow IPC; top-level extension columns hash as their
     storage. Nested extension types and dictionary-encoded columns hash as they come, so equal
     values in different encodings only fall back to the sum and count. Read metadata (the
     `metadata` of a `(metadata, table)`, such as the CRS) is not hashed: only values are compared.
@@ -178,7 +178,10 @@ def digest(results) -> str:
             h.update(batch.serialize())
         else:
             a = np.ascontiguousarray(res)
-            h.update(a.dtype.str.encode())
+            shape = a.shape
+            while len(shape) > 2 and shape[0] == 1:  # a band's (1, h, w) hashes as (h, w)
+                shape = shape[1:]
+            h.update(repr((a.dtype.str, shape)).encode())
             h.update(memoryview(a).cast("B"))
     return h.hexdigest()
 

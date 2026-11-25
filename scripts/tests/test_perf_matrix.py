@@ -67,13 +67,14 @@ def test_equal_sums_with_different_bytes_are_not_exact():
 
 
 def test_digest_compares_values_not_their_layout():
-    """Hash the values read: not a band's shape, a table's chunks, column order or integer width."""
+    """Hash the values read and their shape: not a band's leading 1, a table's chunks, column order or integer width."""
     import numpy as np
 
     a = np.arange(12, dtype="float32").reshape(3, 4)
     assert perf_matrix.digest([a]) == perf_matrix.digest([a[None]]) == perf_matrix.digest([np.asfortranarray(a)])
     assert perf_matrix.digest([a]) != perf_matrix.digest([a.astype("float64")])
     assert perf_matrix.digest([a]) != perf_matrix.digest([a[::-1]])
+    assert perf_matrix.digest([a]) != perf_matrix.digest([a.reshape(a.shape[::-1])])  # same bytes, other shape
     pa = pytest.importorskip("pyarrow")
     xy = pa.struct([pa.field("x", pa.float64(), False), pa.field("y", pa.float64(), False)])
     rings = pa.array([[[{"x": 1.0, "y": 2.0}]], [[{"x": 3.0, "y": 4.0}, {"x": 5.0, "y": 6.0}]]], pa.list_(pa.list_(xy)))
