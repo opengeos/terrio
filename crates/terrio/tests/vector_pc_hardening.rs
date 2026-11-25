@@ -115,12 +115,13 @@ fn deeply_nested_xml_wkt_and_mif_return_errors_without_stack_overflow() {
 #[test]
 fn ply_zero_property_vertex_element_returns_error_immediately() {
     let ply = b"ply\nformat ascii 1.0\nelement vertex 18446744073709551615\nend_header\n".to_vec();
-    let res = open_points_bytes(ply, "empty_props.ply");
-    assert!(res.is_err());
+    let Err(err) = open_points_bytes(ply, "empty_props.ply") else { panic!("expected error") };
+    let err = err.to_string();
+    assert!(err.contains("no scalar properties"), "got: {err}");
 }
 
 #[test]
-fn ept_zero_span_is_rejected_on_open() {
+fn ept_zero_span_and_oversized_zstd_node_are_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let ept = serde_json::json!({
         "bounds": [0.0, 0.0, 0.0, 10.0, 10.0, 10.0],
@@ -136,9 +137,37 @@ fn ept_zero_span_is_rejected_on_open() {
             {"name": "Z", "type": "floating", "size": 8}
         ]
     });
-    std::fs::write(dir.path().join("ept.json"), serde_json::to_vec(&ept).unwrap()).unwrap();
-    let res = open_points(dir.path().to_str().unwrap());
-    assert!(res.is_err());
+    let ept_path = dir.path().join("ept.json");
+    std::fs::write(&ept_path, serde_json::to_vec(&ept).unwrap()).unwrap();
+    let Err(err) = open_points(ept_path.to_str().unwrap()) else { panic!("expected error") };
+    let err = err.to_string();
+    assert!(err.contains("span"), "got: {err}");
+
+    // An EPT zstandard node whose hierarchy declares >256 MiB of records returns ResourceLimit.
+    let dir2 = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir2.path().join("ept-hierarchy")).unwrap();
+    std::fs::create_dir_all(dir2.path().join("ept-data")).unwrap();
+    let ept_zst = serde_json::json!({
+        "bounds": [0.0, 0.0, 0.0, 10.0, 10.0, 10.0],
+        "boundsConforming": [0.0, 0.0, 0.0, 10.0, 10.0, 10.0],
+        "dataType": "zstandard",
+        "hierarchyType": "json",
+        "points": 20_000_000,
+        "span": 256,
+        "version": "1.0.0",
+        "schema": [
+            {"name": "X", "type": "floating", "size": 8},
+            {"name": "Y", "type": "floating", "size": 8},
+            {"name": "Z", "type": "floating", "size": 8}
+        ]
+    });
+    let ept_zst_path = dir2.path().join("ept.json");
+    std::fs::write(&ept_zst_path, serde_json::to_vec(&ept_zst).unwrap()).unwrap();
+    std::fs::write(dir2.path().join("ept-hierarchy/0-0-0-0.json"), r#"{"0-0-0-0": 20000000}"#).unwrap();
+    std::fs::write(dir2.path().join("ept-data/0-0-0-0.zst"), b"stub").unwrap();
+    let mut ds = open_points(ept_zst_path.to_str().unwrap()).unwrap();
+    let err = ds.read(&Default::default()).unwrap_err();
+    assert!(matches!(err, terrio::Error::ResourceLimit(_)), "expected ResourceLimit, got: {err:?}");
 }
 
 #[test]

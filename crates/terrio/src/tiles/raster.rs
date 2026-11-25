@@ -40,14 +40,21 @@ pub(crate) struct Image {
 pub(crate) fn decode_image(b: &[u8]) -> Result<Image> {
     let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("tile image: {e}"));
     if b.starts_with(b"\x89PNG") {
+        let png_err = |e: png::DecodingError| match e {
+            png::DecodingError::LimitsExceeded => Error::ResourceLimit(format!("tile image: {e}")),
+            other => err(&other),
+        };
         let mut d = png::Decoder::new(std::io::Cursor::new(b));
         d.set_limits(png::Limits { bytes: 64 << 20 });
         d.set_transformations(png::Transformations::normalize_to_color8());
-        let mut reader = d.read_info().map_err(|e| err(&e))?;
+        let mut reader = d.read_info().map_err(png_err)?;
         let palette = reader.info().color_type == png::ColorType::Indexed;
-        let out_size = reader.output_buffer_size().ok_or_else(|| err(&"too large"))?;
+        let out_size = reader.output_buffer_size().ok_or_else(|| Error::ResourceLimit("tile image: PNG tile exceeds limit".into()))?;
+        if out_size > 64 << 20 {
+            return Err(Error::ResourceLimit(format!("tile image: PNG tile size {out_size} exceeds 64 MiB limit")));
+        }
         let mut buf = crate::dataset::fallible::filled(out_size, 0u8, "a PNG tile")?;
-        let info = reader.next_frame(&mut buf).map_err(|e| err(&e))?;
+        let info = reader.next_frame(&mut buf).map_err(png_err)?;
         let channels = info.color_type.samples();
         let (w, h) = (info.width as usize, info.height as usize);
         let expected = crate::dataset::fallible::len(&[w, h, channels], "a PNG tile")?;

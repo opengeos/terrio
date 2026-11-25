@@ -132,7 +132,7 @@ pub fn decode(bytes: &[u8]) -> String {
     }
 }
 
-/// Parses a document and returns its root element.
+/// Parses a document and returns its root element. Nesting is bounded at 256 levels.
 pub fn parse(text: &str) -> Result<Element> {
     parse_with_limits(text, usize::MAX, 256, false)
 }

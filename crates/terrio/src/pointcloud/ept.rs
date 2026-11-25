@@ -420,7 +420,8 @@ impl EptReader {
                     return Err(Error::InvalidData("EPT: an empty schema".into()));
                 }
                 let bytes = if kind == "zstandard" {
-                    // Every frame, to at most the records of the node's points in the hierarchy.
+                    // Cap per-node decompressed payload at 256 MiB to prevent crafted EPT hierarchy
+                    // point counts from forcing multi-gigabyte decompression allocations.
                     const MAX_EPT_NODE_BYTES: usize = 256 << 20;
                     let limit = usize::try_from(points)
                         .ok()
