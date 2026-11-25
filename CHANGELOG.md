@@ -305,8 +305,8 @@
   MiB of Float64 bands in each open dataset: whole when they fit, otherwise the rows a read needs
   and those nearest them. On Unix, the datasets open at once on one version of a file that has gone
   unchanged for 2 seconds, including the spare readers Python opens to read a raster from several
-  threads, share them. GRIB bytes opened from memory are no longer copied. Four datasets of the
-  issue's 64 MiB file held 256 MiB once opened and 768 MiB after a one-pixel read of each; they now
+  threads, share them. GRIB bytes opened from memory are no longer copied. Four datasets of a
+  64 MiB file held 256 MiB once opened and 768 MiB after a one-pixel read of each; they now
   hold nothing once opened and 64 MiB after the reads, in the cache. Opening the file and reading a
   first window takes less time than on `main`, with the default cache and with one that holds the
   band. (#1163)
@@ -558,7 +558,7 @@
 - A WKT 1 or WKT 2 prime meridian that PROJ 9.8.1 knows by name (Paris RGS, Ferro, Lisbon and ten
   others; not Copenhagen) is now read in degrees when its value is given in degrees or in EPSG's
   sexagesimal degrees, whatever its unit, as PROJ reads it. A WKT 2
-  `PRIMEM["Ferro",-17.4,ANGLEUNIT["degree",...]]`, was 0.27° off. A WKT 2 prime meridian without its
+  `PRIMEM["Ferro",-17.4,ANGLEUNIT["degree",...]]` was read 0.27° off before. A WKT 2 prime meridian without its
   own unit is now in its CRS's or base CRS's unit when PROJ takes that unit for an angle (an
   `ANGLEUNIT`, or a `UNIT` named `degree` or `grad`), else in degrees, and never in its axes' unit.
   ATF (Paris) / Nord de Guerre (EPSG:27500), as GDAL and ESRI write it, has its Paris RGS meridian
