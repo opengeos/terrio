@@ -1029,6 +1029,12 @@ def test_report_gives_each_tools_speedup_over_one_thread():
     # Files run with different library pools are not merged into one scaling section.
     mixed = report([{"machine": {**_MACHINE, "threads": 1}}, {"machine": {**_MACHINE, "threads": 4}}, *rows])
     assert "mix --threads [1, 4]" in mixed and "## Thread scaling" not in mixed
+    # Thread counts pair within a results file: another file's one-thread run is not A's baseline.
+    def case(n, t, g):
+        return summarize({**_row(terrio=[_sample(t)], gdal=[_sample(g)]), "access": f"threads{n}"})
+
+    two_runs = report([{"machine": _MACHINE}, case(1, 8.0, 4.0), case(8, 2.0, 1.0), {"machine": _MACHINE}, case(1, 80.0, 40.0)])
+    assert "geotiff local threads8  terrio x4.00  gdal x4.00  terrio/gdal time x2.00  (1)" in two_runs
 
 
 def test_flatgeobuf_index_levels_end_at_one_root_and_refuse_no_features():
