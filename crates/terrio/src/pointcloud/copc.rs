@@ -324,8 +324,8 @@ impl Copc {
             // Fetch a batch of nodes in as few requests as possible, then decode them.
             let mut j = i;
             let mut bytes = 0u64;
-            while j < nodes.len() && (j == i || bytes + nodes[j].byte_size as u64 <= BATCH_BYTES) {
-                bytes += nodes[j].byte_size.max(0) as u64;
+            while j < nodes.len() && (j == i || bytes.saturating_add(nodes[j].byte_size.max(0) as u64) <= BATCH_BYTES) {
+                bytes = bytes.saturating_add(nodes[j].byte_size.max(0) as u64);
                 j += 1;
             }
             if source.is_remote() {
@@ -348,7 +348,8 @@ impl Copc {
     }
 
     fn decompress(&self, data: Vec<u8>, count: usize, record_len: usize) -> Result<Vec<u8>> {
-        let mut out = vec![0u8; count * record_len];
+        let byte_len = crate::dataset::fallible::len(&[count, record_len], "a COPC node")?;
+        let mut out = crate::dataset::fallible::filled(byte_len, 0u8, "a COPC node")?;
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
             let mut d = laz::record::LayeredPointRecordDecompressor::new(Cursor::new(data));
             d.set_fields_from(&self.items).map_err(|e| Error::InvalidData(format!("COPC: {e}")))?;

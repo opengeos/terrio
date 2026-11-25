@@ -1,0 +1,140 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+
+//! Regression tests for malformed vector, GeoPackage, point cloud, and tile inputs.
+
+use flate2::Compression;
+use flate2::write::GzEncoder;
+use std::io::Write;
+use terrio::formats::VectorDriver;
+use terrio::memory::{open_vector_bytes, open_vector_or_geometries};
+use terrio::pointcloud::{PointReadOptions, open_points, open_points_bytes};
+
+#[test]
+fn tab_dat_out_of_bounds_header_and_zero_record_len_return_error() {
+    let tab = b"!table\n!version 300\n!charset Neutral\nDefinition Table\n  Type NATIVE Charset \"Neutral\"\n  Fields 0\n";
+
+    // header_len = 64 > dat.len() (32) must return Err, not panic.
+    let mut bad_header = vec![0u8; 32];
+    bad_header[8..10].copy_from_slice(&64u16.to_le_bytes());
+    bad_header[10..12].copy_from_slice(&1u16.to_le_bytes());
+    let dir = tempfile::tempdir().unwrap();
+    let tab_path = dir.path().join("bad_hdr.tab");
+    std::fs::write(&tab_path, tab).unwrap();
+    std::fs::write(dir.path().join("bad_hdr.dat"), &bad_header).unwrap();
+    assert!(terrio::open_vector(tab_path.to_str().unwrap(), &Default::default()).is_err());
+
+    // records = 1, header_len = 32, record_len = 0 must return Err, not panic on rec[0].
+    let mut bad_rec = vec![0u8; 32];
+    bad_rec[4..8].copy_from_slice(&1u32.to_le_bytes());
+    bad_rec[8..10].copy_from_slice(&32u16.to_le_bytes());
+    bad_rec[10..12].copy_from_slice(&0u16.to_le_bytes());
+    let tab_path2 = dir.path().join("bad_rec.tab");
+    std::fs::write(&tab_path2, tab).unwrap();
+    std::fs::write(dir.path().join("bad_rec.dat"), &bad_rec).unwrap();
+    assert!(terrio::open_vector(tab_path2.to_str().unwrap(), &Default::default()).is_err());
+}
+
+#[test]
+fn tab_seamless_rejects_parent_traversal_absolute_paths_and_cycles() {
+    let dir = tempfile::tempdir().unwrap();
+    let sub = dir.path().join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    // Minimal 1-field Table seamless .tab + .dat helper.
+    let make_seamless = |path: &std::path::Path, target: &str| {
+        let tab = "!table\n!version 300\n!charset Neutral\nDefinition Table\n  Type NATIVE Charset \"Neutral\"\n  Fields 1\n    Table Char (64) ;\nbegin_metadata\n\"\\IsSeamless\" = \"TRUE\"\nend_metadata\n";
+        let mut dat = vec![0u8; 32 + 32 + 1 + 65];
+        dat[4..8].copy_from_slice(&1u32.to_le_bytes()); // 1 record
+        dat[8..10].copy_from_slice(&65u16.to_le_bytes()); // header_len = 32 + 32 + 1 (0x0d)
+        dat[10..12].copy_from_slice(&65u16.to_le_bytes()); // record_len = 1 + 64
+        dat[32..37].copy_from_slice(b"Table");
+        dat[32 + 11] = b'C';
+        dat[32 + 16] = 64;
+        dat[64] = 0x0d;
+        dat[65] = b' ';
+        let bytes = target.as_bytes();
+        dat[66..66 + bytes.len()].copy_from_slice(bytes);
+        std::fs::write(path, tab).unwrap();
+        std::fs::write(path.with_extension("dat"), &dat).unwrap();
+    };
+
+    // Self-referential cycle must fail cleanly instead of overflowing the stack.
+    let self_tab = sub.join("loop.tab");
+    make_seamless(&self_tab, "loop.tab");
+    assert!(terrio::open_vector(self_tab.to_str().unwrap(), &Default::default()).is_err());
+
+    // Parent directory traversal must be refused.
+    let parent_tab = sub.join("escape.tab");
+    make_seamless(&parent_tab, "../outside.tab");
+    assert!(terrio::open_vector(parent_tab.to_str().unwrap(), &Default::default()).is_err());
+
+    // Absolute path must be refused.
+    let abs_tab = sub.join("abs.tab");
+    make_seamless(&abs_tab, "/etc/hosts");
+    assert!(terrio::open_vector(abs_tab.to_str().unwrap(), &Default::default()).is_err());
+}
+
+#[test]
+fn deeply_nested_xml_wkt_and_mif_return_errors_without_stack_overflow() {
+    // Deeply nested KML (>256 levels) fails cleanly.
+    let deep_kml = format!("<kml>{}{}</kml>", "<a>".repeat(500), "</a>".repeat(500));
+    assert!(open_vector_bytes(deep_kml.into_bytes(), "deep.kml", &Default::default()).is_err());
+
+    // Deeply nested WKT GEOMETRYCOLLECTION (>64 levels) fails cleanly.
+    let deep_wkt = format!("{}POINT(0 0){}", "GEOMETRYCOLLECTION(".repeat(200), ")".repeat(200));
+    assert!(open_vector_or_geometries(&deep_wkt, &Default::default()).is_err());
+
+    // Deeply nested MIF Collection (>64 levels) fails cleanly.
+    let deep_mif = format!("Version 300\nColumns 0\nData\n{}Point 0 0\n", "Collection 1\n".repeat(200));
+    let res = open_vector_bytes(deep_mif.into_bytes(), "deep.mif", &Default::default());
+    // MIF ignores unparseable statements or errors cleanly without stack overflow.
+    if let Ok(ds) = res {
+        assert!(ds.layers[0].features.is_empty());
+    }
+}
+
+#[test]
+fn ply_zero_property_vertex_element_returns_error_immediately() {
+    let ply = b"ply\nformat ascii 1.0\nelement vertex 18446744073709551615\nend_header\n".to_vec();
+    let res = open_points_bytes(ply, "empty_props.ply");
+    assert!(res.is_err());
+}
+
+#[test]
+fn ept_zero_span_is_rejected_on_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let ept = serde_json::json!({
+        "bounds": [0.0, 0.0, 0.0, 10.0, 10.0, 10.0],
+        "boundsConforming": [0.0, 0.0, 0.0, 10.0, 10.0, 10.0],
+        "dataType": "binary",
+        "hierarchyType": "json",
+        "points": 1,
+        "span": 0,
+        "version": "1.0.0",
+        "schema": [
+            {"name": "X", "type": "floating", "size": 8},
+            {"name": "Y", "type": "floating", "size": 8},
+            {"name": "Z", "type": "floating", "size": 8}
+        ]
+    });
+    std::fs::write(dir.path().join("ept.json"), serde_json::to_vec(&ept).unwrap()).unwrap();
+    let res = open_points(dir.path().to_str().unwrap());
+    assert!(res.is_err());
+    let _ = PointReadOptions::default();
+}
+
+#[test]
+fn mvt_gzip_bomb_hits_decoded_limit_and_does_not_oom() {
+    // Build a >64 MiB zero payload compressed with gzip (~70 KiB compressed).
+    let mut enc = GzEncoder::new(Vec::new(), Compression::best());
+    let chunk = vec![0u8; 1024 * 1024];
+    for _ in 0..70 {
+        enc.write_all(&chunk).unwrap();
+    }
+    let bomb = enc.finish().unwrap();
+    assert!(bomb.len() < 1024 * 1024);
+    let res = open_vector_bytes(bomb, "0_0_0.mvt", &Default::default());
+    assert!(res.is_err(), "gzipped MVT exceeding 64 MiB must fail cleanly");
+    let _ = VectorDriver::MVT;
+}

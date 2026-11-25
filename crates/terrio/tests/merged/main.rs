@@ -148,6 +148,8 @@ mod unreferenced_writes;
 mod user_crs;
 #[path = "../vector_ops.rs"]
 mod vector_ops;
+#[path = "../vector_pc_hardening.rs"]
+mod vector_pc_hardening;
 #[path = "../vector_sql.rs"]
 mod vector_sql;
 #[path = "../white_is_zero.rs"]

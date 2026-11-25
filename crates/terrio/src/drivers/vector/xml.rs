@@ -134,7 +134,7 @@ pub fn decode(bytes: &[u8]) -> String {
 
 /// Parses a document and returns its root element.
 pub fn parse(text: &str) -> Result<Element> {
-    parse_with_limits(text, usize::MAX, usize::MAX, false)
+    parse_with_limits(text, usize::MAX, 256, false)
 }
 
 /// Parse legacy XML with a caller-specific element bound and a 256-level nesting bound.

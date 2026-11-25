@@ -92,12 +92,20 @@ impl PageStore for Editor {
     fn alloc(&mut self) -> Result<u32> {
         let (trunk, count) = (self.header_u32(32)?, self.header_u32(36)?);
         if count > 0 && trunk > 0 {
+            let max_leaves = self.page_size.saturating_sub(8) / 4;
+            let n_pages = self.n_pages;
             let t = self.page(trunk)?;
             let next = u32::from_be_bytes([t[0], t[1], t[2], t[3]]);
             let leaves = u32::from_be_bytes([t[4], t[5], t[6], t[7]]) as usize;
+            if leaves > max_leaves {
+                return Err(Error::InvalidData(format!("SQLite: freelist trunk {trunk} declares {leaves} leaves (max {max_leaves})")));
+            }
             let n = if leaves > 0 {
                 let at = 8 + 4 * (leaves - 1);
                 let leaf = u32::from_be_bytes([t[at], t[at + 1], t[at + 2], t[at + 3]]);
+                if leaf == 0 || leaf > n_pages {
+                    return Err(Error::InvalidData(format!("SQLite: freelist leaf page {leaf} out of range (1..={n_pages})")));
+                }
                 let t = self.page_mut(trunk)?;
                 t[4..8].copy_from_slice(&((leaves - 1) as u32).to_be_bytes());
                 t[at..at + 4].fill(0);
@@ -1235,15 +1243,28 @@ pub(crate) fn read_consistent(path: &Path) -> Result<Vec<u8>> {
         && let Some((original, page_size, pages)) = journal_pages(&journal)
     {
         // Pages are restored in reverse, so that the first image of a page journaled twice wins.
+        let max_bytes = data.len().saturating_add(journal.len()).max(page_size);
         for (pgno, page) in pages.iter().rev() {
-            let start = (*pgno as usize - 1) * page_size;
-            if data.len() < start + page_size {
-                data.resize(start + page_size, 0);
+            let start = (*pgno as usize).checked_sub(1).and_then(|p| p.checked_mul(page_size));
+            let end = start.and_then(|s| s.checked_add(page_size));
+            let (Some(start), Some(end)) = (start, end) else {
+                return Err(Error::InvalidData("SQLite journal page offset overflows".into()));
+            };
+            if end > max_bytes {
+                return Err(Error::InvalidData(format!(
+                    "SQLite journal page {pgno} exceeds consistent database size ({end} > {max_bytes})"
+                )));
             }
-            data[start..start + page_size].copy_from_slice(page);
+            if data.len() < end {
+                data.resize(end, 0);
+            }
+            data[start..end].copy_from_slice(page);
         }
         if original > 0 {
-            data.truncate(original as usize * page_size);
+            let orig_bytes = (original as usize)
+                .checked_mul(page_size)
+                .ok_or_else(|| Error::InvalidData("SQLite journal original size overflows".into()))?;
+            data.truncate(orig_bytes);
         }
     }
     Ok(data)

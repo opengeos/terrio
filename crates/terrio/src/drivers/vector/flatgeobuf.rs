@@ -67,8 +67,12 @@ fn bad(what: &str) -> Error {
     Error::InvalidData(format!("FlatGeobuf: {what}"))
 }
 
-fn verifier() -> flatbuffers::VerifierOptions {
-    flatbuffers::VerifierOptions { max_tables: usize::MAX, max_apparent_size: usize::MAX, ..Default::default() }
+fn verifier(buf_len: usize) -> flatbuffers::VerifierOptions {
+    flatbuffers::VerifierOptions {
+        max_tables: buf_len.max(1024),
+        max_apparent_size: buf_len.saturating_mul(8).max(1 << 20),
+        ..Default::default()
+    }
 }
 
 /// What decoding features needs of a file's header.
@@ -105,7 +109,8 @@ pub(crate) fn header_len(start: &[u8]) -> Result<usize> {
 pub(crate) fn parse_header(buf: &[u8]) -> Result<(Layer, FgbHeader)> {
     let header_end = header_len(buf)?;
     let header_buf = buf.get(8..header_end).ok_or_else(|| bad("truncated header"))?;
-    let header = flatgeobuf::size_prefixed_root_as_header_with_opts(&verifier(), header_buf).map_err(|e| bad(&format!("header: {e}")))?;
+    let header = flatgeobuf::size_prefixed_root_as_header_with_opts(&verifier(header_buf.len()), header_buf)
+        .map_err(|e| bad(&format!("header: {e}")))?;
 
     let mut layer = Layer::new(header.name().unwrap_or_default());
     layer.geom_type = from_fgb_type(header.geometry_type());
@@ -175,9 +180,11 @@ pub(crate) fn decode_feature_exact(fbuf: &[u8], h: &FgbHeader, fid: u64) -> Resu
 }
 
 fn decode(fbuf: &[u8], h: &FgbHeader, fid: u64, exact: bool) -> Result<Feature> {
-    let f = flatgeobuf::size_prefixed_root_as_feature_with_opts(&verifier(), fbuf).map_err(|e| bad(&format!("feature {fid}: {e}")))?;
+    let f = flatgeobuf::size_prefixed_root_as_feature_with_opts(&verifier(fbuf.len()), fbuf)
+        .map_err(|e| bad(&format!("feature {fid}: {e}")))?;
     if let Some(g) = f.geometry() {
-        validate_geometry(&g, h)?;
+        let mut budget = fbuf.len().max(1024);
+        validate_geometry(&g, h, &mut budget)?;
     }
     let geometry = f.geometry().and_then(|g| to_geometry(&g, h.geometry_type, h.has_z, h.has_m, exact));
     let mut attributes = vec![FieldValue::Null; h.columns.len()];
@@ -189,7 +196,11 @@ fn decode(fbuf: &[u8], h: &FgbHeader, fid: u64, exact: bool) -> Result<Feature> 
 
 /// Checks coordinate pairs, declared dimensions and part ends before any coordinate slicing.
 /// Nested parts obey the same bounds; undeclared and extra ordinate values are ignored.
-fn validate_geometry(g: &FgbGeometry, h: &FgbHeader) -> Result<()> {
+fn validate_geometry(g: &FgbGeometry, h: &FgbHeader, budget: &mut usize) -> Result<()> {
+    if *budget == 0 {
+        return Err(bad("geometry parts exceed buffer size budget"));
+    }
+    *budget -= 1;
     let n = g.xy().map_or(0, |xy| xy.len());
     if !n.is_multiple_of(2) {
         return Err(bad("odd XY coordinate count"));
@@ -216,7 +227,7 @@ fn validate_geometry(g: &FgbGeometry, h: &FgbHeader) -> Result<()> {
     }
     if let Some(parts) = g.parts() {
         for p in parts {
-            validate_geometry(&p, h)?;
+            validate_geometry(&p, h, budget)?;
         }
     }
     Ok(())
@@ -363,7 +374,7 @@ impl PreparedIndex {
         reader.read_exact(&mut bytes)?;
         let (layer, header) = parse_header(&bytes)?;
         let data_start = (size as u64).checked_add(header.index_size).filter(|v| *v <= file_len).ok_or_else(|| bad("truncated index"))?;
-        let metadata = flatgeobuf::size_prefixed_root_as_header_with_opts(&verifier(), &bytes[8..])
+        let metadata = flatgeobuf::size_prefixed_root_as_header_with_opts(&verifier(bytes.len() - 8), &bytes[8..])
             .ok()
             .and_then(|h| h.metadata().map(str::to_string));
         let info = FlatGeobufInfo {
@@ -497,7 +508,7 @@ fn read_impl<R: std::io::Read + std::io::Seek>(
                 let mut merged: Vec<(u64, u64)> = Vec::new();
                 for (a, b) in next {
                     match merged.last_mut() {
-                        Some(last) if last.1 == a => last.1 = b,
+                        Some(last) if a <= last.1 => last.1 = last.1.max(b),
                         _ => merged.push((a, b)),
                     }
                 }
@@ -1426,7 +1437,7 @@ mod tests {
             let f = FgbFeature::create(&mut b, &FeatureArgs { geometry: Some(g), ..Default::default() });
             b.finish_size_prefixed(f, None);
             let feature = flatgeobuf::size_prefixed_root_as_feature(b.finished_data()).unwrap();
-            assert_eq!(validate_geometry(&feature.geometry().unwrap(), &header).is_ok(), valid);
+            assert_eq!(validate_geometry(&feature.geometry().unwrap(), &header, &mut 1024).is_ok(), valid);
         }
     }
 

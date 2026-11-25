@@ -41,14 +41,17 @@ pub(crate) fn decode_image(b: &[u8]) -> Result<Image> {
     let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("tile image: {e}"));
     if b.starts_with(b"\x89PNG") {
         let mut d = png::Decoder::new(std::io::Cursor::new(b));
+        d.set_limits(png::Limits { bytes: 64 << 20 });
         d.set_transformations(png::Transformations::normalize_to_color8());
         let mut reader = d.read_info().map_err(|e| err(&e))?;
         let palette = reader.info().color_type == png::ColorType::Indexed;
-        let mut buf = vec![0u8; reader.output_buffer_size().ok_or_else(|| err(&"too large"))?];
+        let out_size = reader.output_buffer_size().ok_or_else(|| err(&"too large"))?;
+        let mut buf = crate::dataset::fallible::filled(out_size, 0u8, "a PNG tile")?;
         let info = reader.next_frame(&mut buf).map_err(|e| err(&e))?;
         let channels = info.color_type.samples();
         let (w, h) = (info.width as usize, info.height as usize);
-        buf.truncate(w * h * channels);
+        let expected = crate::dataset::fallible::len(&[w, h, channels], "a PNG tile")?;
+        buf.truncate(expected);
         return Ok(Image { w, h, channels, data: buf, palette });
     }
     if b.starts_with(&[0xff, 0xd8]) {
@@ -60,7 +63,11 @@ pub(crate) fn decode_image(b: &[u8]) -> Result<Image> {
         let mut d = image_webp::WebPDecoder::new(std::io::Cursor::new(b)).map_err(|e| err(&e))?;
         let (w, h) = d.dimensions();
         let channels = if d.has_alpha() { 4 } else { 3 };
-        let mut data = vec![0u8; d.output_buffer_size().ok_or_else(|| err(&"too large"))?];
+        let out_size = d.output_buffer_size().ok_or_else(|| err(&"too large"))?;
+        if out_size > (64 << 20) {
+            return Err(Error::ResourceLimit(format!("WebP tile decoded size {out_size} exceeds 64 MiB limit")));
+        }
+        let mut data = crate::dataset::fallible::filled(out_size, 0u8, "a WebP tile")?;
         d.read_image(&mut data).map_err(|e| err(&e))?;
         return Ok(Image { w: w as usize, h: h as usize, channels, data, palette: false });
     }
