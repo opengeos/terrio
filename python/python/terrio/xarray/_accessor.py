@@ -38,7 +38,7 @@ from terrio.rio import open as rio_open
 from terrio.rio import warp, windows
 from terrio.rio.crs import CRS
 from terrio.rio.enums import Resampling
-from terrio.rio.errors import WindowError
+from terrio.rio.errors import CRSError, WindowError
 from terrio.rio.io import MemoryFile, driver_from_extension
 from terrio.xarray import _ops, _zonal
 from terrio.xarray._crs import crs_from_cf, crs_from_user_input, crs_to_cf
@@ -102,23 +102,40 @@ def _declared(attrs: Mapping[Hashable, Any], name: str) -> bool:
 def _read_crs(obj: XarrayObject) -> CRS | None:
     """The CRS of an object, from its grid mapping (CF), Zarr `proj:` or `crs` attributes.
 
+    The first readable source gives the CRS. When none gives one but a `spatial_ref`,
+    `crs_wkt`, `proj:` or `crs` value cannot be read, the error of the first such value is
+    raised, so it does not read as no CRS. CF grid mapping parameters that cannot be read
+    give no CRS, as in rioxarray; beside a `spatial_ref` or `crs_wkt` they are read through
+    pyproj only, which reads that value first.
+
     Args:
         obj: The object.
 
     Returns:
-        CRS | None: The CRS.
+        CRS | None: The CRS, or None when no source gives one and none is unreadable.
+
+    Raises:
+        CRSError: The first unreadable source's error, when no source can be read.
     """
+    # The unreadable values, not their errors: a kept error's traceback would hold this frame
+    # and `obj` in a reference cycle.
+    unreadable: list[Any] = []
+
+    def parse(value: Any) -> CRS | None:
+        try:
+            return crs_from_user_input(value)
+        except CRSError:  # try the next source, raise if none reads
+            unreadable.append(value)
+            return None
+
     try:
         gm = obj.coords[obj.terrio.grid_mapping]
     except KeyError:
         gm = None
     if gm is not None:
         for key in ("spatial_ref", "crs_wkt"):
-            if key in gm.attrs:
-                try:
-                    return crs_from_user_input(gm.attrs[key])
-                except Exception:  # noqa: BLE001 - try the next source
-                    pass
+            if key in gm.attrs and (crs := parse(gm.attrs[key])) is not None:
+                return crs
         # CF grid mapping parameters, as rioxarray reads them through pyproj.CRS.from_cf.
         cf = crs_from_cf(gm.attrs)
         if cf is not None:
@@ -126,13 +143,12 @@ def _read_crs(obj: XarrayObject) -> CRS | None:
     if _declared(obj.attrs, "proj:"):
         for key in ("proj:wkt2", "proj:code"):
             value = obj.attrs.get(key)
-            if value is not None:
-                try:
-                    return crs_from_user_input(value)
-                except Exception:  # noqa: BLE001 - try the next source
-                    pass
-    if "crs" in obj.attrs:
-        return crs_from_user_input(obj.attrs["crs"])
+            if value is not None and (crs := parse(value)) is not None:
+                return crs
+    if "crs" in obj.attrs and (crs := parse(obj.attrs["crs"])) is not None:
+        return crs
+    if unreadable:
+        return crs_from_user_input(unreadable[0])  # raises the first unreadable source's error
     return None
 
 
@@ -267,7 +283,12 @@ class XRasterBase:
 
         Returns:
             CRS | None: The CRS, read from the grid mapping coordinate's `spatial_ref` or
-            `crs_wkt`, Zarr `proj:` attributes or a `crs` attribute.
+            `crs_wkt`, its CF grid mapping parameters, Zarr `proj:` attributes or a `crs`
+            attribute. CF parameters that cannot be read give no CRS.
+
+        Raises:
+            CRSError: If a `spatial_ref`, `crs_wkt`, `proj:` or `crs` value cannot be read and
+                no source gives a CRS.
         """
         if self._crs is not None:
             return None if self._crs is False else self._crs
@@ -2057,20 +2078,33 @@ class TerrioDataset(XRasterBase):
     def crs(self) -> CRS | None:
         """The CRS of the Dataset (the same for all its variables).
 
+        The Dataset's own CRS comes first. When it is absent or cannot be read, the variables'
+        CRS is used.
+
         Returns:
             CRS | None: The CRS.
 
         Raises:
             RioXarrayError: If the variables' CRSs differ.
+            CRSError: If a CRS is present but cannot be read, from the Dataset when no
+                variable gives one, or from a variable.
         """
         if self._crs is not None:
             return None if self._crs is False else self._crs
-        crs = super().crs
+        unreadable = False
+        try:
+            crs = super().crs
+        except CRSError:  # the variables may still give one
+            crs, unreadable = None, True
         if crs is not None:
             return crs
+        # Not "no CRS" yet: a variable's CRS may still be unreadable, and must raise on each read.
+        self._crs = None
         crs_list = [self._obj[v].terrio.crs for v in self.vars]
         crs_list = [c for c in crs_list if c is not None]
         if not crs_list:
+            if unreadable:
+                return super().crs  # raises the Dataset's error again
             self._crs = False
             return None
         first: CRS = crs_list[0]
