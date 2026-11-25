@@ -100,13 +100,39 @@ fn tab_seamless_rejects_parent_traversal_absolute_paths_and_cycles() {
     let err = terrio::open_vector(abs_tab.to_str().unwrap(), &Default::default()).unwrap_err().to_string();
     assert!(err.contains("escapes"), "expected escape error, got: {err}");
 
-    // Exponentially branching DAG (11 levels x 2 parts = 2047 > 1024 reads) must hit ResourceLimit.
+    // A flat seamless table referencing >1024 parts still opens cleanly under the 10_000 budget.
+    let flat_dir = dir.path().join("flat");
+    std::fs::create_dir_all(&flat_dir).unwrap();
+    let flat_leaf = flat_dir.join("leaf.tab");
+    std::fs::write(&flat_leaf, std::fs::read(&outside_tab).unwrap()).unwrap();
+    std::fs::write(flat_leaf.with_extension("dat"), std::fs::read(outside_tab.with_extension("dat")).unwrap()).unwrap();
+    let flat_tab = flat_dir.join("flat.tab");
+    let flat_rows = 1050usize;
+    let tab_hdr = "!table\n!version 300\n!charset Neutral\nDefinition Table\n  Type NATIVE Charset \"Neutral\"\n  Fields 1\n    Table Char (16) ;\nbegin_metadata\n\"\\IsSeamless\" = \"TRUE\"\nend_metadata\n";
+    let mut flat_dat = vec![0u8; 32 + 32 + 1 + flat_rows * 17];
+    flat_dat[4..8].copy_from_slice(&(flat_rows as u32).to_le_bytes());
+    flat_dat[8..10].copy_from_slice(&65u16.to_le_bytes());
+    flat_dat[10..12].copy_from_slice(&17u16.to_le_bytes());
+    flat_dat[32..37].copy_from_slice(b"Table");
+    flat_dat[32 + 11] = b'C';
+    flat_dat[32 + 16] = 16;
+    flat_dat[64] = 0x0d;
+    for row in 0..flat_rows {
+        let off = 65 + row * 17;
+        flat_dat[off] = b' ';
+        flat_dat[off + 1..off + 1 + b"leaf.tab".len()].copy_from_slice(b"leaf.tab");
+    }
+    std::fs::write(&flat_tab, tab_hdr).unwrap();
+    std::fs::write(flat_tab.with_extension("dat"), &flat_dat).unwrap();
+    assert!(terrio::open_vector(flat_tab.to_str().unwrap(), &Default::default()).is_ok());
+
+    // Exponentially branching DAG (14 levels x 2 parts = 16383 > 10_000 reads) must hit ResourceLimit.
     let dag_dir = dir.path().join("dag");
     std::fs::create_dir_all(&dag_dir).unwrap();
-    let leaf = dag_dir.join("l11.tab");
+    let leaf = dag_dir.join("l14.tab");
     std::fs::write(&leaf, std::fs::read(&outside_tab).unwrap()).unwrap();
     std::fs::write(leaf.with_extension("dat"), std::fs::read(outside_tab.with_extension("dat")).unwrap()).unwrap();
-    for lvl in (0..11).rev() {
+    for lvl in (0..14).rev() {
         let p = dag_dir.join(format!("l{lvl}.tab"));
         let next = format!("l{}.tab", lvl + 1);
         let tab = "!table\n!version 300\n!charset Neutral\nDefinition Table\n  Type NATIVE Charset \"Neutral\"\n  Fields 1\n    Table Char (16) ;\nbegin_metadata\n\"\\IsSeamless\" = \"TRUE\"\nend_metadata\n";
@@ -132,16 +158,21 @@ fn tab_seamless_rejects_parent_traversal_absolute_paths_and_cycles() {
 
 #[test]
 fn deeply_nested_xml_wkt_and_mif_return_errors_without_stack_overflow() {
-    // Deeply nested KML (>1024 levels) fails cleanly.
+    // Deeply nested KML (>1024 levels) hits the nesting ResourceLimit cleanly.
     let deep_kml = format!("<kml>{}{}</kml>", "<a>".repeat(1500), "</a>".repeat(1500));
-    assert!(open_vector_bytes(deep_kml.into_bytes(), "deep.kml", &Default::default()).is_err());
+    let kml_err = open_vector_bytes(deep_kml.into_bytes(), "deep.kml", &Default::default()).unwrap_err();
+    assert!(matches!(kml_err, terrio::Error::ResourceLimit(_)), "expected ResourceLimit, got: {kml_err:?}");
 
-    // Deeply nested WKT GEOMETRYCOLLECTION (>64 levels) fails cleanly.
-    let deep_wkt = format!("{}POINT(0 0){}", "GEOMETRYCOLLECTION(".repeat(200), ")".repeat(200));
+    // WKT GEOMETRYCOLLECTION within the 64-level cap succeeds; exceeding it fails cleanly.
+    let ok_wkt = format!("{}POINT(0 0){}", "GEOMETRYCOLLECTION(".repeat(60), ")".repeat(60));
+    assert!(open_vector_or_geometries(&ok_wkt, &Default::default()).is_ok());
+    let deep_wkt = format!("{}POINT(0 0){}", "GEOMETRYCOLLECTION(".repeat(65), ")".repeat(65));
     assert!(open_vector_or_geometries(&deep_wkt, &Default::default()).is_err());
 
-    // Deeply nested MIF Collection (>64 levels) hits the depth cap and returns an error.
-    let deep_mif = format!("Version 300\nColumns 0\nData\n{}Point 0 0\n", "Collection 1\n".repeat(200));
+    // MIF Collection within the 64-level cap succeeds; exceeding it hits the depth cap cleanly.
+    let ok_mif = format!("Version 300\nColumns 0\nData\n{}Point 0 0\n", "Collection 1\n".repeat(60));
+    assert!(open_vector_bytes(ok_mif.into_bytes(), "ok.mif", &Default::default()).is_ok());
+    let deep_mif = format!("Version 300\nColumns 0\nData\n{}Point 0 0\n", "Collection 1\n".repeat(65));
     assert!(open_vector_bytes(deep_mif.into_bytes(), "deep.mif", &Default::default()).is_err());
 }
 
@@ -213,6 +244,9 @@ fn mvt_gzip_bomb_hits_decoded_limit_and_does_not_oom() {
     }
     let bomb = enc.finish().unwrap();
     assert!(bomb.len() < 1024 * 1024);
-    let res = open_vector_bytes(bomb, "0_0_0.mvt", &Default::default());
-    assert!(res.is_err(), "gzipped MVT exceeding 64 MiB must fail cleanly");
+    let err = open_vector_bytes(bomb, "0_0_0.mvt", &Default::default()).unwrap_err();
+    assert!(
+        matches!(err, terrio::Error::DecodedLimitExceeded { .. }) && err.to_string().contains("MVT tile payload"),
+        "expected DecodedLimitExceeded for 64 MiB MVT bomb, got: {err:?}"
+    );
 }

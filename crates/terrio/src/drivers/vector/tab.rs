@@ -44,7 +44,7 @@ pub fn read(path: &str) -> Result<Layer> {
 }
 
 const MAX_SEAMLESS_DEPTH: usize = 16;
-const MAX_SEAMLESS_READS: usize = 1024;
+const MAX_SEAMLESS_READS: usize = 10_000;
 
 fn read_contained_sibling(p: &Path, ext: &str, root_dir: Option<&Path>) -> Result<Option<Vec<u8>>> {
     let Some(path) = sibling(p, ext) else { return Ok(None) };
