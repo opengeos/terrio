@@ -213,10 +213,11 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
             // EPSG:2048 (#1012 item 49), nor keys of standard parallels other than the code's. Keys
             // of a conversion terrio does not read (a method it does not map, an off-equator
             // Mercator 1SP at another scale) name none: GDAL builds the CRS from the keys, not the
-            // citation, and so has no conversion PROJ runs.
+            // citation, and so has no conversion PROJ runs; nor do keys whose PROJ string terrio
+            // then cannot read, as their conversion is unknown.
             let own_proj = user_defined_proj4(&k);
             let own = own_proj.as_deref().and_then(|p| SpatialRef::from_proj4(p).ok()).and_then(|s| s.projection_params());
-            let unread = unmapped_method(&k).is_some();
+            let unread = unmapped_method(&k).is_some() || (own_proj.is_some() && own.is_none());
             user_defined_projected(k.short(3074), k.short(2048), datum, citation).filter(|code| {
                 !unread
                     && SpatialRef::from_epsg(*code).is_ok_and(|s| {

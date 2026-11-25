@@ -174,6 +174,24 @@ fn a_citation_names_no_crs_for_keys_terrio_does_not_read() {
     assert_eq!(read.crs.and_then(|c| c.epsg), Some(3395));
 }
 
+/// With wbprojection, a citation does not name a CRS for keys whose conversion terrio cannot read:
+/// the GeoKeys of EPSG:5070 with a false easting of 1000, then given a false easting that is not a
+/// number, read back without the code.
+#[cfg(feature = "wbprojection-fallback")]
+#[test]
+fn a_citation_names_no_crs_for_an_unreadable_conversion() {
+    let wkt = SpatialRef::from_epsg(5070).unwrap().to_wkt().unwrap();
+    let tag = "\"false_easting\",";
+    let start = wkt.find(tag).unwrap() + tag.len();
+    let end = start + wkt[start..].find(']').unwrap();
+    let tags = SpatialRef::from_wkt(&format!("{}1000{}", &wkt[..start], &wkt[end..])).to_geokeys().unwrap().encode().unwrap();
+    let mut doubles = tags.doubles.clone();
+    let at = doubles.iter().position(|v| *v == 1000.0).unwrap();
+    doubles[at] = f64::NAN;
+    let back = terrio_crs::geokeys::read(&tags.directory, &doubles, tags.ascii.as_bytes()).crs;
+    assert!(back.as_ref().is_none_or(|c| c.epsg.is_none()), "{tags:?} {back:?}");
+}
+
 /// A Stereographic CRS's scale in ProjScaleAtCenterGeoKey alone, as terrio wrote it before, keeps
 /// that scale (GDAL 3.12.2 reads 1): a file terrio wrote reads back as it was. The writer puts it
 /// in ProjScaleAtNatOriginGeoKey, as GDAL does.

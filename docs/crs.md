@@ -1387,8 +1387,8 @@ They read and write:
   ProjFalseOriginLatGeoKey, else ProjCenterLatGeoKey: 90° and a ProjStdParallel1GeoKey of 71° or
   -71° is variant A of its scale, the standard parallel unread); Mercator 2SP by its
   ProjStdParallel1GeoKey whatever its scale, else 1SP of its latitude of origin (as `+lat_ts`) and
-  ProjScaleAtNatOriginGeoKey alone; Stereographic of ProjScaleAtNatOriginGeoKey, else (unlike GDAL, which
-  reads 1) of ProjScaleAtCenterGeoKey, where terrio wrote it before; Laborde
+  ProjScaleAtNatOriginGeoKey alone; Stereographic of ProjScaleAtNatOriginGeoKey, else (unlike
+  GDAL, which reads 1) of ProjScaleAtCenterGeoKey, where terrio wrote it before; Laborde
   (CT 4) as `+proj=labrd`. An ellipsoid, datum or prime meridian given by its code without its
   values is the registry's (Airy 1830 for 7001 or for datum 6277, which also gets OSGB36's
   transformations; the spheres 7035, 7047 and 7048; Paris for 8903), as libgeotiff looks them up.
@@ -1430,11 +1430,12 @@ also names a UTM zone by its ProjectionGeoKey or a `UTM zone 33N` citation, on W
 NAD27, in the GeoKeys' unit, and, with the `wbprojection-fallback` feature (which `terrio` enables),
 the projected CRS a citation names (an `EPSG:` reference or a CRS name), on the GeoKeys' datum when
 they give its code, of the keys' own conversion when they give one (EPSG:2048 with another false
-easting is not EPSG:2048). The code's definition then replaces the keys': where the keys give a datum of
-their own or none, a citation naming a CRS on another ellipsoid (`EPSG:32633` on keys of Clarke
-1866, `NAD27 / UTM zone 15N` on keys without a datum, which GDAL reads on WGS 84) gives other
-coordinates than GDAL. The GeoKeys of a CRS terrio reads only through wbprojection need that feature
-too.
+easting is not EPSG:2048, EPSG:5070 with other standard parallels is not EPSG:5070), and none for
+keys of a conversion terrio does not read. The code's definition then replaces the keys': where
+the keys give a datum of their own or none, a citation naming a CRS on another ellipsoid
+(`EPSG:32633` on keys of Clarke 1866, `NAD27 / UTM zone 15N` on keys without a datum, which GDAL
+reads on WGS 84) gives other coordinates than GDAL. The GeoKeys of a CRS terrio reads only
+through wbprojection need that feature too.
 
 `tests/geokeys_gdal.rs` compares both directions with GDAL 3.12.1 (rasterio 1.5.0), frozen by
 `scripts/gen_geokeys_gdal.py`: the GeoKeys GDAL writes for 376 CRSs (every 20th EPSG projected and
