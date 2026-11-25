@@ -1487,7 +1487,8 @@ def summarize(row: dict) -> dict:
             tools = [t for t in tools if t != "base"]
         differ = next(((t, r) for t in tools for r in row[t] if r["n"] != ref["n"] or not math.isclose(r["sum"], ref["sum"], rel_tol=1e-6)), None)
         out["values"] = "checksum_match" if differ is None else f"DIFFER: {differ[0]} n {differ[1]['n']} sum {differ[1]['sum']:.6g} vs gdal n {ref['n']} sum {ref['sum']:.6g}"
-        compares = [r["compare"] for t in tools for r in row[t] if "compare" in r]
+        # terrio's outputs label the case; the base build's comparisons stay in its own samples
+        compares = [r["compare"] for r in row["terrio"] if "compare" in r]
         if compares:  # outputs compared with GDAL's, pixel by pixel: the worst sample labels the case
             c = out["compare"] = max(compares, key=_badness)
             out["values"] = (

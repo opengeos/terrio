@@ -688,6 +688,9 @@ def test_an_operation_is_exact_within_tolerance_or_differs_by_its_pixels():
     assert beyond["values"] == "DIFFER: 1 of 4 values beyond 0.01 (max 0.003)"
     shape = row(_compare(beyond=4, mismatch="shape (1, 2, 2) vs (1, 1, 4)"))
     assert shape["values"] == "DIFFER: shape (1, 2, 2) vs (1, 1, 4)"
+    based = summarize(_row(terrio=[{**_sample(2, s=0), "compare": _compare()}], gdal=[_sample(1, s=0)],
+                           base=[{**_sample(2, s=0), "compare": _compare(mismatch="CRS differs")}]))
+    assert based["values"] == "exact"  # a base build's output does not label terrio's
     text = report([exact, {**within, "access": "aspect"}, {**beyond, "fixture": "f32_none"}])
     worst = text.split("## Worst cases")[1].split("## Geometric")[0]
     assert " exact" in worst and " within_tol" in worst and "f32_none" not in worst
