@@ -53,13 +53,13 @@ def test_reads_user_defined_crs_as_gdal(name, how):
 def test_warns_of_a_projection_it_cannot_read(tmp_path):
     """A GeoKeys projection method terrio does not map warns and leaves the raster without CRS."""
     data = (DATA / "tmerc.tif").read_bytes()
-    # ProjCoordTransGeoKey (3075) = 1 (transverse Mercator) -> 4 (oblique Mercator, Laborde).
+    # ProjCoordTransGeoKey (3075) = 1 (transverse Mercator) -> 5 (oblique Mercator, Rosenmund).
     key = (3075).to_bytes(2, "little") + bytes([0, 0, 1, 0])
     assert data.count(key + bytes([1, 0])) == 1
-    path = tmp_path / "laborde.tif"
-    path.write_bytes(data.replace(key + bytes([1, 0]), key + bytes([4, 0])))
+    path = tmp_path / "rosenmund.tif"
+    path.write_bytes(data.replace(key + bytes([1, 0]), key + bytes([5, 0])))
     for lazy in (False, True):
-        with pytest.warns(UserWarning, match="projection method 4"):
+        with pytest.warns(UserWarning, match="projection method 5"):
             assert terrio.open_raster(str(path), lazy=lazy).crs is None
     # A sidecar's CRS takes its place, with no warning.
     shutil.copy(DATA / "sidecar_only.tif.aux.xml", f"{path}.aux.xml")
@@ -85,7 +85,7 @@ def test_translate_passes_on_the_warnings_of_opening_its_path(tmp_path):
     """`translate` of a path warns as opening it does (here, of an unreadable projection)."""
     data = (DATA / "tmerc.tif").read_bytes()
     key = (3075).to_bytes(2, "little") + bytes([0, 0, 1, 0])
-    path = tmp_path / "laborde.tif"
-    path.write_bytes(data.replace(key + bytes([1, 0]), key + bytes([4, 0])))
-    with pytest.warns(UserWarning, match="projection method 4"):
+    path = tmp_path / "rosenmund.tif"
+    path.write_bytes(data.replace(key + bytes([1, 0]), key + bytes([5, 0])))
+    with pytest.warns(UserWarning, match="projection method 5"):
         assert terrio.translate(str(path), srcwin=(0, 0, 2, 2)).crs is None

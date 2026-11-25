@@ -6,7 +6,7 @@
 //! ellipsoidal `cea` inverse past the pole line (item 40), polar Lambert azimuthal equal-area's
 //! axes and a vertical CRS's body (item 41), and `+over` (item 42).
 
-use terrio_crs::{AxisOrder, SpatialRef, Transformer};
+use terrio_crs::{AxisOrder, SpatialRef, TransformOptions, Transformer};
 
 fn offline() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
@@ -31,6 +31,14 @@ fn longitudes_beyond_ten_radians_are_refused_into_a_shift_or_projection() {
     }
     let (x, _) = transformer("EPSG:4326", "EPSG:4277").transform(572.0, 52.0).unwrap();
     assert!((x - -148.0).abs() < 1e-3, "{x}");
+    // Through the heights' paths too (heights promoted to 3D), and reported through a null
+    // transformation as without the limit.
+    let options = TransformOptions { promote_to_3d: true, ..Default::default() };
+    let promoted =
+        Transformer::with_options(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::from_epsg(3857).unwrap(), &options).unwrap();
+    assert!(promoted.transform_3d(600.0, 40.0, 0.0).is_err());
+    let null = transformer("EPSG:4326", "EPSG:4258");
+    assert_eq!(null.operation_at(718.0, 52.0, 0.0).unwrap(), null.operation_at(-2.0, 52.0, 0.0).unwrap());
 }
 
 #[test]

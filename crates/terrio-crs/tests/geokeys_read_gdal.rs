@@ -4,8 +4,10 @@
 //! 90°, and a polar stereographic CRS of ProjNatOriginLatGeoKey 90° without its
 //! ProjStdParallel1GeoKey (opengeos/terrio#1012, item 35). GeoKeys with a projected code alone
 //! read as the registry's CRS (a deprecated code's replacement) in their linear unit, an
-//! ellipsoid, datum or prime meridian by its code alone, Mercator's and stereographic's scale and
-//! latitude keys, and Laborde oblique Mercator (items 32 to 35).
+//! ellipsoid, datum or prime meridian by its code alone, Mercator's scale and latitude keys, and
+//! Laborde oblique Mercator (items 32 to 35). Not as GDAL: a Stereographic CRS's
+//! ProjScaleAtCenterGeoKey, which terrio wrote before and still reads where there is no
+//! ProjScaleAtNatOriginGeoKey (GDAL reads a scale of 1).
 //!
 //! `data/geokeys_read_gdal.json` (`scripts/gen_geokeys_read_gdal.py`, GDAL 3.12.2,
 //! `PROJ_NETWORK=OFF`) holds the keys and where GDAL's CRS places a point from WGS 84
@@ -18,7 +20,7 @@ use terrio_crs::{SpatialRef, Transformer};
 fn user_defined_geokeys_are_read_as_gdal_reads_them() {
     let data: Value = serde_json::from_str(include_str!("data/geokeys_read_gdal.json")).unwrap();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 25);
+    assert_eq!(cases.len(), 24);
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     for case in cases {
         let name = case["name"].as_str().unwrap();
@@ -100,4 +102,38 @@ fn a_citation_names_its_crs_only_for_the_same_conversion() {
         let back = terrio_crs::geokeys::read(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).crs.unwrap();
         assert_eq!(back.epsg, code, "false easting {false_easting}");
     }
+}
+
+/// A Stereographic CRS's scale in ProjScaleAtCenterGeoKey alone, as terrio wrote it before, keeps
+/// that scale (GDAL 3.12.2 reads 1): a file terrio wrote reads back as it was. The writer puts it
+/// in ProjScaleAtNatOriginGeoKey, as GDAL does.
+#[test]
+fn a_stereographic_scale_terrio_wrote_at_the_centre_is_kept() {
+    let crs = |key: u16| {
+        let directory = [
+            1u16, 1, 0, 10, 1024, 0, 1, 1, 1025, 0, 1, 1, 2048, 0, 1, 4326, 3072, 0, 1, 32767, 3074, 0, 1, 32767, 3075, 0, 1, 14, 3076, 0,
+            1, 9001, 3088, 34736, 1, 0, 3089, 34736, 1, 1, key, 34736, 1, 2,
+        ];
+        SpatialRef::from_geokeys(&directory, &[10.0, 40.0, 0.9], b"").unwrap()
+    };
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let place = |c: &SpatialRef| Transformer::new(&wgs84, c).unwrap().transform(12.0, 41.0).unwrap();
+    let (at_origin, at_centre) = (place(&crs(3092)), place(&crs(3093)));
+    assert!((at_origin.0 - at_centre.0).abs() < 1e-6 && (at_origin.1 - at_centre.1).abs() < 1e-6, "{at_origin:?} {at_centre:?}");
+    // GDAL's scale of 1 would place it 10% farther.
+    assert!((at_centre.0 - 151_459.646_927_064_8).abs() < 1e-3, "{at_centre:?}");
+    let written = SpatialRef::from_proj4("+proj=stere +lat_0=40 +lon_0=10 +k=0.9 +datum=WGS84").unwrap().to_geokeys().unwrap();
+    assert!(written.doubles.iter().any(|(id, v)| *id == 3092 && *v == 0.9), "{written:?}");
+}
+
+/// A projected code alone in another linear unit, with VerticalCSTypeGeoKey, keeps its vertical
+/// CRS: UTM zone 33N in feet with EGM96 heights.
+#[test]
+fn a_code_in_another_unit_keeps_its_vertical_crs() {
+    let directory = [1u16, 1, 0, 4, 1024, 0, 1, 1, 3072, 0, 1, 32633, 3076, 0, 1, 9002, 4096, 0, 1, 5773];
+    let crs = SpatialRef::from_geokeys(&directory, &[], b"").unwrap();
+    let wkt = crs.to_wkt().unwrap();
+    assert!(wkt.starts_with("COMPD_CS[") && wkt.contains("EGM96"), "{wkt}");
+    let (x, _) = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).unwrap().transform(15.0, 50.0).unwrap();
+    assert!((x - 1_640_419.947_506_561_4).abs() < 1e-3, "{x}");
 }

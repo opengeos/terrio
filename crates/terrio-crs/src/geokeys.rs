@@ -220,7 +220,16 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
         _ => None,
     };
     if let Some(c) = rescaled {
-        return GeoKeysCrs { crs: Some(c), unsupported_method: None };
+        // With its vertical CRS (VerticalCSTypeGeoKey), as a compound CRS of the two.
+        let vertical = k.short(4096).filter(|v| *v != 0 && *v != USER_DEFINED).and_then(|v| SpatialRef::from_epsg(u32::from(v)).ok());
+        let crs = match (c.to_wkt(), vertical.and_then(|v| v.wkt)) {
+            (Some(h), Some(v)) => {
+                let name = c.name().unwrap_or_else(|| "unnamed".into());
+                SpatialRef::from_wkt(&format!("COMPD_CS[{},{h},{v}]", wkt_quoted(&name)))
+            }
+            _ => c,
+        };
+        return GeoKeysCrs { crs: Some(crs), unsupported_method: None };
     }
     let (mut crs, mut proj4, mut unsupported_method) = (None, None, None);
     if epsg.is_none() {
@@ -797,8 +806,9 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
         11 => format!("aea +lat_1={} +lat_2={} +lat_0={lat0} +lon_0={lon0} {false_xy}", lat1?, lat2.or(lat1)?),
         12 => format!("aeqd +lat_0={lat0} +lon_0={lon0} {false_xy}"),
         13 => format!("eqdc +lat_1={} +lat_2={} +lat_0={lat0} +lon_0={lon0} {false_xy}", lat1?, lat2.or(lat1)?),
-        // ProjScaleAtNatOriginGeoKey alone, as libgeotiff reads it.
-        14 => format!("stere +lat_0={lat0} +lon_0={lon0} +k={} {false_xy}", k.double(SCALE_AT_NAT_ORIGIN).unwrap_or(1.0)),
+        // ProjScaleAtNatOriginGeoKey, as libgeotiff reads it, else ProjScaleAtCenterGeoKey, in
+        // which terrio wrote it before (libgeotiff and GDAL 3.12 read such a file at a scale of 1).
+        14 => format!("stere +lat_0={lat0} +lon_0={lon0} +k={scale} {false_xy}"),
         // Laborde oblique Mercator (CT 4), as GDAL 3.12 reads it (`SetLOM`).
         4 => format!("labrd +lat_0={lat0} +lon_0={lon0} +azi={} +k={scale} {false_xy}", k.double(AZIMUTH).unwrap_or(0.0)),
         15 => {
@@ -958,7 +968,13 @@ fn in_keys_unit(k: &GeoKeys, code: u32, target: u32) -> Option<SpatialRef> {
     }
     let proj = crs.to_proj4()?;
     let tokens: Vec<&str> = proj.split_whitespace().filter(|t| !t.starts_with("+units=") && !t.starts_with("+to_meter=")).collect();
-    SpatialRef::from_proj4(&format!("{} {unit}", tokens.join(" "))).ok()
+    // GeogTOWGS84GeoKey beside it, the CRS's own shift, as beside the code (`with_towgs84`).
+    let shift = k
+        .doubles(2062)
+        .filter(|t| matches!(t.len(), 3 | 7) && t.iter().all(|v| v.is_finite()) && t.iter().any(|v| *v != 0.0))
+        .map(|t| format!(" +towgs84={}", t.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")))
+        .unwrap_or_default();
+    SpatialRef::from_proj4(&format!("{} {unit}{shift}", tokens.join(" "))).ok()
 }
 
 /// The size in metres of the GeoKeys' linear unit (a metre when they give none).

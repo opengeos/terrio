@@ -11,8 +11,8 @@ stereographic CRS whose ProjNatOriginLatGeoKey of 90° wins over ProjStdParallel
 
 `KEYED` cases give their own keys (#1012 items 32 to 35): a projected code alone, read as the
 registry's CRS (a deprecated code's replacement) in the keys' linear unit; an ellipsoid, datum or
-prime meridian by its code alone, looked up in the registry; Mercator's and stereographic's scale
-and latitude keys; Laborde oblique Mercator. A point on a sphere, which pyproj does not place from
+prime meridian by its code alone, looked up in the registry; Mercator's scale and latitude keys;
+Laborde oblique Mercator. A point on a sphere, which pyproj does not place from
 WGS 84, is placed from the CRS's own geographic CRS (`"from": "geodetic"`).
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_geokeys_read_gdal.py (needs GDAL 3.12.2's Python
@@ -246,13 +246,6 @@ KEYED = [
         PROJECTED + USER[2:] + [(3075, 7)],
         [(3093, 0.9), (3088, 10.0)],
         (12.0, 40.0),
-        False,
-    ),
-    (
-        "stereographic with ProjScaleAtCenterGeoKey only",
-        PROJECTED + USER[2:] + [(3075, 14)],
-        [(3093, 0.9), (3088, 10.0), (3089, 40.0)],
-        (12.0, 41.0),
         False,
     ),
     (

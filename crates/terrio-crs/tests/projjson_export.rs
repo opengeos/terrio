@@ -311,3 +311,22 @@ fn export_report() {
     }
     std::fs::write(report, out).unwrap();
 }
+
+/// A WKT 2 datum's `ANCHOREPOCH` is written as `anchor_epoch`, as PROJ 9.9.0 writes it, and read
+/// back (#1012 item 65); a WKT 2 without one is written without it, as PROJ leaves it.
+#[test]
+fn a_datum_anchor_epoch_is_written_and_read_back() {
+    let wkt = |anchor: &str| {
+        format!(
+            r#"GEOGCRS["CHTRS95",DATUM["Swiss Terrestrial Reference System 1995",ELLIPSOID["GRS 1980",6378137,298.257222101,LENGTHUNIT["metre",1]]{anchor}],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["geodetic longitude (Lon)",east,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]]]"#
+        )
+    };
+    let with = SpatialRef::from_wkt(&wkt(",ANCHOREPOCH[1993]"));
+    let json: Value = serde_json::from_str(&with.to_projjson().unwrap()).unwrap();
+    assert_eq!(json["datum"]["anchor_epoch"], json!(1993.0), "{json}");
+    let back = SpatialRef::from_projjson(&with.to_projjson().unwrap()).unwrap();
+    let again: Value = serde_json::from_str(&back.to_projjson().unwrap()).unwrap();
+    assert_eq!(again["datum"]["anchor_epoch"], json!(1993.0), "{again}");
+    let without: Value = serde_json::from_str(&SpatialRef::from_wkt(&wkt("")).to_projjson().unwrap()).unwrap();
+    assert!(without["datum"].get("anchor_epoch").is_none(), "{without}");
+}

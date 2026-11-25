@@ -59,6 +59,18 @@ pub(crate) fn recording<T>(f: impl FnOnce() -> T) -> (T, Vec<Used>) {
     (out, used)
 }
 
+/// [`recording`], with the operations also seen by a capture around this one (`operation_at`
+/// around a check that records them to decide).
+pub(crate) fn recording_forwarded<T>(f: impl FnOnce() -> T) -> (T, Vec<Used>) {
+    let (out, used) = recording(f);
+    USED.with(|outer| {
+        if let Some(outer) = outer.borrow_mut().as_mut() {
+            outer.extend(used.iter().cloned());
+        }
+    });
+    (out, used)
+}
+
 /// Whether an operation changes the datum or heights, for its name when it has none.
 #[derive(Clone, Copy)]
 pub(crate) enum OpKind {
@@ -1065,7 +1077,8 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, ctx: &OperationContext) -> 
             let found = from(code, gb.datum, true);
             if !found.is_empty() {
                 list.retain(|l| l.op.ballpark);
-                list.extend(found.into_iter().map(|(i, reverse)| Leg { op: reg.ops[i].op.clone(), reverse }));
+                // Framed as the general pivot frames another CRS's operations.
+                list.extend(found.into_iter().map(|(i, reverse)| Leg { op: Arc::new(ctx.framed((*reg.ops[i].op).clone())), reverse }));
                 pivoted = true;
                 break;
             }
@@ -1192,7 +1205,9 @@ fn direct_chain(l: &Leg, aoi: Option<&[f64; 4]>) -> (SortKey, Chain) {
     // flags, are the same both ways (as in PROJ, whose inverse keeps them); only the name and the
     // pipeline differ.
     let name = step_names(&l.op, l.reverse).join(" + ");
-    let rank = Op { name: name.clone(), ..l.op.as_concatenated() };
+    // Its registered name in the direction it runs, which the chain reports forward.
+    let reported = l.op.reported.as_ref().map(|r| if l.reverse { Arc::from(inverse_name(r)) } else { r.clone() });
+    let rank = Op { name: name.clone(), reported, ..l.op.as_concatenated() };
     let key = SortKey::new(&rank, name, pipeline_steps(&[(&l.op, l.reverse)]), aoi);
     (key, Chain { legs: vec![l.clone()], rank })
 }

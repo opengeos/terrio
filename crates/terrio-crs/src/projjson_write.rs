@@ -52,18 +52,43 @@ fn with_id(mut v: Value, code: Option<u32>) -> Value {
     v
 }
 
-/// Whether PROJ 9.9.0 writes the anchor epochs of the CRS's datums, from its `ANCHOREPOCH` and
-/// from its database for the EPSG vertical CRS of a compound one: for a WKT 2 CRS, not for WKT 1
-/// or a PROJ string, which have none (#1012 item 65). Nor for an EPSG code, whose registry WKT is
-/// GDAL's WKT 1, though PROJ writes them for the code from its database.
-fn anchors(s: &SpatialRef) -> bool {
-    s.proj4.is_none()
-        && s.wkt
-            .as_deref()
-            .is_some_and(|w| crate::parsed::tree(w).is_some_and(|root| crate::model::dialect(w, &root) == crate::model::Dialect::Wkt2))
+/// Whether the WKT 2 a CRS was read from gives its geodetic and its vertical datum an
+/// `ANCHOREPOCH`, which PROJ 9.9.0 writes (#1012 item 65): then the epoch is written also where
+/// this writer rebuilds the datum from the registry (an identified code, the parts of a compound
+/// one), from PROJ's database. PROJ writes none for a datum without one, nor for WKT 1 or a PROJ
+/// string; nor does this for an EPSG code, whose registry WKT is GDAL's WKT 1, though PROJ writes
+/// them for the code from its database.
+#[derive(Clone, Copy)]
+struct Anchors {
+    geodetic: bool,
+    vertical: bool,
 }
 
-fn crs(s: &SpatialRef, anchors: bool) -> Result<Value> {
+fn anchors(s: &SpatialRef) -> Anchors {
+    let none = Anchors { geodetic: false, vertical: false };
+    let Some(w) = s.wkt.as_deref().filter(|_| s.proj4.is_none()) else { return none };
+    if !crate::parsed::tree(w).is_some_and(|root| crate::model::dialect(w, &root) == crate::model::Dialect::Wkt2) {
+        return none;
+    }
+    let upper = w.to_ascii_uppercase();
+    let mut out = none;
+    // Each epoch belongs to the datum node opened last before it.
+    for (i, _) in upper.match_indices("ANCHOREPOCH[") {
+        let before = &upper[..i];
+        let last = |keys: &[&str]| keys.iter().filter_map(|k| before.rfind(k)).max();
+        let vertical = last(&["VDATUM[", "VERTICALDATUM[", "VRF["]);
+        let geodetic = last(&[",DATUM[", "[DATUM[", "GEODETICDATUM[", "TRF["]);
+        match (geodetic, vertical) {
+            (Some(g), Some(v)) if v > g => out.vertical = true,
+            (_, Some(_)) if geodetic.is_none() => out.vertical = true,
+            (Some(_), _) => out.geodetic = true,
+            _ => {}
+        }
+    }
+    out
+}
+
+fn crs(s: &SpatialRef, anchors: Anchors) -> Result<Value> {
     if let Some(code) = s.epsg {
         // A compound code, given or declared, by the registry; a compound CRS identified by its
         // parts (opengeos/terrio#1012 item 47) by its own text below, as PROJ 9.9.0 writes it.
@@ -97,7 +122,7 @@ fn crs(s: &SpatialRef, anchors: bool) -> Result<Value> {
 }
 
 /// An EPSG vertical CRS.
-fn vertical(code: u32, anchors: bool) -> Result<Value> {
+fn vertical(code: u32, anchors: Anchors) -> Result<Value> {
     let v = epsg::vertical(code).ok_or_else(|| unsupported(format!("EPSG:{code}, not a vertical CRS terrio knows")))?;
     let datum_name = wkt1::parse(&v.wkt)
         .and_then(|n| n.child("VERT_DATUM").or_else(|| n.child("VDATUM")).and_then(|d| d.name().map(str::to_string)))
@@ -107,7 +132,7 @@ fn vertical(code: u32, anchors: bool) -> Result<Value> {
     let axis = json!({"name": name, "abbreviation": abbreviation, "direction": direction, "unit": length_unit(v.to_meter, None)});
     let mut datum = json!({"type": "VerticalReferenceFrame", "name": datum_name});
     // Its anchor epoch, which PROJ 9.9.0 writes (#1012 item 65).
-    if let Some(epoch) = epsg::anchor_epoch(v.datum).filter(|_| anchors) {
+    if let Some(epoch) = epsg::anchor_epoch(v.datum).filter(|_| anchors.vertical) {
         datum["anchor_epoch"] = epoch.into();
     }
     Ok(json!({
@@ -146,7 +171,7 @@ fn base_node(root: &Node) -> Option<&Node> {
         .or_else(|| [GEOGRAPHIC_OR_GEODETIC_CRS, WKT1_GEOGRAPHIC, WKT1_GEOCENTRIC].iter().any(|keys| root.is(keys)).then_some(root))
 }
 
-fn horizontal(s: &SpatialRef, wkt: &str, anchors: bool) -> Result<Value> {
+fn horizontal(s: &SpatialRef, wkt: &str, anchors: Anchors) -> Result<Value> {
     let root = wkt1::parse(wkt).ok_or_else(|| unsupported("an unreadable WKT"))?;
     let def = Def::new(s)?;
     let entry = s.epsg.and_then(epsg::get);
@@ -216,7 +241,7 @@ fn horizontal(s: &SpatialRef, wkt: &str, anchors: bool) -> Result<Value> {
         t => t,
     };
     let mut written = vec!["towgs84"];
-    let datum = datum(base, &p, &def, anchors)?;
+    let datum = datum(base, &p, &def, anchors.geodetic)?;
     let iau = match (code, s.authority()) {
         (None, Some(("IAU_2015", n))) => Some(json!({"authority": "IAU", "code": n, "version": 2015})),
         _ => None,
@@ -337,7 +362,7 @@ fn spherical_cs(root: &Node) -> bool {
 }
 
 /// A geodetic reference frame, from the WKT's datum and ellipsoid nodes and the PROJ string.
-fn datum(base: &Node, p: &Params, def: &Def, anchors: bool) -> Result<Value> {
+fn datum(base: &Node, p: &Params, def: &Def, anchored: bool) -> Result<Value> {
     let node = base.datum();
     let code = node.and_then(Node::epsg);
     let name =
@@ -366,10 +391,11 @@ fn datum(base: &Node, p: &Params, def: &Def, anchors: bool) -> Result<Value> {
     }
     let ellipsoid = with_id(ellipsoid, e.and_then(Node::epsg));
     let mut d = json!({"type": "GeodeticReferenceFrame", "name": name, "ellipsoid": ellipsoid});
-    // A WKT 2 datum's `ANCHOREPOCH`, else the EPSG datum's, which PROJ 9.9.0 writes (#1012
-    // item 65).
+    // A WKT 2 datum's `ANCHOREPOCH`, which PROJ 9.9.0 writes (#1012 item 65), else the EPSG
+    // datum's where the WKT 2 read had one (`anchored`) but the datum is the registry's here; not
+    // for a WKT without one, which PROJ leaves without.
     if let Some(epoch) =
-        node.and_then(|n| n.child("ANCHOREPOCH")).and_then(|a| a.num(0)).or_else(|| code.filter(|_| anchors).and_then(epsg::anchor_epoch))
+        node.and_then(|n| n.child("ANCHOREPOCH")).and_then(|a| a.num(0)).or_else(|| code.filter(|_| anchored).and_then(epsg::anchor_epoch))
     {
         d["anchor_epoch"] = epoch.into();
     }

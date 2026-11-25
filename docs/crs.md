@@ -1329,9 +1329,10 @@ axes, planetocentric latitudes (`+geoc`, a spherical coordinate system) as a `Ge
 spherical coordinate system, IAU_2015 CRSs with their `IAU`/2015 identifier. Differences from
 PROJ's output:
 
-- a datum's `anchor_epoch` is written for a WKT 2 CRS, from its `ANCHOREPOCH` (and from PROJ
-  9.9.0's database for the EPSG vertical CRS of a compound one), as PROJ writes it (#1012 item 65),
-  but not for an EPSG code, whose registry WKT is GDAL's WKT 1, though PROJ writes it from its
+- a datum's `anchor_epoch` is written where the WKT 2 read gives it an `ANCHOREPOCH` (from PROJ
+  9.9.0's database where the datum is written from the registry, an identified code or a compound
+  CRS's parts), as PROJ writes it, and read back (#1012 item 65); not for a WKT without one, as
+  PROJ, nor for an EPSG code, whose registry WKT is GDAL's WKT 1, though PROJ writes it from its
   database there;
 - no `scope`, `area`, `bbox` or `usages`;
 - the WGS 84 and ETRS89 ensembles are written as their datum, without members (so GDAL's
@@ -1386,7 +1387,8 @@ They read and write:
   ProjFalseOriginLatGeoKey, else ProjCenterLatGeoKey: 90° and a ProjStdParallel1GeoKey of 71° or
   -71° is variant A of its scale, the standard parallel unread); Mercator 2SP by its
   ProjStdParallel1GeoKey whatever its scale, else 1SP of its latitude of origin (as `+lat_ts`) and
-  ProjScaleAtNatOriginGeoKey alone; Stereographic of ProjScaleAtNatOriginGeoKey alone; Laborde
+  ProjScaleAtNatOriginGeoKey alone; Stereographic of ProjScaleAtNatOriginGeoKey, else (unlike GDAL, which
+  reads 1) of ProjScaleAtCenterGeoKey, where terrio wrote it before; Laborde
   (CT 4) as `+proj=labrd`. An ellipsoid, datum or prime meridian given by its code without its
   values is the registry's (Airy 1830 for 7001 or for datum 6277, which also gets OSGB36's
   transformations; the spheres 7035, 7047 and 7048; Paris for 8903), as libgeotiff looks them up.

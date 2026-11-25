@@ -2998,26 +2998,27 @@ impl Transformer {
         }
     }
 
-    /// The 2D transformation of a point, with its height kept (or, for transformations PROJ runs
-    /// without keeping heights, transformed).
-    /// Whether a geographic source longitude is beyond 10 radians (572.96°), which PROJ's
-    /// `fwd_prepare()` refuses going into a projection, a conversion to geocentric coordinates or
-    /// a datum shift's, but not through a null transformation or a ballpark, which keep it (#1012
-    /// item 23).
-    fn beyond_ten_radians(&self, x: f64, y: f64) -> bool {
-        self.cartesian_src.is_none() && self.src.source_degrees(x, y).is_some_and(|(lon, _)| lon.to_radians().abs() > 10.0)
+    /// Runs `transform` on a point, but for a geographic source longitude beyond 10 radians
+    /// (572.96°), which PROJ's `fwd_prepare()` refuses going into a projection, a conversion to
+    /// geocentric coordinates or a datum shift's, though not through a null transformation or a
+    /// ballpark, which keep it (#1012 item 23).
+    fn within_ten_radians(&self, x: f64, y: f64, transform: impl FnOnce() -> Result<(f64, f64, f64)>) -> Result<(f64, f64, f64)> {
+        let beyond = self.cartesian_src.is_none() && self.src.source_degrees(x, y).is_some_and(|(lon, _)| lon.to_radians().abs() > 10.0);
+        if !beyond {
+            return transform();
+        }
+        let fail = || Error::Crs(format!("cannot transform ({x}, {y})"));
+        if self.cartesian_dst.is_some() || !self.dst.is_geographic() {
+            return Err(fail());
+        }
+        let (result, used) = route::recording_forwarded(transform);
+        if used.iter().any(|u| u.shifts) { Err(fail()) } else { result }
     }
 
+    /// The 2D transformation of a point, with its height kept (or, for transformations PROJ runs
+    /// without keeping heights, transformed).
     fn transform_2d(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {
-        if self.beyond_ten_radians(x, y) {
-            let fail = || Error::Crs(format!("cannot transform ({x}, {y})"));
-            if !self.dst.is_geographic() {
-                return Err(fail());
-            }
-            let (result, used) = route::recording(|| self.transform_2d_unchecked(x, y, z, t));
-            return if used.iter().any(|u| u.shifts) { Err(fail()) } else { result };
-        }
-        self.transform_2d_unchecked(x, y, z, t)
+        self.within_ten_radians(x, y, || self.transform_2d_unchecked(x, y, z, t))
     }
 
     fn transform_2d_unchecked(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {
@@ -3226,9 +3227,6 @@ impl Transformer {
 
     fn transform_at(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {
         let fail = || Error::Crs(format!("cannot transform ({x}, {y}, {z})"));
-        if self.cartesian_dst.is_some() && self.beyond_ten_radians(x, y) {
-            return Err(fail());
-        }
         if self.cartesian_src.is_some() || self.cartesian_dst.is_some() {
             if !x.is_finite() || !y.is_finite() || !z.is_finite() {
                 return Err(fail());
@@ -3259,6 +3257,11 @@ impl Transformer {
     }
 
     fn transform_geographic_at(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {
+        // The heights' paths too, which do not all go through `transform_2d`.
+        self.within_ten_radians(x, y, || self.transform_geographic_unchecked(x, y, z, t))
+    }
+
+    fn transform_geographic_unchecked(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {
         if self.identity {
             return Ok((x, y, z));
         }

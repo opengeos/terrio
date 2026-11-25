@@ -183,7 +183,9 @@ impl Params {
             "x_0" | "y_0" => {
                 let unit = self.str("units").and_then(crate::math::unit_to_meter);
                 let m = unit.or_else(|| self.str("to_meter").and_then(|t| t.trim().parse().ok())).filter(|m: &f64| *m > 0.0).unwrap_or(1.0);
-                near(v / m) * m
+                // The value itself when not rounded, not its round trip through the unit.
+                let r = near(v / m);
+                if r == v / m { v } else { r * m }
             }
             _ => v,
         }
