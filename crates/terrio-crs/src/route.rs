@@ -1064,7 +1064,9 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, ctx: &OperationContext) -> 
     // From a WKT with an ID of an authority PROJ does not know, taken for the CRS of its name:
     // PROJ's datum pivot takes the first CRS of the datum with transformations, in order of code,
     // whose alone (ONGD14's geocentric CRS, 7371, before 7373: "ONGD14 to WGS 84 (1)"), or the
-    // CRS's own when it comes first (#1012 item 7).
+    // CRS's own when it comes first (#1012 item 7). Only from the source: into such a WKT, PROJ
+    // places the point by the CRS of its name, without this pivot or the search (`searching`
+    // above), as the "<- 4326" cases of `wkt_unresolved.json` pin.
     if src.unresolved().is_some_and(|u| u.foreign_id) {
         let mut pivoted = false;
         for code in reg.by_datum.get(&ga.datum).into_iter().flatten().copied() {

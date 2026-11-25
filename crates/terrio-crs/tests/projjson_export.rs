@@ -330,3 +330,23 @@ fn a_datum_anchor_epoch_is_written_and_read_back() {
     let without: Value = serde_json::from_str(&SpatialRef::from_wkt(&wkt("")).to_projjson().unwrap()).unwrap();
     assert!(without["datum"].get("anchor_epoch").is_none(), "{without}");
 }
+
+/// A WKT 2 compound CRS's vertical datum `ANCHOREPOCH` is written as the vertical reference
+/// frame's `anchor_epoch` (CGVD2013a epoch 2010, EPSG datum 1256, 2010 in PROJ 9.9.0's database)
+/// and read back.
+#[test]
+fn a_vertical_datum_anchor_epoch_is_written_and_read_back() {
+    let deg = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
+    let wkt = format!(
+        r#"COMPOUNDCRS["NAD83(CSRS) + CGVD2013a(2010) height",GEOGCRS["NAD83(CSRS)",DATUM["North American Datum of 1983 (CSRS)",ELLIPSOID["GRS 1980",6378137,298.257222101,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,{deg}],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],{deg}],AXIS["geodetic longitude (Lon)",east,ORDER[2],{deg}],ID["EPSG",4617]],VERTCRS["CGVD2013a(2010) height",VDATUM["Canadian Geodetic Vertical Datum of 2013 (CGG2013a) epoch 2010",ANCHOREPOCH[2010]],CS[vertical,1],AXIS["gravity-related height (H)",up,LENGTHUNIT["metre",1]],ID["EPSG",9245]]]"#
+    );
+    let vertical_epoch = |text: &str| {
+        let json: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(json["type"], "CompoundCRS", "{json}");
+        json["components"][1]["datum"]["anchor_epoch"].clone()
+    };
+    let written = SpatialRef::from_wkt(&wkt).to_projjson().unwrap();
+    assert_eq!(vertical_epoch(&written), json!(2010.0), "{written}");
+    let again = SpatialRef::from_projjson(&written).unwrap().to_projjson().unwrap();
+    assert_eq!(vertical_epoch(&again), json!(2010.0), "{again}");
+}

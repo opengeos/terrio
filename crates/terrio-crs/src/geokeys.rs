@@ -1116,10 +1116,7 @@ fn own_towgs84(crs: &SpatialRef) -> Option<Vec<f64>> {
 /// as [`own_towgs84`] finds it for a horizontal CRS.
 fn compound_horizontal_shift(crs: &SpatialRef, code: u32) -> Option<Vec<f64>> {
     let root = crate::parsed::tree(crs.wkt.as_deref()?)?;
-    let horizontal = root.args.iter().find_map(|a| match a {
-        crate::wkt1::Arg::Node(n) if n.key.eq_ignore_ascii_case("PROJCS") || n.key.eq_ignore_ascii_case("GEOGCS") => Some(n.to_wkt()),
-        _ => None,
-    })?;
+    let horizontal = root.compound_horizontal()?.to_wkt();
     own_towgs84(&SpatialRef { epsg: Some(code), wkt: Some(horizontal), proj4: None, ..crs.clone() })
 }
 

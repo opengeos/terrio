@@ -67,6 +67,11 @@ impl Node {
         crate::keywords::is(&self.key, keys)
     }
 
+    /// A WKT 1 compound CRS's horizontal CRS: its first `PROJCS` or `GEOGCS` child.
+    pub fn compound_horizontal(&self) -> Option<&Node> {
+        self.first_in(&["PROJCS", "GEOGCS"])
+    }
+
     /// The first child node with the first of `keys` the node has one with.
     pub fn child_in(&self, keys: &[&str]) -> Option<&Node> {
         keys.iter().find_map(|k| self.child(k))
