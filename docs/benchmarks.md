@@ -304,7 +304,8 @@ reads, since it searches the spatial index, and `terrio.open_stream` for whole a
 reads, since it selects columns. GDAL reads all of them with `pyogrio.read_arrow`. A FlatGeobuf
 stores each feature whole, so a column read needs the same bytes as a whole read. The bytes a
 bbox read needs are the header, the index nodes visited and the features found, or every feature
-without an index.
+without an index. As for the other formats' chunks, a node or feature that several of the 16 boxes
+touch counts once.
 
 The worker environment sets `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` to avoid directory scans,
 `GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES` to enable GDAL range merging, and `GDAL_CACHEMAX=512`

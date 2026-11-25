@@ -23,7 +23,8 @@ run, interleaved with this one and GDAL: the report then gives this build's time
 
 Formats: geotiff, zarr, geoparquet, flatgeobuf. Needs terrio's Python module (a release build:
 `maturin develop --release` in python/), GDAL's Python bindings, pyogrio and PyArrow (GeoParquet,
-FlatGeobuf) and zarr-python 3 (Zarr fixtures) in one environment. Fixtures and results stay in --dir, out of the repository.
+FlatGeobuf) and zarr-python 3 (Zarr fixtures) in one environment. Fixtures and results stay in
+--dir, out of the repository.
 docs/benchmarks.md describes the method.
 """
 
@@ -820,7 +821,7 @@ class FlatGeobuf:
     # bbox of 1% of the extent; 16 such bboxes. The boxes and columns are GeoParquet's.
     ACCESS = ["full", "columns", "bbox", "bbox16"]
     EXT = ".fgb"
-    NODE_SIZE = 16  # of the packed R-tree GDAL writes
+    NODE_SIZE = 16  # of the packed R-tree GDAL writes (reference: GDAL 3.13.3)
 
     @staticmethod
     def axes(name: str) -> dict:
@@ -887,7 +888,8 @@ class FlatGeobuf:
         """What a read of a fixture needs, from the fixture's own header, index and features.
 
         The header and every feature, for a whole read or a bbox without an index; for a bbox
-        through the index, the header, the index nodes on the way and the features found.
+        through the index, the header, the index nodes on the way and the features found. As in the
+        other formats, a node or feature that several of `bbox16`'s boxes touch counts once.
 
         Args:
             path: The fixture.
@@ -916,7 +918,8 @@ class FlatGeobuf:
         with open(path, "rb") as f:
             fd = f.fileno()
             header = 12 + struct.unpack("<I", os.pread(fd, 4, 8))[0]  # magic bytes, header length, header
-            data = header + levels[0][1] * 40
+            num_nodes = levels[0][1]  # the leaves end the index: every node precedes the data
+            data = header + num_nodes * 40
 
             def nodes(a, b):
                 """The index nodes `[a, b)`."""
@@ -927,7 +930,7 @@ class FlatGeobuf:
                 return 4 + struct.unpack("<I", os.pread(fd, 4, data + off))[0]
 
             # The features follow the leaves: the first leaf's starts the data, the last's ends the file.
-            first, last = int(nodes(levels[0][0], levels[0][0] + 1)["off"][0]), int(nodes(levels[0][1] - 1, levels[0][1])["off"][0])
+            first, last = int(nodes(levels[0][0], levels[0][0] + 1)["off"][0]), int(nodes(num_nodes - 1, num_nodes)["off"][0])
             if first != 0 or data + last + feature(last) != size:
                 raise ValueError(f"{path.name}: the spatial index does not describe the features")
             boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16}.get(access, 0))
