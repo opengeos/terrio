@@ -2692,6 +2692,9 @@ enum Reopened {
     /// Quiet ([`crate::sparse::SparseFile::quiet`]): a decoder that cannot be opened is done
     /// without.
     Sparse(crate::sparse::SparseFile),
+    /// A remote file read over HTTP: the chunks were prefetched before decoding.
+    #[cfg(remote)]
+    Http(crate::http::RangeReader),
 }
 
 fn tiff_err(e: tiff::TiffError) -> Error {
@@ -3278,7 +3281,7 @@ impl TiffRaster {
         ranges.extend(misses.iter().filter_map(|i| tables.get(*i as usize)));
         dec.inner().get_ref().prefetch(&ranges)?;
         drop(ranges);
-        // More decoders over the local file, or over the bytes in memory.
+        // More decoders over the file: local, in memory, in a zip archive or remote.
         let (tags, limits) = (&self.tags, self.limits);
         let source = match dec.inner().get_ref() {
             Source::File(f) => Some(Reopened::File(f.get_ref().clone())),
@@ -3287,8 +3290,9 @@ impl TiffRaster {
             // Without recording what they miss: a header the caller's cache dropped would be
             // fetched again for decoders the read does without.
             Source::Sparse(s) => Some(Reopened::Sparse(s.get_ref().file.quiet())),
+            // Clones share the prefetched blocks and the connections, each with its own position.
             #[cfg(remote)]
-            Source::Http(_) => None,
+            Source::Http(r) => Some(Reopened::Http(r.clone())),
         };
         let reopen = source.map(|source| {
             move || -> Result<Decoder<PatchedReader<Source>>> {
@@ -3311,6 +3315,12 @@ impl TiffRaster {
                         let mut s = Source::sparse(file.clone());
                         s.seek(SeekFrom::Start(0))?;
                         (s, file.len())
+                    }
+                    #[cfg(remote)]
+                    Reopened::Http(r) => {
+                        let mut s = Source::Http(r.clone());
+                        s.seek(SeekFrom::Start(0))?;
+                        (s, r.len())
                     }
                 };
                 Ok(Decoder::new(PatchedReader::new(s, tags)).map_err(tiff_err)?.with_limits(limits.tiff_within(len)))
@@ -4541,6 +4551,43 @@ mod tests {
         assert!(before > 0, "the opening read must fetch the TIFF header");
         assert_eq!(read(&mut r), want);
         assert_eq!(header_fetches.get(), before, "worker reopening must not refetch the trimmed header");
+    }
+
+    /// A GeoTIFF read over HTTP decodes its tiles on the workers, as a local file does, reading the
+    /// same values: the workers' decoders read the blocks the window's prefetch fetched, and send
+    /// no request of their own.
+    #[cfg(remote)]
+    #[test]
+    fn http_window_reads_decode_on_the_workers() {
+        let _serial = crate::block_cache::tests::cache_test_guard(0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiled.tif");
+        write_tiled_tiff(&path, (160, 144, 3), sequence(DataType::U8, 160 * 144 * 3, 5), &[]);
+        let (url, seen) = crate::http::test_server(std::fs::read(&path).unwrap());
+        let w = Window::new(20, 20, 120, 100);
+        let want = read_f64(&mut LazyRaster::open(path.to_str().unwrap()).unwrap(), w, &[1, 2, 3], None);
+        let opened = |r: &LazyRaster| match &r.inner {
+            Inner::Tiff(t) => t.workers.opened.load(std::sync::atomic::Ordering::Relaxed),
+            _ => panic!("a GeoTIFF reader"),
+        };
+        // Tests running alongside may hold the process's decode workers: a read then decodes on
+        // its own thread. Fresh readers (of a file new to the process-wide cache) until one gets
+        // workers, 20 at most.
+        let mut workers = 0;
+        for i in 0..20 {
+            let mut r = LazyRaster::open(&format!("{url}/tiled.tif?reader={i}")).unwrap();
+            let before = seen.lock().unwrap().len();
+            assert_eq!(read_f64(&mut r, w, &[1, 2, 3], None), want);
+            let requests = seen.lock().unwrap().len() - before;
+            assert_eq!(requests, 1, "the window's tiles are fetched by its prefetch alone");
+            workers = opened(&r);
+            if crate::par::threads() < 2 || workers >= 1 {
+                break;
+            }
+        }
+        if crate::par::threads() > 1 {
+            assert!(workers >= 1, "no read opened decoders for its workers over HTTP");
+        }
     }
 
     /// `place` matches a pixel-by-pixel copy of each sample of pixel-interleaved chunks, over:
