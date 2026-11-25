@@ -728,15 +728,28 @@ fn blosc_decompress(src: &[u8], most: usize) -> Result<Vec<u8>> {
     let nblocks = nbytes.div_ceil(blocksize);
     let byte_shuffle = flags & 0x01 != 0 && typesize > 1;
     let bit_shuffle = flags & 0x01 == 0 && flags & 0x04 != 0;
-    let mut out = crate::dataset::fallible::filled_now(nbytes, 0u8, "a Blosc chunk")?;
+    let size = blocksize.min(nbytes);
+    // Blocks larger than the scratch kept: the chunk and the scratch block are zeroed by the
+    // allocator, their pages resident only once written, so that a block's decoder output, the
+    // chunk and the scratch are not all resident at once (as `main` never had them). Smaller
+    // blocks are written now, which is faster, the overlap a block at most.
+    let large = size > BLOSC_SCRATCH_KEPT;
+    let mut out = if large {
+        crate::dataset::fallible::filled(nbytes, 0u8, "a Blosc chunk")?
+    } else {
+        crate::dataset::fallible::filled_now(nbytes, 0u8, "a Blosc chunk")?
+    };
     // A byte-shuffled block before its unshuffle, or a bit-shuffled one's byte planes: this
     // thread's, reused from chunk to chunk rather than allocated and zeroed for each.
-    let mut block = BLOSC_SCRATCH.take();
-    let size = blocksize.min(nbytes);
+    let mut block = if large { Vec::new() } else { BLOSC_SCRATCH.take() };
     if (byte_shuffle || bit_shuffle) && block.len() < size {
-        let more = size - block.len();
-        crate::dataset::fallible::reserve(&mut block, more, "a Blosc block")?;
-        block.resize(size, 0);
+        if large {
+            block = crate::dataset::fallible::filled(size, 0u8, "a Blosc block")?;
+        } else {
+            let more = size - block.len();
+            crate::dataset::fallible::reserve(&mut block, more, "a Blosc block")?;
+            block.resize(size, 0);
+        }
     }
     let decoded = blosc_blocks(src, flags, typesize, blocksize, nblocks, (byte_shuffle, bit_shuffle), &mut out, &mut block);
     // Kept for the next chunk only when small: a chunk of large blocks does not leave it held.
@@ -755,7 +768,7 @@ thread_local! {
 }
 
 /// Decompresses the `nblocks` blocks of a Blosc chunk `src` into `out`, unshuffling them (the
-/// `(byte_shuffle, bit_shuffle)` pair) through the scratch `block`, at least a block long when
+/// flags `byte_shuffle`, `bit_shuffle`) through the scratch `block`, at least a block long when
 /// used.
 #[allow(clippy::too_many_arguments)]
 fn blosc_blocks(
@@ -3387,6 +3400,63 @@ mod tests {
         }
     }
 
+    /// A chunk of blocks larger than the scratch kept (zeroed by the allocator, not kept)
+    /// unshuffles each block as a chunk of small blocks does: bit and byte shuffle, stored streams.
+    #[test]
+    fn blosc_blocks_larger_than_the_scratch_kept_unshuffle_as_small_ones() {
+        let (typesize, bsize) = (4usize, 3 << 19);
+        let data: Vec<u8> = (0..2 * bsize).map(|i| (i * 31 % 251) as u8).collect();
+        for shuffle in [0x04u8, 0x01] {
+            // Version 2, unsplit (0x10), stored streams (each its block's size).
+            let mut src = vec![2, 1, 0x10 | shuffle, typesize as u8];
+            for v in [2 * bsize, bsize, 0, 24, 24 + 4 + bsize] {
+                src.extend((v as u32).to_le_bytes());
+            }
+            for block in data.chunks(bsize) {
+                src.extend((bsize as u32).to_le_bytes());
+                src.extend(block);
+            }
+            let out = blosc_decompress(&src, 4 * bsize).unwrap();
+            for (k, block) in data.chunks(bsize).enumerate() {
+                let want = if shuffle == 0x04 {
+                    bit_unshuffled(block, typesize, 2)
+                } else {
+                    let mut want = vec![0; bsize];
+                    interleave(block, &mut want, typesize, bsize / typesize);
+                    want
+                };
+                assert!(out[k * bsize..(k + 1) * bsize] == want[..], "shuffle {shuffle:#x}, block {k}");
+            }
+        }
+    }
+
+    /// A Blosc block split into one stream per byte of its elements is refused when its size is
+    /// not a multiple of its stream count, before any stream is read, and a short stream is
+    /// reported with the bytes decoded up to its end.
+    #[test]
+    fn blosc_split_blocks_refuse_uneven_sizes_and_short_streams() {
+        // Version 2, LZ4 (compressor 1), split (no 0x10 flag), unshuffled; one block.
+        let chunk = |typesize: u8, size: u32, streams: &[&[u8]]| {
+            let mut src = vec![2, 1, 1 << 5, typesize];
+            for v in [size, size, 0, 20] {
+                src.extend(v.to_le_bytes());
+            }
+            for s in streams {
+                src.extend((s.len() as u32).to_le_bytes());
+                src.extend(*s);
+            }
+            src
+        };
+        // 400 bytes of 3-byte elements: 133 per stream, one byte left over.
+        let e = blosc_decompress(&chunk(3, 400, &[]), 1 << 20).unwrap_err().to_string();
+        assert!(e.contains("a block of 400 bytes in 3 streams"), "{e}");
+        // 256 bytes of 2-byte elements: the first stream stored whole (128 bytes), the second an
+        // LZ4 stream of 10 bytes.
+        let short = lz4_flex::block::compress(&[7u8; 10]);
+        let e = blosc_decompress(&chunk(2, 256, &[&[1u8; 128], &short]), 1 << 20).unwrap_err().to_string();
+        assert!(e.contains("a block decompressing to 138 bytes, 256 expected"), "{e}");
+    }
+
     /// Blosc's byte shuffle undone in [`blosc_decompress`]: byte `k` of element `e` is byte
     /// `k * n + e` of the block, for every element size, the bytes past the last whole element
     /// left as they are.
@@ -3415,45 +3485,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    /// A Blosc header for `nbytes` bytes in blocks of `blocksize`, element size `typesize`.
-    fn blosc_header(flags: u8, typesize: u8, nbytes: u32, blocksize: u32) -> Vec<u8> {
-        let mut h = vec![2, 1, flags, typesize];
-        for v in [nbytes, blocksize, 0] {
-            h.extend_from_slice(&v.to_le_bytes());
-        }
-        h
-    }
-
-    /// A split block whose size is not a multiple of its stream count is refused before any
-    /// stream is read, rather than decoded into unequal shares.
-    #[test]
-    fn blosc_block_not_divisible_by_its_streams_is_refused() {
-        // 385 bytes of 3-byte elements: split into 3 streams of 128 bytes, one byte unaccounted.
-        let mut src = blosc_header(0, 3, 385, 385);
-        src.extend_from_slice(&20u32.to_le_bytes());
-        let e = blosc_decompress(&src, 385).unwrap_err().to_string();
-        assert!(e.contains("a block of 385 bytes in 3 streams"), "{e}");
-    }
-
-    /// A stream decompressing to fewer bytes than its share of the block is an error naming the
-    /// bytes it produced.
-    #[test]
-    fn blosc_short_stream_is_refused() {
-        let stream = lz4_flex::block::compress(&[7u8; 8]);
-        let mut src = blosc_header(1 << 5, 1, 16, 16);
-        src.extend_from_slice(&20u32.to_le_bytes());
-        src.extend_from_slice(&(stream.len() as u32).to_le_bytes());
-        src.extend_from_slice(&stream);
-        let e = blosc_decompress(&src, 16).unwrap_err().to_string();
-        assert!(e.contains("a block decompressing to 8 bytes, 16 expected"), "{e}");
-        // The same stream as a whole block decodes.
-        let mut whole = blosc_header(1 << 5, 1, 8, 8);
-        whole.extend_from_slice(&20u32.to_le_bytes());
-        whole.extend_from_slice(&(stream.len() as u32).to_le_bytes());
-        whole.extend_from_slice(&stream);
-        assert_eq!(blosc_decompress(&whole, 8).unwrap(), vec![7u8; 8]);
     }
 
     #[test]
