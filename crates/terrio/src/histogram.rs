@@ -228,7 +228,12 @@ pub(crate) fn count(values: &[f64], nodata: Option<f64>, t: DataType, min: f64, 
 }
 
 /// The first histogram stored for a band (numbered from 1) in a dataset's `.aux.xml` sidecar.
+/// None with sidecar discovery disabled (`GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`), where GDAL
+/// reads no `.aux.xml`, as for the stored range.
 pub(crate) fn pam_histogram(path: &str, band: usize) -> Option<Histogram> {
+    if crate::config::sidecars_disabled() {
+        return None;
+    }
     let xml = std::fs::read_to_string(format!("{path}.aux.xml")).ok()?;
     let start = xml.find(&format!("<PAMRasterBand band=\"{band}\""))?;
     let block = &xml[start..];
@@ -388,5 +393,54 @@ mod tests {
     fn json_numbers_as_gdal_prints_them() {
         let h = Histogram { count: 1, min: 365.2274509803922, max: 2.0, buckets: vec![3] };
         assert_eq!(serde_json::to_string(&h).unwrap(), r#"{"count":1,"min":365.22745098039218,"max":2.0,"buckets":[3]}"#);
+    }
+
+    /// `info --hist` takes a band's stored range and stored histogram from its `.aux.xml`, except
+    /// under `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, where GDAL reads no sidecar: the default
+    /// histogram is then computed over the pixels, for the range and the histogram alike.
+    #[test]
+    fn info_histograms_ignore_pam_sidecars_under_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.tif");
+        let ds = raster(RasterData::F32((1..=64).map(|v| v as f32).collect()), 8, 8, None);
+        let options = crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::GTiff), ..Default::default() };
+        crate::write_raster_dataset(&ds, path.to_str().unwrap(), &options).unwrap();
+        let path = path.to_str().unwrap();
+        let hist = |empty_dir: bool| {
+            if empty_dir {
+                crate::config::push_scope(std::collections::HashMap::from([(
+                    "GDAL_DISABLE_READDIR_ON_OPEN".to_string(),
+                    Some("EMPTY_DIR".to_string()),
+                )]));
+            }
+            let info = crate::info::info_path(path, &crate::info::InfoOptions { statistics: false, histogram: true });
+            if empty_dir {
+                crate::config::pop_scope();
+            }
+            match info.unwrap() {
+                crate::info::Info::Raster(r) => r.bands[0].histogram.clone().unwrap(),
+                _ => panic!("not a raster"),
+            }
+        };
+        let computed = hist(false);
+        let half = 63.0 / 510.0;
+        assert_eq!((computed.count, computed.min, computed.max), (256, 1.0 - half, 64.0 + half));
+        // A stored range.
+        let sidecar = format!("{path}.aux.xml");
+        std::fs::write(
+            &sidecar,
+            r#"<PAMDataset><PAMRasterBand band="1"><Metadata><MDI key="STATISTICS_MINIMUM">0</MDI><MDI key="STATISTICS_MAXIMUM">255</MDI></Metadata></PAMRasterBand></PAMDataset>"#,
+        )
+        .unwrap();
+        assert_eq!(hist(false).min, -0.5);
+        assert_eq!(hist(true), computed);
+        // A stored histogram.
+        std::fs::write(
+            &sidecar,
+            r#"<PAMDataset><PAMRasterBand band="1"><Histograms><HistItem><HistMin>0</HistMin><HistMax>2</HistMax><BucketCount>2</BucketCount><IncludeOutOfRange>0</IncludeOutOfRange><Approximate>0</Approximate><HistCounts>30|34</HistCounts></HistItem></Histograms></PAMRasterBand></PAMDataset>"#,
+        )
+        .unwrap();
+        assert_eq!(hist(false).buckets, vec![30, 34]);
+        assert_eq!(hist(true), computed);
     }
 }

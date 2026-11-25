@@ -47,6 +47,10 @@ const MAX_IMAGES: usize = 256;
 /// so read-ahead cannot announce a following block that the decoder never requests.
 const SPARSE_BUFFER_BYTES: usize = 64 * 1024;
 
+/// The block `approx_min_max` samples a source with when the source reports no block size of its
+/// own: GDAL's default VRT block size (128 x 128), so a large or remote source is never read whole.
+const SOURCE_SAMPLE_BLOCK: (usize, usize) = (128, 128);
+
 /// The most chunks a single prefetch collects.
 ///
 /// A whole-raster read of a file without overviews would otherwise list every strip at once (a
@@ -1306,11 +1310,13 @@ impl LazyRaster {
         if band == 0 || band > bands {
             return Err(Error::InvalidArgument(format!("unable to fetch band #{band}")));
         }
-        // The range stored with a single local file, as GDAL's `GetStatistics(bApproxOK=TRUE)`
-        // finds it. Only a GeoTIFF's own file owns its sidecars: a VRT's or catalog's file list
-        // names its sources, whose stored statistics are not this raster's.
+        // The range stored with a single local file, which `ComputeRasterMinMax` finds through
+        // `GetMinimum()`/`GetMaximum()` (`STATISTICS_MINIMUM`/`MAXIMUM` metadata). Only a
+        // GeoTIFF's own file owns its sidecars: a VRT's or catalog's file list names its sources,
+        // whose stored statistics are not this raster's. A complex raster's statistics are stored
+        // per complex band, not per component, so they are not looked up for a component.
         let stored = match &self.inner {
-            Inner::Tiff(t) => t
+            Inner::Tiff(t) if !t.complex => t
                 .files
                 .first()
                 .filter(|p| std::path::Path::new(p).is_file())
@@ -1332,11 +1338,14 @@ impl LazyRaster {
         }
         // One block in every `nSampleRate`: only those blocks are read. The block size is the
         // raster's own when it is read on demand, else the driver's; a raster held whole is one
-        // block of the whole image.
+        // block of the whole image. A source read on demand without a block size of its own
+        // (Zarr, GRIB, a STAC mosaic) is sampled in blocks of `SOURCE_SAMPLE_BLOCK`, GDAL's VRT
+        // default block size, so that it is never read whole.
         let block = match self.block_size() {
             Some(block) => block,
             None => match &self.inner {
-                Inner::Memory(ds) | Inner::Source(ds, _) => crate::histogram::driver_block(ds).unwrap_or((w, h)),
+                Inner::Memory(ds) => crate::histogram::driver_block(ds).unwrap_or((w, h)),
+                Inner::Source(ds, _) => crate::histogram::driver_block(ds).unwrap_or(SOURCE_SAMPLE_BLOCK),
                 Inner::Tiff(_) => (w, h),
             },
         };
@@ -4517,6 +4526,64 @@ mod tests {
         let mut r = LazyRaster::from_source(header, Box::new(FirstFile(tile.to_str().unwrap().to_string())));
         assert_eq!(r.file_list().unwrap(), vec![tile.to_str().unwrap().to_string()]);
         assert_eq!(r.approx_min_max(1).unwrap(), Some((100.0, 100.0)), "not the source tile's stored (-5, 42)");
+    }
+
+    /// A source without a block size of its own (Zarr, GRIB, a STAC mosaic) is sampled in
+    /// 128 x 128 blocks, one in every `nSampleRate`: it is never read whole in one window.
+    #[test]
+    fn approx_min_max_samples_a_source_without_a_block_size_in_bounded_blocks() {
+        use std::sync::{Arc, Mutex};
+        struct NoBlocks(Arc<Mutex<Vec<Window>>>);
+        impl WindowSource for NoBlocks {
+            fn overviews(&self) -> Vec<(usize, usize)> {
+                Vec::new()
+            }
+            fn read(&mut self, _level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
+                self.0.lock().unwrap().push(window);
+                // The value is the block's index, so the sampled blocks set the range.
+                let v = (window.y / 128 * 8 + window.x / 128) as u16;
+                Ok(RasterData::U16(vec![v; window.width * window.height * bands.len()]))
+            }
+        }
+        let (cols, rows) = (1024, 1024);
+        let reads = Arc::new(Mutex::new(Vec::new()));
+        let cfg = wbraster::RasterConfig { cols, rows, bands: 1, data_type: DataType::U16, ..Default::default() };
+        let header = RasterDataset::new(wbraster::Raster::from_data_native(cfg, RasterData::U16(vec![0; cols * rows])).unwrap(), false);
+        let mut r = LazyRaster::from_source(header, Box::new(NoBlocks(reads.clone())));
+        assert_eq!(r.block_size(), None);
+        let got = r.approx_min_max(1).unwrap();
+        let reads = reads.lock().unwrap();
+        // 8 x 8 blocks of 128 x 128, sampled every 9th (8 + 1 for a square raster): 8 blocks read.
+        assert_eq!(reads.len(), 8, "{reads:?}");
+        assert!(reads.iter().all(|w| w.width <= 128 && w.height <= 128), "{reads:?}");
+        assert_eq!(got, Some((0.0, 63.0)));
+    }
+
+    /// A complex raster's stored statistics describe a complex band, not one of its components:
+    /// `approx_min_max` samples the component's own pixels rather than return them.
+    #[test]
+    fn approx_min_max_ignores_stored_statistics_of_a_complex_raster() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("complex.tif");
+        let cfg = wbraster::RasterConfig { cols: 16, rows: 16, bands: 2, data_type: DataType::I16, ..Default::default() };
+        let values: Vec<i16> = (0..512).map(|i| if i < 256 { 3 } else { 9 }).collect();
+        let mut ds = RasterDataset::with_driver(
+            wbraster::Raster::from_data_native(cfg, RasterData::I16(values)).unwrap(),
+            RasterDriver::GTiff,
+            false,
+        );
+        ds.complex = true;
+        let options = crate::RasterWriteOptions { driver: Some(RasterDriver::GTiff), ..Default::default() };
+        crate::write_raster_dataset(&ds, path.to_str().unwrap(), &options).unwrap();
+        std::fs::write(
+            dir.path().join("complex.tif.aux.xml"),
+            r#"<PAMDataset><PAMRasterBand band="1"><Metadata><MDI key="STATISTICS_MINIMUM">-5</MDI><MDI key="STATISTICS_MAXIMUM">42</MDI></Metadata></PAMRasterBand><PAMRasterBand band="2"><Metadata><MDI key="STATISTICS_MINIMUM">-6</MDI><MDI key="STATISTICS_MAXIMUM">43</MDI></Metadata></PAMRasterBand></PAMDataset>"#,
+        )
+        .unwrap();
+        let mut r = LazyRaster::open(path.to_str().unwrap()).unwrap();
+        assert!(r.is_complex());
+        assert_eq!(r.approx_min_max(1).unwrap(), Some((3.0, 3.0)));
+        assert_eq!(r.approx_min_max(2).unwrap(), Some((9.0, 9.0)), "not complex band 2's stored (-6, 43)");
     }
 
     /// A raster held in memory is one block of the whole image (unless its driver reads by
