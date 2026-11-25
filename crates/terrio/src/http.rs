@@ -2480,7 +2480,10 @@ impl RangeReader {
     /// reach, its blocks and the cached ones its ranges cover fitting in the cache together:
     /// reads of its ranges, from any clone, then send no request while its blocks stay in
     /// the process-wide block cache (a concurrent read of another file can evict some, which are
-    /// then fetched again).
+    /// then fetched again). The state is shared by every clone, so another clone's prefetch
+    /// between a read's own prefetch and this call decides the answer; a read that then decodes
+    /// on the workers without its blocks fetches the missing ones itself, so only its request
+    /// count, not its values, depends on that.
     pub(crate) fn prefetched_whole(&self) -> bool {
         self.lock().is_ok_and(|s| s.plan.is_empty() && s.prefetch_fits)
     }

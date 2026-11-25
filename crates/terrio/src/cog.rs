@@ -4975,18 +4975,20 @@ mod tests {
         };
         // Tests running alongside may hold the process's decode workers: a read then decodes on
         // its own thread. Fresh readers (of a file new to the process-wide cache) until one gets
-        // workers, 20 at most.
+        // workers, for up to 10 s.
         let mut workers = 0;
-        for i in 0..20 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        for i in 0.. {
             let mut r = LazyRaster::open(&format!("{url}/tiled.tif?reader={i}")).unwrap();
             let before = seen.lock().unwrap().len();
             assert_eq!(read_f64(&mut r, w, &[1, 2, 3], None), want);
             let requests = seen.lock().unwrap().len() - before;
             assert_eq!(requests, 1, "the window's tiles are fetched by its prefetch alone");
             workers = opened(&r);
-            if crate::par::threads() < 2 || workers >= 1 {
+            if crate::par::threads() < 2 || workers >= 1 || std::time::Instant::now() > deadline {
                 break;
             }
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
         if crate::par::threads() > 1 {
             assert!(workers >= 1, "no read opened decoders for its workers over HTTP");

@@ -2732,12 +2732,14 @@ mod tests {
             Err(crate::Error::InvalidData("not opened".into()))
         };
         let err = |e: tiff::TiffError| crate::Error::InvalidData(e.to_string());
-        for _ in 0..50 {
+        // Up to 10 s: a loaded runner's tests can hold the budget for a while.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
             let decoded = crate::config::with_options(&[(key, "YES")], || {
                 decode_in_threads(&reopen, None, 0, &[0, 1, 2, 3], None, usize::MAX, &err, &mut |_| Ok(())).unwrap()
             });
             assert_eq!(decoded, 0, "no worker opened a decoder");
-            if !seen.lock().unwrap().is_empty() || crate::par::threads() < 2 {
+            if !seen.lock().unwrap().is_empty() || crate::par::threads() < 2 || std::time::Instant::now() > deadline {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
