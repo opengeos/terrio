@@ -36,20 +36,24 @@ pub(crate) struct Image {
     pub palette: bool,
 }
 
-/// Verifies embedded VP8, VP8L, and ANMF frame headers stay within the declared WebP canvas
-/// dimensions before `image-webp` decodes and allocates frame planes.
+/// Verifies embedded VP8, VP8L, and ANMF frame headers (including sub-chunks inside ANMF)
+/// stay within the declared WebP canvas dimensions before `image-webp` allocates frame planes.
 fn validate_webp_frames(b: &[u8], canvas_w: u32, canvas_h: u32) -> Result<()> {
-    let mut off = 12usize;
-    while off + 8 <= b.len() {
-        let tag = &b[off..off + 4];
-        let len = u32::from_le_bytes([b[off + 4], b[off + 5], b[off + 6], b[off + 7]]) as usize;
+    validate_webp_chunks(b.get(12..).unwrap_or(&[]), canvas_w, canvas_h, true)
+}
+
+fn validate_webp_chunks(chunks: &[u8], canvas_w: u32, canvas_h: u32, allow_anmf: bool) -> Result<()> {
+    let mut off = 0usize;
+    while off + 8 <= chunks.len() {
+        let tag = &chunks[off..off + 4];
+        let len = u32::from_le_bytes([chunks[off + 4], chunks[off + 5], chunks[off + 6], chunks[off + 7]]) as usize;
         let Some(end) = off.checked_add(8).and_then(|s| s.checked_add(len)) else {
             return Err(Error::InvalidData("tile image: WebP chunk length overflows".into()));
         };
-        if end > b.len() {
+        if end > chunks.len() {
             break;
         }
-        let payload = &b[off + 8..end];
+        let payload = &chunks[off + 8..end];
         let check = |fw: u32, fh: u32| -> Result<()> {
             if fw == 0 || fh == 0 || fw > canvas_w || fh > canvas_h {
                 return Err(Error::ResourceLimit(format!(
@@ -68,10 +72,11 @@ fn validate_webp_frames(b: &[u8], canvas_w: u32, canvas_h: u32) -> Result<()> {
                 let bits = u32::from_le_bytes([payload[1], payload[2], payload[3], payload[4]]);
                 check((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1)?;
             }
-            b"ANMF" if payload.len() >= 16 => {
+            b"ANMF" if allow_anmf && payload.len() >= 16 => {
                 let fw = (u32::from(payload[6]) | (u32::from(payload[7]) << 8) | (u32::from(payload[8]) << 16)) + 1;
                 let fh = (u32::from(payload[9]) | (u32::from(payload[10]) << 8) | (u32::from(payload[11]) << 16)) + 1;
                 check(fw, fh)?;
+                validate_webp_chunks(&payload[16..], canvas_w, canvas_h, false)?;
             }
             _ => {}
         }
@@ -1642,6 +1647,29 @@ mod tests {
         webp.extend_from_slice(&(body.len() as u32).to_le_bytes());
         webp.extend_from_slice(&body);
         let Err(err) = decode_image(&webp) else { panic!("expected ResourceLimit") };
+        assert!(matches!(err, Error::ResourceLimit(_)), "got: {err:?}");
+
+        // ANMF frame with valid 1x1 header but embedded oversized VP8L sub-chunk is also rejected.
+        let mut anmf_payload = vec![0u8; 16]; // x=0, y=0, w-1=0 (1), h-1=0 (1)
+        anmf_payload.extend_from_slice(b"VP8L");
+        anmf_payload.extend_from_slice(&5u32.to_le_bytes());
+        let bits = 16382u32 | (16382u32 << 14); // 16383x16383
+        anmf_payload.push(0x2f);
+        anmf_payload.extend_from_slice(&bits.to_le_bytes());
+        anmf_payload.push(0); // pad odd chunk length
+        let mut anim_body = b"WEBP".to_vec();
+        anim_body.extend_from_slice(b"VP8X");
+        anim_body.extend_from_slice(&10u32.to_le_bytes());
+        let mut vp8x = [0u8; 10];
+        vp8x[0] = 0x02; // animation flag
+        anim_body.extend_from_slice(&vp8x);
+        anim_body.extend_from_slice(b"ANMF");
+        anim_body.extend_from_slice(&(anmf_payload.len() as u32).to_le_bytes());
+        anim_body.extend_from_slice(&anmf_payload);
+        let mut anim_webp = b"RIFF".to_vec();
+        anim_webp.extend_from_slice(&(anim_body.len() as u32).to_le_bytes());
+        anim_webp.extend_from_slice(&anim_body);
+        let Err(err) = validate_webp_frames(&anim_webp, 1, 1) else { panic!("expected ResourceLimit") };
         assert!(matches!(err, Error::ResourceLimit(_)), "got: {err:?}");
     }
 }

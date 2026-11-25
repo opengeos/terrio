@@ -48,12 +48,15 @@ const MAX_SEAMLESS_READS: usize = 10_000;
 
 fn read_contained_sibling(p: &Path, ext: &str, root_dir: Option<&Path>) -> Result<Option<Vec<u8>>> {
     let Some(path) = sibling(p, ext) else { return Ok(None) };
-    if let Some(root) = root_dir {
+    let path = if let Some(root) = root_dir {
         let canonical = std::fs::canonicalize(&path)?;
         if !canonical.starts_with(root) {
             return Err(bad(format!("seamless table sidecar '{}' resolves outside the table directory", path.display())));
         }
-    }
+        canonical
+    } else {
+        path
+    };
     Ok(Some(std::fs::read(path)?))
 }
 

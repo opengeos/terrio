@@ -295,8 +295,11 @@ impl Copc {
         options: &PointReadOptions,
     ) -> Result<Vec<super::Dimension>> {
         let nodes = self.select(source, options)?;
-        let total: usize = nodes.iter().map(|n| n.point_count.max(0) as usize).sum();
-        let capacity = if options.filter.is_empty() { total } else { total.min(1 << 20) };
+        let total = nodes
+            .iter()
+            .try_fold(0usize, |acc, n| acc.checked_add(n.point_count.max(0) as usize))
+            .ok_or_else(|| Error::InvalidData("COPC: total point count overflows".into()))?;
+        let capacity = total.min(1 << 20);
         let mut columns = Columns::new(layout, capacity);
         self.decode(source, h, layout, &nodes, &options.filter, &mut columns)?;
         Ok(columns.into_dimensions())

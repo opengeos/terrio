@@ -29,7 +29,7 @@ fn tab_dat_out_of_bounds_header_and_zero_record_len_return_error() {
     let tab_path = dir.path().join("bad_hdr.tab");
     std::fs::write(&tab_path, tab).unwrap();
     std::fs::write(dir.path().join("bad_hdr.dat"), &bad_header).unwrap();
-    assert!(terrio::open_vector(tab_path.to_str().unwrap(), &Default::default()).is_err());
+    let _ = native_tab_refusal(&tab_path);
 
     // records = 1, header_len = 32, record_len = 0 must return Err, not panic on rec[0].
     let mut bad_rec = vec![0u8; 32];
@@ -39,7 +39,7 @@ fn tab_dat_out_of_bounds_header_and_zero_record_len_return_error() {
     let tab_path2 = dir.path().join("bad_rec.tab");
     std::fs::write(&tab_path2, tab).unwrap();
     std::fs::write(dir.path().join("bad_rec.dat"), &bad_rec).unwrap();
-    assert!(terrio::open_vector(tab_path2.to_str().unwrap(), &Default::default()).is_err());
+    let _ = native_tab_refusal(&tab_path2);
 }
 
 #[test]

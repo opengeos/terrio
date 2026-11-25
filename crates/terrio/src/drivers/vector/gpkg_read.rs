@@ -347,13 +347,8 @@ pub(crate) fn rtree_candidates(db: &impl Tables, rtree: &str, bbox: Rect) -> Res
         return Err(bad(format!("R-tree '{rtree}' depth {depth} exceeds limit")));
     }
     let mut visited = std::collections::HashSet::from([1i64]);
-    let mut visits = 0usize;
     let mut stack: Vec<(Vec<u8>, usize)> = vec![(root_node, 0)];
     while let Some((data, level)) = stack.pop() {
-        visits += 1;
-        if visits > 1_000_000 {
-            return Err(bad(format!("R-tree '{rtree}' is malformed")));
-        }
         let count = data.get(2..4).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize).ok_or_else(|| bad("truncated R-tree node"))?;
         for i in 0..count {
             let c = 4 + i * 24;
@@ -373,9 +368,6 @@ pub(crate) fn rtree_candidates(db: &impl Tables, rtree: &str, bbox: Rect) -> Res
                 let child = node(id)?.ok_or_else(|| bad("missing R-tree child node"))?;
                 stack.push((child, level + 1));
             }
-        }
-        if stack.len() > 1_000_000 {
-            return Err(bad(format!("R-tree '{rtree}' is malformed")));
         }
     }
     out.sort_unstable();
