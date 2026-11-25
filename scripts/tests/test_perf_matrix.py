@@ -83,6 +83,11 @@ def test_digest_compares_values_not_their_layout():
     assert perf_matrix.digest([t]) == perf_matrix.digest([padded]) == perf_matrix.digest([(None, wide)])
     assert perf_matrix.digest([t]) != perf_matrix.digest([t.set_column(0, "id", pa.array([2, 1], pa.int32()))])
     assert perf_matrix.digest([t]) != perf_matrix.digest([t.rename_columns(["ie", "class", "geometry", "wkb"])])
+    big = pa.table({"id": pa.array([2**63, 1], pa.uint64())})  # past int64: hashed, not a failed sample
+    assert perf_matrix.digest([big]) != perf_matrix.digest([pa.table({"id": pa.array([1, 1], pa.uint64())})])
+
+
+_MACHINE = {"cpu": "A", "cpus": 4, "cpu_quota": "max", "mem_gb": 16, "os": "Linux", "on_ac": True, "load": 0.1, "versions": {}}
 
 
 def test_report_lists_mismatches_and_failures_apart_and_warns_on_mixed_machines():
@@ -717,3 +722,6 @@ def test_report_gives_each_tools_speedup_over_one_thread():
     text = report([*rows, other])  # a zarr case without one thread is not mixed into GeoTIFF's
     assert "geotiff local threads2  terrio x2.00  gdal x2.00  terrio/gdal time x2.00  (1)" in text
     assert "geotiff local threads8  terrio x2.00  gdal x4.00  terrio/gdal time x4.00  (1)" in text
+    # Files run with different library pools are not merged into one scaling section.
+    mixed = report([{"machine": {**_MACHINE, "threads": 1}}, {"machine": {**_MACHINE, "threads": 4}}, *rows])
+    assert "mix --threads [1, 4]" in mixed and "## Thread scaling" not in mixed

@@ -124,7 +124,7 @@ def _arrow_canonical(t):
     import pyarrow as pa
 
     if pa.types.is_integer(t):
-        return pa.int64()
+        return pa.uint64() if t == pa.uint64() else pa.int64()  # uint64 past 2**63 does not fit int64
     if pa.types.is_floating(t):
         return pa.float64()
     if pa.types.is_string(t) or pa.types.is_large_string(t):
@@ -1234,6 +1234,7 @@ def run(args: argparse.Namespace) -> None:
         except FileExistsError:
             sys.exit(f"{results} exists: choose another --out")
         cleanup.callback(out_file.close)
+        head["machine"]["threads"] = args.threads
         out_file.write(json.dumps(head) + "\n")
         rows = []
         for case_index, (name, access, source) in enumerate(itertools.product(names, args.access or accesses(fmt), sources)):
@@ -1405,6 +1406,9 @@ def report(rows: list[dict]) -> str:
         lines.append(f"machine: {h['cpu']}, {h['cpus']} CPUs (quota {h['cpu_quota']}), {h['mem_gb']} GB, {h['os']}, AC {h['on_ac']}, load {h['load']:.1f}, {h['versions']}")
     if len({(h["cpu"], h["cpus"], h["cpu_quota"], h["mem_gb"]) for h in heads}) > 1:
         lines.append("WARNING: these results come from different machines: compare ratios within one machine only")
+    pools = {h.get("threads") for h in heads}
+    if len(pools) > 1:
+        lines.append(f"WARNING: these results mix --threads {sorted(pools, key=str)}: the thread scaling is left out")
     computed = [r for r in rows if "time_ratio" in r]
     ok = [r for r in computed if r["values"] in MATCH]
     differ = [r for r in computed if r["values"] not in MATCH]
@@ -1447,7 +1451,7 @@ def report(rows: list[dict]) -> str:
                 speedup = {t: math.exp(statistics.fmean(math.log(one[t]["total_s"] / r[t]["total_s"]) for one, r in pairs)) for t in ("terrio", "gdal")}
                 ratio = math.exp(statistics.fmean(math.log(r["time_ratio"]) for _, r in pairs))
                 scaling.append(f"{fmt} {source:5} threads{n:<2} terrio x{speedup['terrio']:.2f}  gdal x{speedup['gdal']:.2f}  terrio/gdal time x{ratio:.2f}  ({len(pairs)})")
-    if scaling:
+    if scaling and len(pools) <= 1:
         lines.append("\n## Thread scaling (time with 1 reading thread / time with N; geometric means, cases in brackets)\n")
         lines += scaling
     http = [r for r in ok if r["source"] == "http"]
