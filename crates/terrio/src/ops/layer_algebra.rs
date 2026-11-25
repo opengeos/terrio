@@ -466,7 +466,7 @@ pub(super) fn dissolve_features(layer: &Layer) -> Result<Layer> {
         }
         let mut set = Set::from_geometry(&geometry);
         if !set.area.0.is_empty() {
-            let unioned = super::vector_clip::union_regions(&[std::mem::replace(&mut set.area, geo::MultiPolygon(vec![]))])?;
+            let unioned = super::vector_clip::union_regions(std::slice::from_ref(&set.area))?;
             set.set_area(unioned);
         }
         let area = Set { area: set.area.clone(), ..Default::default() };
