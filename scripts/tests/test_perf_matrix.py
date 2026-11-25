@@ -132,14 +132,14 @@ def test_flatgeobuf_needed_bytes_come_from_the_spatial_index(tmp_path, monkeypat
         lyr = ds = None
     size = (tmp_path / "tiny_index.fgb").stat().st_size
     header = 12 + int.from_bytes((tmp_path / "tiny_index.fgb").read_bytes()[8:12], "little")
-    index = 4 * 40  # a root and three leaves, all visited
-    feature = (size - header - index) // 3
+    index_bytes = 4 * 40  # a root and three leaves, all visited
+    feature = (size - header - index_bytes) // 3
     meta = perf_matrix.FlatGeobuf.meta
-    assert meta(tmp_path / "tiny_index.fgb", "bbox")["need_bytes"] == header + index + feature
-    assert meta(tmp_path / "tiny_index.fgb", "full")["need_bytes"] == size - index
+    assert meta(tmp_path / "tiny_index.fgb", "bbox")["need_bytes"] == header + index_bytes + feature
+    assert meta(tmp_path / "tiny_index.fgb", "full")["need_bytes"] == size - index_bytes
     # Without an index, every feature is read to find the bbox's.
     unindexed = (tmp_path / "tiny_noindex.fgb").stat().st_size
-    assert meta(tmp_path / "tiny_noindex.fgb", "bbox")["need_bytes"] == unindexed == size - index
+    assert meta(tmp_path / "tiny_noindex.fgb", "bbox")["need_bytes"] == unindexed == size - index_bytes
 
 
 def test_metadata_errors_are_recorded_for_each_case(tmp_path, monkeypatch):
@@ -651,6 +651,8 @@ def test_flatgeobuf_index_levels_end_at_one_root_and_refuse_no_features():
     assert perf_matrix.FlatGeobuf.levels(17)[-1] == (0, 1)
     with pytest.raises(ValueError):
         perf_matrix.FlatGeobuf.levels(0)
+    with pytest.raises(ValueError, match="unknown"):
+        perf_matrix.FlatGeobuf.levels(-1)
 
 
 def test_flatgeobuf_needed_bytes_walk_every_level_of_a_deep_index(tmp_path, monkeypatch):
