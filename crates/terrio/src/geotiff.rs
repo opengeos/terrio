@@ -2715,6 +2715,40 @@ mod tests {
         assert_eq!(spares.bytes(), 0);
     }
 
+    /// Decode workers open their decoders under the options the calling thread set for itself
+    /// (a credentialed STAC asset's consent read over HTTP among them), as `par::map_waiting`'s
+    /// threads do. Workers are reserved from a budget shared with tests running alongside, so
+    /// the read is retried until one gets them.
+    #[cfg(threads)]
+    #[test]
+    fn decode_workers_open_under_the_callers_thread_options() {
+        use std::sync::Mutex;
+        let key = "TERRIO_TEST_DECODE_WORKER_OPTION";
+        let seen: Mutex<Vec<Option<String>>> = Mutex::new(Vec::new());
+        // Records the option as a worker sees it, then opens nothing: the chunks are left to
+        // the caller.
+        let reopen = || -> crate::Result<tiff::decoder::Decoder<std::io::Cursor<Vec<u8>>>> {
+            seen.lock().unwrap().push(crate::config::get(key));
+            Err(crate::Error::InvalidData("not opened".into()))
+        };
+        let err = |e: tiff::TiffError| crate::Error::InvalidData(e.to_string());
+        for _ in 0..50 {
+            let decoded = crate::config::with_options(&[(key, "YES")], || {
+                decode_in_threads(&reopen, None, 0, &[0, 1, 2, 3], None, usize::MAX, &err, &mut |_| Ok(())).unwrap()
+            });
+            assert_eq!(decoded, 0, "no worker opened a decoder");
+            if !seen.lock().unwrap().is_empty() || crate::par::threads() < 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let seen = seen.into_inner().unwrap();
+        if crate::par::threads() > 1 {
+            assert!(!seen.is_empty(), "no read got decode workers");
+        }
+        assert!(seen.iter().all(|v| v.as_deref() == Some("YES")), "a worker lost the caller's options: {seen:?}");
+    }
+
     /// A decoder whose strip count overflows must not retain unaccounted chunk tables.
     /// This malformed geometry is accepted by tiff's directory reader; GDAL 3.13.3 is
     /// the reference version for the surrounding TIFF conformance tests.
