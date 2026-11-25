@@ -1,6 +1,7 @@
 """The performance matrix counts rounds, windows and needed bytes, and ranks only valid cases."""
 
 import json
+import os
 import struct
 import sys
 from pathlib import Path
@@ -525,8 +526,10 @@ def test_changed_files_choose_the_formats_to_measure():
     """A format's own file picks it; a shared one picks every format; others pick none."""
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
-    assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet"]
+    assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "warp", "terrain"]
     assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr"]
+    assert perf_matrix.touched(["crates/terrio/src/ops/warp/window.rs"]) == ["warp"]
+    assert perf_matrix.touched(["crates/terrio/src/ops/dem.rs", "crates/terrio/src/ops/calc/eval.rs"]) == ["terrain"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == []
 
 
@@ -604,3 +607,120 @@ def test_benchmark_request_rejects_a_read_only_collaborator(tmp_path):
     assert result.returncode == 1
     assert "Repository write permission is required" in result.stdout
     assert not (tmp_path / "outputs").exists()
+
+
+def _mem(np, gdal, a, gt=(500000, 10, 0, 5000000, 0, -10), nodata=None):
+    """A GDAL in-memory raster of one band, in UTM 31N.
+
+    Args:
+        np: The numpy module.
+        gdal: GDAL's module.
+        a: The band's values.
+        gt: The geotransform.
+        nodata: The nodata value, if any.
+
+    Returns:
+        The dataset.
+    """
+    ds = gdal.GetDriverByName("MEM").Create("", a.shape[1], a.shape[0], 1, gdal.GetDataTypeByName({"float32": "Float32", "uint8": "Byte"}[a.dtype.name]))
+    ds.SetGeoTransform(gt)
+    ds.SetProjection("EPSG:32631")
+    ds.GetRasterBand(1).WriteArray(a)
+    if nodata is not None:
+        ds.GetRasterBand(1).SetNoDataValue(nodata)
+    return ds
+
+
+def test_an_operation_output_is_compared_with_gdal_pixel_by_pixel():
+    """Count every differing pixel, and put all of them beyond the tolerance on a metadata mismatch."""
+    np = pytest.importorskip("numpy")
+    gdal = pytest.importorskip("osgeo.gdal")
+    gdal.UseExceptions()
+    ref = np.arange(12, dtype="float32").reshape(3, 4)
+    ref[0, 0] = np.nan
+    g = _mem(np, gdal, ref, nodata=-1.0)
+
+    def out(a, gt=(500000, 10, 0, 5000000, 0, -10), nodata=-1.0):
+        return SimpleNamespace(read=lambda: a[None], nodata=nodata, transform=gt, crs_wkt=g.GetProjection())
+
+    same = perf_matrix.compare_raster(out(ref.copy()), g, 0.0)
+    assert (same["differing"], same["beyond_tol"], same["n"], same["mismatch"]) == (0, 0, 12, "")
+    near = ref.copy()
+    near[1, 1] += 0.005
+    near[2, 2] += 0.5
+    near[0, 0] = 3.0  # a value where GDAL's is NaN differs infinitely
+    c = perf_matrix.compare_raster(out(near), g, 1e-2)
+    assert (c["differing"], c["beyond_tol"]) == (3, 2) and c["max_diff"] == pytest.approx(0.5)
+    # A nodata value is compared as the output's type holds it.
+    g.GetRasterBand(1).SetNoDataValue(3.402823466e+38)
+    assert not perf_matrix.compare_raster(out(ref.copy(), nodata=float(np.finfo("float32").max)), g, 0.0)["mismatch"]
+    g.GetRasterBand(1).SetNoDataValue(-1.0)
+    for bad in (out(ref.copy(), nodata=None), out(ref.copy(), nodata=-1.5), out(ref.copy(), gt=(500010, 10, 0, 5000000, 0, -10)),
+                out(ref.astype("float64")), out(ref[:2].copy())):
+        c = perf_matrix.compare_raster(bad, g, 1.0)
+        assert c["mismatch"] and c["beyond_tol"] == 12
+
+
+def _compare(differing=0, beyond=0, mismatch=""):
+    return {"n": 4, "tol": 0.01, "differing": differing, "beyond_tol": beyond, "max_diff": 0.001 * differing, "mismatch": mismatch}
+
+
+def test_an_operation_is_exact_within_tolerance_or_differs_by_its_pixels():
+    """Label operations by their pixel comparison, never as a checksum match."""
+    def row(*compares):
+        return summarize(_row(terrio=[{**_sample(2, s=c["beyond_tol"]), "compare": c} for c in compares],
+                              gdal=[_sample(1, s=0)] * len(compares)))
+
+    exact = row(_compare(), _compare())
+    assert exact["values"] == "exact" and "compare" not in exact["terrio"]
+    within = row(_compare(), _compare(differing=3))  # the worst sample decides
+    assert within["values"] == "within_tol" and within["compare"]["differing"] == 3
+    beyond = row(_compare(differing=3, beyond=1))
+    assert beyond["values"] == "DIFFER: 1 of 4 values beyond 0.01 (max 0.003)"
+    shape = row(_compare(beyond=4, mismatch="shape (1, 2, 2) vs (1, 1, 4)"))
+    assert shape["values"] == "DIFFER: shape (1, 2, 2) vs (1, 1, 4)"
+    text = report([exact, {**within, "access": "aspect"}, {**beyond, "fixture": "f32_none"}])
+    worst = text.split("## Worst cases")[1].split("## Geometric")[0]
+    assert " exact" in worst and " within_tol" in worst and "f32_none" not in worst
+    assert "within tolerance of GDAL's (ranked): 1\n  u8_none/aspect: 3 of 4 values differ, max 0.003 <= 0.01" in text
+    assert "values differ from GDAL (not ranked): 1\n  f32_none" in text
+    assert "within tolerance" not in report([exact])
+
+
+@pytest.mark.parametrize("fmt,access", [("warp", "bilinear"), ("warp", "near_t1"), ("terrain", "slope_t1"), ("terrain", "aspect"),
+                                        ("terrain", "proximity"), ("terrain", "calc")])
+def test_an_operation_runs_in_a_worker_and_matches_gdal(tmp_path, monkeypatch, fmt, access):
+    """Run an operation as the runner's worker does, on a small DEM, against GDAL's output.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped environment and case replacements.
+        fmt: The operation's format.
+        access: The operation.
+    """
+    np = pytest.importorskip("numpy")
+    gdal = pytest.importorskip("osgeo.gdal")
+    pytest.importorskip("terrio")
+    gdal.UseExceptions()
+    op = perf_matrix.FORMATS[fmt]
+    if access == "near_t1":
+        monkeypatch.setitem(op.CASES, access, ("near", 0, 0.0))
+    for name in ("RAYON_NUM_THREADS", "GDAL_NUM_THREADS"):
+        monkeypatch.setenv(name, "2")
+    dem = perf_matrix.terrain(np, 256, 1, "float32")[0]
+    gdal.Translate(str(tmp_path / "f32_none.tif"), _mem(np, gdal, dem), format="GTiff")
+    gdal.Translate(str(tmp_path / "u8_none.tif"), _mem(np, gdal, perf_matrix.terrain(np, 256, 1, "uint8")[0]), format="GTiff")
+    src = tmp_path / f"{op.CASES[access][0] if fmt == 'terrain' else 'f32_none'}.tif"
+    if fmt == "terrain":  # an operation is measured on its own input only
+        assert op.meta(tmp_path / ("f32_none.tif" if src.stem == "u8_none" else "u8_none.tif"), access) is None
+    warm = _mem(np, gdal, np.ones((64, 64), "float32"), gt=(0, 1, 0, 0, 0, -1))
+    warm.SetProjection("")
+    gdal.Translate(str(tmp_path / "_warmup.tif"), warm, format="GTiff")
+    meta = op.meta(src, access)
+    samples = {tool: perf_matrix.worker({"format": fmt, "tool": tool, "src": str(src), "access": access, "meta": meta})
+               for tool in ("gdal", "terrio")}
+    assert os.environ["RAYON_NUM_THREADS"] == ("1" if access.endswith("_t1") else "2")
+    c = samples["terrio"]["compare"]
+    assert c["n"] == samples["gdal"]["n"] > 0 and c["beyond_tol"] == 0 and not c["mismatch"], c
+    row = summarize({**_row(terrio=[samples["terrio"]], gdal=[samples["gdal"]]), "format": fmt, "access": access})
+    assert row["values"] in ("exact", "within_tol")
