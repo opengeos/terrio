@@ -169,10 +169,12 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
     Ok(Some(match driver {
         #[cfg(feature = "flatgeobuf")]
         VectorDriver::FlatGeobuf => match options.spatial_filter {
-            // With a filter, only the index nodes on the way and the features found are read.
+            // With a filter, only the index nodes on the way and the features found are read: each
+            // read seeks first, so the file is not buffered (a buffer would be dropped and filled
+            // again at every seek).
             Some(rect) => {
-                let mut f = std::io::BufReader::new(std::fs::File::open(path)?);
-                let len = std::fs::metadata(path)?.len();
+                let mut f = std::fs::File::open(path)?;
+                let len = f.metadata()?.len();
                 vec![flatgeobuf::read_filtered(&mut f, len, Some(rect), &|_| Ok(()))?.1]
             }
             None => vec![flatgeobuf::read(path)?],
