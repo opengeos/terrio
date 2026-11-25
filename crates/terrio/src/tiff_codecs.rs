@@ -1885,6 +1885,57 @@ mod tests {
         assert!(e.to_string().to_lowercase().contains("checksum"), "{e}");
     }
 
+    /// The first blob of a Lerc2 v6 band set, alone in a chunk, declares a band the chunk does not
+    /// hold, and is refused, as `lerc_reader::get_band_count` refused it.
+    #[cfg(feature = "lerc")]
+    #[test]
+    fn lerc_single_v6_blob_declaring_further_bands_is_refused() {
+        let (w, h, depth) = (3usize, 2usize, 2usize);
+        // Two bands of two values a pixel, one of them no-data in a pixel: mixed no-data, so v6.
+        let mut values: Vec<f32> = (0..w * h * depth * 2).map(|i| i as f32).collect();
+        values[0] = -9999.0;
+        values[w * h * depth] = -9999.0;
+        let set = lerc_core::BandSetView::new(w as u32, h as u32, depth as u32, 2, lerc_core::BandLayout::Bsq, &values).unwrap();
+        let options = lerc_writer::EncodeOptions::new().with_no_data_value(-9999.0);
+        let blobs = lerc_writer::encode_band_set(set, None, options).unwrap();
+        let info = lerc_reader::decode_first(&blobs).unwrap().info;
+        assert_eq!((info.version, info.remaining_band_count), (lerc_core::Version::Lerc2(6), 1));
+        let first = blobs[..info.blob_size].to_vec();
+        let codec = ChunkCodec { codec: Codec::Lerc, sample: Sample::F32, limit: usize::MAX, ..packed(32, depth) };
+        let Err(e) = codec.lerc(first, w, h) else { panic!("a blob declaring further bands decoded") };
+        assert!(e.to_string().contains("declaring further bands"), "{e}");
+    }
+
+    /// Floating-point samples of the image's type keep their bits, signaling NaNs included (the
+    /// conversion through `f64` this path skips quieted them, which libtiff does not), and masked
+    /// pixels become NaN.
+    #[cfg(feature = "lerc")]
+    #[test]
+    fn lerc_native_samples_keep_signaling_nan_bits_and_mask_to_nan() {
+        let codec = |sample, bits| ChunkCodec { codec: Codec::Lerc, sample, limit: usize::MAX, ..packed(bits, 1) };
+        let mask = [1u8, 0, 1];
+        let snan32 = f32::from_bits(0x7fa0_0001);
+        let Ok(DecodingResult::F32(out)) =
+            codec(Sample::F32, 32).lerc_native(lerc_core::PixelData::F32(vec![snan32, 1.0, 2.5]), Some(&mask))
+        else {
+            panic!("Float32 expected")
+        };
+        assert_eq!(out[0].to_bits(), 0x7fa0_0001);
+        assert!(out[1].is_nan());
+        assert_eq!(out[2], 2.5);
+        let snan64 = f64::from_bits(0x7ff4_0000_0000_0001);
+        let Ok(DecodingResult::F64(out)) =
+            codec(Sample::F64, 64).lerc_native(lerc_core::PixelData::F64(vec![snan64, 1.0, 2.5]), Some(&mask))
+        else {
+            panic!("Float64 expected")
+        };
+        assert_eq!(out[0].to_bits(), 0x7ff4_0000_0000_0001);
+        assert!(out[1].is_nan());
+        assert_eq!(out[2], 2.5);
+        // Samples of another type are handed back for the conversion.
+        assert!(codec(Sample::F64, 64).lerc_native(lerc_core::PixelData::F32(vec![1.0; 3]), None).is_err());
+    }
+
     #[cfg(feature = "lerc")]
     #[test]
     fn codec_header_limits_lerc_before_mask_inspection() {
