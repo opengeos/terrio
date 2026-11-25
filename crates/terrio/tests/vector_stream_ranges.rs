@@ -244,11 +244,12 @@ fn flatgeobuf_bbox_reads_keep_the_same_features_with_or_without_an_index() {
     let mut layer = grid();
     layer.features[399].geometry = None;
     terrio::write_vector(&[layer], unindexed.to_str().unwrap(), &Default::default()).unwrap();
-    let options = VectorOpenOptions { spatial_filter: Some((2.5, 3.5, 6.5, 5.5)), ..Default::default() };
     // x in 3..=6 and y in 4..=5: in the file's order (the indexed file sorts its features).
     let mut expected: Vec<String> = (4..=5).flat_map(|y| (3..=6).map(move |x| (y * 20 + x).to_string())).collect();
     expected.sort();
-    for path in [&indexed, &unindexed] {
+    // The same rectangle given by its other two corners selects the same features.
+    for (path, bbox) in [&indexed, &unindexed].into_iter().flat_map(|p| [(p, (2.5, 3.5, 6.5, 5.5)), (p, (6.5, 5.5, 2.5, 3.5))]) {
+        let options = VectorOpenOptions { spatial_filter: Some(bbox), ..Default::default() };
         let path = path.to_str().unwrap();
         let eager = terrio::open_vector(path, &options).unwrap();
         let streamed = terrio::stream::open_layers(path, &options, 3).unwrap().remove(0).read_all().unwrap();
