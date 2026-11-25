@@ -253,7 +253,11 @@ pub(crate) fn pam_histogram(path: &str, band: usize) -> Option<Histogram> {
 /// header, a Surfer grid's Z range).
 pub(crate) fn stored_range(driver: crate::formats::RasterDriver, path: &str, band: usize) -> Option<(f64, f64)> {
     use crate::formats::RasterDriver as D;
-    if let Some(r) = crate::ops::dem::pam_statistics(path, band) {
+    // With sidecar discovery disabled (`GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`), the PAM
+    // sidecar is not consulted; statistics stored in the file itself remain available.
+    if !crate::config::sidecars_disabled()
+        && let Some(r) = crate::ops::dem::pam_statistics(path, band)
+    {
         return Some(r);
     }
     let p = std::path::Path::new(path);
