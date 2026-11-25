@@ -114,7 +114,7 @@ jobs:
       - uses: mamba-org/setup-micromamba@v3
         with:
           environment-name: perf
-          # The GDAL of the matrix's published runs; pyogrio and PyArrow for GeoParquet and FlatGeobuf,
+          # The GDAL of the matrix's published runs; pyogrio and PyArrow for the vector formats,
           # zarr-python for the Zarr fixtures.
           create-args: python=3.12 gdal=3.13.3 libgdal-core=3.13.3 libgdal-arrow-parquet pyogrio pyarrow zarr>=3 numpy pip maturin
           # Not cached: a cache saved after the pull request's code ran could carry its changes.
@@ -193,7 +193,7 @@ jobs:
       - uses: mamba-org/setup-micromamba@v3
         with:
           environment-name: perf
-          # The GDAL of the matrix's published runs; pyogrio and PyArrow for GeoParquet and FlatGeobuf,
+          # The GDAL of the matrix's published runs; pyogrio and PyArrow for the vector formats,
           # zarr-python for the Zarr fixtures.
           create-args: python=3.12 gdal=3.13.3 libgdal-core=3.13.3 libgdal-arrow-parquet pyogrio pyarrow zarr>=3 numpy pip maturin
           # Not cached: a cache saved after the pull request's code ran could carry its changes.

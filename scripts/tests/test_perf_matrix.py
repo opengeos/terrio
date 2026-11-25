@@ -52,6 +52,47 @@ def test_summarize_ranks_only_complete_matching_samples():
     assert "time_ratio" not in partial and partial["terrio"]["read_s"] == 2
 
 
+def test_equal_sums_with_different_bytes_are_not_exact():
+    """Rank a case as `exact` only when every sample's bytes hash as GDAL's."""
+    exact = summarize(_row(terrio=[{**_sample(2), "digest": "a"}], gdal=[{**_sample(1), "digest": "a"}]))
+    nan = summarize(_row(terrio=[{**_sample(2, s=float("nan")), "digest": "a"}], gdal=[{**_sample(1, s=float("nan")), "digest": "a"}]))
+    assert nan["values"] == "exact"  # equal bytes holding a NaN sum to NaN, which no sum check accepts
+    assert exact["values"] == "exact" and "digest" not in exact["terrio"]
+    # Two compensating errors keep the sum and count: the bytes still differ.
+    swapped = summarize(_row(terrio=[{**_sample(2), "digest": "b"}], gdal=[{**_sample(1), "digest": "a"}]))
+    assert swapped["values"] == "checksum_match"
+    text = report([exact, swapped])
+    assert "values not byte-identical to GDAL's (sum within 1e-6 and count equal; ranked): 1\n  u8_none" in text
+    # A later sample whose bytes differ is caught too.
+    later = _row(terrio=[{**_sample(2), "digest": "a"}, {**_sample(2), "digest": "b"}], gdal=[{**_sample(1), "digest": "a"}])
+    assert summarize(later)["values"] == "checksum_match"
+
+
+def test_digest_compares_values_not_their_layout():
+    """Hash the values read and their shape: not a band's leading 1, a table's chunks, column order or integer width."""
+    import numpy as np
+
+    a = np.arange(12, dtype="float32").reshape(3, 4)
+    assert perf_matrix.digest([a]) == perf_matrix.digest([a[None]]) == perf_matrix.digest([np.asfortranarray(a)])
+    assert perf_matrix.digest([a]) != perf_matrix.digest([a.astype("float64")])
+    assert perf_matrix.digest([a]) != perf_matrix.digest([a[::-1]])
+    assert perf_matrix.digest([a]) != perf_matrix.digest([a.reshape(a.shape[::-1])])  # same bytes, other shape
+    pa = pytest.importorskip("pyarrow")
+    xy = pa.struct([pa.field("x", pa.float64(), False), pa.field("y", pa.float64(), False)])
+    rings = pa.array([[[{"x": 1.0, "y": 2.0}]], [[{"x": 3.0, "y": 4.0}, {"x": 5.0, "y": 6.0}]]], pa.list_(pa.list_(xy)))
+    t = pa.table({"id": pa.array([1, 2], pa.int32()), "class": ["a", "bb"], "geometry": rings, "wkb": [b"x", b"yy"]})
+    padded = pa.concat_tables([t.slice(0, 1), t]).slice(1)  # sliced, in two chunks
+    wide = t.set_column(0, "id", t.column("id").cast(pa.int64())).select(["wkb", "geometry", "class", "id"])
+    assert perf_matrix.digest([t]) == perf_matrix.digest([padded]) == perf_matrix.digest([(None, wide)])
+    assert perf_matrix.digest([t]) != perf_matrix.digest([t.set_column(0, "id", pa.array([2, 1], pa.int32()))])
+    assert perf_matrix.digest([t]) != perf_matrix.digest([t.rename_columns(["ie", "class", "geometry", "wkb"])])
+    big = pa.table({"id": pa.array([2**63, 1], pa.uint64())})  # past int64: hashed, not a failed sample
+    assert perf_matrix.digest([big]) != perf_matrix.digest([pa.table({"id": pa.array([1, 1], pa.uint64())})])
+
+
+_MACHINE = {"cpu": "A", "cpus": 4, "cpu_quota": "max", "mem_gb": 16, "os": "Linux", "on_ac": True, "load": 0.1, "versions": {}}
+
+
 def test_report_lists_mismatches_and_failures_apart_and_warns_on_mixed_machines():
     ok = summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)]))
     differ = summarize({**_row(terrio=[_sample(9, s=0)], gdal=[_sample(1)]), "fixture": "f32_none"})
@@ -618,6 +659,7 @@ def test_quick_runs_rotate_tools_between_cases_and_close_the_server(tmp_path, mo
     perf_matrix.run(args)
     assert calls == ["terrio", "gdal", "base", "gdal", "base", "terrio"]
     assert servers[0].socket.fileno() == -1
+    assert servers[0].request_queue_size >= 64  # the threaded reads' connections are not dropped
 
 
 def test_a_fixture_filter_matching_nothing_is_an_error(tmp_path, monkeypatch):
@@ -646,14 +688,16 @@ def test_every_path_pattern_names_files_of_the_repository():
 
 def test_changed_files_choose_the_formats_to_measure():
     """A format's own file picks it; a shared one picks every format; others pick none."""
+    # GeoPackage's `where` read goes through `terrio.sql` and the eager vector read.
+    assert all("geopackage" in perf_matrix.touched([f]) for f in ("python/src/ops.rs", "crates/terrio/src/drivers/vector/mod.rs"))
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
     assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "flatgeobuf", "geopackage"]
     assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
+    assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
     assert perf_matrix.touched(["crates/terrio/src/ops/sql/select.rs"]) == ["geopackage"]
     assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == ["flatgeobuf"]
-    assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
     assert perf_matrix.touched(["docs/benchmarks.md"]) == []
 
 
@@ -733,6 +777,94 @@ def test_benchmark_request_rejects_a_read_only_collaborator(tmp_path):
     assert not (tmp_path / "outputs").exists()
 
 
+def test_threads4_is_measured_with_each_thread_count():
+    """Expand a format's `threads4` to 1, 2, 4 and 8 threads, and keep the explicit name valid."""
+    assert perf_matrix.accesses(perf_matrix.GeoTiff) == ["window", "windows16", "full", "overview",
+                                                         "threads1", "threads2", "threads4", "threads8"]
+    assert [perf_matrix.threads(a) for a in ("threads1", "threads8", "windows16", "bbox16")] == [1, 8, 0, 0]
+    assert perf_matrix.accesses(SimpleNamespace(ACCESS=["full"])) == ["full"]
+
+
+@pytest.mark.parametrize("access,ok", [(["threads4"], True), (["threads8", "window"], True), (["threads3"], False)])
+def test_run_accepts_only_the_measured_thread_counts(tmp_path, monkeypatch, access, ok):
+    """Accept `threads4` as before and the other measured counts, and reject any other count.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped argument and runner replacements.
+        access: The `--access` values.
+        ok: Whether the command line is accepted.
+    """
+    ran = []
+    monkeypatch.setattr(perf_matrix, "run", ran.append)
+    monkeypatch.setattr(sys, "argv", ["perf_matrix.py", "run", "--dir", str(tmp_path), "--access", *access])
+    if ok:
+        perf_matrix.main()
+        assert ran[0].access == access
+    else:
+        with pytest.raises(SystemExit) as exc:
+            perf_matrix.main()
+        assert exc.value.code == 2 and not ran
+
+
+@pytest.mark.parametrize("n", [1, 2, 8])
+def test_threaded_reads_open_a_handle_per_thread_and_keep_the_parts_in_order(monkeypatch, n):
+    """Read a format's 16 `threads4` parts with N handles in N threads, in the parts' order.
+
+    Args:
+        monkeypatch: Scoped format replacement.
+        n: The number of reading threads.
+    """
+    import threading
+
+    opened, given = [], []
+
+    def reader(_tool, access, _meta):
+        """Give 16 parts that record the thread reading them.
+
+        Args:
+            _tool: Reader backend.
+            access: Read pattern the format is asked for.
+            _meta: Fixture metadata.
+
+        Returns:
+            Reader operations and validation.
+        """
+        given.append(access)
+
+        def open_(path):
+            opened.append(threading.get_ident())
+            return path
+
+        items = [lambda _d, i=i: [i] for i in range(16)]
+        return open_, items, perf_matrix.checksum, (lambda p: p, lambda _d: None)
+
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", SimpleNamespace(EXT=".tif", reader=reader))
+    result = perf_matrix.worker({"format": "fake", "tool": "gdal", "src": "http://localhost/f.tif",
+                                 "access": f"threads{n}", "meta": {}})
+    assert given == ["threads4"] and len(set(opened)) == n  # n handles, on n distinct threads
+    assert result["digest"] == perf_matrix.digest([[i] for i in range(16)])
+
+
+def test_report_gives_each_tools_speedup_over_one_thread():
+    """Compare each thread count with one thread, per tool, over the cases that have both."""
+    rows = [summarize({**_row(terrio=[_sample(t)], gdal=[_sample(g)]), "access": f"threads{n}"})
+            for n, t, g in ((1, 8.0, 4.0), (2, 4.0, 2.0), (8, 4.0, 1.0))]
+    other = summarize({**_row(terrio=[_sample(1.0)], gdal=[_sample(1.0)]), "format": "zarr", "access": "threads8"})
+    text = report([*rows, other])  # a zarr case without one thread is not mixed into GeoTIFF's
+    assert "geotiff local threads2  terrio x2.00  gdal x2.00  terrio/gdal time x2.00  (1)" in text
+    assert "geotiff local threads8  terrio x2.00  gdal x4.00  terrio/gdal time x4.00  (1)" in text
+    # Files run with different library pools are not merged into one scaling section.
+    mixed = report([{"machine": {**_MACHINE, "threads": 1}}, {"machine": {**_MACHINE, "threads": 4}}, *rows])
+    assert "mix --threads [1, 4]" in mixed and "## Thread scaling" not in mixed
+    # Thread counts pair within a results file: another file's one-thread run is not A's baseline.
+    def case(n, t, g):
+        return summarize({**_row(terrio=[_sample(t)], gdal=[_sample(g)]), "access": f"threads{n}"})
+
+    two_runs = report([{"machine": _MACHINE}, case(1, 8.0, 4.0), case(8, 2.0, 1.0), {"machine": _MACHINE}, case(1, 80.0, 40.0)])
+    assert "geotiff local threads8  terrio x4.00  gdal x4.00  terrio/gdal time x2.00  (1)" in two_runs
+
+
 def test_flatgeobuf_index_levels_end_at_one_root_and_refuse_no_features():
     """Lay out a packed R-tree's levels down to one root, and refuse an index of no features."""
     assert perf_matrix.FlatGeobuf.levels(1) == [(1, 2), (0, 1)]
@@ -799,3 +931,45 @@ def test_flatgeobuf_needed_bytes_walk_every_level_of_a_deep_index(tmp_path, monk
         assert read.sum() < num_nodes  # the search skips part of the index
         expected = header + int(read.sum()) * 40 + found * feature
         assert perf_matrix.FlatGeobuf.meta(path, access)["need_bytes"] == expected
+
+
+def test_flatgeobuf_gdal_read_names_the_geometry_as_terrio(tmp_path):
+    """Name GDAL's FlatGeobuf geometry column `geometry`, as terrio does, so the digests compare."""
+    ogr = pytest.importorskip("osgeo.ogr")
+    pytest.importorskip("pyogrio")
+    pytest.importorskip("pyarrow")
+    if ogr.GetDriverByName("FlatGeobuf") is None:
+        pytest.skip("FlatGeobuf driver is required")
+    ogr.UseExceptions()
+    path = tmp_path / "tiny.fgb"
+    ds = ogr.GetDriverByName("FlatGeobuf").CreateDataSource(str(path))
+    lyr = ds.CreateLayer("data", None, ogr.wkbPoint)
+    lyr.CreateField(ogr.FieldDefn("id", ogr.OFTInteger64))
+    f = ogr.Feature(lyr.GetLayerDefn())
+    f["id"] = 1
+    f.SetGeometry(ogr.CreateGeometryFromWkt("POINT (1 2)"))
+    lyr.CreateFeature(f)
+    lyr = ds = None
+    open_, items, check, _ = perf_matrix.FlatGeobuf.reader("gdal", "full", {})
+    table = items[0](open_(str(path)))
+    assert table.column_names == ["id", "geometry"]
+    assert check(table) == (1.0, 1)
+
+
+def test_geopackage_gdal_read_names_the_geometry_as_terrio(tmp_path):
+    """Name GDAL's GeoPackage geometry column (`geom`) `geometry`, as terrio does, so the digests compare."""
+    ogr = pytest.importorskip("osgeo.ogr")
+    pytest.importorskip("pyogrio")
+    pytest.importorskip("pyarrow")
+    ogr.UseExceptions()
+    path = tmp_path / "tiny.gpkg"
+    ds = ogr.GetDriverByName("GPKG").CreateDataSource(str(path))
+    lyr = ds.CreateLayer(perf_matrix.GeoPackage.LAYER, None, ogr.wkbPoint)
+    lyr.CreateField(ogr.FieldDefn("id", ogr.OFTInteger64))
+    f = ogr.Feature(lyr.GetLayerDefn())
+    f["id"] = 1
+    f.SetGeometry(ogr.CreateGeometryFromWkt("POINT (1 2)"))
+    lyr.CreateFeature(f)
+    lyr = ds = None
+    open_, items, _, _ = perf_matrix.GeoPackage.reader("gdal", "full", {})
+    assert items[0](open_(str(path))).column_names == ["id", "geometry"]

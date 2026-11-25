@@ -260,9 +260,9 @@ one file at a time. Each format lists the ways its files vary and the ways they 
 
 | Format | Files vary by | Reads |
 |---|---|---|
-| GeoTIFF | codec and predictor, data type, tiled or stripped, band or pixel interleave, 1–12 bands | one window, 16 windows, whole file, 8x decimated (overview), 4 threads × 4 windows |
-| Zarr | v2 or v3, codec (zlib, gzip, zstd, Blosc LZ4/Zstd with shuffle or bitshuffle, none), data type, chunk size, sharding, cube chunking | one window, 16 windows, whole array, one band of a cube, 4 threads × 4 windows |
-| GeoParquet | geometry type, WKB or GeoArrow, compression, row group size, covering bbox column, spatial sort | all columns, two columns, a bbox of 1% of the extent, 16 bboxes, 4 threads × 4 bboxes, an attribute filter |
+| GeoTIFF | codec and predictor, data type, tiled or stripped, band or pixel interleave, 1–12 bands | one window, 16 windows, whole file, 8x decimated (overview), 1, 2, 4 and 8 threads sharing 16 windows |
+| Zarr | v2 or v3, codec (zlib, gzip, zstd, Blosc LZ4/Zstd with shuffle or bitshuffle, none), data type, chunk size, sharding, cube chunking | one window, 16 windows, whole array, one band of a cube, 1, 2, 4 and 8 threads sharing 16 windows |
+| GeoParquet | geometry type, WKB or GeoArrow, compression, row group size, covering bbox column, spatial sort | all columns, two columns, a bbox of 1% of the extent, 16 bboxes, 1, 2, 4 and 8 threads sharing 16 bboxes, an attribute filter |
 | FlatGeobuf | geometry type, with or without a spatial index | all columns, two columns, a bbox of 1% of the extent, 16 bboxes |
 | GeoPackage (vector) | geometry type, R-tree or none, rows in Hilbert order or not, 400,000 or 2,000,000 rows | as GeoParquet's |
 
@@ -280,18 +280,25 @@ Every case records:
   from the file's own chunk tables;
 - HTTP requests and sequential rounds of requests: a request that starts after every request in
   flight has ended waited for them, so it opens a new round;
-- peak memory, and whether terrio's checksums match GDAL's: the sum and count of the pixels, or of
-  the rows' `id` (`value` when `id` is not read), in every sample of both tools. Time and peak
-  memory are taken before this check.
+- peak memory, and whether terrio's values equal GDAL's, in every sample of both tools. Time and
+  peak memory are taken before this check.
 
-These sums and counts are benchmark checks, not exhaustive pixel, categorical-attribute or
-geometry conformance checks. Counts match exactly; numeric sums use relative tolerance `1e-6`.
+The values check hashes the values a read returned, not its metadata (a CRS or a geometry type
+returned beside a table is not compared). A raster read hashes as its data type and its
+bytes in C order (a band read as `(1, h, w)` or `(h, w)` hashes the same); a table hashes each
+column by name, cast to a canonical type (64-bit integers and floats, large strings and binaries,
+top-level extension columns as their storage) and serialized as Arrow IPC, so row order, every attribute and
+the geometry's bytes count. A case whose hashes equal GDAL's in every sample is `exact`. Otherwise
+the check falls back to the sum and count of the pixels, or of the rows' `id` (`value` when `id`
+is not read): counts equal and sums within relative tolerance `1e-6` give `checksum_match`, which is
+still ranked but listed apart as not byte-identical. Anything else is a mismatch. A geometry that
+one tool returns as WKB and the other as native GeoArrow (a bbox read of a GeoArrow file: terrio
+native, GDAL WKB) hashes differently, so these cases are `checksum_match` at best.
 Process peak RSS includes initialization, warm-up and retained read results, but excludes
 subsequent validation allocations. RSS units are normalized for Linux and macOS.
 
-The result label is `checksum_match`, rather than a claim of exact value equality. Only cases
-where every sample of both tools succeeded and matched GDAL's checksums are ranked;
-the report lists failures, timeouts and value mismatches apart. Local byte counts need Linux's
+Only cases where every sample of both tools succeeded and matched GDAL's values (`exact` or
+`checksum_match`) are ranked; the report lists failures, timeouts and value mismatches apart. Local byte counts need Linux's
 `/proc/self/io`. Local reads after the first come from the OS page cache, so the matrix measures
 decoding and I/O logic, not the disk.
 
@@ -302,8 +309,9 @@ errors and are excluded from rankings.
 
 FlatGeobuf reads use two Terrio entry points: `terrio.open_vector(bbox=...)` for the bbox
 reads, since it searches the spatial index, and `terrio.open_stream` for whole and column
-reads, since it selects columns. GDAL reads all of them with `pyogrio.read_arrow`. A FlatGeobuf
-stores each feature whole, so a column read needs the same bytes as a whole read. The bytes a
+reads, since it selects columns. GDAL reads all of them with `pyogrio.read_arrow`, whose geometry
+column, `wkb_geometry`, the values check compares as terrio's `geometry`. A FlatGeobuf stores each
+feature whole, so a column read needs the same bytes as a whole read. The bytes a
 bbox read needs are the header, the index nodes visited and the features found, or every feature
 without an index. As for the other formats' chunks, a node or feature that several of the 16 boxes
 touch counts once.
@@ -335,7 +343,7 @@ request can fix all the cases of that area, with the matrix's numbers before and
 # PyArrow (GeoParquet) and zarr-python 3 (Zarr fixtures).
 (cd python && maturin develop --release)
 python scripts/perf_matrix.py fixtures --format geotiff      # 0.9 GB in ~/.cache/terrio-bench/matrix
-python scripts/perf_matrix.py run --format geotiff           # every case; 30 to 60 minutes per format
+python scripts/perf_matrix.py run --format geotiff           # every case; 50 to 100 minutes per format
 python scripts/perf_matrix.py fixtures --format zarr
 python scripts/perf_matrix.py run --format zarr --only shard --access window --quick
 # `run` prints its results file path; report summarizes one again:
@@ -346,6 +354,13 @@ python -m pytest -q scripts/tests/test_perf_matrix.py
 
 Fixture names identify fixed specifications. Use an empty fixture directory after changing a
 specification or fixture generation code, since existing files are reused by name.
+
+The threaded reads, `threads1` to `threads8`, open one handle in each of N threads, which read
+every Nth of the 16 windows or bboxes; opening is timed as part of the read. The report's thread
+scaling section gives each tool's time with one thread divided by its time with N, per source, over
+the cases measured with both. `--access threads4` selects one thread count, as before. These counts
+are reading threads: the libraries' own pools stay at `--threads` for every access, so `threads1`
+is one reading thread, not a single-threaded process; `--threads 1` measures that.
 
 `--threads` sets `RAYON_NUM_THREADS` and `GDAL_NUM_THREADS` (4 by default), `--latency-ms` the
 simulated round-trip time, `--samples` the samples per tool, and `--quick` takes one. A read that
