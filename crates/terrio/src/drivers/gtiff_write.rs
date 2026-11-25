@@ -1188,7 +1188,8 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
         Some(6) if jpeg && samples == 3 => 6,
         Some(6) => return Err(Error::Unsupported("PHOTOMETRIC=YCBCR needs JPEG compression of 3 bands".into())),
         Some(p) => p,
-        // GDAL 3.13.3's COG driver writes three JPEG bands as YCbCr (`GDALCOGCreator::Create`).
+        // GDAL 3.13.3's COG driver writes three JPEG bands as YCbCr (`GDALCOGCreator::Create`);
+        // `dataset::color_options` keeps PHOTOMETRIC=RGB off such a copy to match.
         None if opts.cog && jpeg && samples == 3 => 6,
         None if (samples == 3 || (samples == 4 && opts.compression == Compression::WebP)) && raster.data_type == DataType::U8 => 2,
         None => 1,
@@ -1230,7 +1231,7 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
     // as red, green and blue. Others, such as Gray or Blue first, are kept in YCbCr.
     let ignored = |i: usize, c: &str| {
         implied.get(i).is_some_and(|m| m.eq_ignore_ascii_case(c))
-            || i < 3 && (opts.photometric == Some(2) || photometric == 6 && c.eq_ignore_ascii_case("Undefined"))
+            || (i < 3 && (opts.photometric == Some(2) || (photometric == 6 && c.eq_ignore_ascii_case("Undefined"))))
     };
     let layout = Layout {
         tile,

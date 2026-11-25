@@ -2203,7 +2203,7 @@ mod tests {
         };
         let write = |bands: usize, driver: crate::formats::RasterDriver, photometric: Option<&str>| {
             let r = raster(bands);
-            let out = dir.path().join(format!("{bands}-{driver:?}-{photometric:?}.tif"));
+            let out = dir.path().join(format!("{bands}-{driver:?}-{}.tif", photometric.unwrap_or("default")));
             let mut creation_options = vec![("COMPRESS".to_string(), "JPEG".to_string())];
             creation_options.extend(photometric.map(|p| ("PHOTOMETRIC".to_string(), p.to_string())));
             let options = crate::RasterWriteOptions { driver: Some(driver), creation_options, ..Default::default() };
@@ -2271,16 +2271,20 @@ mod tests {
         let r = wbraster::Raster::from_data_native(cfg, wbraster::raster::RasterData::U8((0..3600).map(|i| (i % 251) as u8).collect()))
             .unwrap();
         use crate::formats::RasterDriver::{Cog, GTiff};
-        for (source, driver, photometric, expected) in [
+        for (case, (source, driver, photometric, expected)) in [
             (["Gray", "Undefined", "Undefined"], GTiff, Some("YCBCR"), ["Gray", "Green", "Blue"]),
             (["Gray", "Undefined", "Undefined"], Cog, None, ["Gray", "Green", "Blue"]),
             (["Blue", "Green", "Red"], GTiff, Some("YCBCR"), ["Blue", "Green", "Red"]),
             (["Blue", "Green", "Red"], Cog, None, ["Blue", "Green", "Red"]),
             (["Gray", "Undefined", "Undefined"], GTiff, Some("RGB"), ["Red", "Green", "Blue"]),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let mut ds = crate::RasterDataset::with_driver(r.clone(), GTiff, false);
             ds.band_metadata = source.map(|c| crate::BandMetadata { color_interp: Some(c.into()), ..Default::default() }).to_vec();
-            let out = dir.path().join(format!("{source:?}-{driver:?}-{photometric:?}.tif")).to_str().unwrap().to_string();
+            // A plain name: Windows refuses the quotes of a debug-formatted one.
+            let out = dir.path().join(format!("{case}.tif")).to_str().unwrap().to_string();
             let mut creation_options = vec![("COMPRESS".to_string(), "JPEG".to_string())];
             creation_options.extend(photometric.map(|p| ("PHOTOMETRIC".to_string(), p.to_string())));
             let options = crate::RasterWriteOptions { driver: Some(driver), creation_options, ..Default::default() };

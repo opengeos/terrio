@@ -2669,6 +2669,8 @@ class DatasetWriter(DatasetReader):
         self._raster = None
         self._dirty = False
         self._colorinterp_set = False
+        # PHOTOMETRIC=RGB was added as GDAL's default rather than given.
+        self._default_rgb = False
         self._overview_factors: list[int] = []
         # Unset until build_overviews: COGs then resample as GDAL's COG driver does.
         self._overview_resampling: str | None = None
@@ -3594,7 +3596,7 @@ class DatasetWriter(DatasetReader):
             except Exception as err:
                 raise RasterioIOError(f"Write failed: {err}") from err
         driver = self._out_driver
-        if getattr(self, "_default_rgb", False) and s.colorinterp[:3] != [
+        if self._default_rgb and s.colorinterp[:3] != [
             ColorInterp.red,
             ColorInterp.green,
             ColorInterp.blue,
@@ -4054,6 +4056,7 @@ class MemPointerDataset(DatasetWriter):
         self._raster = None
         self._dirty = False
         self._colorinterp_set = False
+        self._default_rgb = False
         self._overview_factors = []
         self._overview_resampling = "nearest"
         self._mask = None

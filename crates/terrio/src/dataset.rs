@@ -1939,8 +1939,8 @@ pub(crate) fn needs_nodata_pam(ds: &RasterDataset) -> bool {
 }
 
 /// The options a GeoTIFF or COG is written with from its source dataset, as GDAL 3.12.2's `CreateCopy`
-/// takes them from the source bands: `PHOTOMETRIC=RGB` for red, green and blue first bands (but
-/// for a COG of three JPEG bands, which is YCbCr),
+/// takes them from the source bands: `PHOTOMETRIC=RGB` for red, green and blue first bands,
+/// except on a COG of three JPEG bands, which GDAL 3.13.3's COG driver writes in YCbCr,
 /// `ALPHA=YES` for an alpha last band besides the colour ones (it then weights the overviews);
 /// each unless the caller gave it, and only when the caller gave no band colour interpretations.
 /// The color table is inherited as `RasterWriteOptions::inherited_from` decides. `None` when
@@ -1956,7 +1956,7 @@ pub(crate) fn color_options(ds: &RasterDataset, path: &str, options: &RasterWrit
     let bands = ds.raster.bands;
     let photometric = given("PHOTOMETRIC");
     // GDAL 3.13.3's COG driver gives three JPEG bands PHOTOMETRIC=YCBCR itself, which the writer's
-    // default is (`GDALCOGCreator::Create`).
+    // default is (`GDALCOGCreator::Create`; the writer's side is in `gtiff_write::plan`).
     let compress = options.compression.as_deref().map(str::to_ascii_uppercase).or_else(|| given("COMPRESS"));
     let cog_ycbcr = driver == Some(RasterDriver::Cog) && bands == 3 && compress.as_deref() == Some("JPEG");
     let rgb = photometric.is_none() && !cog_ycbcr && bands >= 3 && (0..3).map(ci).eq(["red", "green", "blue"].map(|c| Some(c.to_string())));
