@@ -2218,12 +2218,9 @@ impl Proj for Cea {
             let phi = if t >= 1.0 { if y < 0.0 { -HALFPI } else { HALFPI } } else { y.asin() };
             return Some((x / self.k0, phi));
         }
-        // `asin`, as PROJ's `cea.cpp`: past the pole line there is no latitude (NaN), not the
-        // pole a clamped `aasin` gives (#1012 item 40).
-        let beta = (2.0 * y * self.k0 / self.qp).asin();
-        if beta.is_nan() {
-            return None;
-        }
+        // Past the pole line there is no latitude, as PROJ's `asin` gives none (#1012 item 40), but
+        // the pole itself, a rounding past it, is read (`aasin_checked`).
+        let beta = aasin_checked(2.0 * y * self.k0 / self.qp)?;
         Some((x / self.k0, authlat_inverse(beta, &self.apa, self.e, self.one_es, self.qp)))
     }
 }

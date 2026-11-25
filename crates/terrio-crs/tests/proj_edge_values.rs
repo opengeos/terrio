@@ -62,6 +62,15 @@ fn the_ellipsoidal_cea_inverse_fails_past_the_pole_line() {
     for crs in ["+proj=cea +lat_ts=30 +ellps=WGS84", "ESRI:54017"] {
         assert!(transformer(crs, "EPSG:4326").transform(1_000_000.0, 7_400_000.0).is_err(), "{crs}");
     }
+    // The pole itself round-trips, also where rounding puts it a hair past the pole line, which
+    // PROJ 9.9.0's plain `asin` refuses (NaN at lat_ts 3.9, 4.0, 4.2, 4.6): within the inverse's
+    // precision there (PROJ: 89.9999991500401 at 4.3, as terrio).
+    for lat_ts in [3.9, 4.0, 4.2, 4.3, 4.6, 30.0] {
+        let cea = format!("+proj=cea +lat_ts={lat_ts} +ellps=WGS84");
+        let (x, y) = transformer("EPSG:4326", &cea).transform(10.0, 90.0).unwrap();
+        let (_, lat) = transformer(&cea, "EPSG:4326").transform(x, y).unwrap();
+        assert!((lat - 90.0).abs() < 1e-5, "{cea}: {lat}");
+    }
     let (x, y) = transformer("+proj=cea +lat_ts=30 +ellps=WGS84", "EPSG:4326").transform(1_000_000.0, 7_300_000.0).unwrap();
     assert!((x - 10.364167811212809).abs() < 1e-9 && (y - 83.87912142978298).abs() < 1e-9, "{x} {y}");
 }
