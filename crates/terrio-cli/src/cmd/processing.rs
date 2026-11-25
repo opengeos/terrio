@@ -260,6 +260,10 @@ fn parse_footprint_attribute(value: &str) -> std::result::Result<(String, String
 }
 
 // Preserve local filenames verbatim; remote source identifiers must not persist authentication.
+// Userinfo and credential queries are found by the shared diagnostic redaction
+// (`terrio::vsi::redact_diagnostic_location`). A persisted attribute is stricter than a
+// diagnostic: it omits a remote location's whole query and fragment, credential or not, and keeps
+// only the sanitized `url=` of a `/vsicurl?` location.
 fn footprint_location(input: &str) -> String {
     if input.starts_with("/vsi")
         && let Some((prefix, query)) = input.split_once("/vsicurl?")
@@ -273,16 +277,16 @@ fn footprint_location(input: &str) -> String {
             None => format!("{prefix}/vsicurl"),
         };
     }
-    if let Some((scheme, rest)) = input.split_once("://") {
-        let rest = rest.split(['?', '#']).next().unwrap_or(rest);
-        let (authority, path) = rest.split_once('/').map_or((rest, ""), |(authority, _)| (authority, &rest[authority.len()..]));
-        let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
-        return format!("{scheme}://{host}{path}");
+    let shown = terrio::vsi::redact_diagnostic_location(input);
+    let query_from = match shown.find("://") {
+        Some(scheme) => scheme + 3,
+        None if shown.starts_with("/vsi") => 0,
+        None => return shown.into_owned(),
+    };
+    match shown[query_from..].find(['?', '#']) {
+        Some(end) => shown[..query_from + end].to_owned(),
+        None => shown.into_owned(),
     }
-    if input.starts_with("/vsi") {
-        return input.split(['?', '#']).next().unwrap_or(input).to_owned();
-    }
-    input.to_owned()
 }
 
 pub fn footprint(a: FootprintArgs) -> Result<()> {

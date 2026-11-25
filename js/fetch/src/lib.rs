@@ -632,7 +632,8 @@ impl Fetcher {
             match next_chunk(&reader).await {
                 Ok(Some(chunk)) => {
                     if (data.len() as u64).saturating_add(chunk.length() as u64) > expected {
-                        self.bytes.set(self.bytes.get() + data.len() as u64);
+                        // The rejected chunk was received too.
+                        self.bytes.set(self.bytes.get() + data.len() as u64 + u64::from(chunk.length()));
                         let _ = call(&reader, "cancel", &[]).map(settle);
                         return Err(JsError::new("initial range response exceeded expected length"));
                     }

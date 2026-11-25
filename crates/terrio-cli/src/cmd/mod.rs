@@ -97,7 +97,8 @@ pub const MAX_FILE_LIST: u64 = 64 << 20;
 ///
 /// MCP tool calls (`TERRIO_MCP_TOOL` set) refuse lists before touching the file: errors name the
 /// inputs that fail to open, so a client could otherwise read any text file back line by line.
-/// They pass their inputs as an array instead.
+/// They pass their inputs as an array instead. The browser UI's runs (`TERRIO_UI_TOOL` also set)
+/// read lists: its user is the local user, holding the session token.
 ///
 /// An input given directly whose file name holds `*` or `?` is replaced by the files of its
 /// folder that match, in name order (see [`expand_wildcards`]), for the terrio UI, MCP clients and
@@ -126,10 +127,11 @@ pub fn expand_file_lists(inputs: &[String]) -> terrio::Result<Vec<String>> {
 
 /// The text of a list file named on the command line (`@FILE`, `--inputs FILE`): a regular UTF-8
 /// file of at most [`MAX_FILE_LIST`] bytes, without a byte-order mark. MCP tool calls refuse
-/// `what` before touching the file, since errors would echo its lines.
+/// `what` before touching the file, since errors would echo its lines; the browser UI's runs
+/// (`TERRIO_UI_TOOL` set) read them.
 pub fn read_list_text(list: &str, what: &str) -> terrio::Result<String> {
     use std::io::Read;
-    if std::env::var_os("TERRIO_MCP_TOOL").is_some() {
+    if std::env::var_os("TERRIO_MCP_TOOL").is_some() && std::env::var_os("TERRIO_UI_TOOL").is_none() {
         let hint = if what.starts_with("--inputs") {
             "pass each raster as a --raster argument"
         } else {

@@ -3448,6 +3448,23 @@ def cmd_calc(args: argparse.Namespace, env: Any) -> None:
         def calc_sieve(
             source: Any, size: int, out: Any = None, mask: Any = None, connectivity: int = 4
         ) -> Any:
+            """Sieves a band for the current chunk of `rio calc`.
+
+            Connected regions can span chunks, so a band's sieve needs the whole band: it is
+            read and sieved once, then cached for the run and sliced per chunk. That full
+            band and its sieve are held outside `--mem-limit`, which bounds only the chunked
+            expression evaluation.
+
+            Args:
+                source: A band (`read`/`band` result) or a 2-D array.
+                size: The minimum region size in pixels.
+                out: An array to write into; bypasses the cache.
+                mask: Pixels to consider; bypasses the cache.
+                connectivity: 4 or 8.
+
+            Returns:
+                numpy.ndarray: The sieved values for the current chunk.
+            """
             if hasattr(source, "ds") and hasattr(source, "bidx") and mask is None and out is None:
                 key = (id(source.ds), source.bidx, int(size), int(connectivity))
                 full = sieve_cache.get(key)
@@ -3563,7 +3580,10 @@ def add_calc(sub: Any) -> None:
         "--mem-limit",
         type=int,
         default=64,
-        help="Limit on memory used to perform calculations, in MB.",
+        help=(
+            "Limit on memory used to perform calculations, in MB. A band passed to "
+            "sieve() is read and sieved whole, outside this limit."
+        ),
     )
     opt_co(p)
 
