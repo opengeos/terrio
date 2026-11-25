@@ -105,6 +105,43 @@ def test_geoparquet_without_statistics_counts_all_row_groups(tmp_path):
     assert perf_matrix.GeoParquet.meta(path, "bbox")["need_bytes"] == expected
 
 
+def test_flatgeobuf_needed_bytes_come_from_the_spatial_index(tmp_path, monkeypatch):
+    """Count the header, the index nodes visited and the features found by a bbox.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped dependency replacements.
+    """
+    ogr = pytest.importorskip("osgeo.ogr")
+    if ogr.GetDriverByName("FlatGeobuf") is None:
+        pytest.skip("FlatGeobuf driver is required")
+    ogr.UseExceptions()
+    # Three features of one size; only the first is in the single bbox (40500..50500 each way).
+    points = [(45000, 45000), (1000, 1000), (99000, 99000)]
+    for index in (True, False):
+        name = "tiny_index" if index else "tiny_noindex"
+        monkeypatch.setitem(perf_matrix.FlatGeobuf.FIXTURES, name, ("point", 3, index))
+        ds = ogr.GetDriverByName("FlatGeobuf").CreateDataSource(str(tmp_path / f"{name}.fgb"))
+        lyr = ds.CreateLayer("data", None, ogr.wkbPoint, [f"SPATIAL_INDEX={'YES' if index else 'NO'}"])
+        lyr.CreateField(ogr.FieldDefn("id", ogr.OFTInteger64))
+        for i, (x, y) in enumerate(points):
+            f = ogr.Feature(lyr.GetLayerDefn())
+            f["id"] = i
+            f.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT ({x} {y})"))
+            lyr.CreateFeature(f)
+        lyr = ds = None
+    size = (tmp_path / "tiny_index.fgb").stat().st_size
+    header = 12 + int.from_bytes((tmp_path / "tiny_index.fgb").read_bytes()[8:12], "little")
+    index = 4 * 40  # a root and three leaves, all visited
+    feature = (size - header - index) // 3
+    meta = perf_matrix.FlatGeobuf.meta
+    assert meta(tmp_path / "tiny_index.fgb", "bbox")["need_bytes"] == header + index + feature
+    assert meta(tmp_path / "tiny_index.fgb", "full")["need_bytes"] == size - index
+    # Without an index, every feature is read to find the bbox's.
+    unindexed = (tmp_path / "tiny_noindex.fgb").stat().st_size
+    assert meta(tmp_path / "tiny_noindex.fgb", "bbox")["need_bytes"] == unindexed == size - index
+
+
 def test_metadata_errors_are_recorded_for_each_case(tmp_path, monkeypatch):
     """Keep a metadata failure from aborting the remaining benchmark cases.
 
@@ -525,9 +562,11 @@ def test_changed_files_choose_the_formats_to_measure():
     """A format's own file picks it; a shared one picks every format; others pick none."""
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
-    assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet"]
+    assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "flatgeobuf"]
     assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr"]
-    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == []
+    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == ["flatgeobuf"]
+    assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf"]
+    assert perf_matrix.touched(["docs/benchmarks.md"]) == []
 
 
 @pytest.mark.parametrize("option,value", [("samples", "0"), ("threads", "-1"),
