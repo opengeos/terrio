@@ -104,6 +104,76 @@ fn a_citation_names_its_crs_only_for_the_same_conversion() {
     }
 }
 
+/// With wbprojection, a citation does not name a CRS of other standard parallels: EPSG:5070
+/// (Albers, 29.5° and 45.5°) with a first parallel of 20°, or a second of 50°, written to GeoKeys
+/// reads back without the code.
+#[cfg(feature = "wbprojection-fallback")]
+#[test]
+fn a_citation_names_its_crs_only_for_the_same_standard_parallels() {
+    let wkt = SpatialRef::from_epsg(5070).unwrap().to_wkt().unwrap();
+    for (key, parallel, code) in [("1", "20", None), ("2", "50", None), ("1", "29.5", Some(5070))] {
+        let tag = format!("\"standard_parallel_{key}\",");
+        let start = wkt.find(&tag).unwrap() + tag.len();
+        let end = start + wkt[start..].find(']').unwrap();
+        let crs = SpatialRef::from_wkt(&format!("{}{parallel}{}", &wkt[..start], &wkt[end..]));
+        let tags = crs.to_geokeys().unwrap().encode().unwrap();
+        let back = terrio_crs::geokeys::read(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).crs.unwrap();
+        assert_eq!(back.epsg, code, "standard parallel {key} of {parallel}");
+    }
+}
+
+/// With wbprojection, a citation does not name a CRS for keys of a conversion terrio does not read:
+/// an off-equator Mercator 1SP at a scale of 0.9 (GDAL 3.12.2 builds a CRS PROJ cannot run) citing
+/// WGS 84 / World Mercator (EPSG:3395) gives no CRS, not EPSG:3395's scale of 1 at the equator.
+#[cfg(feature = "wbprojection-fallback")]
+#[test]
+fn a_citation_names_no_crs_for_keys_terrio_does_not_read() {
+    let citation = b"WGS 84 / World Mercator|\0";
+    let directory = [
+        1u16,
+        1,
+        0,
+        8,
+        1024,
+        0,
+        1,
+        1,
+        1025,
+        0,
+        1,
+        1,
+        1026,
+        34737,
+        citation.len() as u16 - 1,
+        0,
+        2048,
+        0,
+        1,
+        4326,
+        3072,
+        0,
+        1,
+        32767,
+        3075,
+        0,
+        1,
+        7,
+        3081,
+        34736,
+        1,
+        0,
+        3092,
+        34736,
+        1,
+        1,
+    ];
+    let read = terrio_crs::geokeys::read(&directory, &[10.0, 0.9], citation);
+    assert!(read.crs.is_none(), "{:?}", read.crs);
+    // At a scale of 1, the citation's CRS.
+    let read = terrio_crs::geokeys::read(&directory, &[0.0, 1.0], citation);
+    assert_eq!(read.crs.and_then(|c| c.epsg), Some(3395));
+}
+
 /// A Stereographic CRS's scale in ProjScaleAtCenterGeoKey alone, as terrio wrote it before, keeps
 /// that scale (GDAL 3.12.2 reads 1): a file terrio wrote reads back as it was. The writer puts it
 /// in ProjScaleAtNatOriginGeoKey, as GDAL does.

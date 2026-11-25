@@ -169,11 +169,13 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
     let mut rescaled = None;
     let mut epsg = match (k.short(1024), k.short(3072), k.short(2048)) {
         // A projected code as GDAL 3.12 reads it (`GTIFGetOGISDefnAsOSR`, #1012 items 32 and 33).
-        // As the only key of its CRS (no projection, method, geographic CRS, datum or ellipsoid
-        // key), the registry's CRS: a deprecated code's single replacement (by default,
-        // `OSR_USE_NON_DEPRECATED=YES`: 26814 as 26847, 3752, which terrio does not carry, as
-        // 3994), in the keys' linear unit (ProjLinearUnitsGeoKey, else the stated code's own),
-        // without a code when that is not its unit. Beside other keys, the stated code, deprecated
+        // As the only key of its CRS (none of ProjectionGeoKey, ProjCoordTransGeoKey,
+        // GeographicTypeGeoKey, GeogGeodeticDatumGeoKey and GeogEllipsoidGeoKey, the keys GDAL
+        // checks: the ellipsoid's axes, prime meridian or TOWGS84 do not count), the registry's
+        // CRS: a deprecated code's single replacement (by default, `OSR_USE_NON_DEPRECATED=YES`:
+        // 26814 as 26847, 3752, which terrio does not carry, as 3994), in the keys' linear unit
+        // (ProjLinearUnitsGeoKey, else the stated code's own), without a code when that is not
+        // its unit. Beside other keys, the stated code, deprecated
         // or not (EPSG:4855 with GeographicTypeGeoKey 4258 is EPSG:4855, not 5105). A geographic
         // one GDAL keeps (EPSG:4140).
         (_, Some(code), _) if keyed(code) => {
@@ -208,13 +210,20 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
             let citation = k.text(1026).or_else(|| k.text(3073));
             // And of the keys' own conversion parameters, when they give them (whatever their
             // ellipsoid): a citation naming EPSG:2048 over keys with another false easting is not
-            // EPSG:2048 (#1012 item 49).
-            let own = user_defined_proj4(&k).and_then(|p| SpatialRef::from_proj4(&p).ok()).and_then(|s| s.projection_params());
+            // EPSG:2048 (#1012 item 49), nor keys of standard parallels other than the code's. Keys
+            // of a conversion terrio does not read (a method it does not map, an off-equator
+            // Mercator 1SP at another scale) name none: GDAL builds the CRS from the keys, not the
+            // citation, and so has no conversion PROJ runs.
+            let own_proj = user_defined_proj4(&k);
+            let own = own_proj.as_deref().and_then(|p| SpatialRef::from_proj4(p).ok()).and_then(|s| s.projection_params());
+            let unread = unmapped_method(&k).is_some();
             user_defined_projected(k.short(3074), k.short(2048), datum, citation).filter(|code| {
-                SpatialRef::from_epsg(*code).is_ok_and(|s| {
-                    (s.metres_per_unit() / size - 1.0).abs() < 1e-9
-                        && own.as_ref().is_none_or(|own| s.projection_params().is_some_and(|p| same_conversion(own, &p)))
-                })
+                !unread
+                    && SpatialRef::from_epsg(*code).is_ok_and(|s| {
+                        (s.metres_per_unit() / size - 1.0).abs() < 1e-9
+                            && own.as_ref().is_none_or(|own| s.projection_params().is_some_and(|p| same_conversion(own, &p)))
+                            && own_proj.as_deref().is_none_or(|own| s.to_proj4().is_some_and(|p| same_parallels(own, &p)))
+                    })
             })
         }
         _ => None,
@@ -938,6 +947,16 @@ fn units(k: &GeoKeys) -> (String, f64) {
         },
         None => ("+units=m".into(), 1.0),
     }
+}
+
+/// Whether two PROJ strings give the same standard parallels, latitude of true scale and oblique
+/// azimuths, where both give them (not in [`crate::ProjParams`]).
+fn same_parallels(a: &str, b: &str) -> bool {
+    let (a, b) = (crate::params::Params::parse(a), crate::params::Params::parse(b));
+    ["lat_1", "lat_2", "lat_ts", "alpha", "gamma", "lonc"].iter().all(|key| match (a.degrees(key), b.degrees(key)) {
+        (Some(x), Some(y)) => (x - y).abs() <= 1e-9,
+        _ => true,
+    })
 }
 
 /// Whether two projections have the same method (UTM as Transverse Mercator) and origin, scale and

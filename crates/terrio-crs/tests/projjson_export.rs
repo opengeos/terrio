@@ -333,7 +333,7 @@ fn a_datum_anchor_epoch_is_written_and_read_back() {
 
 /// A WKT 2 compound CRS's vertical datum `ANCHOREPOCH` is written as the vertical reference
 /// frame's `anchor_epoch` (CGVD2013a epoch 2010, EPSG datum 1256, 2010 in PROJ 9.9.0's database)
-/// and read back.
+/// and read back; another epoch (2011) is written as given, as PROJ 9.9.0 writes it.
 #[test]
 fn a_vertical_datum_anchor_epoch_is_written_and_read_back() {
     let deg = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
@@ -349,4 +349,7 @@ fn a_vertical_datum_anchor_epoch_is_written_and_read_back() {
     assert_eq!(vertical_epoch(&written), json!(2010.0), "{written}");
     let again = SpatialRef::from_projjson(&written).unwrap().to_projjson().unwrap();
     assert_eq!(vertical_epoch(&again), json!(2010.0), "{again}");
+    // Another epoch than the registry's is the WKT's, as PROJ 9.9.0 writes it.
+    let other = SpatialRef::from_wkt(&wkt.replace("ANCHOREPOCH[2010]", "ANCHOREPOCH[2011]")).to_projjson().unwrap();
+    assert_eq!(vertical_epoch(&other), json!(2011.0), "{other}");
 }

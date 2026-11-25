@@ -110,7 +110,8 @@ pub(crate) struct Def {
 /// are an ESRI alias of) is not that of a single CRS of PROJ's database, or that CRS differs, its
 /// axis order too (an ESRI WKT 1 has no `AXIS`, so longitude first). For a projected CRS, its
 /// geographic CRS (once the projected CRS is not resolved). PROJ then searches transformations
-/// through other datums, as [`route`] follows it.
+/// through other datums, as [`route`] follows it. Also set, with `foreign_id`, for a CRS PROJ
+/// resolves whose ID's authority it does not know.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Unresolved {
     /// Whether PROJ reaches the CRSs of its datum by its ballpark, of unknown accuracy: the datum
@@ -1195,7 +1196,8 @@ impl Def {
     /// datum's ellipsoid are moved onto the CRS's, as PROJ replaces the first operation's source,
     /// and a null transformation becomes the geocentric change from the CRS's ellipsoid to WGS 84's;
     /// others (grids, a concatenation starting with an offset, one registered between geocentric
-    /// CRSs) are kept as registered.
+    /// CRSs) are kept as registered; one between geocentric CRSs is reported framed, of unknown
+    /// accuracy, as PROJ 9.9.0 reports it.
     fn datum_by_name(&mut self, geogcs: &str) {
         if self.pm != 0.0 {
             return;
@@ -2082,7 +2084,7 @@ impl Def {
             self.unresolved = Some(Unresolved { ballpark: r.ballpark, named: r.named, same_name: r.same_name, foreign_id: false });
             self.area = r.area;
         } else if let Some(r) = r.filter(|r| r.foreign_id) {
-            // Resolved, with the code's area, but pivoted as PROJ's datum pivot goes.
+            // Resolved, so the area stays the code's, but pivoted as PROJ's datum pivot goes.
             self.unresolved = Some(Unresolved { ballpark: false, named: true, same_name: false, foreign_id: r.foreign_id });
         }
     }

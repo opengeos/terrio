@@ -57,15 +57,18 @@ fn with_id(mut v: Value, code: Option<u32>) -> Value {
 /// this writer rebuilds the datum from the registry (an identified code, the parts of a compound
 /// one), from PROJ's database. PROJ writes none for a datum without one, nor for WKT 1 or a PROJ
 /// string; nor does this for an EPSG code, whose registry WKT is GDAL's WKT 1, though PROJ writes
-/// them for the code from its database.
+/// them for the code from its database. The vertical datum's epoch is the WKT's own, as PROJ writes
+/// it (2011 on the CGVD2013a(2010) datum, whose registry epoch is 2010).
 #[derive(Clone, Copy)]
 struct Anchors {
     geodetic: bool,
     vertical: bool,
+    /// The vertical datum's own `ANCHOREPOCH` value.
+    vertical_epoch: Option<f64>,
 }
 
 fn anchors(s: &SpatialRef) -> Anchors {
-    let none = Anchors { geodetic: false, vertical: false };
+    let none = Anchors { geodetic: false, vertical: false, vertical_epoch: None };
     let Some(w) = s.wkt.as_deref().filter(|_| s.proj4.is_none()) else { return none };
     let Some(root) = crate::parsed::tree(w).filter(|root| crate::model::dialect(w, root) == crate::model::Dialect::Wkt2) else {
         return none;
@@ -77,9 +80,10 @@ fn anchors(s: &SpatialRef) -> Anchors {
         if node.is(&["TARGETCRS"]) {
             return;
         }
-        if node.child("ANCHOREPOCH").is_some() {
+        if let Some(epoch) = node.child("ANCHOREPOCH") {
             if node.is(&["VDATUM", "VERTICALDATUM", "VRF"]) {
                 out.vertical = true;
+                out.vertical_epoch = epoch.num(0);
             } else if node.is(&["DATUM", "GEODETICDATUM", "TRF"]) {
                 out.geodetic = true;
             }
@@ -137,8 +141,8 @@ fn vertical(code: u32, anchors: Anchors) -> Result<Value> {
         if v.down { ("Gravity-related depth", "D", "down") } else { ("Gravity-related height", "H", "up") };
     let axis = json!({"name": name, "abbreviation": abbreviation, "direction": direction, "unit": length_unit(v.to_meter, None)});
     let mut datum = json!({"type": "VerticalReferenceFrame", "name": datum_name});
-    // Its anchor epoch, which PROJ 9.9.0 writes (#1012 item 65).
-    if let Some(epoch) = epsg::anchor_epoch(v.datum).filter(|_| anchors.vertical) {
+    // Its anchor epoch, which PROJ 9.9.0 writes (#1012 item 65): the WKT's, else the registry's.
+    if let Some(epoch) = anchors.vertical_epoch.or_else(|| epsg::anchor_epoch(v.datum)).filter(|_| anchors.vertical) {
         datum["anchor_epoch"] = epoch.into();
     }
     Ok(json!({
