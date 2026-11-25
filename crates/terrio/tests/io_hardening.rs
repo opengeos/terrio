@@ -28,31 +28,6 @@ fn s3_bucket_validation_rejects_url_delimiters() {
 }
 
 #[test]
-fn stac_relative_href_cannot_escape_url_origin_or_s3_bucket() {
-    let dir = tempfile::tempdir().unwrap();
-    let item_path = dir.path().join("item.json");
-    // Write a local STAC item whose self link is an HTTPS URL and asset href has excess `..` segments.
-    // Even simpler: verify directly through open_stac_item? Here test via stac::resolve_href behavior
-    // observable through a STAC item collection / item with an https self link.
-    let item = serde_json::json!({
-        "type": "Feature",
-        "stac_version": "1.0.0",
-        "id": "t",
-        "geometry": { "type": "Polygon", "coordinates": [[[0,0],[1,0],[1,1],[0,1],[0,0]]] },
-        "bbox": [0, 0, 1, 1],
-        "properties": { "datetime": "2024-01-01T00:00:00Z" },
-        "links": [{ "rel": "self", "href": "https://trusted.example/a/item.json" }],
-        "assets": {
-            "data": { "href": "../../attacker.example/evil.tif", "type": "image/tiff; application=geotiff" }
-        }
-    });
-    std::fs::write(&item_path, serde_json::to_vec(&item).unwrap()).unwrap();
-    let ds = terrio::open_vector(item_path.to_str().unwrap(), &Default::default()).unwrap();
-    assert_eq!(ds.layers.len(), 1);
-    let _ = ds;
-}
-
-#[test]
 fn zarr_v2_multibyte_dtype_and_invalid_separator_return_errors_without_panicking() {
     let dir = tempfile::tempdir().unwrap();
     let bad_dtype = dir.path().join("bad_dtype.zarr");

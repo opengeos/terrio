@@ -477,16 +477,33 @@ fn write_request_with(
             builder = builder.header(k.as_str(), v.as_str());
         }
         if azure_bearer
-            && crate::vfs::azure_token_endpoint(&|k| crate::config::get(k))
-                .is_some_and(|ep| crate::vfs::url_origin(&url).is_some() && crate::vfs::url_origin(&url) == crate::vfs::url_origin(&ep))
-            && let Some(token) =
-                crate::config::get("TERRIO_AZURE_ACCESS_TOKEN").or_else(|| crate::config::get("AZURE_STORAGE_ACCESS_TOKEN"))
+            && crate::vfs::azure_token_endpoint(&|k| crate::config::get(k)).is_some_and(|ep| {
+                crate::vfs::url_origin(&url).is_some()
+                    && crate::vfs::url_origin(&url) == crate::vfs::url_origin(&ep)
+                    && url.starts_with(&format!("{ep}/"))
+            })
         {
-            if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("x-ms-version")) {
-                builder = builder.header("x-ms-version", super::AZURE_X_MS_VERSION);
+            let mut names = vec![url.clone(), format!("/vsicurl/{}", url.split('?').next().unwrap_or(&url))];
+            let custom = crate::vfs::custom_azure_endpoint().map(|e| format!("{e}/"));
+            let az_path = custom
+                .as_deref()
+                .and_then(|e| url.strip_prefix(e))
+                .or_else(|| url.split_once(".blob.core.windows.net/").map(|(_, path)| path));
+            if let Some(path) = az_path {
+                names.push(format!("/vsiaz/{}", path.split('?').next().unwrap_or(path)));
             }
-            if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("authorization")) {
-                builder = builder.header("Authorization", format!("Bearer {}", token.trim()));
+            if let Some(token) = names
+                .iter()
+                .find_map(|n| super::path_specific_option(n, "AZURE_STORAGE_ACCESS_TOKEN"))
+                .or_else(|| crate::config::get("TERRIO_AZURE_ACCESS_TOKEN"))
+                .or_else(|| crate::config::get("AZURE_STORAGE_ACCESS_TOKEN"))
+            {
+                if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("x-ms-version")) {
+                    builder = builder.header("x-ms-version", super::AZURE_X_MS_VERSION);
+                }
+                if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("authorization")) {
+                    builder = builder.header("Authorization", format!("Bearer {}", token.trim()));
+                }
             }
         }
         if !matches!(payload, Payload::Empty) || method == "PUT" || method == "POST" {
@@ -1333,5 +1350,66 @@ mod tests {
         let payload = b"upload body".to_vec();
         write_request("PUT", &remote, "", &[], Payload::Bytes(payload.clone()), Accept::Success).unwrap();
         assert_eq!(server.join().unwrap(), (payload.clone(), payload));
+    }
+
+    #[test]
+    fn azure_bearer_writes_honor_endpoint_origin_and_path_specific_token() {
+        let capture_headers = |listener: TcpListener| {
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut lines = Vec::new();
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                        break;
+                    }
+                    lines.push(line.trim().to_string());
+                }
+                let length = lines
+                    .iter()
+                    .find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case("content-length")))
+                    .and_then(|(_, v)| v.trim().parse().ok())
+                    .unwrap_or(0);
+                let mut body = vec![0; length];
+                let _ = reader.read_exact(&mut body);
+                let _ = stream.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                lines
+            })
+        };
+
+        let good_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let good_endpoint = format!("http://{}", good_listener.local_addr().unwrap());
+        let good_server = capture_headers(good_listener);
+
+        let other_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let other_endpoint = format!("http://{}", other_listener.local_addr().unwrap());
+        let other_server = capture_headers(other_listener);
+
+        let prefix = crate::http::azure_bearer_prefix();
+        crate::http::set_path_specific_option("/vsiaz/path-container/", "AZURE_STORAGE_ACCESS_TOKEN", Some("path-tok"));
+        crate::config::push_scope(HashMap::from([
+            ("CPL_AZURE_ENDPOINT".to_string(), Some(good_endpoint.clone())),
+            ("AZURE_STORAGE_ACCESS_TOKEN".to_string(), Some("global-tok".to_string())),
+            ("TERRIO_AZURE_ACCESS_TOKEN".to_string(), None),
+        ]));
+
+        // Write to configured Azure endpoint with a path-specific token sends Bearer + x-ms-version.
+        let good_remote = Remote::Url(format!("{prefix}{good_endpoint}/path-container/blob.tif"));
+        write_request("PUT", &good_remote, "", &[], Payload::Bytes(b"hi".to_vec()), Accept::Success).unwrap();
+
+        // Write to a different origin does NOT send the Azure bearer token.
+        let other_remote = Remote::Url(format!("{prefix}{other_endpoint}/path-container/blob.tif"));
+        write_request("PUT", &other_remote, "", &[], Payload::Bytes(b"hi".to_vec()), Accept::Success).unwrap();
+
+        crate::config::pop_scope();
+        crate::http::set_path_specific_option("/vsiaz/path-container/", "AZURE_STORAGE_ACCESS_TOKEN", None);
+
+        let good_headers = good_server.join().unwrap();
+        assert!(good_headers.iter().any(|h| h.eq_ignore_ascii_case("authorization: Bearer path-tok")), "{good_headers:?}");
+        assert!(good_headers.iter().any(|h| h.to_ascii_lowercase().starts_with("x-ms-version:")), "{good_headers:?}");
+
+        let other_headers = other_server.join().unwrap();
+        assert!(!other_headers.iter().any(|h| h.to_ascii_lowercase().starts_with("authorization:")), "{other_headers:?}");
     }
 }

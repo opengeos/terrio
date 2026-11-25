@@ -98,11 +98,11 @@ fn local_node(p: &Path) -> bool {
     crate::memfs::is_dir(p) && METADATA_FILES.iter().any(|f| crate::memfs::is_file(&p.join(f)))
 }
 
-fn safe_key(key: &str) -> bool {
+fn safe_key(key: &str, remote: bool) -> bool {
     if key.is_empty() {
         return true;
     }
-    if key.contains(['\\', '\0', '?', '#']) {
+    if key.contains(['\\', '\0']) || (remote && key.contains(['?', '#'])) {
         return false;
     }
     for seg in key.split('/') {
@@ -129,7 +129,7 @@ impl Store {
 
     /// Reads a key: `None` when there is no such object.
     pub(crate) fn get(&self, key: &str, range: Range) -> Result<Option<Vec<u8>>> {
-        if !safe_key(key) {
+        if !safe_key(key, !matches!(self.backend, Backend::Local(_))) {
             return Err(crate::Error::InvalidData(format!("Zarr: invalid store key '{key}'")));
         }
         match &self.backend {
@@ -538,12 +538,14 @@ mod tests {
         assert_eq!(join_key("a/b", "/c/./d"), "c/d");
         assert_eq!(join_key("", "c/.zarray"), "c/.zarray");
         assert_eq!(join_key("a", ".."), "");
-        assert!(safe_key("a/b/c.0"));
-        assert!(safe_key("2026-01-01T00:00:00/0"));
-        assert!(!safe_key(r"..\..\secret"));
-        assert!(!safe_key("C:secret"));
-        assert!(!safe_key("a?sig=1"));
-        assert!(!safe_key("a#frag"));
-        assert!(!safe_key("../escape"));
+        assert!(safe_key("a/b/c.0", true));
+        assert!(safe_key("2026-01-01T00:00:00/0", true));
+        assert!(!safe_key(r"..\..\secret", false));
+        assert!(!safe_key("C:secret", false));
+        assert!(!safe_key("a?sig=1", true));
+        assert!(safe_key("a?sig=1", false));
+        assert!(!safe_key("a#frag", true));
+        assert!(safe_key("a#frag", false));
+        assert!(!safe_key("../escape", false));
     }
 }

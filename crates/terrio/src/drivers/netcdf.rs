@@ -262,20 +262,31 @@ impl VarRef<'_> {
     }
 }
 
+/// Opens the auxiliary HDF5 handle at most once per NetCDF read, reusing it across
+/// variable ordering and `_NoFill` inspection.
+struct LazyHdf5<'a> {
+    cell: std::cell::OnceCell<Option<hdf5_reader::Hdf5File>>,
+    open: &'a dyn Fn() -> Option<hdf5_reader::Hdf5File>,
+}
+
+impl<'a> LazyHdf5<'a> {
+    fn new(open: &'a dyn Fn() -> Option<hdf5_reader::Hdf5File>) -> Self {
+        Self { cell: std::cell::OnceCell::new(), open }
+    }
+
+    fn get(&self) -> Option<&hdf5_reader::Hdf5File> {
+        self.cell.get_or_init(self.open).as_ref()
+    }
+}
+
 /// Every variable, in GDAL 3.13.3's order: the root group's in definition order, then each subgroup's
 /// (in definition order, recursively). A group that does not track creation order is listed by name.
-fn all_variables<'a>(
-    f: &'a NcFile,
-    path: &Path,
-    hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf5File>,
-    ordered: bool,
-) -> Result<Vec<VarRef<'a>>> {
+fn all_variables<'a>(f: &'a NcFile, path: &Path, h5: &LazyHdf5<'_>, ordered: bool) -> Result<Vec<VarRef<'a>>> {
     let root = f.root_group().map_err(|e| err(path, e))?;
     let classic = matches!(f.format(), NcFormat::Classic | NcFormat::Offset64 | NcFormat::Cdf5);
     // NetCDF-4 groups and variables come in the creation order of their HDF5 links when the group
     // tracks it, as netCDF-4 groups do: their definition order. netCDF lists the links of a group
-    // that does not track it by name. The file is opened again, once, to tell.
-    let h5 = std::cell::OnceCell::new();
+    // that does not track it by name. The file is opened at most once via `h5`.
     let sort_by_name = |group_path: &str| -> bool {
         // Explicit variable lookup needs no ordering. In memory this also avoids copying the
         // entire input into the auxiliary HDF5 reader; classic files need no HDF5 reader either.
@@ -283,7 +294,7 @@ fn all_variables<'a>(
             return false;
         }
         let header = || {
-            let h = h5.get_or_init(hdf5).as_ref()?;
+            let h = h5.get()?;
             let mut g = h.root_group().ok()?;
             for part in group_path.split('/').filter(|p| !p.is_empty()) {
                 g = g.group(part).ok()?;
@@ -365,7 +376,9 @@ fn subdatasets(vars: &[VarRef], file: &str) -> Vec<(String, String)> {
 /// The paths of a file's raster variables (`Band1`, `/group/Band1`), as [`read`] names them.
 pub(crate) fn data_variable_paths(path: &Path) -> Result<Vec<String>> {
     let f = NcFile::open(path).map_err(|e| err(path, e))?;
-    let vars = all_variables(&f, path, &|| super::hdf5::open_file(path).ok(), true)?;
+    let open = || super::hdf5::open_file(path).ok();
+    let h5 = LazyHdf5::new(&open);
+    let vars = all_variables(&f, path, &h5, true)?;
     Ok(data_variables(&vars).iter().map(|r| r.full.clone()).collect())
 }
 
@@ -457,7 +470,8 @@ pub(crate) fn read_bytes(bytes: &[u8], name: &str, variable: Option<&str>) -> Re
 }
 
 fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf5File>, variable: Option<&str>) -> Result<RasterDataset> {
-    let vars = all_variables(f, path, hdf5, variable.is_none())?;
+    let h5 = LazyHdf5::new(hdf5);
+    let vars = all_variables(f, path, &h5, variable.is_none())?;
     let candidates = data_variables(&vars);
     let var = match variable {
         Some(name) => {
@@ -700,7 +714,8 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     let no_fill = || {
         attr_str(var, "_NoFill").is_some_and(|v| v.eq_ignore_ascii_case("true"))
             || (!matches!(f.format(), NcFormat::Classic | NcFormat::Offset64 | NcFormat::Cdf5)
-                && hdf5()
+                && h5
+                    .get()
                     .and_then(|h| h.dataset(&format!("/{}", var_ref.read_path())).ok())
                     .is_some_and(|d| d.fill_value().is_none_or(|fv| !fv.defined)))
     };
@@ -1033,7 +1048,8 @@ mod tests {
         let selected = read_file(&file, &path, &unavailable, Some("zulu")).unwrap();
         assert_eq!(selected.raster.data.to_f64_vec(), [2.0, 3.0, 0.0, 1.0]);
         assert_eq!(opens.get(), 0, "explicit selection must not open the auxiliary reader");
-        let vars = all_variables(&file, &path, &unavailable, true).unwrap();
+        let h5 = LazyHdf5::new(&unavailable);
+        let vars = all_variables(&file, &path, &h5, true).unwrap();
         assert_eq!(opens.get(), 1, "a listing attempts at most one auxiliary open");
         let root = file.root_group().unwrap();
         let expected: Vec<_> = root.variables.iter().map(|v| v.name.as_str()).collect();

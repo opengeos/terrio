@@ -839,6 +839,13 @@ pub(crate) fn resolve_href(base: &str, href: &str) -> String {
             Some(i) => (&href[..i], &href[i..]),
             None => (href, ""),
         };
+        if href_path.is_empty() {
+            return if base_path.is_empty() {
+                format!("{scheme}://{authority}{href_tail}")
+            } else {
+                format!("{scheme}://{authority}/{base_path}{href_tail}")
+            };
+        }
         let dir = match base_path.rfind('/') {
             Some(i) => &base_path[..i],
             None => "",
@@ -4276,6 +4283,9 @@ mod tests {
             "https://trusted.example/attacker.example/evil.tif"
         );
         assert_eq!(resolve_href("s3://my-bucket/a/item.json", "../../other-bucket/secret.tif"), "s3://my-bucket/other-bucket/secret.tif");
+        assert_eq!(resolve_href("https://trusted.example/a/item.json", "?x=1"), "https://trusted.example/a/item.json?x=1");
+        assert_eq!(resolve_href("https://trusted.example/a/item.json", "#frag"), "https://trusted.example/a/item.json#frag");
+        assert_eq!(resolve_href("https://trusted.example/a/item.json", ""), "https://trusted.example/a/item.json");
         assert_eq!(resolve_href("https://trusted.example/a/b/item.json", "../c.tif?x=1"), "https://trusted.example/a/c.tif?x=1");
     }
 }
