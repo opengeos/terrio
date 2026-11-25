@@ -1286,6 +1286,8 @@ class GeoParquetWrite:
 
         a, b = pq.ParquetFile(path).metadata, pq.ParquetFile(ref).metadata
         mismatch = next(iter(compare_vectors(ogr.Open(str(path)), ogr.Open(str(ref)))), None)
+        if mismatch and mismatch.startswith("vector validation requires"):  # the runner, not the output
+            raise RuntimeError(mismatch)
 
         def geo(md):
             # A file without GeoParquet metadata differs from GDAL's rather than failing the check.
@@ -1356,8 +1358,8 @@ class GeoParquetWrite:
             try:
                 if tool == "gdal":
                     return 0, meta["n"]
-                with open(dst, "rb") as f:  # the same bytes compare the same: once per case
-                    done = out / f"compared-{hashlib.file_digest(f, 'sha256').hexdigest()}.json"
+                # the same bytes compare the same: once per case
+                done = out / f"compared-{hashlib.sha256(dst.read_bytes()).hexdigest()}.json"
                 if done.exists():
                     c = json.loads(done.read_text())
                 else:
@@ -1378,6 +1380,7 @@ PATHS["geoparquet-write"] = [
     "crates/terrio/src/drivers/vector/projjson.rs",
     "crates/terrio/src/parquet_metadata.rs",
     "python/src/ops.rs",
+    "python/src/vector.rs",
 ]
 
 
@@ -1779,7 +1782,8 @@ def summarize(row: dict) -> dict:
             tools = [t for t in tools if t != "base"]
         differ = next(((t, r) for t in tools for r in row[t] if r["n"] != ref["n"] or not math.isclose(r["sum"], ref["sum"], rel_tol=1e-6)), None)
         out["values"] = "checksum_match" if differ is None else f"DIFFER: {differ[0]} n {differ[1]['n']} sum {differ[1]['sum']:.6g} vs gdal n {ref['n']} sum {ref['sum']:.6g}"
-        compares = [r["compare"] for t in tools for r in row[t] if "compare" in r]
+        # terrio's outputs label the case; the base build's comparisons stay in its own samples
+        compares = [r["compare"] for r in row["terrio"] if "compare" in r]
         if compares:  # outputs compared with GDAL's, pixel by pixel: the worst sample labels the case
             c = out["compare"] = max(compares, key=_badness)
             out["values"] = (
@@ -1959,6 +1963,9 @@ def main() -> None:
         return
     if a.cmd == "run" and a.access and (bad := set(a.access) - set(FORMATS[a.format].ACCESS)):
         p.error(f"--access {' '.join(sorted(bad))}: {a.format} reads are {' '.join(FORMATS[a.format].ACCESS)}")
+    sources = getattr(FORMATS[a.format], "SOURCES", ["local", "http"])
+    if a.cmd == "run" and a.source and (bad := set(a.source) - set(sources)):
+        p.error(f"--source {' '.join(sorted(bad))}: {a.format} runs from {' '.join(sources)}")
     # absolute: the readers take a relative path as a URL
     a.dir = a.dir.expanduser().resolve() / getattr(FORMATS[a.format], "DIR", a.format)
     a.dir.mkdir(parents=True, exist_ok=True)

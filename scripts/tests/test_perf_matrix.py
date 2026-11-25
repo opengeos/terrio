@@ -529,6 +529,7 @@ def test_changed_files_choose_the_formats_to_measure():
     assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr", "geotiff-write"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/gtiff_write.rs"]) == ["geotiff-write"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet.rs"]) == ["geoparquet", "geoparquet-write"]
+    assert perf_matrix.touched(["python/src/vector.rs"]) == ["geoparquet-write"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == []
 
 
@@ -549,6 +550,14 @@ def test_run_rejects_invalid_measurement_limits(tmp_path, monkeypatch, option, v
         perf_matrix.main()
     assert exc.value.code == 2
     assert not (tmp_path / "geotiff").exists()
+
+
+def test_writes_refuse_an_http_source(tmp_path, monkeypatch):
+    """Writes read their source from a local path only, so `--source http` is refused before any work."""
+    monkeypatch.setattr(sys, "argv", ["perf_matrix.py", "run", "--format", "geotiff-write", "--dir", str(tmp_path), "--source", "http"])
+    with pytest.raises(SystemExit) as exc:
+        perf_matrix.main()
+    assert exc.value.code == 2
 
 
 def test_posted_artifact_markdown_cannot_close_its_text_fence(tmp_path):
@@ -624,6 +633,8 @@ def test_compared_outputs_label_a_case_by_its_worst_sample():
     assert beyond["values"] == "DIFFER: 2 of 100 values beyond 24 (max 30)"
     meta = summarize(_row(terrio=[_compared(differing=9, max_diff=9), _compared(mismatch="CRS differs")], gdal=gdal))
     assert meta["values"] == "DIFFER: CRS differs"
+    based = summarize(_row(terrio=[_compared()], gdal=gdal, base=[{**_compared(mismatch="CRS differs"), "sum": 0}]))
+    assert based["values"] == "exact"  # a base build's output does not label terrio's
     text = report([exact, {**within, "fixture": "f32_none"}, {**beyond, "fixture": "u8_rgb_jpeg"}])
     worst = text.split("## Worst cases")[1].split("## Geometric")[0]
     assert "u8_none" in worst and "f32_none" in worst and "within_tol" in worst and "u8_rgb_jpeg" not in worst
@@ -726,6 +737,11 @@ def test_geoparquet_write_comparison_checks_features_and_file_layout(tmp_path, m
     # Even when the features compare equal, a file without GeoParquet metadata is labelled.
     monkeypatch.setattr(sys.modules["benchmark_validation"], "compare_vectors", lambda a, b: [])
     plain = perf_matrix.GeoParquetWrite.compare(tmp_path / "plain.parquet", ref)
+    # A runner without GEOS or sort fails the check rather than labelling the output.
+    no_geos = ["vector validation requires GDAL built with GEOS for geometry normalization"]
+    monkeypatch.setattr(sys.modules["benchmark_validation"], "compare_vectors", lambda a, b: no_geos)
+    with pytest.raises(RuntimeError, match="requires GDAL built with GEOS"):
+        perf_matrix.GeoParquetWrite.compare(tmp_path / "same.parquet", ref)
     assert plain["mismatch"] == "geometry encoding None vs GDAL's WKB"
 
 
