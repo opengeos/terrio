@@ -166,14 +166,33 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
         (_, Some(c), _) | (Some(2), _, Some(c)) if keyed(c) => Some(u32::from(c)),
         _ => None,
     };
+    let mut rescaled = None;
     let mut epsg = match (k.short(1024), k.short(3072), k.short(2048)) {
-        // A deprecated projected code with a single replacement, as GDAL 3.12 reads it by default
-        // (`OSR_USE_NON_DEPRECATED=YES`): EPSG:4855 as 5105, 3752 (which terrio does not carry)
-        // as 3994. A geographic one GDAL keeps (EPSG:4140).
-        (_, Some(code), _) if keyed(code) => match crate::epsg_replacements(u32::from(code)) {
-            [replacement] if SpatialRef::from_epsg(*replacement).is_ok() => Some(*replacement),
-            _ => Some(u32::from(code)),
-        },
+        // A projected code as GDAL 3.12 reads it (`GTIFGetOGISDefnAsOSR`, #1012 items 32 and 33).
+        // As the only key of its CRS (none of ProjectionGeoKey, ProjCoordTransGeoKey,
+        // GeographicTypeGeoKey, GeogGeodeticDatumGeoKey and GeogEllipsoidGeoKey, the keys GDAL
+        // checks: the ellipsoid's axes, prime meridian or TOWGS84 do not count), the registry's
+        // CRS: a deprecated code's single replacement (by default, `OSR_USE_NON_DEPRECATED=YES`:
+        // 26814 as 26847, 3752, which terrio does not carry, as 3994), in the keys' linear unit
+        // (ProjLinearUnitsGeoKey, else the stated code's own), without a code when that is not
+        // its unit. Beside other keys, the stated code, deprecated
+        // or not (EPSG:4855 with GeographicTypeGeoKey 4258 is EPSG:4855, not 5105). A geographic
+        // one GDAL keeps (EPSG:4140).
+        (_, Some(code), _) if keyed(code) => {
+            let code = u32::from(code);
+            let only = [3074, 3075, 2048, 2050, 2056].iter().all(|id| k.short(*id).is_none());
+            let target = match crate::epsg_replacements(code) {
+                [replacement] if only && SpatialRef::from_epsg(*replacement).is_ok() => *replacement,
+                _ => code,
+            };
+            match only.then(|| in_keys_unit(&k, code, target)).flatten() {
+                Some(c) => {
+                    rescaled = Some(c);
+                    None
+                }
+                None => Some(target),
+            }
+        }
         (Some(2), _, Some(code)) if keyed(code) => Some(code as u32),
         (Some(1), _, _) => {
             // A registered CRS only in the GeoKeys' linear unit: GDAL builds the CRS from the
@@ -189,11 +208,39 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
             });
             let datum = if cites_wgs84 && k.short(2050) == Some(USER_DEFINED) { Some(6326) } else { k.short(2050) };
             let citation = k.text(1026).or_else(|| k.text(3073));
-            user_defined_projected(k.short(3074), k.short(2048), datum, citation)
-                .filter(|code| SpatialRef::from_epsg(*code).is_ok_and(|s| (s.metres_per_unit() / size - 1.0).abs() < 1e-9))
+            // And of the keys' own conversion parameters, when they give them (whatever their
+            // ellipsoid): a citation naming EPSG:2048 over keys with another false easting is not
+            // EPSG:2048 (#1012 item 49), nor keys of standard parallels other than the code's. Keys
+            // of a conversion terrio does not read (a method it does not map, an off-equator
+            // Mercator 1SP at another scale) name none: GDAL builds the CRS from the keys, not the
+            // citation, and so has no conversion PROJ runs; nor do keys whose PROJ string terrio
+            // then cannot read, as their conversion is unknown.
+            let own_proj = user_defined_proj4(&k);
+            let own = own_proj.as_deref().and_then(|p| SpatialRef::from_proj4(p).ok()).and_then(|s| s.projection_params());
+            let unread = unmapped_method(&k).is_some() || (own_proj.is_some() && own.is_none());
+            user_defined_projected(k.short(3074), k.short(2048), datum, citation).filter(|code| {
+                !unread
+                    && SpatialRef::from_epsg(*code).is_ok_and(|s| {
+                        (s.metres_per_unit() / size - 1.0).abs() < 1e-9
+                            && own.as_ref().is_none_or(|own| s.projection_params().is_some_and(|p| same_conversion(own, &p)))
+                            && own_proj.as_deref().is_none_or(|own| s.to_proj4().is_some_and(|p| same_parallels(own, &p)))
+                    })
+            })
         }
         _ => None,
     };
+    if let Some(c) = rescaled {
+        // With its vertical CRS (VerticalCSTypeGeoKey), as a compound CRS of the two.
+        let vertical = k.short(4096).filter(|v| *v != 0 && *v != USER_DEFINED).and_then(|v| SpatialRef::from_epsg(u32::from(v)).ok());
+        let crs = match (c.to_wkt(), vertical.and_then(|v| v.wkt)) {
+            (Some(h), Some(v)) => {
+                let name = c.name().unwrap_or_else(|| "unnamed".into());
+                SpatialRef::from_wkt(&format!("COMPD_CS[{},{h},{v}]", wkt_quoted(&name)))
+            }
+            _ => c,
+        };
+        return GeoKeysCrs { crs: Some(crs), unsupported_method: None };
+    }
     let (mut crs, mut proj4, mut unsupported_method) = (None, None, None);
     if epsg.is_none() {
         // Geographic and projected user-defined CRSs, and ESRI PE citations.
@@ -233,6 +280,16 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
     {
         let registered = crate::compound_code(h, u32::from(v), c.name().as_deref()).and_then(|code| SpatialRef::from_epsg(code).ok());
         let c = registered.unwrap_or(c);
+        // With GeogTOWGS84GeoKey beside the horizontal code: that shift on the horizontal CRS, as
+        // terrio writes a compound CRS with a shift of its own (#1012 item 62).
+        if stated == Some(h)
+            && let Some(horizontal) = with_towgs84(&k, h).and_then(|s| s.wkt)
+            && let Some(vertical) = SpatialRef::from_epsg(u32::from(v)).ok().and_then(|s| s.wkt)
+        {
+            let name = c.name().unwrap_or_else(|| "unnamed".into());
+            let wkt = format!("COMPD_CS[{},{horizontal},{vertical}]", wkt_quoted(&name));
+            return GeoKeysCrs { crs: Some(SpatialRef::from_wkt(&wkt)), unsupported_method };
+        }
         return GeoKeysCrs { crs: Some(SpatialRef { wkt: c.to_wkt(), esri: None, ..c }), unsupported_method };
     }
     // The CRS an identifier is a summary of: the retained definition, else the code's (with the
@@ -623,8 +680,11 @@ fn geographic_proj(k: &GeoKeys) -> Option<String> {
         return Some(n.to_string());
     }
     let mut out = ellipsoid_proj(k)?;
-    // GeogPrimeMeridianLongGeoKey and GeogTOWGS84GeoKey.
-    if let Some(pm) = k.double(2061).filter(|pm| *pm != 0.0) {
+    // GeogPrimeMeridianLongGeoKey, else GeogPrimeMeridianGeoKey's registered longitude (Paris,
+    // 8903, as libgeotiff looks it up, #1012 item 34), and GeogTOWGS84GeoKey.
+    let pm =
+        k.double(2061).or_else(|| k.short(2051).filter(|c| *c != USER_DEFINED).and_then(|c| crate::epsg::prime_meridian(u32::from(c))));
+    if let Some(pm) = pm.filter(|pm| *pm != 0.0) {
         out.push_str(&format!(" +pm={pm}"));
     }
     if let Some(t) = k.doubles(2062).filter(|t| t.len() == 3 || t.len() == 7) {
@@ -634,7 +694,8 @@ fn geographic_proj(k: &GeoKeys) -> Option<String> {
 }
 
 /// The ellipsoid of GeoKeys, as PROJ parameters: their EPSG geographic CRS's, else their
-/// ellipsoid code's, else their semi-major axis and inverse flattening (or semi-minor axis).
+/// semi-major axis and inverse flattening (or semi-minor axis), else their ellipsoid code's, else
+/// their datum code's, as libgeotiff looks the codes up (`GTIFGetDefn`, #1012 item 34).
 fn ellipsoid_proj(k: &GeoKeys) -> Option<String> {
     // The ellipsoid of another EPSG geographic CRS, when its datum cannot be named.
     if let Some(e) = k.short(2048).filter(|c| *c != USER_DEFINED).and_then(|c| crate::epsg_ellipsoid(c as u32)) {
@@ -646,19 +707,36 @@ fn ellipsoid_proj(k: &GeoKeys) -> Option<String> {
         Some(7008) => Some("+ellps=clrk66"),
         Some(7004) => Some("+ellps=bessel"),
         Some(7022) => Some("+ellps=intl"),
-        Some(7035) | Some(7047) => Some("+R=6371007.181"),
         _ => None,
     };
-    Some(match ellipsoid {
-        Some(e) => e.to_string(),
-        None => {
-            let a = k.double(2057)?;
-            match (k.double(2059), k.double(2058)) {
-                (Some(rf), _) if rf > 0.0 => format!("+a={a} +rf={rf}"),
-                (_, Some(b)) => format!("+a={a} +b={b}"),
-                _ => format!("+R={a}"),
-            }
+    let registered = |(a, rf): (f64, f64)| if rf == 0.0 { format!("+R={a}") } else { format!("+a={a} +rf={rf}") };
+    // Axes given win over the code, as GDAL 3.12.2 reads them (7030 with a sphere's axes is that
+    // sphere); the code's own axes keep the code's ellipsoid, which GDAL names by it.
+    let code = k.short(2056).filter(|c| *c != USER_DEFINED).and_then(|c| crate::epsg::ellipsoid(u32::from(c)));
+    if let (Some(a), Some((ca, crf))) = (k.double(2057), code) {
+        let rf = k.double(2059).or_else(|| k.double(2058).map(|b| if a == b { 0.0 } else { a / (a - b) }));
+        if (a - ca).abs() < 1e-3 && rf.is_none_or(|rf| (rf - crf).abs() < 1e-6) {
+            return Some(ellipsoid.map(str::to_string).unwrap_or_else(|| registered((ca, crf))));
         }
+    }
+    if k.double(2057).is_none() {
+        if let Some(e) = ellipsoid {
+            return Some(e.to_string());
+        }
+        // The registry's ellipsoid of the code (Airy 1830, 7001; the spheres 7035 and 7048), else
+        // the datum's (OSGB 1936, 6277), without the axes.
+        if let Some(e) = k.short(2056).filter(|c| *c != USER_DEFINED).and_then(|c| crate::epsg::ellipsoid(u32::from(c))) {
+            return Some(registered(e));
+        }
+        let datum = k.short(2050).filter(|c| *c != USER_DEFINED)?;
+        let geog = crate::epsg::geographic_on(u32::from(datum)).iter().copied().find(|g| !crate::epsg::is_deprecated(*g))?;
+        return crate::epsg_ellipsoid(geog);
+    }
+    let a = k.double(2057)?;
+    Some(match (k.double(2059), k.double(2058)) {
+        (Some(rf), _) if rf > 0.0 => format!("+a={a} +rf={rf}"),
+        (_, Some(b)) => format!("+a={a} +b={b}"),
+        _ => format!("+R={a}"),
     })
 }
 
@@ -727,11 +805,22 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
         // Hotine oblique Mercator: variant A (natural origin) and B (centre of projection).
         3 => oblique_mercator(" +no_uoff")?,
         9815 => oblique_mercator("")?,
-        // Mercator 2SP has its standard parallel in ProjStdParallel1GeoKey, 1SP a scale (with
-        // which a zero standard parallel is taken as unused).
-        7 => match lat1.filter(|ts| *ts != 0.0 || scale == 1.0) {
+        // As libgeotiff and GDAL 3.12 read Mercator (#1012 item 35): 2SP with
+        // ProjStdParallel1GeoKey, whatever the scale (which GDAL ignores, with a warning); else
+        // 1SP, of ProjScaleAtNatOriginGeoKey alone (not ProjScaleAtCenterGeoKey) and of the
+        // latitude of origin, which PROJ writes as `+lat_ts`.
+        7 => match lat1 {
             Some(ts) => format!("merc +lon_0={lon0} +lat_ts={ts} {false_xy}"),
-            None => format!("merc +lon_0={lon0} +k={scale} {false_xy}"),
+            None if lat0 != 0.0 => {
+                // Off the equator only at a scale of 1: GDAL 3.12 reads other scales as a
+                // Mercator (variant A) PROJ 9 cannot run ("Unsupported value for Latitude of
+                // natural origin"), so the scale is not dropped into `+lat_ts`.
+                if k.double(SCALE_AT_NAT_ORIGIN).is_some_and(|s| s != 1.0) {
+                    return None;
+                }
+                format!("merc +lon_0={lon0} +lat_ts={lat0} {false_xy}")
+            }
+            None => format!("merc +lon_0={lon0} +k={} {false_xy}", k.double(SCALE_AT_NAT_ORIGIN).unwrap_or(1.0)),
         },
         8 => format!("lcc +lat_1={} +lat_2={} +lat_0={lat0} +lon_0={lon0} {false_xy}", lat1?, lat2.or(lat1)?),
         9 => format!("lcc +lat_1={lat0} +lat_0={lat0} +lon_0={lon0} +k_0={scale} {false_xy}"),
@@ -739,7 +828,11 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
         11 => format!("aea +lat_1={} +lat_2={} +lat_0={lat0} +lon_0={lon0} {false_xy}", lat1?, lat2.or(lat1)?),
         12 => format!("aeqd +lat_0={lat0} +lon_0={lon0} {false_xy}"),
         13 => format!("eqdc +lat_1={} +lat_2={} +lat_0={lat0} +lon_0={lon0} {false_xy}", lat1?, lat2.or(lat1)?),
+        // ProjScaleAtNatOriginGeoKey, as libgeotiff reads it, else ProjScaleAtCenterGeoKey, in
+        // which terrio wrote it before (libgeotiff and GDAL 3.12 read such a file at a scale of 1).
         14 => format!("stere +lat_0={lat0} +lon_0={lon0} +k={scale} {false_xy}"),
+        // Laborde oblique Mercator (CT 4), as GDAL 3.12 reads it (`SetLOM`).
+        4 => format!("labrd +lat_0={lat0} +lon_0={lon0} +azi={} +k={scale} {false_xy}", k.double(AZIMUTH).unwrap_or(0.0)),
         15 => {
             // Variant B's standard parallel is in ProjStdParallel1GeoKey for some writers, and in
             // ProjNatOriginLatGeoKey for GDAL (which writes a scale of 1 too); a natural origin
@@ -864,6 +957,118 @@ fn units(k: &GeoKeys) -> (String, f64) {
         },
         None => ("+units=m".into(), 1.0),
     }
+}
+
+/// Whether two PROJ strings give the same standard parallels, latitude of true scale and oblique
+/// (and Laborde) azimuths, where both give them, a value PROJ implies when left out filled in (not
+/// in [`crate::ProjParams`]).
+fn same_parallels(a: &str, b: &str) -> bool {
+    let (a, b) = (crate::params::Params::parse(a), crate::params::Params::parse(b));
+    // Mercator's latitude of true scale left out is the equator, a polar stereographic one's the
+    // pole (its scale there), and a second standard parallel left out is the first, as PROJ takes
+    // them.
+    let value = |p: &crate::params::Params, key: &str| match key {
+        "lat_ts" if p.str("proj") == Some("merc") => Some(p.degrees(key).unwrap_or(0.0)),
+        "lat_ts" if p.str("proj") == Some("stere") && p.degrees("lat_0").is_some_and(|l| (l.abs() - 90.0).abs() < 1e-9) => {
+            p.degrees(key).or_else(|| p.degrees("lat_0"))
+        }
+        "lat_2" => p.degrees(key).or_else(|| p.degrees("lat_1")),
+        _ => p.degrees(key),
+    };
+    ["lat_1", "lat_2", "lat_ts", "alpha", "gamma", "lonc", "azi"].iter().all(|key| match (value(&a, key), value(&b, key)) {
+        (Some(x), Some(y)) => (x - y).abs() <= 1e-9,
+        _ => true,
+    })
+}
+
+/// Whether two projections have the same method (UTM as Transverse Mercator) and origin, scale and
+/// false easting and northing, whatever their ellipsoids.
+fn same_conversion(a: &crate::ProjParams, b: &crate::ProjParams) -> bool {
+    let method = |m: &str| if m == "utm" { "tmerc".to_string() } else { m.to_string() };
+    let close = |x: f64, y: f64, tolerance: f64| (x - y).abs() <= tolerance;
+    method(&a.method) == method(&b.method)
+        && close(a.lat_0, b.lat_0, 1e-9)
+        && close(a.lon_0, b.lon_0, 1e-9)
+        && close(a.k_0, b.k_0, 1e-12)
+        && close(a.x_0, b.x_0, 1e-6)
+        && close(a.y_0, b.y_0, 1e-6)
+}
+
+/// The registry's projected CRS `target` in the linear unit of GeoKeys stating `code` alone, when
+/// that is not its unit: ProjLinearUnitsGeoKey's, else `code`'s own, as GDAL 3.12 changes the
+/// unit of the CRS it imports (`SetLinearUnitsAndUpdateParameters`), its false easting and northing
+/// kept in metres, and drops its code. `None` in its own unit.
+fn in_keys_unit(k: &GeoKeys, code: u32, target: u32) -> Option<SpatialRef> {
+    let crs = SpatialRef::from_epsg(target).ok()?;
+    let (unit, size) = if k.short(3076).is_some() {
+        units(k)
+    } else {
+        let own = SpatialRef::from_epsg(code).ok()?;
+        let token = own.to_proj4()?.split_whitespace().find(|t| t.starts_with("+units=") || t.starts_with("+to_meter="))?.to_string();
+        (token, own.metres_per_unit())
+    };
+    if (crs.metres_per_unit() / size - 1.0).abs() < 1e-12 {
+        return None;
+    }
+    // The GeoKeys' shift (GeogTOWGS84GeoKey) beside it, the CRS's own, as beside the code
+    // (`with_towgs84`): a zero shift is none on the WGS 84 datum, and kept on another (VN-2000),
+    // the datum of the CRS it is written onto.
+    let on_wgs84 = crate::epsg::get(target).is_some_and(|e| e.datum == 6326);
+    let towgs84 = k
+        .doubles(2062)
+        .filter(|t| matches!(t.len(), 3 | 7) && t.iter().all(|v| v.is_finite()) && (!on_wgs84 || t.iter().any(|v| *v != 0.0)));
+    if let Some(c) = rescaled_wkt(k, code, &crs, size, towgs84) {
+        return Some(c);
+    }
+    let proj = crs.to_proj4()?;
+    let tokens: Vec<&str> = proj.split_whitespace().filter(|t| !t.starts_with("+units=") && !t.starts_with("+to_meter=")).collect();
+    let shift = towgs84.map(|t| format!(" +towgs84={}", t.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","))).unwrap_or_default();
+    SpatialRef::from_proj4(&format!("{} {unit}{shift}", tokens.join(" "))).ok()
+}
+
+/// The registry's projected CRS `crs` in the GeoKeys' linear unit of `size` metres, as GDAL 3.12
+/// changes it (`SetLinearUnitsAndUpdateParameters`): its WKT 1 with that `UNIT`, its false easting
+/// and northing converted to it, without its code, on its own geographic CRS, so that its datum
+/// keeps its transformations (EPSG:27700 in feet stays on OSGB36), with the keys' `towgs84`.
+/// `None` for a unit without WKT.
+fn rescaled_wkt(k: &GeoKeys, code: u32, crs: &SpatialRef, size: f64, towgs84: Option<&[f64]>) -> Option<SpatialRef> {
+    use crate::wkt1::{Arg, Node};
+    let unit = match k.short(3076) {
+        Some(USER_DEFINED) => linear_unit_wkt(k)?,
+        Some(u) => {
+            let (_, name, m) = LENGTH_UNITS.iter().find(|l| l.0 == u)?;
+            format!("UNIT[\"{name}\",{},AUTHORITY[\"EPSG\",\"{u}\"]]", wkt_number(*m))
+        }
+        // The stated code's own unit.
+        None => crate::wkt1::parse(&SpatialRef::from_epsg(code).ok()?.to_wkt1_strict()?)?.child("UNIT")?.to_wkt(),
+    };
+    let unit = crate::wkt1::parse(&unit)?;
+    let mut root = crate::wkt1::parse(&crs.to_wkt1_strict()?)?;
+    if !root.key.eq_ignore_ascii_case("PROJCS") {
+        return None;
+    }
+    let factor = crs.metres_per_unit() / size;
+    for a in &mut root.args {
+        match a {
+            Arg::Node(n) if n.key.eq_ignore_ascii_case("PARAMETER") => {
+                let offset = n.name().is_some_and(|p| matches!(p.to_ascii_lowercase().as_str(), "false_easting" | "false_northing"));
+                if let (true, Some(Arg::Num(v))) = (offset, n.args.get_mut(1)) {
+                    *v *= factor;
+                }
+            }
+            Arg::Node(n) if n.key.eq_ignore_ascii_case("UNIT") => *n = unit.clone(),
+            _ => {}
+        }
+    }
+    root.args.retain(|a| !matches!(a, Arg::Node(n) if n.key.eq_ignore_ascii_case("AUTHORITY")));
+    if let Some(t) = towgs84 {
+        let datum = datum_node(&mut root)?;
+        datum.args.retain(|a| !matches!(a, Arg::Node(n) if n.key.eq_ignore_ascii_case("TOWGS84")));
+        let at = datum.args.iter().position(|a| matches!(a, Arg::Node(n) if n.key.eq_ignore_ascii_case("SPHEROID")))? + 1;
+        datum.args.insert(at, Arg::Node(Node { key: "TOWGS84".into(), args: t.iter().map(|v| Arg::Num(*v)).collect() }));
+    }
+    let rescaled = SpatialRef::from_wkt(&root.to_wkt());
+    (rescaled.projection_params().is_some() && (rescaled.metres_per_unit() / size - 1.0).abs() < 1e-9).then_some(rescaled)
 }
 
 /// The size in metres of the GeoKeys' linear unit (a metre when they give none).
@@ -1001,6 +1206,21 @@ fn own_towgs84(crs: &SpatialRef) -> Option<Vec<f64>> {
     (matches!(t.len(), 3 | 7) && !(wgs84 && t.iter().all(|x| *x == 0.0))).then_some(t)
 }
 
+/// The horizontal CRS of a compound CRS's WKT, of WKT 1 (`PROJCS`, `GEOGCS`) or WKT 2 (a
+/// projected, geographic or geodetic CRS, or a `BOUNDCRS` of one).
+fn compound_horizontal_crs(crs: &SpatialRef) -> Option<SpatialRef> {
+    let root = crate::parsed::tree(crs.wkt.as_deref()?)?;
+    let horizontal = root.first_in(crate::keywords::HORIZONTAL_CRS)?.to_wkt();
+    Some(SpatialRef { wkt: Some(horizontal), proj4: None, ..crs.clone() })
+}
+
+/// The datum shift of a compound CRS's horizontal CRS (`code`) of its own: a `TOWGS84` in its WKT
+/// 1, or a WKT 2 `BOUNDCRS`'s Helmert transformation to WGS 84, as [`own_towgs84`] finds it for a
+/// horizontal CRS.
+fn compound_horizontal_shift(crs: &SpatialRef, code: u32) -> Option<Vec<f64>> {
+    own_towgs84(&SpatialRef { epsg: Some(code), ..compound_horizontal_crs(crs)? })
+}
+
 /// Whether a PROJ string is on WGS 84: its datum or ellipsoid by name, or the ellipsoid's axis and
 /// flattening. A zero shift on it is no shift for the writer, for a CRS without a code.
 fn on_wgs84(proj: &str) -> bool {
@@ -1008,15 +1228,16 @@ fn on_wgs84(proj: &str) -> bool {
     has("+datum=WGS84") || has("+ellps=WGS84") || (has("+a=6378137") && has("+rf=298.257223563"))
 }
 
-/// Whether a CRS is a WKT 2 `BOUNDCRS` whose Helmert transformation its `+towgs84` only
-/// approximates: the reader keeps the exact operation beside it (a Molodensky-Badekas evaluation
-/// point, a full rotation matrix).
+/// Whether a CRS is a WKT 2 `BOUNDCRS` whose Helmert transformation GeogTOWGS84GeoKey cannot
+/// carry: one its `+towgs84` only approximates, which the reader keeps beside it (a
+/// Molodensky-Badekas evaluation point, a full rotation matrix), or one to a datum other than
+/// WGS 84 (ED50), which the reader chains with that datum's transformations (#1012 item 64).
 fn bound_beyond_towgs84(crs: &SpatialRef) -> bool {
     let Some(w) = crs.wkt.as_deref().filter(|w| crate::def::is_bound_crs(w)) else { return false };
     crate::parsed::tree(w)
         .filter(|root| crate::wkt2::handles(root))
         .and_then(|_| crate::model::wkt2_to_proj(w).ok())
-        .is_some_and(|c| c.helmert.is_some())
+        .is_some_and(|c| c.helmert.is_some() || c.bound.is_some())
 }
 
 /// GeoKeys from wbprojection's model of a CRS, when terrio is built with it.
@@ -1189,7 +1410,8 @@ fn keys_for_crs(crs: &wbprojection::Crs, name: &str) -> Option<GeoKeyValues> {
         }
         K::LambertAzimuthalEqualArea => (10, vec![(3089, lat0), (3088, lon0), (3082, fe), (3083, fn_)]),
         K::AzimuthalEquidistant => (12, vec![(3089, lat0), (3088, lon0), (3082, fe), (3083, fn_)]),
-        K::Stereographic => (14, vec![(3089, lat0), (3088, lon0), (3093, k), (3082, fe), (3083, fn_)]),
+        // The scale in ProjScaleAtNatOriginGeoKey, which GDAL writes and libgeotiff reads for it.
+        K::Stereographic => (14, vec![(3089, lat0), (3088, lon0), (3092, k), (3082, fe), (3083, fn_)]),
         K::ObliqueStereographic => (16, vec![(3081, lat0), (3080, lon0), (3092, k), (3082, fe), (3083, fn_)]),
         K::PolarStereographic { north, lat_ts } => {
             let pole = if *north { 90.0 } else { -90.0 };
@@ -1376,7 +1598,8 @@ impl SpatialRef {
         // identified as EPSG:27700, is 3.1 m from it).
         let shift = own_towgs84(self);
         // A WKT 2 `BOUNDCRS` whose transformation `+towgs84` only approximates (Molodensky-Badekas,
-        // a full rotation matrix): neither its code nor GeogTOWGS84GeoKey, but its WKT.
+        // a full rotation matrix), or to another datum than WGS 84: neither its code nor
+        // GeogTOWGS84GeoKey, but its WKT.
         let exact = bound_beyond_towgs84(self);
         let declared = self.wkt.as_deref().and_then(crate::declared_epsg);
         let registered =
@@ -1384,7 +1607,12 @@ impl SpatialRef {
         // A compound CRS of EPSG CRSs: its horizontal CRS's keys, its vertical CRS's and its name,
         // in GeoTIFF 1.1 as GDAL 3.12.1 writes them (`GTIFSetFromOGISDefnEx`); a compound code in
         // a horizontal key reads as another CRS.
+        // Not one whose horizontal CRS is a `BOUNDCRS` GeogTOWGS84GeoKey cannot carry: its WKT
+        // keeps the shift.
         let compound = (!engineering).then(|| self.compound_parts()).flatten().and_then(|(h, v)| {
+            if compound_horizontal_crs(self).is_some_and(|h| bound_beyond_towgs84(&h)) {
+                return None;
+            }
             let (h, geographic) = horizontal_geokey(h)?;
             Some((h, u16::try_from(gdal_code(v)?).ok()?, geographic))
         });
@@ -1394,6 +1622,11 @@ impl SpatialRef {
                 v.shorts.push((if geographic { 2048 } else { 3072 }, h));
                 v.shorts.push((4096, vertical));
                 v.ascii.push((1026, self.name().unwrap_or_else(|| "unnamed".into())));
+                // The horizontal CRS's own shift beside its code, as for a horizontal CRS, read
+                // back on that CRS (#1012 item 62).
+                if let Some(t) = compound_horizontal_shift(self, u32::from(h)) {
+                    v.doubles.extend(t.iter().map(|x| (2062, *x)));
+                }
             }
             (None, Some((code, geographic))) => {
                 v.shorts.push((1024, if geographic { 2 } else { 1 }));

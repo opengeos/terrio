@@ -187,7 +187,7 @@ pub(crate) fn build(name: &str, s: &mut Setup<'_>) -> Result<Option<Box<dyn Proj
         "ortho" => Box::new(Ortho::new(s)),
         "geos" => Box::new(Geos::new(s)?),
         "robin" => Box::new(Robin),
-        "eck4" => Box::new(Eck4),
+        "eck4" => Box::new(Eck4 { over: s.p.has("over") }),
         "natearth" => Box::new(Natearth),
         "moll" | "wag4" | "wag5" => Box::new(Moll::new(name)),
         "healpix" => Box::new(Healpix::new(s, false)?),
@@ -1967,11 +1967,13 @@ impl Proj for Mill {
 #[derive(Debug)]
 struct Vandg {
     r: f64,
+    /// `+over`: past the antimeridian, the other side's A (PROJ's `vandg.cpp`, #1012 item 42).
+    over: bool,
 }
 
 impl Vandg {
     fn new(s: &mut Setup<'_>) -> Self {
-        Self { r: authalic_radius(s.ell) }
+        Self { r: authalic_radius(s.ell), over: s.p.has("over") }
     }
 }
 
@@ -1996,7 +1998,8 @@ impl Proj for Vandg {
         } else if lam.abs() <= VANDG_TOL || (p2 - 1.0).abs() < VANDG_TOL {
             (0.0, (PI * (0.5 * p2.asin()).tan()).copysign(phi))
         } else {
-            let al = 0.5 * (PI / lam - lam / PI).abs();
+            let sign = if self.over && lam.abs() > PI { -1.0 } else { 1.0 };
+            let al = 0.5 * sign * (PI / lam - lam / PI).abs();
             let al2 = al * al;
             let g = (1.0 - p2 * p2).sqrt();
             let g = g / (p2 + g - 1.0);
@@ -2215,7 +2218,10 @@ impl Proj for Cea {
             let phi = if t >= 1.0 { if y < 0.0 { -HALFPI } else { HALFPI } } else { y.asin() };
             return Some((x / self.k0, phi));
         }
-        Some((x / self.k0, authlat_inverse(aasin(2.0 * y * self.k0 / self.qp), &self.apa, self.e, self.one_es, self.qp)))
+        // Past the pole line there is no latitude, as PROJ's `asin` gives none (#1012 item 40), but
+        // the pole itself, a rounding past it, is read (`aasin_checked`).
+        let beta = aasin_checked(2.0 * y * self.k0 / self.qp)?;
+        Some((x / self.k0, authlat_inverse(beta, &self.apa, self.e, self.one_es, self.qp)))
     }
 }
 
@@ -2527,6 +2533,12 @@ impl Krovak {
         }
         if p.f64("k").is_none() && p.f64("k_0").is_none() {
             s.k0 = 0.9999;
+        }
+        // PROJ 9.9.0's CRS parser reads `+alpha` as the co-latitude of the cone axis, and refuses
+        // one that is not an angle (`nan`, #1012 item 39); another than Krovak's has no pipeline
+        // (`Def::no_pipeline`).
+        if p.str("alpha").is_some() && p.degrees("alpha").is_none_or(|a| !a.is_finite()) {
+            return Err(err("invalid value for alpha"));
         }
         let czech = if p.has("czech") { 1.0 } else { -1.0 };
         // As PROJ, on Bessel's ellipsoid whatever the CRS's (which only its datum uses).
@@ -3418,7 +3430,10 @@ impl Proj for Robin {
 // guess) and its pole and antimeridian tolerances.
 
 #[derive(Debug)]
-struct Eck4;
+struct Eck4 {
+    /// `+over`: longitudes past the antimeridian are kept (#1012 item 42).
+    over: bool,
+}
 
 /// 2 / sqrt(4π + π²).
 const ECK4_CX: f64 = 0.42223820031577120149;
@@ -3475,7 +3490,7 @@ impl Proj for Eck4 {
         };
         // Past the antimeridian: refused, unless by rounding (PROJ without +over).
         let past = lam.abs() - PI;
-        if past > 0.0 {
+        if past > 0.0 && !self.over {
             if past > 1e-10 {
                 return None;
             }
@@ -4746,8 +4761,8 @@ mod benchmark_regressions {
     #[test]
     fn eckert_iv_and_natural_earth_refuse_non_finite_inverse_inputs() {
         for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert!(Eck4.inv(value, 0.0).is_none(), "eck4: x {value}");
-            assert!(Eck4.inv(0.0, value).is_none(), "eck4: y {value}");
+            assert!(Eck4 { over: false }.inv(value, 0.0).is_none(), "eck4: x {value}");
+            assert!(Eck4 { over: false }.inv(0.0, value).is_none(), "eck4: y {value}");
             assert!(Natearth.inv(value, 0.0).is_none(), "natearth: x {value}");
             assert!(Natearth.inv(0.0, value).is_none(), "natearth: y {value}");
         }

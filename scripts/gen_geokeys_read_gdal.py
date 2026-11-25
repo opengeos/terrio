@@ -9,6 +9,12 @@ from a reading by key names alone: ProjCenterEasting/NorthingGeoKey as the false
 northing, a Hotine oblique Mercator without ProjRectifiedGridAngleGeoKey (90°), and a polar
 stereographic CRS whose ProjNatOriginLatGeoKey of 90° wins over ProjStdParallel1GeoKey.
 
+`KEYED` cases give their own keys (#1012 items 32 to 35): a projected code alone, read as the
+registry's CRS (a deprecated code's replacement) in the keys' linear unit; an ellipsoid, datum or
+prime meridian by its code alone, looked up in the registry; Mercator's scale and latitude keys;
+Laborde oblique Mercator. A point on a sphere, which pyproj does not place from
+WGS 84, is placed from the CRS's own geographic CRS (`"from": "geodetic"`).
+
 Usage: PROJ_NETWORK=OFF python scripts/gen_geokeys_read_gdal.py (needs GDAL 3.12.2's Python
 bindings and pyproj)
 """
@@ -139,6 +145,153 @@ CASES = [
 ]
 
 
+# Model types, and a user-defined projection of a Transverse Mercator of these doubles.
+PROJECTED, GEOGRAPHIC = [(1024, 1), (1025, 1)], [(1024, 2), (1025, 1)]
+USER_TM = [(3072, 32767), (3074, 32767), (3076, 9001), (2048, 32767), (3075, 1)]
+# Off the UTM zones (which PROJ refuses on a sphere), as GDAL would read 9°E as zone 32.
+TM = [(3080, 10.0), (3081, 0.0), (3092, 0.9996), (3082, 500000.0), (3083, 0.0)]
+KEYED = [
+    (
+        "deprecated EPSG:4855 beside GeographicTypeGeoKey 4258, by its own definition",
+        PROJECTED + [(3072, 4855), (2048, 4258)],
+        [],
+        (10.0, 63.0),
+        False,
+    ),
+    (
+        "deprecated EPSG:26814 alone, as EPSG:26847 in metres",
+        PROJECTED + [(3072, 26814)],
+        [],
+        (-69.0, 45.0),
+        False,
+    ),
+    (
+        "EPSG:32633 with ProjLinearUnitsGeoKey 9002, in feet",
+        PROJECTED + [(3072, 32633), (3076, 9002)],
+        [],
+        (15.0, 50.0),
+        False,
+    ),
+    (
+        "EPSG:27700 with ProjLinearUnitsGeoKey 9002, in feet on OSGB36",
+        PROJECTED + [(3072, 27700), (3076, 9002)],
+        [],
+        (-1.5, 52.5),
+        False,
+    ),
+    (
+        "ellipsoid 7030 with a sphere's axes, which win",
+        PROJECTED + USER_TM + [(2050, 32767), (2056, 7030)],
+        TM + [(2057, 6371007.0), (2059, 0.0)],
+        (10.0, 50.0),
+        True,
+    ),
+    (
+        "ellipsoid 7001 without axes",
+        PROJECTED + USER_TM + [(2050, 32767), (2056, 7001)],
+        TM,
+        (10.0, 50.0),
+        False,
+    ),
+    (
+        "ellipsoid 7048 without axes",
+        PROJECTED + USER_TM + [(2050, 32767), (2056, 7048)],
+        TM,
+        (10.0, 50.0),
+        True,
+    ),
+    (
+        "ellipsoid 7035 without axes",
+        PROJECTED + USER_TM + [(2050, 32767), (2056, 7035)],
+        TM,
+        (10.0, 50.0),
+        True,
+    ),
+    (
+        "ellipsoid 7047 without axes",
+        PROJECTED + USER_TM + [(2050, 32767), (2056, 7047)],
+        TM,
+        (10.0, 50.0),
+        True,
+    ),
+    (
+        "datum 6277 without ellipsoid, projected",
+        PROJECTED + USER_TM + [(2050, 6277)],
+        [
+            (3080, -2.0),
+            (3081, 49.0),
+            (3092, 0.9996012717),
+            (3082, 400000.0),
+            (3083, -100000.0),
+        ],
+        (-2.0, 52.0),
+        False,
+    ),
+    (
+        "datum 6277 without ellipsoid, geographic",
+        GEOGRAPHIC + [(2048, 32767), (2050, 6277)],
+        [],
+        (-2.0, 52.0),
+        False,
+    ),
+    (
+        "prime meridian 8903 without its longitude",
+        PROJECTED + USER_TM + [(2050, 32767), (2056, 7022), (2051, 8903)],
+        [(3080, 0.0), (3081, 0.0), (3092, 1.0), (3082, 0.0), (3083, 0.0)],
+        (5.0, 46.0),
+        False,
+    ),
+    (
+        "Mercator with a standard parallel of 0 and a scale",
+        PROJECTED + USER[2:] + [(3075, 7)],
+        [(3078, 0.0), (3092, 0.9996), (3088, 10.0)],
+        (12.0, 40.0),
+        False,
+    ),
+    (
+        "Mercator 1SP with a natural origin latitude",
+        PROJECTED + USER[2:] + [(3075, 7)],
+        [(3081, 10.0), (3080, 10.0)],
+        (12.0, 40.0),
+        False,
+    ),
+    (
+        "Mercator with ProjScaleAtCenterGeoKey only",
+        PROJECTED + USER[2:] + [(3075, 7)],
+        [(3093, 0.9), (3088, 10.0)],
+        (12.0, 40.0),
+        False,
+    ),
+    (
+        "Laborde oblique Mercator",
+        PROJECTED + USER[2:] + [(3075, 4)],
+        [
+            (3088, 46.4372291),
+            (3089, -18.9),
+            (3094, 18.9),
+            (3093, 0.9995),
+            (3082, 400000.0),
+            (3083, 800000.0),
+        ],
+        (47.0, -19.0),
+        False,
+    ),
+    (
+        "Laborde oblique Mercator without its azimuth, of 0",
+        PROJECTED + USER[2:] + [(3075, 4)],
+        [
+            (3088, 46.4372291),
+            (3089, -18.9),
+            (3093, 0.9995),
+            (3082, 400000.0),
+            (3083, 800000.0),
+        ],
+        (47.0, -19.0),
+        False,
+    ),
+]
+
+
 def directory(shorts, doubles):
     """GeoKeyDirectoryTag and GeoDoubleParamsTag of the keys, in key order."""
     entries = [[key, 0, 1, value] for key, value in shorts]
@@ -192,8 +345,17 @@ def main():
     assert gdal.__version__ == "3.12.2", gdal.__version__
     assert os.environ.get("PROJ_NETWORK") == "OFF"
     cases = []
-    for name, method, doubles, point, *extra in CASES:
-        shorts = USER + (extra[0] if extra else []) + [(3075, method)]
+    listed = [
+        (
+            name,
+            USER + (extra[0] if extra else []) + [(3075, method)],
+            doubles,
+            point,
+            False,
+        )
+        for name, method, doubles, point, *extra in CASES
+    ]
+    for name, shorts, doubles, point, geodetic in listed + KEYED:
         keys, values = directory(shorts, doubles)
         path = "/vsimem/case.tif"
         gdal.FileFromMemBuffer(path, tiff(keys, values))
@@ -202,9 +364,11 @@ def main():
         wkt = srs.ExportToWkt(["FORMAT=WKT2_2019"])
         ds = None
         gdal.Unlink(path)
-        x, y = Transformer.from_crs(
-            "EPSG:4326", CRS.from_wkt(wkt), always_xy=True
-        ).transform(*point, errcheck=True)
+        crs = CRS.from_wkt(wkt)
+        source = crs.geodetic_crs if geodetic else "EPSG:4326"
+        x, y = Transformer.from_crs(source, crs, always_xy=True).transform(
+            *point, errcheck=True
+        )
         cases.append(
             {
                 "name": name,
@@ -212,6 +376,7 @@ def main():
                 "doubles": values,
                 "gdal_proj4": srs.ExportToProj4(),
                 "point": list(point),
+                "from": "geodetic" if geodetic else "wgs84",
                 "gdal": [x, y],
             }
         )

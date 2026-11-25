@@ -110,6 +110,8 @@ pub(crate) struct Compound {
     pub horizontal: u32,
     pub vertical: u32,
     pub wkt: String,
+    /// Its area of use (west, south, east, north in degrees), when known.
+    pub area: Option<[f64; 4]>,
 }
 
 /// Transformations without and with grids.
@@ -157,6 +159,8 @@ struct Table {
     /// The transformations PROJ lists for a geographic 3D or geocentric CRS in another direction
     /// than into WGS 84 (3D), where they differ, by code and direction.
     directed: HashMap<(u32, Direction), Lazy<OpLists>>,
+    /// The names PROJ reports for registered concatenations, by `O` row id (`N` rows).
+    reported: HashMap<u32, (usize, usize)>,
 }
 
 /// A direction between a geographic 3D or geocentric CRS and WGS 84 other than into WGS 84 (3D),
@@ -228,6 +232,7 @@ fn load(text: Cow<'static, str>) -> Table {
     let (mut geodetic, mut registered) = (Vec::new(), Vec::new());
     let mut replacements = HashMap::new();
     let mut directed = HashMap::new();
+    let mut reported = HashMap::new();
     let mut pos = 0;
     for line in text.split_inclusive('\n') {
         let start = pos;
@@ -301,6 +306,11 @@ fn load(text: Cow<'static, str>) -> Table {
                     directed.insert((code, direction), Lazy::new(after_second(), end));
                 }
             }
+            "N" => {
+                if let Ok(id) = key.parse::<u32>() {
+                    reported.insert(id, (rest, end));
+                }
+            }
             "E" => geodetic.push((start + 2, end)),
             "R" => registered.push((start + 2, end)),
             _ => {}
@@ -321,6 +331,7 @@ fn load(text: Cow<'static, str>) -> Table {
         registered,
         replacements,
         directed,
+        reported,
     }
 }
 
@@ -358,6 +369,7 @@ impl Table {
                     keeps_height: flags.contains('z'),
                     keeps_wgs84_leg_height: false,
                     keeps_height_3d: flags.contains('k'),
+                    reported: self.reported.get(&id).map(|&(start, end)| Arc::from(&self.text[start..end])),
                     steps,
                     name,
                 }))
@@ -424,6 +436,62 @@ impl Table {
             PairLists { lists: (next(), next()) }
         }))
     }
+}
+
+/// An EPSG ellipsoid's semi-major axis in metres and inverse flattening (0 for a sphere), by its
+/// code, as the registry's WKT 1 gives it, for GeoKeys giving the code without the values
+/// (libgeotiff's `GTIFGetEllipsoidInfo`, #1012 item 34). Also EPSG:7047, the deprecated GRS 1980
+/// authalic sphere no CRS is on (6370997 m, PROJ's `+ellps=sphere`, as GDAL 3.12 reads it).
+pub(crate) fn ellipsoid(code: u32) -> Option<(f64, f64)> {
+    if code == 7047 {
+        return Some((6_370_997.0, 0.0));
+    }
+    static ELLIPSOIDS: OnceLock<HashMap<u32, (f64, f64)>> = OnceLock::new();
+    ELLIPSOIDS.get_or_init(|| nodes("SPHEROID[").filter_map(|n| Some((n.epsg()?, (n.num(1)?, n.num(2)?)))).collect()).get(&code).copied()
+}
+
+/// An EPSG prime meridian's longitude in degrees, by its code, as the registry's WKT 1 gives it
+/// (Paris, EPSG:8903, 2.33722917), for GeoKeys giving the code without the longitude (#1012
+/// item 34).
+pub(crate) fn prime_meridian(code: u32) -> Option<f64> {
+    static MERIDIANS: OnceLock<HashMap<u32, f64>> = OnceLock::new();
+    MERIDIANS.get_or_init(|| nodes("PRIMEM[").filter_map(|n| Some((n.epsg()?, n.num(1)?))).collect()).get(&code).copied()
+}
+
+/// The WKT 1 nodes of a keyword in the registry's CRSs.
+fn nodes(keyword: &'static str) -> impl Iterator<Item = crate::wkt1::Node> {
+    let text = &table().text;
+    text.match_indices(keyword).filter_map(move |(i, _)| {
+        let mut depth = 0;
+        let end = text[i..].char_indices().find(|&(_, c)| {
+            depth += match c {
+                '[' => 1,
+                ']' => -1,
+                _ => 0,
+            };
+            c == ']' && depth == 0
+        })?;
+        crate::wkt1::parse(&text[i..=i + end.0])
+    })
+}
+
+/// An EPSG geodetic or vertical datum's anchor epoch, as PROJ 9.9.0's database gives it
+/// (`scripts/gen_datum_anchor_epochs.py`), which PROJ writes in PROJJSON (#1012 item 65).
+pub(crate) fn anchor_epoch(datum: u32) -> Option<f64> {
+    static EPOCHS: OnceLock<HashMap<u32, f64>> = OnceLock::new();
+    EPOCHS
+        .get_or_init(|| {
+            include_str!("../data/datum_anchor_epochs.tsv")
+                .lines()
+                .filter(|l| !l.starts_with('#'))
+                .filter_map(|l| {
+                    let (code, epoch) = l.split_once('\t')?;
+                    Some((code.parse().ok()?, epoch.parse().ok()?))
+                })
+                .collect()
+        })
+        .get(&datum)
+        .copied()
 }
 
 /// The transformations PROJ lists for an EPSG geographic 3D or geocentric CRS in a direction
@@ -967,8 +1035,14 @@ pub(crate) fn compound(code: u32) -> Option<&'static Compound> {
         .get(&code)?
         .get(&t.text, |line| {
             let f: Vec<&str> = line.split('\t').collect();
-            let [name, h, v, wkt] = f[..] else { return None };
-            Some(Compound { name: name.to_string(), horizontal: h.parse().ok()?, vertical: v.parse().ok()?, wkt: wkt.to_string() })
+            let (name, h, v, wkt, area) = match f[..] {
+                [name, h, v, wkt] => (name, h, v, wkt, ""),
+                [name, h, v, wkt, area] => (name, h, v, wkt, area),
+                _ => return None,
+            };
+            let area: Vec<f64> = area.split(',').filter_map(|x| x.parse().ok()).collect();
+            let area = <[f64; 4]>::try_from(area).ok();
+            Some(Compound { name: name.to_string(), horizontal: h.parse().ok()?, vertical: v.parse().ok()?, wkt: wkt.to_string(), area })
         })
         .as_ref()
 }

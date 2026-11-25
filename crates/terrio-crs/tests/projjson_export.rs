@@ -311,3 +311,49 @@ fn export_report() {
     }
     std::fs::write(report, out).unwrap();
 }
+
+/// A WKT 2 datum's `ANCHOREPOCH` is written as `anchor_epoch`, as PROJ 9.9.0 writes it, and read
+/// back (#1012 item 65); a WKT 2 without one is written without it, as PROJ leaves it.
+#[test]
+fn a_datum_anchor_epoch_is_written_and_read_back() {
+    let wkt = |anchor: &str| {
+        format!(
+            r#"GEOGCRS["CHTRS95",DATUM["Swiss Terrestrial Reference System 1995",ELLIPSOID["GRS 1980",6378137,298.257222101,LENGTHUNIT["metre",1]]{anchor}],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["geodetic longitude (Lon)",east,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]]]"#
+        )
+    };
+    let with = SpatialRef::from_wkt(&wkt(",ANCHOREPOCH[1993]"));
+    let json: Value = serde_json::from_str(&with.to_projjson().unwrap()).unwrap();
+    assert_eq!(json["datum"]["anchor_epoch"], json!(1993.0), "{json}");
+    let back = SpatialRef::from_projjson(&with.to_projjson().unwrap()).unwrap();
+    let again: Value = serde_json::from_str(&back.to_projjson().unwrap()).unwrap();
+    assert_eq!(again["datum"]["anchor_epoch"], json!(1993.0), "{again}");
+    let without: Value = serde_json::from_str(&SpatialRef::from_wkt(&wkt("")).to_projjson().unwrap()).unwrap();
+    assert!(without["datum"].get("anchor_epoch").is_none(), "{without}");
+}
+
+/// A WKT 2 compound CRS's vertical datum `ANCHOREPOCH` is written as the vertical reference
+/// frame's `anchor_epoch` (CGVD2013a epoch 2010, EPSG datum 1256, 2010 in PROJ 9.9.0's database)
+/// and read back; another epoch (2011) is written as given, as PROJ 9.9.0 writes it.
+#[test]
+fn a_vertical_datum_anchor_epoch_is_written_and_read_back() {
+    let deg = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
+    let wkt = format!(
+        r#"COMPOUNDCRS["NAD83(CSRS) + CGVD2013a(2010) height",GEOGCRS["NAD83(CSRS)",DATUM["North American Datum of 1983 (CSRS)",ELLIPSOID["GRS 1980",6378137,298.257222101,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,{deg}],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],{deg}],AXIS["geodetic longitude (Lon)",east,ORDER[2],{deg}],ID["EPSG",4617]],VERTCRS["CGVD2013a(2010) height",VDATUM["Canadian Geodetic Vertical Datum of 2013 (CGG2013a) epoch 2010",ANCHOREPOCH[2010]],CS[vertical,1],AXIS["gravity-related height (H)",up,LENGTHUNIT["metre",1]],ID["EPSG",9245]]]"#
+    );
+    let vertical_epoch = |text: &str| {
+        let json: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(json["type"], "CompoundCRS", "{json}");
+        json["components"][1]["datum"]["anchor_epoch"].clone()
+    };
+    let written = SpatialRef::from_wkt(&wkt).to_projjson().unwrap();
+    assert_eq!(vertical_epoch(&written), json!(2010.0), "{written}");
+    let again = SpatialRef::from_projjson(&written).unwrap().to_projjson().unwrap();
+    assert_eq!(vertical_epoch(&again), json!(2010.0), "{again}");
+    // Another epoch than the registry's is the WKT's, as PROJ 9.9.0 writes it.
+    let other = SpatialRef::from_wkt(&wkt.replace("ANCHOREPOCH[2010]", "ANCHOREPOCH[2011]")).to_projjson().unwrap();
+    assert_eq!(vertical_epoch(&other), json!(2011.0), "{other}");
+    // One that is not a number is the registry's, not a `null` the reader refuses.
+    let nan = SpatialRef::from_wkt(&wkt.replace("ANCHOREPOCH[2010]", "ANCHOREPOCH[\"nan\"]")).to_projjson().unwrap();
+    assert_eq!(vertical_epoch(&nan), json!(2010.0), "{nan}");
+    assert!(SpatialRef::from_projjson(&nan).is_ok(), "{nan}");
+}

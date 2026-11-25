@@ -16010,7 +16010,7 @@
     20.535
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "7373 esri gcs renamed, local id <- 4326",

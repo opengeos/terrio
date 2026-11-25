@@ -220,6 +220,8 @@ pub(crate) struct Transformation {
     /// geodetic or projected CRS, or a `BOUNDCRS` whose source it takes), which it takes the shift
     /// to.
     pub target_converted: bool,
+    /// Its target's dialect: WKT 1 for a `GEOGCS` inside the WKT 2 `BOUNDCRS`.
+    pub target_dialect: Dialect,
     /// Whether its target is WGS 84, as terrio's WKT 2 reader tells it (`wkt2::bound_to_wgs84`: by
     /// its code, or its datum's code or name), read or not.
     pub to_wgs84: bool,
@@ -462,7 +464,29 @@ fn wkt1_kind_input(m: &Model, kind: wkt1::Wkt1Kind) -> Option<wkt1::Wkt1Input> {
         axes: None,
         has_axis: false,
     };
-    let Some(c) = conversion else { return Some(input) };
+    let Some(c) = conversion else {
+        // A `GEOGCS`'s `AXIS` directions, which PROJ 9.9.0 reads (`buildCS`), as a WKT 2
+        // geographic CRS's: two along east-west and north-south, one of them west or south, in
+        // their order (#1012 item 26).
+        if kind == Wkt1Kind::Geographic && cs.explicit {
+            let letter = |a: &Axis| match a.direction.as_str() {
+                "east" => Some(b'e'),
+                "west" => Some(b'w'),
+                "north" => Some(b'n'),
+                "south" => Some(b's'),
+                _ => None,
+            };
+            input.axes = match cs.axes.iter().map(letter).collect::<Option<Vec<u8>>>().as_deref() {
+                Some(&[a, b])
+                    if matches!(a, b'e' | b'w') != matches!(b, b'e' | b'w') && (a == b'w' || a == b's' || b == b'w' || b == b's') =>
+                {
+                    Some([a, b])
+                }
+                _ => None,
+            };
+        }
+        return Some(input);
+    };
     input.params = c.params.iter().map(|p| (wkt1::norm(&p.ident.name), p.value)).filter(|(k, _)| !k.is_empty()).collect();
     input.method = Some(c.method.name.clone()).filter(|n| !n.is_empty());
     input.method_epsg = first_epsg(&c.method);
@@ -558,7 +582,15 @@ fn root_input(crs: &Crs) -> Result<wkt2::Wkt2Root> {
         files: t.files.len(),
     };
     // The target's input when the WKT 2 reader converts it.
-    let target = t.target.as_deref().filter(|_| t.target_converted).and_then(|t| root_input(t).ok());
+    // A WKT 1 `GEOGCS` target as the WKT 1 reader reads it, unless it has a `TOWGS84` of its own,
+    // with which PROJ 9.9.0 links the CRSs by its ballpark (#1012 item 53).
+    let target = match t.target.as_deref() {
+        Some(target) if t.target_dialect != Dialect::Wkt2 && matches!(target, Crs::Geodetic { .. }) => {
+            let m = Model { crs: target.clone(), dialect: t.target_dialect, extensions: Vec::new(), height_added: false };
+            wkt1_kind_input(&m, wkt1::Wkt1Kind::Geographic).filter(|i| i.towgs84.is_none()).map(Wkt2Source::Wkt1)
+        }
+        target => target.filter(|_| t.target_converted).and_then(|t| root_input(t).ok()).map(Wkt2Source::Wkt2),
+    };
     Ok(Wkt2Root::Bound(Box::new(Wkt2Bound { source, transformation, to_wgs84: t.to_wgs84, target })))
 }
 
@@ -1226,7 +1258,10 @@ fn bound(n: &Node, d: Dialect) -> Result<Crs> {
         "PROJCS" => Some(wkt1::Wkt1Kind::Projected),
         _ => None,
     };
-    let target = inner("TARGETCRS").and_then(|(_, c, _)| c.ok());
+    let target = inner("TARGETCRS");
+    let target_dialect = target.as_ref().map_or(Dialect::Wkt2, |(_, _, d)| *d);
+    // Only a `GEOGCS` of WKT 1 (not a `PROJCS`, which PROJ 9.9.0 does not chain through).
+    let target = target.filter(|(c, _, d)| *d == Dialect::Wkt2 || c.key.eq_ignore_ascii_case("GEOGCS")).and_then(|(_, c, _)| c.ok());
     let target_converted = n.child("TARGETCRS").and_then(crate::wkt2::first_node).is_some_and(crate::wkt2::handles);
     let t = n.child("ABRIDGEDTRANSFORMATION").ok_or_else(|| wkt2::bad("a BOUNDCRS without its ABRIDGEDTRANSFORMATION"))?;
     let transformation = Transformation {
@@ -1242,6 +1277,7 @@ fn bound(n: &Node, d: Dialect) -> Result<Crs> {
             .collect(),
         target: target.map(Box::new),
         target_converted,
+        target_dialect,
         to_wgs84: crate::wkt2::bound_to_wgs84(n),
     };
     Ok(Crs::Bound { source: Box::new(source), source_dialect, source_wkt1, transformation })

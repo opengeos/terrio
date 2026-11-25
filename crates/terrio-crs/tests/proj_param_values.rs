@@ -38,7 +38,6 @@ fn unchecked_parameters_have_proj_accepted_fixture_rows() {
 ///   ignores when unreadable but for `etmerc`, `utm` and `ups`;
 /// - checks of terrio's own for methods PROJ keeps as PROJ strings (`murd2`, `tissot`, `tpers`), and
 ///   of a geocentric CRS's ellipsoid, which refuse an unreadable value PROJ ignores;
-/// - Krovak's azimuth, which terrio does not read;
 /// - rotated-pole definitions keep terrio's strict check of `o_lat_p`, which PROJ's CRS parser
 ///   leaves unchecked.
 fn known(definition: &str, proj_accepts: bool) -> bool {
@@ -53,8 +52,7 @@ fn known(definition: &str, proj_accepts: bool) -> bool {
         "ob_tran" => definition.contains("+o_lat_p=abc"),
         _ => false,
     };
-    let krovak_azimuth = matches!(method, "krovak" | "mod_krovak") && key == "alpha";
-    (lenient && !proj_accepts) || (own && proj_accepts) || (krovak_azimuth && !proj_accepts)
+    (lenient && !proj_accepts) || (own && proj_accepts)
 }
 
 #[test]
@@ -75,7 +73,7 @@ fn unreadable_parameter_values_are_refused_as_proj_refuses_them() {
         }
     }
     // A change in the strings that still differ shows here.
-    assert_eq!(differing, 77, "strings that still differ from PROJ");
+    assert_eq!(differing, 75, "strings that still differ from PROJ");
     differences.sort_unstable();
     // Compare lines, not text: a Windows checkout may give the fixture CRLF line endings.
     let expected: Vec<&str> = include_str!("data/proj_param_value_differences.tsv").lines().collect();

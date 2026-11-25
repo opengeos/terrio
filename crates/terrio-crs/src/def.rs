@@ -60,6 +60,9 @@ pub(crate) struct Def {
     to_deg: f64,
     /// The prime meridian, in radians east of Greenwich.
     pm: f64,
+    /// `+over`: longitudes are not wrapped to ±180° around the central meridian, as PROJ keeps
+    /// them (#1012 item 42).
+    over: bool,
     /// The axis directions (`enu`, `wsu`, `neu`...).
     axis: [u8; 2],
     /// Datum transformations to WGS 84, in the order they are tried; empty for WGS 84 itself or a
@@ -72,6 +75,10 @@ pub(crate) struct Def {
     /// The EPSG geographic CRS that a CRS on a datum no CRS is on is identified as by its name
     /// ([`Def::registered_datum`]). Its transformations are not those of that CRS.
     named_geog: Option<u32>,
+    /// Why PROJ 9.9.0 has no pipeline for the CRS, which it reads: a Krovak of another co-latitude
+    /// of the cone axis than Krovak's (`conversion.cpp`, within 1e-7 of 30.2881397°, #1012 item
+    /// 39). Transformers using it are refused.
+    pub(crate) no_pipeline: Option<Arc<str>>,
     /// The EPSG code whose registered transformations `ops` are, for [`Def::facing`].
     code: Option<u32>,
     /// All the operations of a datum found by its name ([`Def::datum_by_name`]), those whose
@@ -103,7 +110,8 @@ pub(crate) struct Def {
 /// are an ESRI alias of) is not that of a single CRS of PROJ's database, or that CRS differs, its
 /// axis order too (an ESRI WKT 1 has no `AXIS`, so longitude first). For a projected CRS, its
 /// geographic CRS (once the projected CRS is not resolved). PROJ then searches transformations
-/// through other datums, as [`route`] follows it.
+/// through other datums, as [`route`] follows it. Also set, with `foreign_id`, for a CRS PROJ
+/// resolves whose ID's authority it does not know.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Unresolved {
     /// Whether PROJ reaches the CRSs of its datum by its ballpark, of unknown accuracy: the datum
@@ -118,6 +126,10 @@ pub(crate) struct Unresolved {
     /// Whether the WKT's geographic CRS has its code's geographic CRS name, which PROJ's datum
     /// pivot tries first (the base geographic CRS for a projected WKT).
     pub same_name: bool,
+    /// Whether the WKT has an ID of an authority PROJ does not know (`AUTHORITY["LOCAL","1"]`):
+    /// PROJ then takes it for the CRS of its name, but its datum pivot takes only the first CRS of
+    /// the datum with transformations, in order of code (#1012 item 7).
+    pub foreign_id: bool,
 }
 
 /// A WKT 2 `BOUNDCRS` with a Helmert transformation, or a coded CRS with a `TOWGS84` of its own.
@@ -560,8 +572,21 @@ impl Def {
             }
             return Self::from_wkt(wkt);
         }
+        // A compound CRS identified by its code, but not one whose WKT gives its horizontal CRS a
+        // shift of its own, a WKT 1 `TOWGS84` or a WKT 2 `BOUNDCRS` (a zero one too), which PROJ
+        // 9.9.0 applies: read from its WKT (#1012 item 62).
+        let horizontal_shift = |w: &str| {
+            crate::parsed::tree(w)
+                .and_then(|root| {
+                    root.first_in(keywords::HORIZONTAL_CRS).map(|h| h.is(keywords::BOUND) || wkt_towgs84(&h.to_wkt()).is_some())
+                })
+                .unwrap_or(false)
+        };
+        let own_shift = s.proj4.is_none()
+            && s.wkt.as_deref().is_some_and(|w| s.epsg.and_then(epsg::compound).is_none_or(|c| c.wkt != w) && horizontal_shift(w));
         if let Some(code) = s.epsg
             && let Some(c) = epsg::compound(code)
+            && !own_shift
         {
             let mut d = Self::new(&SpatialRef { epsg: Some(c.horizontal), ..Default::default() })?;
             d.vertical = Vertical::from_epsg(c.vertical).map(Arc::new);
@@ -735,7 +760,12 @@ impl Def {
     /// transformation.
     pub fn from_proj(s: &str) -> Result<Self> {
         let p = Params::parse(s);
-        let d = Self::from_params(s, &p, false);
+        let d = Self::from_params(s, &p, false).map(|mut d| {
+            if matches!(p.str("proj"), Some("krovak" | "mod_krovak")) && p.degrees("alpha").is_some_and(|a| (a - 30.2881397).abs() > 1e-7) {
+                d.no_pipeline = Some(Arc::from("PROJ has no Krovak of another co-latitude of the cone axis (+alpha) than 30.2881397°"));
+            }
+            d
+        });
         // As PROJ refuses a value it cannot read, where terrio would take the parameter's default.
         match p.invalid().into_iter().find(|key| !unchecked(&p, key)) {
             Some(key) => Err(Error::Crs(format!("invalid value for {key} in '{s}'"))),
@@ -1011,11 +1041,13 @@ impl Def {
             to_meter,
             to_deg: p.f64("to_deg").unwrap_or(1.0),
             pm: proj_prime_meridian(pm).to_radians(),
+            over: p.has("over"),
             axis,
             ops: Vec::new(),
             datum: None,
             geog: None,
             named_geog: None,
+            no_pipeline: None,
             code: None,
             all_ops: None,
             three_d: false,
@@ -1166,7 +1198,8 @@ impl Def {
     /// datum's ellipsoid are moved onto the CRS's, as PROJ replaces the first operation's source,
     /// and a null transformation becomes the geocentric change from the CRS's ellipsoid to WGS 84's;
     /// others (grids, a concatenation starting with an offset, one registered between geocentric
-    /// CRSs) are kept as registered.
+    /// CRSs) are kept as registered; one between geocentric CRSs is reported framed, of unknown
+    /// accuracy, as PROJ 9.9.0 reports it.
     fn datum_by_name(&mut self, geogcs: &str) {
         if self.pm != 0.0 {
             return;
@@ -1206,6 +1239,12 @@ impl Def {
         // point, and runs it on the datum's own ellipsoid.
         let rebase = |op: &Arc<Op>| {
             let mut op = (**op).clone();
+            if op.geocentric && !op.ballpark {
+                // Reported as PROJ 9.9.0 reports it: framed by that ballpark, of unknown accuracy
+                // (#1012 item 56).
+                op.framed = true;
+                (op.accuracy, op.chain_accuracy) = (-1.0, -1.0);
+            }
             if !op.geocentric {
                 if let Some(datum::Step::Cart { ell, inv: false }) = op.steps.first_mut()
                     && same(ell, &registered)
@@ -1377,7 +1416,10 @@ impl Def {
                     }));
                     return Ok(source);
                 };
-                t.registered_datum(target, None);
+                // A WKT 1 `GEOGCS` target by its text, as a WKT 1 CRS's own datum is found (by its
+                // name: ESRI's `D_Monte_Mario`, #1012 item 53).
+                let wkt1_target = target.geogcs.key.eq_ignore_ascii_case("GEOGCS").then(|| target.geogcs.to_wkt());
+                t.registered_datum(target, wkt1_target.as_deref());
                 let to_target = match helmert {
                     Some(step) => datum::helmert_steps_with(d.ell, t.ell, step),
                     None => datum::helmert_steps(d.ell, t.ell, shift),
@@ -1481,11 +1523,13 @@ impl Def {
                 to_meter: wkt_linear_unit(w).filter(|_| !geographic).unwrap_or(1.0),
                 to_deg: 1.0,
                 pm: 0.0,
+                over: false,
                 axis: *b"en",
                 ops: Vec::new(),
                 datum: None,
                 geog: None,
                 named_geog: None,
+                no_pipeline: None,
                 code: None,
                 all_ops: None,
                 three_d: false,
@@ -1671,7 +1715,7 @@ impl Def {
         if !lam.is_finite() || !phi.is_finite() {
             return None;
         }
-        Some((adjlon(lam + self.pm), phi))
+        Some((if self.over { lam + self.pm } else { adjlon(lam + self.pm) }, phi))
     }
 
     /// The longitude and latitude in degrees (east of Greenwich) of coordinates in a geographic
@@ -1694,8 +1738,10 @@ impl Def {
         let (e, n) = match &self.proj {
             None => {
                 let (lam, phi) = match &self.rot {
-                    Some(r) => r.fwd(adjlon(lon - self.lam0), lat),
-                    None => (adjlon(lon - self.lam0), if self.ocentric { ((1.0 - self.ell.es) * lat.sin()).atan2(lat.cos()) } else { lat }),
+                    Some(r) => r.fwd(self.wrap(lon - self.lam0), lat),
+                    None => {
+                        (self.wrap(lon - self.lam0), if self.ocentric { ((1.0 - self.ell.es) * lat.sin()).atan2(lat.cos()) } else { lat })
+                    }
                 };
                 if self.inverted_degrees {
                     // The forward step went from degrees to radians, with this factor.
@@ -1711,7 +1757,7 @@ impl Def {
                 }
                 // PROJ's `fwd_prepare()` clamps the latitude to the poles.
                 let lat = lat.clamp(-HALFPI, HALFPI);
-                let (x, y) = p.fwd(adjlon(lon - self.lam0), lat)?;
+                let (x, y) = p.fwd(self.wrap(lon - self.lam0), lat)?;
                 ((x * self.projection_a + self.x0) / self.to_meter, (y * self.projection_a + self.y0) / self.to_meter)
             }
         };
@@ -1719,6 +1765,11 @@ impl Def {
             return None;
         }
         Some(self.axis(e, n))
+    }
+
+    /// A longitude about the central meridian, wrapped to ±180° unless `+over` keeps it.
+    fn wrap(&self, lon: f64) -> f64 {
+        if self.over { lon } else { adjlon(lon) }
     }
 
     /// Whether both CRSs are on the same datum, so that no datum transformation is needed.
@@ -2032,8 +2083,11 @@ impl Def {
         if let Some(r) = r
             && !r.resolved
         {
-            self.unresolved = Some(Unresolved { ballpark: r.ballpark, named: r.named, same_name: r.same_name });
+            self.unresolved = Some(Unresolved { ballpark: r.ballpark, named: r.named, same_name: r.same_name, foreign_id: false });
             self.area = r.area;
+        } else if let Some(r) = r.filter(|r| r.foreign_id) {
+            // Resolved, so the area stays the code's, but pivoted as PROJ's datum pivot goes.
+            self.unresolved = Some(Unresolved { ballpark: false, named: true, same_name: false, foreign_id: r.foreign_id });
         }
     }
 }
@@ -2109,7 +2163,18 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
     // own transformations, as for a resolved CRS.
     // `named` and `same_name` are read for an unresolved CRS only.
     if has_id(root) {
-        return Some(Resolution { resolved: true, area: area(code), datum_renamed, ballpark: false, named: false, same_name: false });
+        // The authorities of PROJ's database.
+        let known = ["EPSG", "ESRI", "IGNF", "IAU_2015", "NKG", "OGC", "PROJ", "NRCAN", "IAU"];
+        let foreign_id = root.ids().all(|id| id.name().is_some_and(|a| !known.iter().any(|k| k.eq_ignore_ascii_case(a))));
+        return Some(Resolution {
+            resolved: true,
+            area: area(code),
+            datum_renamed,
+            ballpark: false,
+            named: false,
+            same_name: false,
+            foreign_id,
+        });
     }
     // ESRI's WKT reader maps a `PROJCS` name after a `GCS_` geographic CRS or a `D_` datum.
     let esri =
@@ -2178,6 +2243,7 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
         ballpark: datum_renamed && !pm_rotated,
         named: found.is_some(),
         same_name,
+        foreign_id: false,
     })
 }
 
@@ -2196,6 +2262,8 @@ struct Resolution {
     named: bool,
     /// See [`Unresolved::same_name`].
     same_name: bool,
+    /// See [`Unresolved::foreign_id`].
+    foreign_id: bool,
 }
 
 /// PROJ's rule for an ellipsoid of the Earth: a semi-major axis within 0.7% of its mean radius

@@ -183,6 +183,9 @@ pub(crate) struct Op {
     /// registered between 2D CRSs, which PROJ runs between `push v_3` and `pop v_3` (PZ-90 to
     /// WGS 84 (1) in PZ-90.11's chain, LUREF to WGS 84 (4)).
     pub keeps_height_3d: bool,
+    /// The name PROJ reports for it, when not its steps' (`name`): that of a concatenation PROJ's
+    /// database registers under a name of its own, `NTF (Paris) to WGS 84 (1)` (#1012 item 54).
+    pub reported: Option<Arc<str>>,
     pub steps: Vec<Step>,
     /// PROJ's name for it, the names of its steps joined by ` + ` (empty for ballparks), by which
     /// PROJ breaks the last ties when it sorts the chains it makes.
@@ -634,6 +637,7 @@ impl Op {
             keeps_height: true,
             keeps_wgs84_leg_height: false,
             keeps_height_3d: false,
+            reported: None,
             steps,
             name: String::new(),
         }

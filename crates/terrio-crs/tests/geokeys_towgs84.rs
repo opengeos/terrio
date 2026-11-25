@@ -176,3 +176,96 @@ fn a_codeless_wkt1_with_its_own_shift_goes_into_its_own_datum_without_it() {
     let (lon, _) = Transformer::new(&SpatialRef::from_wkt(&foo), &nad83).unwrap().transform(x, y).unwrap();
     assert!((lon + 82.927_597_805_866_5).abs() > 1e-4, "{lon}");
 }
+
+/// A compound CRS whose horizontal CRS has a `TOWGS84` of its own (OSGB36 / British National Grid
+/// with `TOWGS84[375,-111,431,0,0,0,0]`, + ODN height, identified as EPSG:7405) is read with that
+/// shift, as PROJ 9.9.0 reads it into EPSG:4979: (-2.001443992181307, 52.59776558274018), not where
+/// EPSG:7405 places (400000, 300000) (-2.0014460538496945, 52.59781049520809), 5 m away. Its
+/// GeoKeys give the codes with GeogTOWGS84GeoKey, read back with the shift (#1012 item 62).
+#[test]
+fn a_compound_crs_with_its_own_shift_is_read_and_written_with_it() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let bng = SpatialRef::from_epsg(27700).unwrap().to_wkt().unwrap();
+    let airy = r#"SPHEROID["Airy 1830",6377563.396,299.3249646,AUTHORITY["EPSG","7001"]]"#;
+    let shifted = bng.replacen(airy, &format!("{airy},TOWGS84[375,-111,431,0,0,0,0]"), 1);
+    assert_ne!(shifted, bng);
+    let odn = SpatialRef::from_epsg(5701).unwrap().to_wkt().unwrap();
+    let crs = SpatialRef::from_wkt(&format!(r#"COMPD_CS["BNG + ODN",{shifted},{odn}]"#));
+    let wgs84 = SpatialRef::from_epsg(4979).unwrap();
+    let place = |crs: &SpatialRef| Transformer::new(crs, &wgs84).unwrap().transform_3d(400000.0, 300000.0, 10.0).unwrap();
+    let keys = crs.to_geokeys().unwrap();
+    assert!(keys.shorts.contains(&(3072, 27700)) && keys.shorts.contains(&(4096, 5701)), "{:?}", keys.shorts);
+    assert_eq!(&towgs84(&keys)[..3], [375.0, -111.0, 431.0]);
+    let tags = keys.encode().unwrap();
+    let back = terrio_crs::geokeys::read(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).crs.unwrap();
+    for (x, y, _) in [place(&crs), place(&back)] {
+        assert!((x + 2.001443992181307).abs() < 1e-9 && (y - 52.59776558274018).abs() < 1e-9, "({x}, {y})");
+    }
+}
+
+/// A WKT 2 compound CRS whose horizontal CRS is a `BOUNDCRS` of EPSG:27700 with a Helmert shift to
+/// WGS 84 of its own (375, -111, 431), + EGM96 height, written as the two codes with that shift in
+/// GeogTOWGS84GeoKey: read back, it places (-1.5, 52.5) where PROJ 9.9.0 places the WKT's
+/// horizontal CRS, (434039.52844240674, 289242.6151533896), not where EPSG:27700 does
+/// (434039.4572860588, 289239.2810926733), 3.3 m away.
+#[test]
+fn a_wkt2_compound_crs_with_a_bound_horizontal_crs_keeps_its_shift() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let wkt = r#"COMPOUNDCRS["BNG + EGM96",BOUNDCRS[SOURCECRS[PROJCRS["OSGB36 / British National Grid",BASEGEOGCRS["OSGB36",DATUM["Ordnance Survey of Great Britain 1936",ELLIPSOID["Airy 1830",6377563.396,299.3249646]],UNIT["degree",0.0174532925199433]],CONVERSION["British National Grid",METHOD["Transverse Mercator"],PARAMETER["Latitude of natural origin",49],PARAMETER["Longitude of natural origin",-2],PARAMETER["Scale factor at natural origin",0.9996012717],PARAMETER["False easting",400000],PARAMETER["False northing",-100000]],CS[Cartesian,2],AXIS["(E)",east],AXIS["(N)",north],UNIT["metre",1],USAGE[SCOPE["Engineering survey,topographic mapping."],AREA["United Kingdom (UK) - offshore to boundary of UKCS within 49°45'N to 61°N and 9°W to 2°E; onshore Great Britain (England,Wales and Scotland). Isle of Man onshore."],BBOX[49.75,-9.01,61.01,2.01]],ID["EPSG",27700]]],TARGETCRS[GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],CS[ellipsoidal,2],AXIS["latitude",north],AXIS["longitude",east],UNIT["degree",0.0174532925199433],ID["EPSG",4326]]],ABRIDGEDTRANSFORMATION["Transformation from unknown to WGS84",METHOD["Position Vector transformation (geog2D domain)",ID["EPSG",9606]],PARAMETER["X-axis translation",375,ID["EPSG",8605]],PARAMETER["Y-axis translation",-111,ID["EPSG",8606]],PARAMETER["Z-axis translation",431,ID["EPSG",8607]],PARAMETER["X-axis rotation",0,ID["EPSG",8608]],PARAMETER["Y-axis rotation",0,ID["EPSG",8609]],PARAMETER["Z-axis rotation",0,ID["EPSG",8610]],PARAMETER["Scale difference",1,ID["EPSG",8611]]]],VERTCRS["EGM96 height",VDATUM["EGM96 geoid"],CS[vertical,1],AXIS["gravity-related height (H)",up],UNIT["metre",1],USAGE[SCOPE["Geodesy."],AREA["World."],BBOX[-90,-180,90,180]],ID["EPSG",5773]]]"#;
+    let keys = SpatialRef::from_wkt(wkt).to_geokeys().unwrap();
+    assert!(keys.shorts.contains(&(3072, 27700)) && keys.shorts.contains(&(4096, 5773)), "{:?}", keys.shorts);
+    assert_eq!(&towgs84(&keys)[..3], [375.0, -111.0, 431.0]);
+    let tags = keys.encode().unwrap();
+    let back = terrio_crs::geokeys::read(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).crs.unwrap();
+    let (x, y) = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &back).unwrap().transform(-1.5, 52.5).unwrap();
+    assert!((x - 434039.52844240674).abs() < 1e-6 && (y - 289242.6151533896).abs() < 1e-6, "({x}, {y})");
+}
+
+/// A WKT 2 compound CRS with the ID EPSG:7405 whose horizontal CRS is a `BOUNDCRS` of EPSG:27700
+/// with a shift of its own (375, -111, 431), + ODN height, is placed by that shift, as PROJ 9.9.0
+/// places it into EPSG:4979: (400000, 300000, 10) at (-2.001443992181307, 52.59776558274018), not
+/// where EPSG:7405 does (-2.0014460538496945, 52.59781049520809), 5 m away; and so is its GeoTIFF.
+#[test]
+fn a_wkt2_compound_code_with_a_bound_horizontal_crs_is_placed_by_its_shift() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let crs = SpatialRef::from_wkt(
+        r#"COMPOUNDCRS["OSGB36 / British National Grid + ODN height",BOUNDCRS[SOURCECRS[PROJCRS["OSGB36 / British National Grid",BASEGEOGCRS["OSGB36",DATUM["Ordnance Survey of Great Britain 1936",ELLIPSOID["Airy 1830",6377563.396,299.3249646]],UNIT["degree",0.0174532925199433]],CONVERSION["British National Grid",METHOD["Transverse Mercator"],PARAMETER["Latitude of natural origin",49],PARAMETER["Longitude of natural origin",-2],PARAMETER["Scale factor at natural origin",0.9996012717],PARAMETER["False easting",400000],PARAMETER["False northing",-100000]],CS[Cartesian,2],AXIS["(E)",east],AXIS["(N)",north],UNIT["metre",1],USAGE[SCOPE["Engineering survey,topographic mapping."],AREA["United Kingdom (UK) - offshore to boundary of UKCS within 49°45'N to 61°N and 9°W to 2°E; onshore Great Britain (England,Wales and Scotland). Isle of Man onshore."],BBOX[49.75,-9.01,61.01,2.01]],ID["EPSG",27700]]],TARGETCRS[GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],CS[ellipsoidal,2],AXIS["latitude",north],AXIS["longitude",east],UNIT["degree",0.0174532925199433],ID["EPSG",4326]]],ABRIDGEDTRANSFORMATION["Transformation from unknown to WGS84",METHOD["Position Vector transformation (geog2D domain)",ID["EPSG",9606]],PARAMETER["X-axis translation",375,ID["EPSG",8605]],PARAMETER["Y-axis translation",-111,ID["EPSG",8606]],PARAMETER["Z-axis translation",431,ID["EPSG",8607]],PARAMETER["X-axis rotation",0,ID["EPSG",8608]],PARAMETER["Y-axis rotation",0,ID["EPSG",8609]],PARAMETER["Z-axis rotation",0,ID["EPSG",8610]],PARAMETER["Scale difference",1,ID["EPSG",8611]]]],VERTCRS["ODN height",VDATUM["Ordnance Datum Newlyn"],CS[vertical,1],AXIS["gravity-related height (H)",up],UNIT["metre",1],USAGE[SCOPE["Geodesy,engineering survey."],AREA["United Kingdom (UK) - Great Britain onshore - England and Wales - mainland; Scotland - mainland and Inner Hebrides."],BBOX[49.93,-7.06,58.71,1.8]],ID["EPSG",5701]],ID["EPSG",7405]]"#,
+    );
+    let keys = crs.to_geokeys().unwrap();
+    assert_eq!(&towgs84(&keys)[..3], [375.0, -111.0, 431.0]);
+    let tags = keys.encode().unwrap();
+    let back = terrio_crs::geokeys::read(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).crs.unwrap();
+    let wgs84 = SpatialRef::from_epsg(4979).unwrap();
+    for c in [&crs, &back] {
+        let (x, y, _) = Transformer::new(c, &wgs84).unwrap().transform_3d(400000.0, 300000.0, 10.0).unwrap();
+        assert!((x + 2.001443992181307).abs() < 1e-9 && (y - 52.59776558274018).abs() < 1e-9, "({x}, {y})");
+    }
+}
+
+/// A WKT 2 `BOUNDCRS` to a datum other than WGS 84 (ED50), whose shift GeogTOWGS84GeoKey cannot
+/// carry, is written as its WKT in an ESRI PE citation: read back, it places its point where PROJ
+/// 9.9.0 places the WKT (`wkt2_bound.json`'s `proj`), by the shift then ED50's transformations, not
+/// by its base CRS's own (#1012 item 64).
+#[test]
+fn a_bound_crs_to_another_datum_is_written_as_its_wkt() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let cases: serde_json::Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
+    for name in ["over EPSG:4277 to ED50", "projected, to ED50", "to ED50"] {
+        let case = cases["cases"].as_array().unwrap().iter().find(|c| c["name"] == name).unwrap();
+        let keys = SpatialRef::from_wkt(case["wkt"].as_str().unwrap()).to_geokeys().unwrap();
+        assert!(keys.ascii.iter().any(|(id, t)| *id == 3073 && t.starts_with("ESRI PE String = BOUNDCRS")), "{name}: {:?}", keys.ascii);
+        let tags = keys.encode().unwrap();
+        let back = terrio_crs::geokeys::read(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).crs.unwrap();
+        let dst = SpatialRef::parse(case["dst"].as_str().unwrap()).unwrap();
+        let (x, y) = Transformer::new(&back, &dst)
+            .unwrap()
+            .transform(case["point"][0].as_f64().unwrap(), case["point"][1].as_f64().unwrap())
+            .unwrap();
+        let (px, py) = (case["proj"][0].as_f64().unwrap(), case["proj"][1].as_f64().unwrap());
+        assert!((x - px).abs() < 1e-8 && (y - py).abs() < 1e-8, "{name}: ({x}, {y}), PROJ ({px}, {py})");
+    }
+}

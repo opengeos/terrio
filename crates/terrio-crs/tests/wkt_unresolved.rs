@@ -19,12 +19,13 @@
 //! cannot find by its name (ONGD14 renamed). So is its ballpark into the CRSs of a renamed datum
 //! (`DATUM["Local datum",..., ID["EPSG",6806]]`), of unknown accuracy: from Monte Mario (Rome),
 //! PROJ then goes through Monte Mario (72 m from the code's placement), from the Georgia Geodetic
-//! Datum through Pulkovo 1942 (7 m). The `pending` case is one PROJ places by a step terrio does
-//! not follow yet, so it places it by the code: ONGD14 renamed with an ID of an authority PROJ does
-//! not know (`AUTHORITY["LOCAL","1"]`), from which PROJ's datum pivot takes only the geocentric
-//! CRS's transformation. ESRI's ATF (Paris) (EPSG:4901) is left out: PROJ applies the Paris prime
-//! meridian twice to it, 178 km from its own placement of EPSG:4901, and terrio does not follow
-//! that (`grads_and_prime_meridians.rs` checks it is placed as EPSG:4901).
+//! Datum through Pulkovo 1942 (7 m). From ONGD14 renamed with an ID of an authority PROJ does not
+//! know (`AUTHORITY["LOCAL","1"]`), PROJ's datum pivot takes only the geocentric CRS's
+//! transformation, the first CRS of the datum with one, and so does terrio. No case is left
+//! `pending` (placed by a step terrio does not follow, so checked against the code instead).
+//! ESRI's ATF (Paris) (EPSG:4901) is left out: PROJ applies the Paris prime meridian twice to it,
+//! 178 km from its own placement of EPSG:4901, and terrio does not follow that
+//! (`grads_and_prime_meridians.rs` checks it is placed as EPSG:4901).
 use serde_json::Value;
 use terrio_crs::{SpatialRef, TransformOptions, Transformer};
 
@@ -104,16 +105,18 @@ fn wkts_proj_does_not_resolve_are_placed_as_proj_does() {
     assert!(searched >= 130, "{searched} cases placed otherwise than by the code");
 }
 
-/// The case of a CRS with an ID of an authority PROJ does not know is placed by the code, not as
-/// PROJ does: until terrio follows its datum pivot for it too.
+/// A CRS with an ID of an authority PROJ does not know (`AUTHORITY["LOCAL","1"]`) is placed as PROJ
+/// places it, by the first CRS of its datum with transformations: ONGD14's geocentric CRS, so
+/// "ONGD14 to WGS 84 (1)", 1.2 m from the code's placement (opengeos/terrio#1012 item 7).
 #[test]
-fn a_crs_with_an_unknown_authority_is_placed_by_the_code() {
-    let pending: Vec<_> = offsets().iter().filter(|(case, ..)| case["pending"].as_bool().unwrap()).collect();
-    assert_eq!(pending.len(), 1);
-    for (case, proj, by_code) in pending {
+fn a_crs_with_an_unknown_authority_is_placed_by_its_datum_pivot() {
+    let local: Vec<_> = offsets().iter().filter(|(case, ..)| case["name"] == "7373 esri gcs renamed, local id -> 4326").collect();
+    assert_eq!(local.len(), 1);
+    for (case, proj, by_code) in local {
         let name = case["name"].as_str().unwrap();
-        assert!(*by_code < 1e-3, "{name}: {by_code:.3} m from the code's placement");
-        assert!(*proj > 0.1, "{name}: placed as PROJ does, {proj:.3} m");
+        assert!(!case["pending"].as_bool().unwrap(), "{name}");
+        assert!(*proj < 1e-3, "{name}: {proj:.3} m from PROJ");
+        assert!(*by_code > 1.0, "{name}: {by_code:.3} m from the code's placement");
     }
 }
 

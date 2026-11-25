@@ -2854,8 +2854,46 @@ PROJ_CASES = {
     },
     "geokeys_read_gdal": {
         "user_defined_geokeys_are_read_as_gdal_reads_them": (
-            "GeoKeys of user-defined projected CRSs as other writers write them (10 cases)", IDENTICAL,
-            "GDAL 3.12.2 (libgeotiff GTIFFetchProjParms): within 1 mm",
+            "GeoKeys as other writers write them: user-defined projected CRSs, a projected code alone or with its unit, "
+            "ellipsoids, datums and prime meridians by code (24 cases)", TOLERANCE,
+            "GDAL 3.12.2 (libgeotiff GTIFFetchProjParms, GTIFGetDefn): within 1 mm",
+        ),
+    },
+    "operation_names": {
+        "registered_concatenations_are_named_as_proj_names_them": (
+            "operation_at names of registered concatenations (NTF (Paris), Greek, MGI (Ferro)...)", IDENTICAL,
+            "PROJ 9.9.0 (pyproj 3.8.0, get_last_used_operation): the same names, both ways",
+        ),
+    },
+    "proj_edge_values": {
+        "longitudes_beyond_ten_radians_are_refused_into_a_shift_or_projection": (
+            "Longitudes beyond 10 radians", TOLERANCE, "PROJ 9.9.0: refused into a shift or projection, kept through a ballpark",
+        ),
+        "conversion_parameters_near_an_integer_are_that_integer": (
+            "Conversion parameters within 1e-8 of an integer", TOLERANCE, "PROJ 9.9.0: within 1e-9 m",
+        ),
+        "krovak_refuses_another_cone_axis": (
+            "Krovak's +alpha (co-latitude of the cone axis)", TOLERANCE, "PROJ 9.9.0: within 1 mm; another refused",
+        ),
+        "the_ellipsoidal_cea_inverse_fails_past_the_pole_line": (
+            "Ellipsoidal cea inverse past the pole line", TOLERANCE, "PROJ 9.9.0: refused (NaN); within 1e-9 degrees",
+        ),
+        "polar_laea_has_polar_axes_and_a_vertical_crs_no_body": (
+            "Polar LAEA axis order, vertical CRS body", IDENTICAL, "PROJ 9.9.0 (pyproj 3.8.0)",
+        ),
+        "over_keeps_longitudes_past_the_antimeridian": (
+            "+over in Eckert IV and Van der Grinten", TOLERANCE, "PROJ 9.9.0: within 1e-9",
+        ),
+    },
+    "wkt_axes_and_units": {
+        "a_wkt1_geographic_crs_follows_its_axis_directions": (
+            "WKT 1 GEOGCS AXIS directions (west, south, in their order)", TOLERANCE, "PROJ 9.9.0 (always_xy): within 1e-9 degrees",
+        ),
+        "wkt2_parameters_without_a_unit_are_in_degrees_and_metres": (
+            "WKT 2 conversion parameters without a unit", TOLERANCE, "PROJ 9.9.0: within 1e-9 degrees",
+        ),
+        "south_orientated_transverse_mercator_in_wkt1_is_westing_first": (
+            "South-orientated Transverse Mercator in WKT 1, whatever its AXIS", TOLERANCE, "PROJ 9.9.0 (always_xy): within 1 mm",
         ),
     },
     "wkt1_axes": {
@@ -2879,7 +2917,7 @@ PROJ_CASES = {
             "PROJ 9.8.1 (pyproj 3.8.0): within 1 mm, or refused as PROJ refuses",
         ),
         "a_wkt_proj4_extension_is_read_as_a_pipeline_step": (
-            "WKT PROJ4 extensions with unreadable values, angle prefixes, fractions and unknown names (11 cases)", TOLERANCE,
+            "WKT PROJ4 extensions with unreadable values, angle prefixes, fractions and unknown names (14 cases: 9 read, 5 refused)", TOLERANCE,
             "PROJ 9.8.1 (pyproj 3.8.0): within 1 mm",
         ),
         "an_overflowing_angle_is_refused_and_a_fraction_reads_beside_a_geoid": (
@@ -2974,7 +3012,12 @@ PROJ_CASES = {
         ),
         "an_exact_or_evaluation_point_shift_to_an_unread_target_is_left_out": (
             "WKT 2 BOUNDCRS: a full-matrix or evaluation-point shift to a target terrio cannot convert", NOT_COMPARED,
-            "left out with its target, as a `+towgs84` one is: placed as the source CRS alone (PROJ 9.8.1 reads a WKT 1 target)",
+            "left out with its WKT 1 target, as PROJ 9.9.0 leaves it out: placed as the source CRS alone",
+        ),
+        "a_wkt1_target_is_chained_through_its_own_transformations": (
+            "WKT 2 BOUNDCRS to a WKT 1 GEOGCS target (ESRI's D_Monte_Mario, or with its codes)", TOLERANCE,
+            "PROJ 9.9.0 (no grids): within 1 mm; the shift then Monte Mario to WGS 84 (4), and back; with a TOWGS84 on the "
+            "target, its ballpark",
         ),
         "an_unapplied_transformation_method_is_refused": (
             "WKT 2 BOUNDCRS: a transformation method terrio does not apply", EXPECTED_REJECTION,
@@ -3051,9 +3094,9 @@ PROJ_CASES = {
             "WKTs PROJ does not resolve to their EPSG CRS: ESRI, renamed, on a renamed datum, WKT 2 without IDs (1,120 cases)", IDENTICAL,
             "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
         ),
-        "a_crs_with_an_unknown_authority_is_placed_by_the_code": (
-            "ONGD14 renamed with an ID of an authority PROJ does not know (AUTHORITY[\"LOCAL\",\"1\"])", NOT_COMPARED,
-            "known difference, placed by the code until terrio follows PROJ's datum pivot for it (opengeos/terrio#1012, item 7)",
+        "a_crs_with_an_unknown_authority_is_placed_by_its_datum_pivot": (
+            "ONGD14 renamed with an ID of an authority PROJ does not know (AUTHORITY[\"LOCAL\",\"1\"])", TOLERANCE,
+            "PROJ 9.9.0 (pyproj 3.8.0, no grids): within 1 mm, by the first CRS of its datum with transformations (opengeos/terrio#1012, item 7)",
         ),
         "transformations_framed_by_the_ballpark_are_refused_with_it": (
             "renamed Monte Mario (Rome), Tokyo 1892 and Georgia Geodetic Datum with ALLOW_BALLPARK=NO", IDENTICAL,
@@ -3063,7 +3106,7 @@ PROJ_CASES = {
     "compound_heights": {
         "compound_crss_are_placed_as_proj_places_them": (
             "EPSG compound CRSs to and from WGS 84 (3D, geocentric, 2D) and between compound CRSs of one horizontal CRS, without grids (1,766 cases)",
-            IDENTICAL, "PROJ 9.9.0 (pyproj, no grids): within 1 mm, heights too; 2 cases pending: Belfast height to Malin Head height (1) outside its area, which PROJ runs as the only operation (opengeos/terrio#1012)",
+            TOLERANCE, "PROJ 9.9.0 (pyproj, no grids): within 1 mm, heights too, Belfast height to Malin Head height (1) outside its area, which PROJ runs as the only operation",
         ),
         "heights_through_the_ballpark_make_every_transformation_of_unknown_accuracy": (
             "EPSG:7405 from WGS 84 (3D) and (2D): the point, in 2D too, and the operation's accuracy and ballpark flag", IDENTICAL,
