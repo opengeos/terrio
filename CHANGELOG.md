@@ -19,7 +19,6 @@
   writes them (#1045).
 - Without `libzstd`, Zstandard goes through `zrip`, and `ZSTD_LEVEL` now takes effect up to level 4
   instead of always writing the fastest level (#1247).
-- A zonal cube's Zarr array names no longer end in a period (`..` becomes `field__`) (#1164).
 
 ### Features
 
