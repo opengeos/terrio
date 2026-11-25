@@ -999,6 +999,9 @@ def test_write_comparison_reads_every_level_and_reports_what_differs(tmp_path):
     nan = data.copy()
     nan[1, 1] = np.nan
     assert perf_matrix.GeoTiffWrite.compare(write("nan.tif", nan, ()), write("ref1.tif", data, ()), 0)["max_diff"] == np.inf
+    infinite = data.copy()
+    infinite[2, 2], infinite[3, 3] = np.inf, -np.inf  # equal infinities agree
+    assert perf_matrix.GeoTiffWrite.compare(write("inf.tif", infinite, ()), write("inf1.tif", infinite, ()), 0)["differing"] == 0
     interp = perf_matrix.GeoTiffWrite.compare(write("interp.tif", data, interp=gdal.GCI_RedBand), ref, 0)
     assert interp["mismatch"] == "band 1 color interpretation Red vs GDAL's Gray" and interp["n"] == 64 * 64 + 32 * 32
     levels = perf_matrix.GeoTiffWrite.compare(write("levels.tif", data, (2, 4)), ref, 0)
