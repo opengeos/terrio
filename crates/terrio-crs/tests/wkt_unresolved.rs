@@ -21,10 +21,11 @@
 //! PROJ then goes through Monte Mario (72 m from the code's placement), from the Georgia Geodetic
 //! Datum through Pulkovo 1942 (7 m). From ONGD14 renamed with an ID of an authority PROJ does not
 //! know (`AUTHORITY["LOCAL","1"]`), PROJ's datum pivot takes only the geocentric CRS's
-//! transformation, the first CRS of the datum with one, and so does terrio (`pending` cases, of a
-//! step terrio does not follow, are placed by the code: none now). ESRI's ATF (Paris) (EPSG:4901) is left out: PROJ applies the Paris prime
-//! meridian twice to it, 178 km from its own placement of EPSG:4901, and terrio does not follow
-//! that (`grads_and_prime_meridians.rs` checks it is placed as EPSG:4901).
+//! transformation, the first CRS of the datum with one, and so does terrio. No case is left
+//! `pending` (placed by a step terrio does not follow, so checked against the code instead).
+//! ESRI's ATF (Paris) (EPSG:4901) is left out: PROJ applies the Paris prime meridian twice to it,
+//! 178 km from its own placement of EPSG:4901, and terrio does not follow that
+//! (`grads_and_prime_meridians.rs` checks it is placed as EPSG:4901).
 use serde_json::Value;
 use terrio_crs::{SpatialRef, TransformOptions, Transformer};
 

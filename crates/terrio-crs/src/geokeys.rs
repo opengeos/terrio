@@ -713,16 +713,11 @@ fn ellipsoid_proj(k: &GeoKeys) -> Option<String> {
         let geog = crate::epsg::geographic_on(u32::from(datum)).iter().copied().find(|g| !crate::epsg::is_deprecated(*g))?;
         return crate::epsg_ellipsoid(geog);
     }
-    Some(match ellipsoid {
-        Some(e) => e.to_string(),
-        None => {
-            let a = k.double(2057)?;
-            match (k.double(2059), k.double(2058)) {
-                (Some(rf), _) if rf > 0.0 => format!("+a={a} +rf={rf}"),
-                (_, Some(b)) => format!("+a={a} +b={b}"),
-                _ => format!("+R={a}"),
-            }
-        }
+    let a = k.double(2057)?;
+    Some(match (k.double(2059), k.double(2058)) {
+        (Some(rf), _) if rf > 0.0 => format!("+a={a} +rf={rf}"),
+        (_, Some(b)) => format!("+a={a} +b={b}"),
+        _ => format!("+R={a}"),
     })
 }
 

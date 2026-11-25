@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+
 """Generate crates/terrio-crs/data/datum_anchor_epochs.tsv: the anchor epochs of EPSG datums.
 
 The geodetic and vertical datums of PROJ's database with an anchor epoch (`anchor_epoch`), which
