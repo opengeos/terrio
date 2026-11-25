@@ -3424,9 +3424,9 @@ mod tests {
                 let want = if shuffle == 0x04 {
                     bit_unshuffled(block, typesize, 2)
                 } else {
-                    let mut want = vec![0; bsize];
-                    interleave(block, &mut want, typesize, bsize / typesize);
-                    want
+                    // Byte `j` of element `e` is byte `j * n + e` of the block.
+                    let n = bsize / typesize;
+                    (0..bsize).map(|i| block[(i % typesize) * n + i / typesize]).collect()
                 };
                 assert!(out[k * bsize..(k + 1) * bsize] == want[..], "shuffle {shuffle:#x}, block {k}");
             }
