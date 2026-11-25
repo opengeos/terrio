@@ -281,10 +281,11 @@ Every case records:
 - peak memory, and whether terrio's values equal GDAL's, in every sample of both tools. Time and
   peak memory are taken before this check.
 
-The values check hashes everything a read returned. A raster read hashes as its data type and its
+The values check hashes the values a read returned, not its metadata (a CRS or a geometry type
+returned beside a table is not compared). A raster read hashes as its data type and its
 bytes in C order (a band read as `(1, h, w)` or `(h, w)` hashes the same); a table hashes each
 column by name, cast to a canonical type (64-bit integers and floats, large strings and binaries,
-extension types as their storage) and serialized as Arrow IPC, so row order, every attribute and
+top-level extension columns as their storage) and serialized as Arrow IPC, so row order, every attribute and
 the geometry's bytes count. A case whose hashes equal GDAL's in every sample is `exact`. Otherwise
 the check falls back to the sum and count of the pixels, or of the rows' `id` (`value` when `id`
 is not read): counts equal and sums within relative tolerance `1e-6` give `checksum_match`, which is

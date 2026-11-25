@@ -144,7 +144,10 @@ def digest(results) -> str:
     A raster's hash covers its data type and its bytes in C order, not its shape: a band read as
     `(1, h, w)` and as `(h, w)` hash the same. A table's covers its columns by name, each cast to a
     canonical type (`int32` and `int64` columns of the same values hash the same, as do chunked
-    and sliced copies) and serialized as Arrow IPC; extension types hash as their storage.
+    and sliced copies) and serialized as Arrow IPC; top-level extension columns hash as their
+    storage. Nested extension types and dictionary-encoded columns hash as they come, so equal
+    values in different encodings only fall back to the sum and count. Read metadata (the
+    `metadata` of a `(metadata, table)`, such as the CRS) is not hashed: only values are compared.
 
     Args:
         results: What each of a case's items returned: arrays, tables or `(metadata, table)`.
@@ -1182,13 +1185,13 @@ def run(args: argparse.Namespace) -> None:
         data = args.dir
         _Handler.latency = args.latency_ms / 1000
         server = ThreadingHTTPServer(("127.0.0.1", 0), lambda *a, **k: _Handler(*a, directory=str(data), **k), bind_and_activate=False)
+        cleanup.callback(server.server_close)  # the socket exists from here, even if binding fails
         # Eight reading threads connect at once: with socketserver's backlog of 5, a dropped
         # connection waits a 1 s SYN retransmission, which the case would time as its read.
         server.request_queue_size = 128
         server.server_bind()
         server.server_activate()
         server.daemon_threads = True
-        cleanup.callback(server.server_close)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         cleanup.callback(server.shutdown)
         base = f"http://127.0.0.1:{server.server_address[1]}/"
