@@ -977,7 +977,11 @@ struct LimitedGz<R: Read> {
 #[cfg(not(target_family = "wasm"))]
 impl<R: Read> LimitedGz<R> {
     fn new(reader: R) -> Self {
-        Self { inner: flate2::read::MultiGzDecoder::new(reader), read: 0, limit: crate::vfs::ZipLimits::from_config().max_size }
+        let limits = crate::vfs::ZipLimits::from_config();
+        // Allow tar header/alignment framing headroom above payload `max_size` so exact payload
+        // limits in `TarLimits` fire first on small archives while still bounding gzip bombs.
+        let framing = limits.max_entries.min(64).saturating_mul(1024).saturating_add(2048);
+        Self { inner: flate2::read::MultiGzDecoder::new(reader), read: 0, limit: limits.max_size.saturating_add(framing) }
     }
 }
 
