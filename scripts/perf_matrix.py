@@ -186,6 +186,27 @@ def digest(results) -> str:
     return h.hexdigest()
 
 
+def gdal_read_arrow(path: str, **kw):
+    """`pyogrio.read_arrow`'s table, its geometry column named `geometry` as terrio names it.
+
+    The digest compares columns by name, and GDAL names the geometry column as the file does
+    (`geom` in a GeoPackage) or, unnamed, pyogrio's `wkb_geometry` (FlatGeobuf); the rename copies
+    nothing.
+
+    Args:
+        path: The dataset's path.
+        **kw: `read_arrow`'s options.
+
+    Returns:
+        The table.
+    """
+    import pyogrio
+
+    info, table = pyogrio.read_arrow(path, **kw)
+    geometry = info.get("geometry_name") or "wkb_geometry"  # pyogrio's name for an unnamed column
+    return table.rename_columns(["geometry" if c == geometry else c for c in table.column_names])
+
+
 def table_checksum(res) -> tuple[float, int]:
     """The sum and row count of a vector read: of `id`, or of `value` when `id` is not read.
 
@@ -1059,16 +1080,11 @@ class FlatGeobuf:
                     return pa.table(terrio.open_vector(p, bbox=bbox).layers[0])
                 return pa.table(terrio.open_stream(p, columns=columns))
         else:
-            import pyogrio
-
             def open_(p):
                 return p if p.startswith("/") else "/vsicurl/" + p
 
             def read(p, **kw):
-                # GDAL names the geometry column `wkb_geometry`, terrio `geometry`: the digest
-                # compares columns by name, so GDAL's is renamed (no copy).
-                table = pyogrio.read_arrow(p, **kw)[1]
-                return table.rename_columns(["geometry" if c == "wkb_geometry" else c for c in table.column_names])
+                return gdal_read_arrow(p, **kw)
 
         boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16}.get(access, 0))
         if boxes:
@@ -1253,7 +1269,8 @@ class GeoPackage:
             access: The access pattern.
 
         Returns:
-            `need_bytes`, or `None` when the access does not apply.
+            `{"need_bytes": ...}`: the bytes the access needs, from the schema, the R-tree and the
+            leaf pages.
         """
         import bisect
         import sqlite3
@@ -1312,17 +1329,11 @@ class GeoPackage:
             def read(p, **kw):
                 return pa.table(terrio.open_stream(p, **kw))
         else:
-            import pyogrio as po
-
             def open_(p):
                 return p if p.startswith("/") else "/vsicurl/" + p
 
             def read(p, **kw):
-                # GDAL names the geometry column as the file does (`geom`), terrio `geometry`: the
-                # digest compares columns by name, so GDAL's is renamed (no copy).
-                meta, table = po.read_arrow(p, **kw)
-                geometry = meta.get("geometry_name")
-                return table.rename_columns(["geometry" if c == geometry else c for c in table.column_names])
+                return gdal_read_arrow(p, **kw)
 
         boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
         if boxes:
