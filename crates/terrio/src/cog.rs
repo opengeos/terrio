@@ -1307,37 +1307,52 @@ impl LazyRaster {
         if band == 0 || band > bands {
             return Err(Error::InvalidArgument(format!("unable to fetch band #{band}")));
         }
-        // The range stored with a single local file, which `ComputeRasterMinMax` finds through
-        // `GetMinimum()`/`GetMaximum()` (`STATISTICS_MINIMUM`/`MAXIMUM` metadata). Only a
-        // GeoTIFF's own file owns its sidecars: a VRT's or catalog's file list names its sources,
+        // The range stored with a GeoTIFF, which `ComputeRasterMinMax` finds through
+        // `GetMinimum()`/`GetMaximum()` (`STATISTICS_MINIMUM`/`MAXIMUM` metadata): the `.aux.xml`
+        // sidecar of a local file, then the `GDAL_METADATA` of the open reader (local or remote).
+        // Only a GeoTIFF owns its sidecars: a VRT's or catalog's file list names its sources,
         // whose stored statistics are not this raster's. A complex raster's statistics are stored
         // per complex band, not per component, so they are not looked up for a component.
         let stored = match &self.inner {
             Inner::Tiff(t) if !t.complex => t
                 .files
                 .first()
-                .filter(|p| std::path::Path::new(p).is_file())
-                .and_then(|p| crate::histogram::stored_range(self.driver(), p, band)),
+                .filter(|p| !crate::config::sidecars_disabled() && std::path::Path::new(p).is_file())
+                .and_then(|p| crate::ops::dem::pam_statistics(p, band))
+                .or_else(|| crate::histogram::tag_range(&t.tags, band)),
             _ => None,
         };
         if let Some(range) = stored {
             return Ok(Some(range));
         }
         let t = self.data_type();
-        // The smallest overview of more than 2500 pixels, when there is one: its pixels only,
+        // Windows are read at most `SAMPLE_TILE` square and their ranges folded, so a large
+        // overview or a source without a block size is never read in one window.
+        const SAMPLE_TILE: usize = 512;
+        let fold = |acc: Option<(f64, f64)>, m: Option<(f64, f64)>| match (acc, m) {
+            (Some((lo, hi)), Some((lo2, hi2))) => Some((lo.min(lo2), hi.max(hi2))),
+            (a, b) => a.or(b),
+        };
+        // The smallest overview of more than 2500 pixels, when there is one: all of its pixels,
         // filtered with the overview level's own nodata.
         let overviews = self.overviews();
         if let Some(i) = crate::histogram::sample_overview(w, h, &overviews) {
             let (ow, oh) = overviews[i];
             let options = WindowOptions { bands: vec![band], overview: Some(i) };
-            let read = self.read_window(Window::full(ow, oh), &options)?;
-            return Ok(crate::histogram::min_max(crate::ops::band_f64(&read.raster, 0).into_iter(), read.band_nodata(1), t));
+            let mut acc = None;
+            for y in (0..oh).step_by(SAMPLE_TILE) {
+                for x in (0..ow).step_by(SAMPLE_TILE) {
+                    let window = Window::new(x, y, SAMPLE_TILE.min(ow - x), SAMPLE_TILE.min(oh - y));
+                    let read = self.read_window(window, &options)?;
+                    acc = fold(acc, crate::histogram::min_max(crate::ops::band_f64(&read.raster, 0).into_iter(), read.band_nodata(1), t));
+                }
+            }
+            return Ok(acc);
         }
         // One block in every `nSampleRate`: only those blocks are read. The block size is the
         // raster's own when it is read on demand, else the driver's. A source without a block
-        // size is sampled in fixed tiles, so a large remote raster is never read whole; a raster
-        // held in memory is one block of the whole image.
-        const SAMPLE_TILE: usize = 512;
+        // size is sampled in `SAMPLE_TILE` tiles, so a large remote raster is never read whole;
+        // a raster held in memory is one block of the whole image.
         let block = match self.block_size() {
             Some(block) => block,
             None => match &self.inner {
@@ -1351,11 +1366,7 @@ impl LazyRaster {
         for (x, y, bw, bh) in crate::histogram::sampled_blocks(w, h, block) {
             let options = WindowOptions { bands: vec![band], overview: None };
             let read = self.read_window(Window::new(x, y, bw, bh), &options)?;
-            let m = crate::histogram::min_max(crate::ops::band_f64(&read.raster, 0).into_iter(), nodata, t);
-            acc = match (acc, m) {
-                (Some((lo, hi)), Some((lo2, hi2))) => Some((lo.min(lo2), hi.max(hi2))),
-                (a, b) => a.or(b),
-            };
+            acc = fold(acc, crate::histogram::min_max(crate::ops::band_f64(&read.raster, 0).into_iter(), nodata, t));
         }
         Ok(acc)
     }
@@ -4579,6 +4590,64 @@ mod tests {
         // The 64 x 64 overview holds 12.5, 500 and its own nodata -32768 (the base's is -9999):
         // the range covers the valid overview pixels only, as `gdalinfo -approx_stats` reports.
         assert_eq!(r.approx_min_max(1).unwrap(), Some((12.5, 500.0)));
+    }
+
+    /// The sample overview is read in windows of at most 512 x 512 whose ranges are folded, not in
+    /// one window of the whole overview: the result is the whole overview's range all the same.
+    #[test]
+    fn approx_min_max_reads_the_sample_overview_in_bounded_windows() {
+        use std::sync::Mutex;
+        struct Pyramid(Arc<Mutex<Vec<(usize, Window)>>>);
+        impl WindowSource for Pyramid {
+            fn overviews(&self) -> Vec<(usize, usize)> {
+                vec![(1200, 700)]
+            }
+            fn block_size(&self) -> Option<(usize, usize)> {
+                Some((256, 256))
+            }
+            fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
+                self.0.lock().unwrap().push((level, window));
+                // Each pixel holds its overview column plus its row: 0 at the origin, 1898 at the
+                // far corner.
+                let v = (0..window.height).flat_map(|r| (0..window.width).map(move |c| (window.x + c + window.y + r) as u16));
+                assert_eq!(bands.len(), 1);
+                Ok(RasterData::U16(v.collect()))
+            }
+        }
+        let (cols, rows) = (4800, 2800);
+        let cfg = wbraster::RasterConfig { cols, rows, bands: 1, data_type: DataType::U16, ..Default::default() };
+        let header = RasterDataset::new(wbraster::Raster::from_data_native(cfg, RasterData::U16(vec![0; cols * rows])).unwrap(), false);
+        let reads = Arc::new(Mutex::new(Vec::new()));
+        let mut r = LazyRaster::from_source(header, Box::new(Pyramid(reads.clone())));
+        assert_eq!(r.approx_min_max(1).unwrap(), Some((0.0, 1898.0)));
+        let reads = reads.lock().unwrap();
+        // 3 x 2 windows over the 1200 x 700 overview, none of them larger than 512 x 512.
+        assert_eq!(reads.len(), 6, "{reads:?}");
+        assert!(reads.iter().all(|(level, w)| *level == 1 && w.width <= 512 && w.height <= 512), "{reads:?}");
+        assert_eq!(reads.iter().map(|(_, w)| w.width * w.height).sum::<usize>(), 1200 * 700);
+    }
+
+    /// Statistics stored in a GeoTIFF's `GDAL_METADATA` are taken from the open reader's tags,
+    /// not by opening its path again: they are found when the path is no longer a local file (as
+    /// for a remote raster), with no pixel read.
+    #[test]
+    fn approx_min_max_takes_in_file_statistics_from_the_open_reader() {
+        let _serial = crate::block_cache::tests::cache_test_guard(64 << 20);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.tif");
+        let cfg = wbraster::RasterConfig { cols: 32, rows: 32, bands: 1, data_type: DataType::U16, ..Default::default() };
+        let r = wbraster::Raster::from_data_native(cfg, sequence(DataType::U16, 32 * 32, 1)).unwrap();
+        let mut ds = RasterDataset::with_driver(r, RasterDriver::GTiff, false);
+        ds.band_metadata = vec![crate::BandMetadata {
+            items: vec![("STATISTICS_MINIMUM".into(), "-7".into()), ("STATISTICS_MAXIMUM".into(), "99".into())],
+            ..Default::default()
+        }];
+        let options = crate::RasterWriteOptions { driver: Some(RasterDriver::GTiff), tile_size: Some(16), ..Default::default() };
+        crate::write_raster_dataset(&ds, path.to_str().unwrap(), &options).unwrap();
+        let mut r = LazyRaster::open(path.to_str().unwrap()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(r.approx_min_max(1).unwrap(), Some((-7.0, 99.0)));
+        assert_eq!(crate::block_cache::tests::take_lookups(), (0, 0), "no chunk decoded for a stored range");
     }
 
     /// A source without a block size is sampled in bounded tiles, not read whole: a large remote

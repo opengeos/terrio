@@ -252,6 +252,14 @@ pub(crate) fn pam_histogram(path: &str, band: usize) -> Option<Histogram> {
     (buckets.len() == count).then_some(Histogram { count, min, max, buckets })
 }
 
+/// The `STATISTICS_MINIMUM`/`MAXIMUM` of a band (numbered from 1) in a GeoTIFF's `GDAL_METADATA`.
+pub(crate) fn tag_range(tags: &crate::geotiff::GeoTags, band: usize) -> Option<(f64, f64)> {
+    let get = |k: &str| -> Option<f64> {
+        tags.band_metadata.iter().find(|(b, n, _)| *b + 1 == band && n == k).and_then(|(_, _, v)| v.trim().parse().ok())
+    };
+    Some((get("STATISTICS_MINIMUM")?, get("STATISTICS_MAXIMUM")?))
+}
+
 /// The minimum and maximum of a band (numbered from 1) stored with a dataset, in GDAL's order:
 /// `STATISTICS_MINIMUM`/`MAXIMUM` metadata (the `.aux.xml` sidecar, then a GeoTIFF's
 /// `GDAL_METADATA`), then what the format records itself (an EHdr `.stx` file, an Idrisi `.rdc`
@@ -267,13 +275,7 @@ pub(crate) fn stored_range(driver: crate::formats::RasterDriver, path: &str, ban
     }
     let p = std::path::Path::new(path);
     match driver {
-        D::GTiff | D::Cog => {
-            let tags = crate::geotiff::read_geo_tags(p)?;
-            let get = |k: &str| -> Option<f64> {
-                tags.band_metadata.iter().find(|(b, n, _)| *b + 1 == band && n == k).and_then(|(_, _, v)| v.trim().parse().ok())
-            };
-            Some((get("STATISTICS_MINIMUM")?, get("STATISTICS_MAXIMUM")?))
-        }
+        D::GTiff | D::Cog => tag_range(&crate::geotiff::read_geo_tags(p)?, band),
         D::EHdr => {
             // `band min max [mean stddev]` lines.
             let stx = std::fs::read_to_string(p.with_extension("stx")).ok()?;
