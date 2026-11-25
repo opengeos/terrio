@@ -730,9 +730,11 @@ fn blosc_decompress(src: &[u8], most: usize) -> Result<Vec<u8>> {
     let bit_shuffle = flags & 0x01 == 0 && flags & 0x04 != 0;
     let size = blocksize.min(nbytes);
     // Blocks larger than the scratch kept: the chunk and the scratch block are zeroed by the
-    // allocator, their pages resident only once written, so that a block's decoder output, the
-    // chunk and the scratch are not all resident at once (as `main` never had them). Smaller
-    // blocks are written now, which is faster, the overlap a block at most.
+    // allocator, their pages resident only once written, so that the first block's decoder output
+    // is not resident beside an untouched chunk and scratch. From the second block on, the scratch
+    // written for the one before stays resident beside the decoder's output: at most one block
+    // above `main`'s peak. Smaller blocks are written now, which is faster, the overlap a block at
+    // most.
     let large = size > BLOSC_SCRATCH_KEPT;
     let mut out = if large {
         crate::dataset::fallible::filled(nbytes, 0u8, "a Blosc chunk")?
