@@ -396,10 +396,10 @@
   the strip once; so does one of an uncompressed strip. On a 16,500 x 16,500 Deflate strip
   (1,090,567 bytes on disk, 272,250,000 decoded), the three reads that raised `ResourceLimitError`
   return the pixels; a window at the end of a 32,768 x 32,768 Deflate strip (1 GiB decoded: the most
-  a compressed strip read so may declare by default) peaks at 4 to 4.6 MiB of RSS (refused on
-  `main`, or about 1 GiB with the limit raised). A compressed strip that declares more is refused at
-  once, as before, and so is a read that would decode more by rows in all, summed over the strips
-  and bands it reads: that bounds the decoding a read does. Each read decodes such a strip from its
+  a compressed strip read may declare by default) peaks at 4 to 4.6 MiB of RSS (refused on `main`,
+  or about 1 GiB with the limit raised). A compressed strip that declares more is refused at once,
+  as before, and so is a read that would decode more by rows in all, summed over the strips and
+  bands it reads: that bounds the decoding a read does. Each read decodes such a strip from its
   start to the window's last row: at the default limit, a read of the last pixel of a 1 GiB strip of
   zeros takes 0.2 to 0.4 s, less than a window over four tiles at the limit takes on `main` (0.28 to
   1.8 s, from files as small). For files you do not trust, `TERRIO_MAX_DECLARED_BYTES` bounds what a
@@ -558,17 +558,18 @@
 - A WKT 1 or WKT 2 prime meridian that PROJ 9.8.1 knows by name (Paris RGS, Ferro, Lisbon and ten
   others; not Copenhagen) is now read in degrees when its value is given in degrees or in EPSG's
   sexagesimal degrees, whatever its unit, as PROJ reads it. A WKT 2
-  `PRIMEM["Ferro",-17.4,ANGLEUNIT["degree",...]]` was read 0.27° off before. A WKT 2 prime meridian without its
-  own unit is now in its CRS's or base CRS's unit when PROJ takes that unit for an angle (an
-  `ANGLEUNIT`, or a `UNIT` named `degree` or `grad`), else in degrees, and never in its axes' unit.
-  ATF (Paris) / Nord de Guerre (EPSG:27500), as GDAL and ESRI write it, has its Paris RGS meridian
-  in degrees beside grads. terrio read it in grads, 17 km off. ESRI's WKT of ATF (Paris) (EPSG:4901)
-  and of Nord de Guerre is now identified as its code, where it had none, 17.8 km off. ESRI's Krovak
-  `XY_Plane_Rotation` is now read in the CRS's angular unit: Krovak East North in grads (100 grads)
-  is east-north. Before, it was south-west, with its axes swapped and negated, and was identified as
-  EPSG:5513. A prime meridian within 1e-10 radians of one of PROJ's named meridians is now that
-  meridian, as PROJ's transformations between CRSs use it. NTF (Paris)'s 2.33722917° is `+pm=paris`
-  (2.337229166667°), where terrio was 0.25 mm off PROJ for every NTF (Paris) CRS. (#1024)
+  `PRIMEM["Ferro",-17.4,ANGLEUNIT["degree",...]]` was read 0.27° off before. A WKT 2 prime meridian
+  without its own unit is now in its CRS's or base CRS's unit when PROJ takes that unit for an angle
+  (an `ANGLEUNIT`, or a `UNIT` named `degree` or `grad`), else in degrees, and never in its axes'
+  unit. ATF (Paris) / Nord de Guerre (EPSG:27500), as GDAL and ESRI write it, has its Paris RGS
+  meridian in degrees beside grads. terrio read it in grads, 17 km off. ESRI's WKT of ATF (Paris)
+  (EPSG:4901) and of Nord de Guerre is now identified as its code, where it had none, 17.8 km off.
+  ESRI's Krovak `XY_Plane_Rotation` is now read in the CRS's angular unit: Krovak East North in
+  grads (100 grads) is east-north. Before, it was south-west, with its axes swapped and negated, and
+  was identified as EPSG:5513. A prime meridian within 1e-10 radians of one of PROJ's named
+  meridians is now that meridian, as PROJ's transformations between CRSs use it. NTF (Paris)'s
+  2.33722917° is `+pm=paris` (2.337229166667°), where terrio was 0.25 mm off PROJ for every NTF
+  (Paris) CRS. (#1024)
 - A WKT 1 projected CRS with ESRI's `Mercator_Variant_A` method, or with EPSG's name `Mercator
   (variant A)`, is now read as Mercator (1SP), as PROJ 9.8.1 reads it. Before, terrio refused both.
   One such CRS is EPSG Guidance Note 7-2's example, Makassar / NEIEZ (EPSG:3002), as an ESRI `.prj`
