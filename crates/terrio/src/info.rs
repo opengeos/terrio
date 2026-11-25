@@ -329,7 +329,7 @@ fn histogram_context(ds: &RasterDataset, band: usize, path: Option<&str>, lazy: 
     let local = path.filter(|p| std::path::Path::new(p).is_file());
     if let Some(p) = local {
         ctx.stored_histogram = crate::histogram::pam_histogram(p, band + 1);
-        ctx.stored_range = crate::histogram::stored_range(ds, p, band + 1);
+        ctx.stored_range = crate::histogram::stored_range(ds.driver, p, band + 1);
     }
     match lazy {
         Some(l) if l.block_size().is_some() => {
