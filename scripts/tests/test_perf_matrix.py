@@ -191,6 +191,43 @@ def test_http_ranges_larger_than_a_piece_are_served_whole_and_counted(tmp_path, 
         server.server_close()
 
 
+def test_flatgeobuf_needed_bytes_come_from_the_spatial_index(tmp_path, monkeypatch):
+    """Count the header, the index nodes visited and the features found by a bbox.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped dependency replacements.
+    """
+    ogr = pytest.importorskip("osgeo.ogr")
+    if ogr.GetDriverByName("FlatGeobuf") is None:
+        pytest.skip("FlatGeobuf driver is required")
+    ogr.UseExceptions()
+    # Three features of one size; only the first is in the single bbox (40500..50500 each way).
+    points = [(45000, 45000), (1000, 1000), (99000, 99000)]
+    for index in (True, False):
+        name = "tiny_index" if index else "tiny_noindex"
+        monkeypatch.setitem(perf_matrix.FlatGeobuf.FIXTURES, name, ("point", 3, index))
+        ds = ogr.GetDriverByName("FlatGeobuf").CreateDataSource(str(tmp_path / f"{name}.fgb"))
+        lyr = ds.CreateLayer("data", None, ogr.wkbPoint, [f"SPATIAL_INDEX={'YES' if index else 'NO'}"])
+        lyr.CreateField(ogr.FieldDefn("id", ogr.OFTInteger64))
+        for i, (x, y) in enumerate(points):
+            f = ogr.Feature(lyr.GetLayerDefn())
+            f["id"] = i
+            f.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT ({x} {y})"))
+            lyr.CreateFeature(f)
+        lyr = ds = None
+    size = (tmp_path / "tiny_index.fgb").stat().st_size
+    header = 12 + int.from_bytes((tmp_path / "tiny_index.fgb").read_bytes()[8:12], "little")
+    index_bytes = 4 * 40  # a root and three leaves, all visited
+    feature = (size - header - index_bytes) // 3
+    meta = perf_matrix.FlatGeobuf.meta
+    assert meta(tmp_path / "tiny_index.fgb", "bbox")["need_bytes"] == header + index_bytes + feature
+    assert meta(tmp_path / "tiny_index.fgb", "full")["need_bytes"] == size - index_bytes
+    # Without an index, every feature is read to find the bbox's.
+    unindexed = (tmp_path / "tiny_noindex.fgb").stat().st_size
+    assert meta(tmp_path / "tiny_noindex.fgb", "bbox")["need_bytes"] == unindexed == size - index_bytes
+
+
 def test_metadata_errors_are_recorded_for_each_case(tmp_path, monkeypatch):
     """Keep a metadata failure from aborting the remaining benchmark cases.
 
@@ -611,11 +648,13 @@ def test_changed_files_choose_the_formats_to_measure():
     """A format's own file picks it; a shared one picks every format; others pick none."""
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
-    assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "geopackage"]
-    assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "geopackage"]
+    assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "flatgeobuf", "geopackage"]
+    assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
     assert perf_matrix.touched(["crates/terrio/src/ops/sql/select.rs"]) == ["geopackage"]
     assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr"]
-    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == []
+    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == ["flatgeobuf"]
+    assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
+    assert perf_matrix.touched(["docs/benchmarks.md"]) == []
 
 
 @pytest.mark.parametrize("option,value", [("samples", "0"), ("threads", "-1"),
@@ -692,3 +731,71 @@ def test_benchmark_request_rejects_a_read_only_collaborator(tmp_path):
     assert result.returncode == 1
     assert "Repository write permission is required" in result.stdout
     assert not (tmp_path / "outputs").exists()
+
+
+def test_flatgeobuf_index_levels_end_at_one_root_and_refuse_no_features():
+    """Lay out a packed R-tree's levels down to one root, and refuse an index of no features."""
+    assert perf_matrix.FlatGeobuf.levels(1) == [(1, 2), (0, 1)]
+    assert perf_matrix.FlatGeobuf.levels(17)[-1] == (0, 1)
+    with pytest.raises(ValueError):
+        perf_matrix.FlatGeobuf.levels(0)
+    with pytest.raises(ValueError, match="unknown"):
+        perf_matrix.FlatGeobuf.levels(-1)
+
+
+def test_flatgeobuf_needed_bytes_walk_every_level_of_a_deep_index(tmp_path, monkeypatch):
+    """Count the nodes a bbox search reads through a root, branch levels and leaves.
+
+    A node is read when its parent's box meets the bbox, so the expected count is the root's
+    plus the children of every branch node that meets it, computed from the whole index rather
+    than by walking it level by level.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped dependency replacements.
+    """
+    ogr = pytest.importorskip("osgeo.ogr")
+    np = pytest.importorskip("numpy")
+    if ogr.GetDriverByName("FlatGeobuf") is None:
+        pytest.skip("FlatGeobuf driver is required")
+    ogr.UseExceptions()
+    # 300 points on a 20 x 15 grid over the extent: 300 leaves, 19, 2 and a root.
+    points = [(2500 + 5000 * i, 3333 + 6666 * j) for i in range(20) for j in range(15)]
+    name = "grid_index"
+    monkeypatch.setitem(perf_matrix.FlatGeobuf.FIXTURES, name, ("point", len(points), True))
+    path = tmp_path / f"{name}.fgb"
+    ds = ogr.GetDriverByName("FlatGeobuf").CreateDataSource(str(path))
+    lyr = ds.CreateLayer("data", None, ogr.wkbPoint, ["SPATIAL_INDEX=YES"])
+    lyr.CreateField(ogr.FieldDefn("id", ogr.OFTInteger64))
+    for i, (x, y) in enumerate(points):
+        f = ogr.Feature(lyr.GetLayerDefn())
+        f["id"] = i
+        f.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT ({x} {y})"))
+        lyr.CreateFeature(f)
+    lyr = ds = None
+
+    levels = perf_matrix.FlatGeobuf.levels(len(points))
+    assert len(levels) == 4
+    raw = path.read_bytes()
+    header = 12 + int.from_bytes(raw[8:12], "little")
+    num_nodes = levels[0][1]
+    item = np.dtype([("x0", "<f8"), ("y0", "<f8"), ("x1", "<f8"), ("y1", "<f8"), ("off", "<u8")])
+    index = np.frombuffer(raw[header:header + num_nodes * 40], item)
+    feature = (len(raw) - header - num_nodes * 40) // len(points)  # equal-sized features
+
+    for access, boxes in (("bbox", perf_matrix.GeoParquet.bboxes(1)), ("bbox16", perf_matrix.GeoParquet.bboxes(16))):
+        hit = np.zeros(num_nodes, bool)
+        for bx0, by0, bx1, by1 in boxes:
+            hit |= (index["x0"] <= bx1) & (index["y0"] <= by1) & (index["x1"] >= bx0) & (index["y1"] >= by0)
+        read = np.zeros(num_nodes, bool)
+        read[levels[-1][0]:levels[-1][1]] = True
+        for i in np.flatnonzero(hit[:levels[0][0]]):  # branch nodes that meet a box
+            level_end = next(b for a, b in levels if a <= int(index["off"][i]) < b)
+            read[int(index["off"][i]):min(int(index["off"][i]) + perf_matrix.FlatGeobuf.NODE_SIZE, level_end)] = True
+        # Every hit at a level below the root was read: its parent met the box too.
+        assert not (hit & ~read)[levels[-1][1]:].any()
+        found = sum(any(bx0 <= x <= bx1 and by0 <= y <= by1 for bx0, by0, bx1, by1 in boxes) for x, y in points)
+        assert 0 < found < len(points)
+        assert read.sum() < num_nodes  # the search skips part of the index
+        expected = header + int(read.sum()) * 40 + found * feature
+        assert perf_matrix.FlatGeobuf.meta(path, access)["need_bytes"] == expected
