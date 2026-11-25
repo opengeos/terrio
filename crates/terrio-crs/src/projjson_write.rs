@@ -71,8 +71,12 @@ fn anchors(s: &SpatialRef) -> Anchors {
         return none;
     };
     let mut out = none;
-    // Each epoch belongs to the datum node it is a child of.
+    // Each epoch belongs to the datum node it is a child of; a bound CRS's target datum is not
+    // the CRS's own (PROJ 9.9.0 writes no epoch for a source whose WKT has none).
     fn walk(node: &Node, out: &mut Anchors) {
+        if node.is(&["TARGETCRS"]) {
+            return;
+        }
         if node.child("ANCHOREPOCH").is_some() {
             if node.is(&["VDATUM", "VERTICALDATUM", "VRF"]) {
                 out.vertical = true;
