@@ -62,7 +62,7 @@ def test_equal_sums_with_different_bytes_are_not_exact():
     swapped = summarize(_row(terrio=[{**_sample(2), "digest": "b"}], gdal=[{**_sample(1), "digest": "a"}]))
     assert swapped["values"] == "checksum_match"
     text = report([exact, swapped])
-    assert "values not byte-identical to GDAL's (sum within 1e-6 and count equal; ranked): 1\n  u8_none" in text
+    assert "values equal to GDAL's but not exact (checksum_match: count and sum within 1e-6; within_tol: every pixel within the case's tolerance; ranked): 1\n  u8_none" in text
     # A later sample whose bytes differ is caught too.
     later = _row(terrio=[{**_sample(2), "digest": "a"}, {**_sample(2), "digest": "b"}], gdal=[{**_sample(1), "digest": "a"}])
     assert summarize(later)["values"] == "checksum_match"
@@ -692,11 +692,14 @@ def test_changed_files_choose_the_formats_to_measure():
     assert all("geopackage" in perf_matrix.touched([f]) for f in ("python/src/ops.rs", "crates/terrio/src/drivers/vector/mod.rs"))
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
-    assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "flatgeobuf", "geopackage"]
+    assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "flatgeobuf", "geopackage", "geotiff-write", "geoparquet-write"]
     assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
     assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
     assert perf_matrix.touched(["crates/terrio/src/ops/sql/select.rs"]) == ["geopackage"]
-    assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr"]
+    assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr", "geotiff-write"]
+    assert perf_matrix.touched(["crates/terrio/src/drivers/gtiff_write.rs"]) == ["geotiff-write"]
+    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet.rs"]) == ["geoparquet", "geoparquet-write"]
+    assert perf_matrix.touched(["python/src/vector.rs"]) == ["flatgeobuf", "geoparquet-write"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == ["flatgeobuf"]
     assert perf_matrix.touched(["docs/benchmarks.md"]) == []
 
@@ -718,6 +721,14 @@ def test_run_rejects_invalid_measurement_limits(tmp_path, monkeypatch, option, v
         perf_matrix.main()
     assert exc.value.code == 2
     assert not (tmp_path / "geotiff").exists()
+
+
+def test_writes_refuse_an_http_source(tmp_path, monkeypatch):
+    """Writes read their source from a local path only, so `--source http` is refused before any work."""
+    monkeypatch.setattr(sys, "argv", ["perf_matrix.py", "run", "--format", "geotiff-write", "--dir", str(tmp_path), "--source", "http"])
+    with pytest.raises(SystemExit) as exc:
+        perf_matrix.main()
+    assert exc.value.code == 2
 
 
 def test_posted_artifact_markdown_cannot_close_its_text_fence(tmp_path):
@@ -775,6 +786,172 @@ def test_benchmark_request_rejects_a_read_only_collaborator(tmp_path):
     assert result.returncode == 1
     assert "Repository write permission is required" in result.stdout
     assert not (tmp_path / "outputs").exists()
+
+
+def _compared(beyond=0, differing=0, max_diff=0.0, mismatch=None):
+    c = {"tol": 24, "n": 100, "differing": differing, "beyond_tol": beyond, "max_diff": max_diff, "sum_diff": 0.0, "mismatch": mismatch}
+    return {**_sample(2, s=beyond + bool(mismatch), n=100), "compare": c}
+
+
+def test_compared_outputs_label_a_case_by_its_worst_sample():
+    """Exact, within tolerance or DIFFER, from the worst sample; only the first two are ranked."""
+    gdal = [_sample(1, s=0, n=100)]
+    exact = summarize(_row(terrio=[_compared(), _compared()], gdal=gdal))
+    assert exact["values"] == "exact" and "compare" not in exact["terrio"]
+    within = summarize(_row(terrio=[_compared(), _compared(differing=5, max_diff=3)], gdal=gdal))
+    assert within["values"] == "within_tol" and within["compare"]["max_diff"] == 3
+    beyond = summarize(_row(terrio=[_compared(beyond=2, differing=5, max_diff=30)], gdal=gdal))
+    assert beyond["values"] == "DIFFER: 2 of 100 values beyond 24 (max 30)"
+    meta = summarize(_row(terrio=[_compared(differing=9, max_diff=9), _compared(mismatch="CRS differs")], gdal=gdal))
+    assert meta["values"] == "DIFFER: CRS differs"
+    based = summarize(_row(terrio=[_compared()], gdal=gdal, base=[{**_compared(mismatch="CRS differs"), "sum": 0}]))
+    assert based["values"] == "exact"  # a base build's output does not label terrio's
+    assert "base_ratio" not in based  # nor is a base whose output differs ranked against
+    assert "base_ratio" in summarize(_row(terrio=[_compared()], gdal=gdal, base=[{**_compared(), "sum": 0}]))
+    text = report([exact, {**within, "fixture": "f32_none"}, {**beyond, "fixture": "u8_rgb_jpeg"}])
+    worst = text.split("## Worst cases")[1].split("## Geometric")[0]
+    assert "u8_none" in worst and "f32_none" in worst and "within_tol" in worst and "u8_rgb_jpeg" not in worst
+    assert "values differ from GDAL (not ranked): 1\n  u8_rgb_jpeg" in text
+
+
+def test_worker_keeps_the_worst_comparison_of_its_items(monkeypatch):
+    results = iter([(0, 10, {"mismatch": None, "beyond_tol": 0, "differing": 1, "max_diff": 1}),
+                    (1, 10, {"mismatch": None, "beyond_tol": 1, "differing": 1, "max_diff": 30})])
+    fake = SimpleNamespace(EXT=".tif", reader=lambda *_: (str, [len, len], lambda _: next(results), (str, len)))
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
+    result = perf_matrix.worker({"format": "fake", "tool": "terrio", "src": "http://localhost/f.tif", "access": "full", "meta": {}})
+    assert (result["sum"], result["n"], result["compare"]["max_diff"]) == (1, 20, 30)
+
+
+def test_worker_hashes_no_digest_for_written_files(monkeypatch, tmp_path):
+    """A write's items return the written file: the worker compares it and hashes no values.
+
+    Args:
+        monkeypatch: Scoped format replacement.
+        tmp_path: Where the fake write puts its file.
+    """
+    written = tmp_path / "out.tif"
+    compare = {"mismatch": None, "beyond_tol": 0, "differing": 0, "max_diff": 0}
+    fake = SimpleNamespace(EXT=".tif", reader=lambda *_: (str, [lambda _: written], lambda _: (0, 10, compare), (str, len)))
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
+    for tool in ("terrio", "gdal"):
+        result = perf_matrix.worker({"format": "fake", "tool": tool, "src": "http://localhost/f.tif", "access": "cog", "meta": {}})
+        assert result["digest"] is None and result["compare"] == compare
+
+
+def test_write_comparison_reads_every_level_and_reports_what_differs(tmp_path):
+    """Exact copies, one changed pixel, a tolerance, a color interpretation and an overview count."""
+    gdal = pytest.importorskip("osgeo.gdal")
+    np = pytest.importorskip("numpy")
+    gdal.UseExceptions()
+
+    def write(name, data, overviews=(2,), interp=None):
+        ds = gdal.GetDriverByName("GTiff").Create(str(tmp_path / name), 64, 64, 1, gdal.GDT_Float32)
+        ds.SetGeoTransform((0, 1, 0, 0, 0, -1))
+        ds.SetProjection("EPSG:32631")
+        ds.GetRasterBand(1).WriteArray(data)
+        if interp is not None:
+            ds.GetRasterBand(1).SetColorInterpretation(interp)
+        if overviews:
+            ds.BuildOverviews("NEAREST", list(overviews))
+        ds = None
+        return tmp_path / name
+
+    data = np.arange(64 * 64, dtype="float32").reshape(64, 64)
+    data[0, 0] = np.nan
+    ref = write("ref.tif", data)
+    same = perf_matrix.GeoTiffWrite.compare(write("same.tif", data), ref, 0)
+    assert same["mismatch"] is None and same["differing"] == 0 and same["n"] == 64 * 64 + 32 * 32
+    changed = data.copy()
+    changed[10, 10] += 3  # also at (5, 5) of the overview, decimated by nearest
+    off = perf_matrix.GeoTiffWrite.compare(write("off.tif", changed), ref, 0)
+    assert (off["differing"], off["beyond_tol"], off["max_diff"]) == (2, 2, 3)
+    assert perf_matrix.GeoTiffWrite.compare(tmp_path / "off.tif", ref, 3)["beyond_tol"] == 0
+    nan = data.copy()
+    nan[1, 1] = np.nan
+    assert perf_matrix.GeoTiffWrite.compare(write("nan.tif", nan, ()), write("ref1.tif", data, ()), 0)["max_diff"] == np.inf
+    infinite = data.copy()
+    infinite[2, 2], infinite[3, 3] = np.inf, -np.inf  # equal infinities agree
+    assert perf_matrix.GeoTiffWrite.compare(write("inf.tif", infinite, ()), write("inf1.tif", infinite, ()), 0)["differing"] == 0
+    interp = perf_matrix.GeoTiffWrite.compare(write("interp.tif", data, interp=gdal.GCI_RedBand), ref, 0)
+    assert interp["mismatch"] == "band 1 color interpretation Red vs GDAL's Gray" and interp["n"] == 64 * 64 + 32 * 32
+    levels = perf_matrix.GeoTiffWrite.compare(write("levels.tif", data, (2, 4)), ref, 0)
+    assert levels["mismatch"].startswith("band 1 overview sizes") and levels["n"] == 0
+
+
+def test_write_cases_give_both_writers_the_same_options():
+    """A COG gets its overviews and block size, a GeoTIFF tiles; RGB JPEG is GeoTIFF only."""
+    w = perf_matrix.GeoTiffWrite
+    assert w.options("u16_deflate_p2_t256", "cog") == ("COG", {"COMPRESS": "DEFLATE", "INTERLEAVE": "BAND", "PREDICTOR": "2", "BLOCKSIZE": "256",
+                                                            "OVERVIEW_RESAMPLING": "AVERAGE", "OVERVIEWS": "IGNORE_EXISTING"})
+    assert w.options("u16_deflate_p2_t256", "cog_no_overviews")[1]["OVERVIEWS"] == "NONE"
+    assert w.options("u8_rgb_jpeg_rgb_t512", "gtiff") == ("GTiff", {"COMPRESS": "JPEG", "INTERLEAVE": "PIXEL", "PHOTOMETRIC": "RGB", "TILED": "YES",
+                                                                 "BLOCKXSIZE": "512", "BLOCKYSIZE": "512"})
+    assert w.options("u16_zstd_p2_t512", "gtiff")[1]["ZSTD_LEVEL"] == "1"
+    assert w.meta(Path("/nonexistent/u8_rgb_jpeg_rgb_t512.tif"), "cog") is None
+    assert all(src in perf_matrix.GeoTiff.FIXTURES and w.axes(name) for name, (src, *_) in w.FIXTURES.items())
+
+
+def test_geoparquet_write_comparison_checks_features_and_file_layout(tmp_path, monkeypatch):
+    """Equal files, a changed attribute, and GDAL's options other than terrio's."""
+    gdal = pytest.importorskip("osgeo.gdal")
+    ogr = pytest.importorskip("osgeo.ogr")
+    pytest.importorskip("pyarrow")
+    if gdal.GetDriverByName("Parquet") is None or ogr.GetGEOSVersionMajor() == 0:
+        pytest.skip("GDAL's Parquet driver and GEOS are required")
+    gdal.UseExceptions()
+
+    def write(name, value=1.5, lco=perf_matrix.GeoParquetWrite.LCO):
+        src = gdal.GetDriverByName("MEM").CreateVector("")
+        srs = gdal.osr.SpatialReference()
+        srs.ImportFromEPSG(32631)
+        layer = src.CreateLayer("data", srs, ogr.wkbPoint)
+        layer.CreateField(ogr.FieldDefn("value", ogr.OFTReal))
+        for i in range(10):
+            f = ogr.Feature(layer.GetLayerDefn())
+            f["value"] = value if i == 3 else i
+            f.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT ({i} {2 * i})"))
+            layer.CreateFeature(f)
+        gdal.VectorTranslate(str(tmp_path / name), src, format="Parquet", layerCreationOptions=lco)
+        return tmp_path / name
+
+    ref = write("ref.parquet")
+    same = perf_matrix.GeoParquetWrite.compare(write("same.parquet"), ref)
+    assert same["mismatch"] is None and same["n"] == 10
+    assert "attributes" in perf_matrix.GeoParquetWrite.compare(write("value.parquet", value=2.5), ref)["mismatch"]
+    groups = perf_matrix.GeoParquetWrite.compare(write("groups.parquet", lco=["ROW_GROUP_SIZE=4"]), ref)
+    assert groups["mismatch"] == "row groups 3 vs GDAL's 1"
+    zstd = perf_matrix.GeoParquetWrite.compare(write("zstd.parquet", lco=["COMPRESSION=ZSTD"]), ref)
+    assert zstd["mismatch"] == "compression ['ZSTD'] vs GDAL's ['SNAPPY']"
+    pq = pytest.importorskip("pyarrow.parquet")
+    table = pq.read_table(tmp_path / "same.parquet")
+    pq.write_table(table.replace_schema_metadata({}), tmp_path / "plain.parquet")
+    # Even when the features compare equal, a file without GeoParquet metadata is labelled.
+    monkeypatch.setattr(pytest.importorskip("benchmark_validation"), "compare_vectors", lambda a, b: [])
+    plain = perf_matrix.GeoParquetWrite.compare(tmp_path / "plain.parquet", ref)
+    # A runner without GEOS or sort fails the check rather than labelling the output.
+    no_geos = ["vector validation requires GDAL built with GEOS for geometry normalization"]
+    monkeypatch.setattr(pytest.importorskip("benchmark_validation"), "compare_vectors", lambda a, b: no_geos)
+    with pytest.raises(RuntimeError, match="requires GDAL built with GEOS"):
+        perf_matrix.GeoParquetWrite.compare(tmp_path / "same.parquet", ref)
+    sort_failed = ["vector validation sort failed (requires -S/-T support): sort: invalid option"]
+    monkeypatch.setattr(pytest.importorskip("benchmark_validation"), "compare_vectors", lambda a, b: sort_failed)
+    with pytest.raises(RuntimeError, match="sort failed"):
+        perf_matrix.GeoParquetWrite.compare(tmp_path / "same.parquet", ref)
+    assert plain["mismatch"] == "geometry encoding None vs GDAL's WKB"
+
+
+def test_gdal_cog_writes_get_the_cog_drivers_option_names(monkeypatch, tmp_path):
+    """GDAL's COG driver takes LEVEL for ZSTD_LEVEL and no PHOTOMETRIC; GTiff takes both as given."""
+    gdal = pytest.importorskip("osgeo.gdal")
+    calls = []
+    monkeypatch.setattr(gdal, "Translate", lambda dst, ds, format, creationOptions: calls.append((format, creationOptions)))
+    monkeypatch.setenv("GDAL_NUM_THREADS", "3")
+    opts = {"COMPRESS": "ZSTD", "PHOTOMETRIC": "RGB", "ZSTD_LEVEL": "1"}
+    perf_matrix.GeoTiffWrite.gdal_write(None, tmp_path / "a.tif", "COG", opts)
+    perf_matrix.GeoTiffWrite.gdal_write(None, tmp_path / "b.tif", "GTiff", opts)
+    assert calls == [("COG", ["COMPRESS=ZSTD", "LEVEL=1", "NUM_THREADS=3"]),
+                     ("GTiff", ["COMPRESS=ZSTD", "PHOTOMETRIC=RGB", "ZSTD_LEVEL=1", "NUM_THREADS=3"])]
 
 
 def test_threads4_is_measured_with_each_thread_count():

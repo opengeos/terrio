@@ -21,10 +21,12 @@ time ratios by axis, so a round of optimization starts from the slow areas, not 
 `--base DIR` times a second terrio build (`pip install --target DIR` of its wheel) in the same
 run, interleaved with this one and GDAL: the report then gives this build's time against the base.
 
-Formats: geotiff, zarr, geoparquet, flatgeobuf, geopackage. Needs terrio's Python module (a
-release build: `maturin develop --release` in python/), GDAL's Python bindings, pyogrio and PyArrow
-(GeoParquet, FlatGeobuf, GeoPackage) and zarr-python 3 (Zarr fixtures) in one environment. Fixtures
-and results stay in --dir, out of the repository. docs/benchmarks.md describes the method.
+Formats: geotiff, zarr, geoparquet, flatgeobuf, geopackage; geotiff-write and geoparquet-write:
+writes of the GeoTIFF and GeoParquet fixtures, each compared with GDAL's output. Needs terrio's
+Python module (a release build: `maturin develop --release` in python/), GDAL's Python bindings,
+pyogrio and PyArrow (GeoParquet, FlatGeobuf, GeoPackage) and zarr-python 3 (Zarr fixtures) in one
+environment. Fixtures and results stay in --dir, out of the repository. docs/benchmarks.md
+describes the method.
 """
 
 from __future__ import annotations
@@ -1423,6 +1425,564 @@ PATHS = {
 }
 
 
+# =============================================================================================
+# GeoTIFF, COG and GeoParquet writes
+
+
+def _writes_dir(parent: Path) -> Path:
+    """This run's write outputs, emptied for each case and removed when the run ends.
+
+    Args:
+        parent: The fixture directory.
+
+    Returns:
+        The empty directory.
+    """
+    import atexit
+    import shutil
+
+    out = parent / f".writes-{os.getpid()}"
+    if not out.exists():
+        atexit.register(shutil.rmtree, out, True)
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir()
+    return out
+
+
+def _spawned(fn, *args):
+    """Runs a function in a fresh process: a worker inherits the runner's peak memory as its own
+    floor, which a reference write would raise.
+
+    Args:
+        fn: A module-level function.
+        *args: Its arguments.
+
+    Returns:
+        What it returns.
+    """
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as pool:
+        return pool.submit(fn, *args).result()
+
+
+class GeoTiffWrite:
+    """COG and GeoTIFF writes of the GeoTIFF fixtures, by codec, predictor, tile size, overviews and threads.
+
+    A case writes a lossless fixture, loaded in memory before the timed write, to a new file on
+    local disk: the time is the write call's. GDAL writes the reference output once, untimed, when
+    the case starts. After each terrio sample, GDAL reads terrio's output and the reference and
+    compares them: size, georeferencing, CRS, types, nodata, color interpretation, mask flags,
+    overview count and every pixel of every band and overview level, exactly (JPEG: within
+    `JPEG_TOL`). Each output is deleted after its sample.
+    """
+
+    DIR = "geotiff"  # the sources are the GeoTIFF fixtures
+    SOURCES = ["local"]
+    EXT = ".tif"
+    # name: (source fixture, compress, predictor, block, interleave, photometric)
+    FIXTURES = {
+        "u8_none_t512": ("u8_none", "NONE", 1, 512, "BAND", None),
+        "u8_rgb_deflate_p2_t512": ("u8_rgb_deflate_band", "DEFLATE", 2, 512, "PIXEL", None),
+        "u8_rgb_jpeg_rgb_t512": ("u8_rgb_deflate_band", "JPEG", 1, 512, "PIXEL", "RGB"),  # GTiff only
+        "u8_rgb_jpeg_ycbcr_t512": ("u8_rgb_deflate_band", "JPEG", 1, 512, "PIXEL", "YCBCR"),
+        "u16_deflate_p2_t512": ("u16_deflate_p2", "DEFLATE", 2, 512, "BAND", None),
+        "u16_deflate_p2_t256": ("u16_deflate_p2", "DEFLATE", 2, 256, "BAND", None),
+        "u16_lzw_p2_t512": ("u16_deflate_p2", "LZW", 2, 512, "BAND", None),
+        "u16_zstd_p2_t512": ("u16_deflate_p2", "ZSTD", 2, 512, "BAND", None),
+        "u16_12b_zstd_p2_band_t256": ("u16_12b_zstd_band", "ZSTD", 2, 256, "BAND", None),
+        "f32_deflate_p3_t512": ("f32_none", "DEFLATE", 3, 512, "BAND", None),
+        "f32_lzw_p3_t512": ("f32_none", "LZW", 3, 512, "BAND", None),
+        "f32_zstd_p3_t512": ("f32_none", "ZSTD", 3, 512, "BAND", None),
+    }
+    # A COG with average overviews; without overviews; a tiled GeoTIFF without overviews; the COG
+    # with one thread (RAYON_NUM_THREADS and GDAL_NUM_THREADS 1).
+    ACCESS = ["cog", "cog_no_overviews", "gtiff", "cog_threads1"]
+    # The largest difference of a JPEG value from GDAL's within tolerance: the largest measured
+    # between terrio's and GDAL's RGB JPEG of `u8_rgb_deflate_band` (1.3% of the values differ,
+    # by 0.07 on average; both outputs' mean error against the source is 6.43).
+    JPEG_TOL = 24
+
+    @staticmethod
+    def axes(name: str) -> dict:
+        """The values of the matrix's axes for a case.
+
+        Args:
+            name: The case's name.
+
+        Returns:
+            Its `codec`, `dtype` and `layout`.
+        """
+        src, comp, pred, block, interleave, photometric = GeoTiffWrite.FIXTURES[name]
+        dtype, bands = GeoTiff.FIXTURES[src][:2]
+        return {
+            "codec": comp + (f"+p{pred}" if pred > 1 else "") + (f"/{photometric.lower()}" if photometric else ""),
+            "dtype": dtype,
+            "layout": f"tile {block}/{interleave.lower()}/{bands}b",
+        }
+
+    @staticmethod
+    def make(out: Path) -> None:
+        """Writes the GeoTIFF fixtures the writes start from.
+
+        Args:
+            out: The directory of the GeoTIFF fixtures.
+        """
+        GeoTiff.make(out)
+
+    @staticmethod
+    def options(name: str, access: str) -> tuple[str, dict]:
+        """The driver and creation options of a case, the same for terrio and GDAL.
+
+        Args:
+            name: The case's name.
+            access: The access pattern: the kind of output.
+
+        Returns:
+            `(driver, options)`.
+        """
+        _, comp, pred, block, interleave, photometric = GeoTiffWrite.FIXTURES[name]
+        o = {"COMPRESS": comp, "INTERLEAVE": interleave}
+        if pred > 1:
+            o["PREDICTOR"] = str(pred)
+        if photometric:
+            o["PHOTOMETRIC"] = photometric
+        if comp == "ZSTD":
+            # Level 1: this build of terrio writes any level above 4 at level 4, which is not GDAL's
+            # default 9; at level 1 both write files of the same size.
+            o["ZSTD_LEVEL"] = "1"
+        if access == "gtiff":
+            return "GTiff", {**o, "TILED": "YES", "BLOCKXSIZE": str(block), "BLOCKYSIZE": str(block)}
+        overviews = "NONE" if access == "cog_no_overviews" else "IGNORE_EXISTING"
+        return "COG", {**o, "BLOCKSIZE": str(block), "OVERVIEW_RESAMPLING": "AVERAGE", "OVERVIEWS": overviews}
+
+    @staticmethod
+    def gdal_write(ds, dst: Path, driver: str, options: dict) -> None:
+        """Writes a dataset with GDAL, with `GDAL_NUM_THREADS` threads.
+
+        Args:
+            ds: The GDAL dataset.
+            dst: The output path.
+            driver: `COG` or `GTiff`.
+            options: The creation options.
+        """
+        from osgeo import gdal
+
+        # GDAL's COG driver has no PHOTOMETRIC option: it writes 3-band JPEG as YCbCr itself. Its
+        # ZSTD level is LEVEL.
+        cog = {"PHOTOMETRIC": None, "ZSTD_LEVEL": "LEVEL"} if driver == "COG" else {}
+        co = [f"{cog.get(k, k)}={v}" for k, v in options.items() if cog.get(k, k)]
+        gdal.Translate(str(dst), ds, format=driver, creationOptions=[*co, f"NUM_THREADS={os.environ.get('GDAL_NUM_THREADS', '1')}"])
+
+    @staticmethod
+    def reference(src: str, ref: str, driver: str, options: dict) -> tuple[int, int]:
+        """Writes GDAL's reference output of a case.
+
+        Args:
+            src: The source fixture.
+            ref: The output path.
+            driver: `COG` or `GTiff`.
+            options: The creation options.
+
+        Returns:
+            `(n, raw)`: the output's values, every overview level included, and the source's
+            uncompressed size in bytes.
+        """
+        from osgeo import gdal
+
+        gdal.UseExceptions()
+        source = gdal.Open(src)
+        GeoTiffWrite.gdal_write(source, Path(ref), driver, options)
+        r = gdal.Open(ref)
+        n = sum(
+            o.XSize * o.YSize
+            for b in range(1, r.RasterCount + 1)
+            for o in [r.GetRasterBand(b), *(r.GetRasterBand(b).GetOverview(i) for i in range(r.GetRasterBand(b).GetOverviewCount()))]
+        )
+        b1 = source.GetRasterBand(1)
+        return n, source.RasterXSize * source.RasterYSize * source.RasterCount * gdal.GetDataTypeSize(b1.DataType) // 8
+
+    @staticmethod
+    def meta(path: Path, access: str) -> dict | None:
+        """Writes GDAL's reference output of a case, untimed and in a fresh process, and what the samples need.
+
+        Args:
+            path: The case's path in the fixture directory (not a file).
+            access: The access pattern.
+
+        Returns:
+            The source, driver, options, output directory and reference output; `need_bytes`, the
+            source's uncompressed size; or `None` when the case does not apply (RGB JPEG is
+            GeoTIFF only: GDAL's COG driver writes YCbCr JPEG).
+        """
+        src, comp, *_, photometric = GeoTiffWrite.FIXTURES[path.stem]
+        if photometric == "RGB" and access != "gtiff":
+            return None
+        out = _writes_dir(path.parent)
+        driver, options = GeoTiffWrite.options(path.stem, access)
+        ref = out / "gdal-reference.tif"
+        n, raw = _spawned(GeoTiffWrite.reference, str(path.with_name(src + ".tif")), str(ref), driver, options)
+        return {
+            "src": str(path.with_name(src + ".tif")), "out": str(out), "ref": str(ref), "driver": driver, "options": options,
+            "n": n, "need_bytes": raw, "gdal_out_bytes": ref.stat().st_size, "tol": GeoTiffWrite.JPEG_TOL if comp == "JPEG" else 0,
+        }
+
+    @staticmethod
+    def compare(path: Path, ref: Path, tol: float) -> dict:
+        """Compares an output with GDAL's, both read by GDAL.
+
+        Args:
+            path: terrio's output.
+            ref: GDAL's output.
+            tol: The largest absolute difference of a pixel within tolerance (0: exact).
+
+        Returns:
+            `tol`, `n` (values compared), `differing`, `beyond_tol`, `max_diff`, `sum_diff` (of the
+            finite differences) and `mismatch`: what differs other than pixels, or `None`. NaNs
+            equal NaNs. Pixels are compared unless the grids or overview sizes differ.
+        """
+        import numpy as np
+        from benchmark_validation import same_crs, same_number
+        from osgeo import gdal
+
+        gdal.UseExceptions()
+        a, b = gdal.Open(str(path)), gdal.Open(str(ref))
+        c = {"tol": tol, "n": 0, "differing": 0, "beyond_tol": 0, "max_diff": 0.0, "sum_diff": 0.0, "mismatch": None}
+
+        def levels(band):
+            return [band, *(band.GetOverview(i) for i in range(band.GetOverviewCount()))]
+
+        def grid() -> str | None:
+            if (a.RasterXSize, a.RasterYSize, a.RasterCount) != (b.RasterXSize, b.RasterYSize, b.RasterCount):
+                return f"size {a.RasterXSize}x{a.RasterYSize}x{a.RasterCount} vs GDAL's {b.RasterXSize}x{b.RasterYSize}x{b.RasterCount}"
+            for i in range(1, a.RasterCount + 1):
+                x, y = ([(o.XSize, o.YSize) for o in levels(ds.GetRasterBand(i))] for ds in (a, b))
+                if x != y:
+                    return f"band {i} overview sizes {x} vs GDAL's {y}"
+            return None
+
+        def metadata() -> str | None:
+            if not np.allclose(a.GetGeoTransform(), b.GetGeoTransform(), rtol=1e-12, atol=1e-8):
+                return f"geotransform {a.GetGeoTransform()} vs GDAL's {b.GetGeoTransform()}"
+            if not same_crs(a.GetSpatialRef(), b.GetSpatialRef()):
+                return "CRS differs"
+            for i in range(1, a.RasterCount + 1):
+                x, y = a.GetRasterBand(i), b.GetRasterBand(i)
+                for what, f in (
+                    ("type", lambda z: gdal.GetDataTypeName(z.DataType)),
+                    ("color interpretation", lambda z: gdal.GetColorInterpretationName(z.GetColorInterpretation())),
+                    ("mask flags", lambda z: z.GetMaskFlags()),
+                ):
+                    if f(x) != f(y):
+                        return f"band {i} {what} {f(x)} vs GDAL's {f(y)}"
+                if not same_number(x.GetNoDataValue(), y.GetNoDataValue()):
+                    return f"band {i} nodata {x.GetNoDataValue()} vs GDAL's {y.GetNoDataValue()}"
+            return None
+
+        c["mismatch"] = grid()
+        if c["mismatch"]:
+            return c  # no pixel to compare
+        c["mismatch"] = metadata()  # the pixels are compared all the same
+        for i in range(1, a.RasterCount + 1):
+            for x, y in zip(levels(a.GetRasterBand(i)), levels(b.GetRasterBand(i)), strict=True):
+                xa, ya = x.ReadAsArray().astype("float64"), y.ReadAsArray().astype("float64")
+                d = np.abs(xa - ya)
+                d[(xa == ya) | (np.isnan(xa) & np.isnan(ya))] = 0  # equal values, infinities included
+                d[np.isnan(d)] = np.inf  # NaN against a number
+                c["n"] += d.size
+                c["differing"] += int(np.count_nonzero(d))
+                c["beyond_tol"] += int(np.count_nonzero(d > tol))
+                c["max_diff"] = max(c["max_diff"], float(d.max()))
+                c["sum_diff"] += float(d[np.isfinite(d)].sum())
+        return c
+
+    @staticmethod
+    def reader(tool: str, access: str, meta: dict):
+        """How a tool writes a case, in the shape of a read: the write is the timed item.
+
+        The warm-up loads the source in memory, untimed, and writes a 256 x 256 crop of it with the
+        case's options; `open` returns the loaded source.
+
+        Args:
+            tool: `terrio` or `gdal`.
+            access: The access pattern.
+            meta: What `meta` returned for the case.
+
+        Returns:
+            `(open, items, check, warm)`, as a format's `reader`. `check` returns `(values beyond
+            tolerance, n, comparison)` for terrio's output, with its size and GDAL's, and `(0, n)`
+            for GDAL's; it deletes the output.
+        """
+        if access == "cog_threads1":  # before either library starts its threads
+            os.environ["RAYON_NUM_THREADS"] = os.environ["GDAL_NUM_THREADS"] = "1"
+        out, driver, options = Path(meta["out"]), meta["driver"], meta["options"]
+        if tool == "terrio":
+            import terrio
+
+            def load(p):
+                return terrio.open_raster(p)
+
+            def crop(r):
+                return terrio.translate(r, srcwin=(0, 0, 256, 256))
+
+            def write(r, dst):
+                terrio.write_raster(r, str(dst), driver=driver, options=options)
+        else:
+            from osgeo import gdal
+
+            gdal.UseExceptions()
+
+            def load(p):
+                return gdal.Translate("", p, format="MEM")
+
+            def crop(ds):
+                return gdal.Translate("", ds, format="MEM", srcWin=[0, 0, 256, 256])
+
+            def write(ds, dst):
+                GeoTiffWrite.gdal_write(ds, dst, driver, options)
+
+        held = {}
+
+        def warm_open(_):
+            held["src"] = load(meta["src"])
+            return crop(held["src"])
+
+        def warm_write(small):
+            dst = out / f"warm-{os.getpid()}.tif"
+            write(small, dst)
+            dst.unlink()
+
+        def item(src):
+            dst = out / f"{tool}-{os.getpid()}.tif"
+            write(src, dst)
+            return dst
+
+        def check(dst):
+            try:
+                if tool == "gdal":
+                    return 0, meta["n"]
+                c = GeoTiffWrite.compare(dst, Path(meta["ref"]), meta["tol"])
+                c.update(out_bytes=dst.stat().st_size, gdal_out_bytes=meta["gdal_out_bytes"])
+                return c["beyond_tol"] + bool(c["mismatch"]), meta["n"], c
+            finally:
+                dst.unlink()
+
+        return lambda _: held["src"], [item], check, (warm_open, warm_write)
+
+
+FORMATS["geotiff-write"] = GeoTiffWrite
+PATHS["geotiff-write"] = [
+    "crates/terrio/src/drivers/gtiff_write.rs",
+    "crates/terrio/src/drivers/tiff_lzw.rs",
+    "crates/terrio/src/cog.rs",
+    "crates/terrio/src/tiff_*",
+    "crates/terrio/src/deflate_compress.rs",
+    "crates/terrio/src/jpeg.rs",
+    "crates/terrio/src/drivers/gdal_overview.rs",
+    "python/src/ops.rs",
+    "python/src/raster.rs",
+]
+
+
+class GeoParquetWrite:
+    """GeoParquet writes of the GeoParquet fixtures, one per geometry type.
+
+    terrio's GeoParquet writer takes no options: it writes WKB with a covering bbox column,
+    Snappy compression and row groups of 65536 rows, in the features' order. GDAL is given the
+    same (`gdal.VectorTranslate` with `layerCreationOptions`). The time is the write call's, from
+    the source loaded in memory beforehand (terrio's `open_vector`, a GDAL `MEM` copy). After each terrio sample, the
+    output is compared with GDAL's reference: every feature's attributes and normalized geometry,
+    field names and types and the CRS (`benchmark_validation.compare_vectors`), then the row and
+    row group counts, columns, compression, geometry encoding and covering. An output whose bytes
+    were compared already is not compared again.
+    """
+
+    DIR = "geoparquet"  # the sources are the GeoParquet fixtures
+    SOURCES = ["local"]
+    EXT = ".parquet"
+    FIXTURES = {  # name: source fixture
+        "polygon_wkb_snappy_rg64k_bbox": "poly_wkb_rg64k_zstd_bbox_sorted",
+        "point_wkb_snappy_rg64k_bbox": "point_wkb_rg64k_zstd_bbox_sorted",
+        "line_wkb_snappy_rg64k_bbox": "line_wkb_rg64k_zstd_bbox_sorted",
+    }
+    ACCESS = ["write"]
+    LCO = ["GEOMETRY_ENCODING=WKB", "WRITE_COVERING_BBOX=YES", "COMPRESSION=SNAPPY", "ROW_GROUP_SIZE=65536", "SORT_BY_BBOX=NO"]
+
+    @staticmethod
+    def axes(name: str) -> dict:
+        """The values of the matrix's axes for a case.
+
+        Args:
+            name: The case's name.
+
+        Returns:
+            Its `codec`, `dtype` and `layout`.
+        """
+        return {"codec": "WKB/SNAPPY", "dtype": GeoParquet.FIXTURES[GeoParquetWrite.FIXTURES[name]][0], "layout": "rg 65536/bbox/source order"}
+
+    @staticmethod
+    def make(out: Path) -> None:
+        """Writes the GeoParquet fixtures the writes start from.
+
+        Args:
+            out: The directory of the GeoParquet fixtures.
+        """
+        GeoParquet.make(out)
+
+    @staticmethod
+    def gdal_write(ds, dst: Path) -> None:
+        """Writes a vector dataset as GeoParquet with GDAL, as terrio writes it.
+
+        Args:
+            ds: The GDAL dataset, or its path.
+            dst: The output path.
+        """
+        from osgeo import gdal
+
+        gdal.UseExceptions()
+        gdal.VectorTranslate(str(dst), ds, format="Parquet", layerCreationOptions=GeoParquetWrite.LCO)
+
+    @staticmethod
+    def meta(path: Path, access: str) -> dict:
+        """Writes GDAL's reference output of a case, untimed and in a fresh process, and what the samples need.
+
+        Args:
+            path: The case's path in the fixture directory (not a file).
+            access: The access pattern.
+
+        Returns:
+            The source, output directory and reference; `n`, the rows; `need_bytes`, the
+            source's uncompressed size.
+        """
+        import pyarrow.parquet as pq
+
+        src = path.with_name(GeoParquetWrite.FIXTURES[path.stem] + ".parquet")
+        out = _writes_dir(path.parent)
+        ref = out / "gdal-reference.parquet"
+        _spawned(GeoParquetWrite.gdal_write, str(src), ref)
+        md = pq.ParquetFile(src).metadata
+        return {
+            "src": str(src), "out": str(out), "ref": str(ref), "n": md.num_rows, "gdal_out_bytes": ref.stat().st_size,
+            "need_bytes": sum(md.row_group(g).total_byte_size for g in range(md.num_row_groups)),
+        }
+
+    @staticmethod
+    def compare(path: Path, ref: Path) -> dict:
+        """Compares an output with GDAL's.
+
+        Args:
+            path: terrio's output.
+            ref: GDAL's output.
+
+        Returns:
+            The comparison, as `GeoTiffWrite.compare`'s: `n` features, and `mismatch`, the first
+            difference, or `None`.
+        """
+        import pyarrow.parquet as pq
+        from benchmark_validation import compare_vectors
+        from osgeo import ogr
+
+        a, b = pq.ParquetFile(path).metadata, pq.ParquetFile(ref).metadata
+        mismatch = next(iter(compare_vectors(ogr.Open(str(path)), ogr.Open(str(ref)))), None)
+        if mismatch and mismatch.startswith("vector validation "):  # the runner's GEOS or sort, not the output
+            raise RuntimeError(mismatch)
+
+        def geo(md):
+            # A file without GeoParquet metadata differs from GDAL's rather than failing the check.
+            return json.loads((md.metadata or {}).get(b"geo", b"{}")).get("columns", {}).get("geometry", {})
+
+        for what, f in (
+            ("rows", lambda md: md.num_rows),
+            ("row groups", lambda md: md.num_row_groups),
+            ("columns", lambda md: [md.schema.column(i).path for i in range(md.num_columns)]),
+            ("compression", lambda md: sorted({md.row_group(0).column(i).compression for i in range(md.num_columns)})),
+            ("geometry encoding", lambda md: geo(md).get("encoding")),
+            ("covering", lambda md: geo(md).get("covering")),
+        ):
+            if mismatch is None and f(a) != f(b):
+                mismatch = f"{what} {f(a)} vs GDAL's {f(b)}"
+        return {"tol": 0, "n": a.num_rows, "differing": 0, "beyond_tol": 0, "max_diff": 0.0, "mismatch": mismatch}
+
+    @staticmethod
+    def reader(tool: str, access: str, meta: dict):
+        """How a tool writes a case, in the shape of a read, as `GeoTiffWrite.reader`.
+
+        Args:
+            tool: `terrio` or `gdal`.
+            access: The access pattern.
+            meta: What `meta` returned for the case.
+
+        Returns:
+            `(open, items, check, warm)`; the warm-up writes the format's warm-up file.
+        """
+        import hashlib
+
+        out = Path(meta["out"])
+        if tool == "terrio":
+            import terrio
+
+            def load(p):
+                return terrio.open_vector(p)
+
+            def write(v, dst):
+                terrio.write_vector(v, str(dst), driver="Parquet")
+        else:
+            from osgeo import gdal
+
+            gdal.UseExceptions()
+
+            def load(p):
+                return gdal.VectorTranslate("", p, format="MEM")
+
+            write = GeoParquetWrite.gdal_write
+
+        held = {}
+
+        def warm_open(p):
+            held["src"] = load(meta["src"])
+            return load(p)
+
+        def warm_write(small):
+            dst = out / f"warm-{os.getpid()}.parquet"
+            write(small, dst)
+            dst.unlink()
+
+        def item(src):
+            dst = out / f"{tool}-{os.getpid()}.parquet"
+            write(src, dst)
+            return dst
+
+        def check(dst):
+            try:
+                if tool == "gdal":
+                    return 0, meta["n"]
+                # the same bytes compare the same: once per case
+                done = out / f"compared-{hashlib.sha256(dst.read_bytes()).hexdigest()}.json"
+                if done.exists():
+                    c = json.loads(done.read_text())
+                else:
+                    c = GeoParquetWrite.compare(dst, Path(meta["ref"]))
+                    done.write_text(json.dumps(c))
+                c.update(out_bytes=dst.stat().st_size, gdal_out_bytes=meta["gdal_out_bytes"])
+                return bool(c["mismatch"]), meta["n"], c
+            finally:
+                dst.unlink()
+
+        return lambda _: held["src"], [item], check, (warm_open, warm_write)
+
+
+FORMATS["geoparquet-write"] = GeoParquetWrite
+PATHS["geoparquet-write"] = [
+    "crates/terrio/src/drivers/vector/geoparquet.rs",
+    "crates/terrio/src/drivers/vector/wkb.rs",
+    "crates/terrio/src/drivers/vector/projjson.rs",
+    "crates/terrio/src/parquet_metadata.rs",
+    "python/src/ops.rs",
+    "python/src/vector.rs",
+]
+
+
 def touched(paths: list[str]) -> list[str]:
     """The formats whose reads go through any of `paths`.
 
@@ -1650,16 +2210,19 @@ def worker(spec: dict) -> dict:
     r2 = _rchar(local)
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**2 if sys.platform == "darwin" else 1024)
     sums = [check(x) for x in out]  # after the timed read and its peak memory, as the digest
+    compares = [s[2] for s in sums if len(s) > 2]  # (sum, n, compare): an output compared with GDAL's
     return {
+        **({"compare": max(compares, key=_badness)} if compares else {}),
         "init_s": t0 - ti,
         "open_s": t1 - t0,
         "read_s": t2 - t1,
         "open_bytes": r1 - r0,
         "read_bytes": r2 - r1,
         "rss_mb": rss,
-        "sum": sum(s for s, _ in sums),
-        "n": sum(n for _, n in sums),
-        "digest": digest(out),
+        "sum": sum(s[0] for s in sums),
+        "n": sum(s[1] for s in sums),
+        # A write's items return the written file, compared by `check`: only read values are hashed.
+        "digest": None if any(isinstance(x, Path) for x in out) else digest(out),
     }
 
 
@@ -1747,7 +2310,7 @@ def run(args: argparse.Namespace) -> None:
             sys.exit("no fixtures match --only")
         samples = 1 if args.quick else args.samples
         results = args.out or data / f"results-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
-        sources = args.source or ["local", "http"]
+        sources = args.source or getattr(fmt, "SOURCES", ["local", "http"])
         if "local" in sources and not PROC_IO.exists():
             sys.exit(f"local byte counts need {PROC_IO} (Linux): use --source http")
         head = machine()
@@ -1847,7 +2410,7 @@ def summarize(row: dict) -> dict:
         rs = row.get(tool)
         if not rs:
             continue
-        out[tool] = {k: statistics.median(r[k] for r in rs) for k in rs[0] if k not in ("sum", "n", "digest")}
+        out[tool] = {k: statistics.median(r[k] for r in rs) for k in rs[0] if k not in ("sum", "n", "compare", "digest")}
         out[tool]["total_s"] = statistics.median(r["open_s"] + r["read_s"] for r in rs)
         out[f"{tool}_sum"], out[f"{tool}_n"] = rs[0]["sum"], rs[0]["n"]
     base_ok = "base" in out and "base_error" not in row
@@ -1868,12 +2431,37 @@ def summarize(row: dict) -> dict:
         exact = ref.get("digest") is not None and all(r.get("digest") == ref["digest"] for t in tools for r in row[t])
         # Equal digests are exact first: a NaN read sums to NaN, which no sum check accepts.
         out["values"] = "exact" if exact else "checksum_match" if differ is None else f"DIFFER: {differ[0]} n {differ[1]['n']} sum {differ[1]['sum']:.6g} vs gdal n {ref['n']} sum {ref['sum']:.6g}"
+        # terrio's outputs label the case; the base build's comparisons stay in its own samples
+        compares = [r["compare"] for r in row["terrio"] if "compare" in r]
+        if compares:  # outputs compared with GDAL's, pixel by pixel: the worst sample labels the case
+            c = out["compare"] = max(compares, key=_badness)
+            out["values"] = (
+                f"DIFFER: {c['mismatch']}" if c["mismatch"]
+                else f"DIFFER: {c['beyond_tol']} of {c['n']} values beyond {c['tol']:g} (max {c['max_diff']:.6g})" if c["beyond_tol"]
+                else "within_tol" if c["differing"] else "exact"
+            )
+        # A base build whose output differs from GDAL's beyond the tolerance is not ranked against.
+        if any(r["compare"]["mismatch"] or r["compare"]["beyond_tol"] for r in row.get("base", []) if "compare" in r):
+            out.pop("base_ratio", None)
     return out
 
 
-# The `values` of a case whose values agree with GDAL's: `exact` (the same bytes), or
-# `checksum_match` (the same count and sum within 1e-6; `same` in older results).
-MATCH = ("exact", "checksum_match", "same")
+def _badness(c: dict) -> tuple:
+    """How far an output is from GDAL's, to keep a case's worst comparison.
+
+    Args:
+        c: A comparison: `mismatch`, `beyond_tol`, `differing` and `max_diff`.
+
+    Returns:
+        A key that sorts a worse comparison higher.
+    """
+    return (bool(c["mismatch"]), c["beyond_tol"], c["differing"], c["max_diff"])
+
+
+# The `values` of a case whose values agree with GDAL's: `exact` (the same bytes, or a written
+# output equal to GDAL's), `checksum_match` (the same count and sum within 1e-6; `same` in older
+# results), or `within_tol` (a written output within its tolerance of GDAL's).
+MATCH = ("exact", "checksum_match", "same", "within_tol")
 
 
 def _errors(r: dict) -> list[str]:
@@ -1918,6 +2506,8 @@ def fmt_row(r: dict) -> str:
     if "requests" in t:
         s += f" | req {t['requests']:4.0f}/{g['requests']:4.0f} rounds {t['rounds']:3.0f}/{g['rounds']:3.0f}"
     label = r["values"] if r["values"] in MATCH else "DIFFER"
+    if "out_bytes" in r.get("compare", {}):
+        s += f" | out KiB {r['compare']['out_bytes'] >> 10:7} vs {r['compare']['gdal_out_bytes'] >> 10:7}"
     s += f" | init {t['init_s'] * 1000:3.0f}/{g['init_s'] * 1000:3.0f} ms rss {t['rss_mb']:4.0f}/{g['rss_mb']:4.0f} MB {label}"
     if "base_ratio" in r:
         s += f" | base {r['base']['total_s'] * 1000:8.1f} ms x{r['base_ratio']:5.2f}"
@@ -2006,7 +2596,7 @@ def report(rows: list[dict]) -> str:
     lines.append(f"more than 1.5x the bytes needed (+ 256 KiB): {len(over_need)}/{len(ok)}")
     lines += ["  " + fmt_row(r) for r in over_need]
     errors = [r for r in rows if "time_ratio" not in r]
-    lines.append(f"\nvalues not byte-identical to GDAL's (sum within 1e-6 and count equal; ranked): {len(inexact)}")
+    lines.append(f"\nvalues equal to GDAL's but not exact (checksum_match: count and sum within 1e-6; within_tol: every pixel within the case's tolerance; ranked): {len(inexact)}")
     lines += ["  " + fmt_row(r) for r in inexact]
     lines.append(f"\nvalues differ from GDAL (not ranked): {len(differ)}" + "".join(f"\n  {r['fixture']}/{r['access']}/{r['source']} x{r['time_ratio']:.2f}: {r['values']}" for r in differ))
     lines.append(f"errors: {len(errors)}" + "".join("\n  " + fmt_row(r) for r in errors))
@@ -2053,7 +2643,11 @@ def main() -> None:
         return
     if a.cmd == "run" and a.access and (bad := set(a.access) - set(accesses(FORMATS[a.format]))):
         p.error(f"--access {' '.join(sorted(bad))}: {a.format} reads are {' '.join(accesses(FORMATS[a.format]))}")
-    a.dir = a.dir.expanduser().resolve() / a.format  # absolute: the readers take a relative path as a URL
+    sources = getattr(FORMATS[a.format], "SOURCES", ["local", "http"])
+    if a.cmd == "run" and a.source and (bad := set(a.source) - set(sources)):
+        p.error(f"--source {' '.join(sorted(bad))}: {a.format} runs from {' '.join(sources)}")
+    # absolute: the readers take a relative path as a URL
+    a.dir = a.dir.expanduser().resolve() / getattr(FORMATS[a.format], "DIR", a.format)
     a.dir.mkdir(parents=True, exist_ok=True)
     if a.cmd == "fixtures":
         FORMATS[a.format].make(a.dir)
