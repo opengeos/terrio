@@ -2,7 +2,12 @@
 //! by that shift, and to another CRS (ED50, OSGB36) by that shift followed by the other CRS's own
 //! transformations to WGS 84, as PROJ concatenates them; into a CRS on the other CRS's datum, by
 //! the shift alone; into a CRS on the source CRS's own datum, with none. A shift a `BOUNDCRS`
-//! gives over a CRS terrio identifies as an EPSG code wins over the code's.
+//! gives over a CRS terrio identifies as an EPSG code wins over the code's. Outside the other
+//! CRS's transformations, the shift and that CRS's ballpark (DHDN, CH1903, Tokyo, NTF), unless
+//! the area of interest leaves only the ballpark, which PROJ excludes (into UTM zone 33N from a
+//! bound CRS to CH1903): no shift. Into a CRS with transformations of its own, the shift and each
+//! of PROJ's transformations from the other CRS (or WGS 84) to it, of unknown accuracy; so for a
+//! PROJ string with `+towgs84`, which PROJ reads as bound to WGS 84.
 //!
 //! `data/wkt2_bound.json` (`scripts/gen_wkt2_bound.py`, pyproj 3.8.0, `PROJ_NETWORK=OFF`, no
 //! grids installed) holds PROJ's coordinates (`always_xy`) in WGS 84, or in another CRS and back.
@@ -10,6 +15,11 @@
 
 use serde_json::Value;
 use terrio_crs::{Error, SpatialRef, TransformOptions, Transformer};
+
+/// A bound CRS's WKT, or a PROJ string.
+fn crs(text: &str) -> SpatialRef {
+    if text.starts_with('+') { SpatialRef::parse(text).unwrap() } else { SpatialRef::from_wkt(text) }
+}
 
 fn offline() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
@@ -26,12 +36,12 @@ fn bound_crss_place_points_as_proj_does() {
     offline();
     let data: Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 83);
+    assert_eq!(cases.len(), 104);
     let mut bad = vec![];
     for case in cases {
         let num = |v: &Value, i: usize| v[i].as_f64().unwrap();
         let dst = SpatialRef::parse(case["dst"].as_str().unwrap()).unwrap();
-        let t = Transformer::new(&SpatialRef::from_wkt(case["wkt"].as_str().unwrap()), &dst).unwrap();
+        let t = Transformer::new(&crs(case["wkt"].as_str().unwrap()), &dst).unwrap();
         let got = t.transform(num(&case["point"], 0), num(&case["point"], 1)).unwrap();
         let proj = (num(&case["proj"], 0), num(&case["proj"], 1));
         let off = if dst.is_geographic() { metres(got, proj) } else { (got.0 - proj.0).hypot(got.1 - proj.1) };
@@ -49,7 +59,7 @@ fn the_bound_transformation_is_undone_the_other_way() {
     let data: Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
     for case in data["cases"].as_array().unwrap().iter().filter(|c| c["dst"] != "EPSG:4326") {
         let num = |v: &Value, i: usize| v[i].as_f64().unwrap();
-        let bound = SpatialRef::from_wkt(case["wkt"].as_str().unwrap());
+        let bound = crs(case["wkt"].as_str().unwrap());
         let t = Transformer::new(&SpatialRef::parse(case["dst"].as_str().unwrap()).unwrap(), &bound).unwrap();
         let got = t.transform(num(&case["proj"], 0), num(&case["proj"], 1)).unwrap();
         let proj = (num(&case["proj_back"], 0), num(&case["proj_back"], 1));

@@ -1,0 +1,303 @@
+name: perf matrix
+
+# The performance matrix of scripts/perf_matrix.py on one GitHub runner: a pull request's terrio,
+# its base branch's terrio and GDAL read every case in turn, so the comment gives the pull
+# request's time against the base and against GDAL, measured on the same machine. Started by a
+# maintainer's comment on a pull request:
+#
+#   /perf-matrix                                   every format, one sample per tool (--quick)
+#   /perf-matrix geoparquet --only geoarrow        one format; options of `perf_matrix.py run`
+#   /perf-matrix zarr --access window band --quick
+#
+# or from the Actions tab (pull request number and the same arguments). The trusted `prepare` job caches the base branch's
+# fixtures and build. The `run` jobs, one per format in parallel, execute pull request code with read-only repository and
+# cache tokens; the base branch's harness takes the measurements. The `comment` job posts the report as text and runs no checked-out code.
+# A pull request's build scripts share the job's workspace and environment, so they can change
+# the harness, fixtures, base build and GDAL too. Run it on code you would build yourself.
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+        type: string
+      args:
+        description: "Format and options, as after /perf-matrix (empty: every format, --quick)"
+        required: false
+        type: string
+
+permissions: {}
+
+jobs:
+  authorize:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.issue.pull_request != null &&
+        (github.event.comment.body == '/perf-matrix' || startsWith(github.event.comment.body, '/perf-matrix ')) &&
+        (github.event.comment.author_association == 'OWNER' ||
+         github.event.comment.author_association == 'MEMBER' ||
+         github.event.comment.author_association == 'COLLABORATOR'))
+    runs-on: ubuntu-latest
+    cache-mode: none
+    permissions:
+      contents: read
+    steps:
+      - name: Require repository write permission
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTER: ${{ github.event.comment.user.login || github.actor }}
+        run: |
+          permission=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$REQUESTER/permission" -q .permission)
+          case "$permission" in admin|maintain|write) ;; *) echo "Repository write permission is required"; exit 1 ;; esac
+
+  prepare:
+    needs: authorize
+    # Only an authorized benchmark request may cancel an earlier benchmark.
+    concurrency:
+      group: perf-matrix-prepare-${{ github.event.issue.number || inputs.pr }}
+      cancel-in-progress: true
+    cache-mode: write
+    outputs:
+      formats: ${{ steps.req.outputs.formats }}
+      formats_json: ${{ steps.req.outputs.formats_json }}
+      args: ${{ steps.req.outputs.args }}
+      head: ${{ steps.req.outputs.head }}
+      base: ${{ steps.req.outputs.base }}
+      fixture_key: ${{ steps.fixtures.outputs.cache-primary-key }}
+      base_key: ${{ steps.basebuild.outputs.cache-primary-key }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      PR: ${{ github.event.issue.number || inputs.pr }}
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+    steps:
+      - name: Read the request
+        id: req
+        env:
+          BODY: ${{ github.event.comment.body || format('/perf-matrix {0}', inputs.args) }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$PR" =~ ^[0-9]+$ ]] || { echo "Invalid pull request number"; exit 1; }
+          args=$(head -n 1 <<< "$BODY" | sed 's|^/perf-matrix||; s|^ *||; s| *$||')
+          # Only names, numbers and options: the arguments reach a command line.
+          [[ "$args" =~ ^[A-Za-z0-9_.\ -]*$ ]] || { echo "Arguments may hold letters, digits, _ . - and spaces"; exit 1; }
+          read -ra words <<< "$args"
+          case "${words[0]:-}" in
+            geotiff|zarr|geoparquet) formats=${words[0]}; rest=("${words[@]:1}") ;;
+            "" ) formats="geotiff zarr geoparquet"; rest=(--quick) ;;
+            -*) formats="geotiff zarr geoparquet"; rest=("${words[@]}") ;;
+            *) echo "The first word is a format: geotiff, zarr or geoparquet"; exit 1 ;;
+          esac
+          for w in "${rest[@]}"; do
+            case "$w" in --out|--dir|--base|--format|--allow-battery) echo "$w is set by the workflow"; exit 1 ;; esac
+          done
+          read -r head base_ref < <(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" -q '[.head.sha, .base.ref] | join(" ")')
+          base=$(gh api "repos/$GITHUB_REPOSITORY/commits/$base_ref" -q .sha)
+          json=$(printf '"%s",' $formats)
+          { echo "formats=$formats"; echo "formats_json=[${json%,}]"; echo "args=${rest[*]}"; echo "head=$head"; echo "base=$base"; } >> "$GITHUB_OUTPUT"
+          echo "pull request #$PR at $head against $base_ref at $base: $formats ${rest[*]}"
+      - name: Reclaim runner disk
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.req.outputs.base }}
+          path: base
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: perf
+          # The GDAL of the matrix's published runs; pyogrio and PyArrow for GeoParquet, zarr-python
+          # for the Zarr fixtures.
+          create-args: python=3.12 gdal=3.13.3 libgdal-core=3.13.3 libgdal-arrow-parquet pyogrio pyarrow zarr>=3 numpy pip maturin
+          # Not cached: a cache saved after the pull request's code ran could carry its changes.
+          cache-environment: false
+      - name: Restore the fixtures
+        id: fixtures
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/matrix
+          key: perf-matrix-v2-fixtures-${{ hashFiles('base/scripts/perf_matrix.py') }}-${{ steps.req.outputs.formats }}
+      - name: Make the fixtures (base branch's harness)
+        if: steps.fixtures.outputs.cache-hit != 'true'
+        shell: micromamba-shell {0}
+        env:
+          FORMATS: ${{ steps.req.outputs.formats }}
+        run: for f in $FORMATS; do python base/scripts/perf_matrix.py fixtures --format "$f" --dir "$RUNNER_TEMP/matrix"; done
+      - if: steps.fixtures.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/matrix
+          key: ${{ steps.fixtures.outputs.cache-primary-key }}
+      - name: Restore the base build
+        id: basebuild
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/terrio-base
+          key: perf-matrix-v2-terrio-${{ steps.req.outputs.base }}
+      - name: Build the base branch's terrio
+        if: steps.basebuild.outputs.cache-hit != 'true'
+        shell: micromamba-shell {0}
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target
+        run: |
+          maturin build --release -m base/python/Cargo.toml -o dist-base
+          python -m pip install --no-deps --target "$RUNNER_TEMP/terrio-base" dist-base/*.whl
+      - if: steps.basebuild.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/terrio-base
+          key: ${{ steps.basebuild.outputs.cache-primary-key }}
+
+  # One job per format, in parallel: each stays well within the job time limit.
+  run:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        format: ${{ fromJSON(needs.prepare.outputs.formats_json) }}
+    concurrency:
+      group: perf-matrix-run-${{ github.event.issue.number || inputs.pr }}-${{ matrix.format }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    cache-mode: read
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      PR: ${{ github.event.issue.number || inputs.pr }}
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+    steps:
+      - name: Reclaim runner disk
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          path: base
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.head }}
+          path: pr
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: perf
+          # The GDAL of the matrix's published runs; pyogrio and PyArrow for GeoParquet, zarr-python
+          # for the Zarr fixtures.
+          create-args: python=3.12 gdal=3.13.3 libgdal-core=3.13.3 libgdal-arrow-parquet pyogrio pyarrow zarr>=3 numpy pip maturin
+          # Not cached: a cache saved after the pull request's code ran could carry its changes.
+          cache-environment: false
+      - name: Restore the prepared fixtures
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/matrix
+          key: ${{ needs.prepare.outputs.fixture_key }}
+          fail-on-cache-miss: true
+      - name: Restore the prepared base build
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/terrio-base
+          key: ${{ needs.prepare.outputs.base_key }}
+          fail-on-cache-miss: true
+      # The job's cache token cannot save caches, including from pull request code.
+      - name: Build the pull request's terrio
+        shell: micromamba-shell {0}
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target
+        run: |
+          maturin build --release -m pr/python/Cargo.toml -o dist-pr
+          python -m pip install --no-deps dist-pr/*.whl
+      - name: Run the matrix
+        shell: micromamba-shell {0}
+        env:
+          FORMAT: ${{ matrix.format }}
+          ARGS: ${{ needs.prepare.outputs.args }}
+        run: |
+          mkdir -p out
+          read -ra args <<< "$ARGS"
+          python base/scripts/perf_matrix.py run --format "$FORMAT" "${args[@]}" --dir "$RUNNER_TEMP/matrix" \
+            --base "$RUNNER_TEMP/terrio-base" --out "out/$FORMAT.jsonl" > "out/$FORMAT.log" 2>&1 || { tail -n 20 "out/$FORMAT.log"; exit 1; }
+      - name: Write the report
+        if: always()
+        shell: micromamba-shell {0}
+        env:
+          FORMAT: ${{ matrix.format }}
+        run: |
+          mkdir -p out
+          {
+            echo "#### $FORMAT"
+            echo
+            echo '```text'
+            if [ -f "out/$FORMAT.jsonl" ]; then python base/scripts/perf_matrix.py report "out/$FORMAT.jsonl"; else echo "The run failed before any result: see the run's log."; fi
+            echo '```'
+          } > "out/$FORMAT.md"
+          cat "out/$FORMAT.md" >> "$GITHUB_STEP_SUMMARY"
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-matrix-${{ matrix.format }}
+          path: out
+
+  comment:
+    cache-mode: none
+    needs: [prepare, run]
+    if: always() && needs.prepare.result == 'success' && needs.run.result != 'cancelled'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          pattern: perf-matrix-*
+          merge-multiple: true
+          path: out
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number || inputs.pr }}
+          HEAD_SHA: ${{ needs.prepare.outputs.head }}
+          BASE_SHA: ${{ needs.prepare.outputs.base }}
+          FORMATS: ${{ needs.prepare.outputs.formats }}
+          ARGS: ${{ needs.prepare.outputs.args }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [[ "$PR" =~ ^[0-9]+$ ]] || exit 1
+          [[ "$HEAD_SHA$BASE_SHA" =~ ^[0-9a-f]*$ ]] || exit 1
+          {
+            echo "### Performance matrix: ${HEAD_SHA:0:8} against base ${BASE_SHA:0:8}"
+            echo
+            echo "\`$FORMATS ${ARGS}\` on GitHub runners, one per format, GDAL 3.13.3 ([run]($RUN_URL)). base: this build's time / the base branch's (<1 faster); x: its time / GDAL's."
+            for f in $FORMATS; do
+              echo
+              echo "#### $f"
+              echo
+              if [ -f "out/$f.md" ]; then
+                # Artifacts come from PR code. Keep all their Markdown inside a fence selected here.
+                fence='```'
+                while grep -Fq "$fence" "out/$f.md"; do fence+='`'; done
+                echo "${fence}text"
+                cat "out/$f.md"
+                echo
+                echo "$fence"
+              else
+                echo "Failed before writing a report: see the run."
+              fi
+            done
+          } > perf.md
+          # A comment holds at most 65536 characters; invalid UTF-8 from the cut is dropped.
+          head -c 60000 perf.md | iconv -c -f UTF-8 -t UTF-8 > body.md
+          gh pr comment "$PR" --body-file body.md

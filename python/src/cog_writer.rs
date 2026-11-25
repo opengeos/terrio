@@ -15,7 +15,8 @@ use wbraster::raster::RasterData;
 /// laid out at the end, the same, byte for byte, as `Raster.write(..., driver="COG")` writes it.
 /// With `mask`, `write` takes the rows of an internal mask with the pixels', and the file is the
 /// one `Raster.write(..., driver="COG", mask=...)` writes. Overview factors, a source's overviews
-/// to copy and compressions only the whole raster is encoded with are not written this way.
+/// to copy, area-matched overviews and compressions only the whole raster is encoded with are not
+/// written this way.
 ///
 /// Args:
 ///     path: The output path.
@@ -58,6 +59,7 @@ impl PyCogWriter {
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
+        py: Python<'_>,
         path: &str,
         width: usize,
         height: usize,
@@ -110,7 +112,7 @@ impl PyCogWriter {
         if mask {
             o.mask = Some(Vec::new());
         }
-        let inner = terrio::GeoTiffWriter::create(path, &header, &o).py()?;
+        let inner = with_warnings(py, || terrio::GeoTiffWriter::create(path, &header, &o))?;
         Ok(Self { inner: Some(inner), width, count, data_type, complex })
     }
 

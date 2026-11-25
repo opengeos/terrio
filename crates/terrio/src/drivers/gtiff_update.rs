@@ -540,29 +540,55 @@ pub(crate) fn update_file<T>(path: &Path, change: impl FnOnce(&mut std::fs::File
 
 /// [`update_file`], whose `change` also gets the path of the copy it updates (to read it back).
 pub(crate) fn update_file_at<T>(path: &Path, change: impl FnOnce(&mut std::fs::File, &Path) -> Result<T>) -> Result<T> {
-    let resolved = std::fs::canonicalize(path)?;
-    let path = resolved.as_path();
-    let tmp = Temporary::next_to(path)?;
-    std::fs::copy(path, &tmp.path)?;
-    let mut file = std::fs::OpenOptions::new().read(true).write(true).open(&tmp.path)?;
-    let out = change(&mut file, &tmp.path)?;
-    file.sync_all()?;
-    drop(file);
-    tmp.persist(path)?;
+    let (out, staged) = stage_update(path, change)?;
+    staged.persist()?;
     Ok(out)
 }
 
 /// Writes a new file safely: `write` fills a temporary file next to `path`, which is synced and
 /// renamed to `path` (replacing any file there) only when `write` succeeds.
 pub(crate) fn replace_file<T>(path: &Path, write: impl FnOnce(&mut std::fs::File) -> Result<T>) -> Result<T> {
+    let (out, staged) = stage_replace(path, write)?;
+    staged.persist()?;
+    Ok(out)
+}
+
+/// A file written and synced next to the file it replaces, not yet renamed over it: removed
+/// unless it is persisted.
+pub(crate) struct Staged {
+    tmp: Temporary,
+    target: PathBuf,
+}
+
+impl Staged {
+    /// Renames the staged file over its target.
+    pub(crate) fn persist(self) -> Result<()> {
+        self.tmp.persist(&self.target)
+    }
+}
+
+/// [`update_file_at`], whose updated copy is staged rather than renamed over the file.
+pub(crate) fn stage_update<T>(path: &Path, change: impl FnOnce(&mut std::fs::File, &Path) -> Result<T>) -> Result<(T, Staged)> {
+    let target = std::fs::canonicalize(path)?;
+    let tmp = Temporary::next_to(&target)?;
+    std::fs::copy(&target, &tmp.path)?;
+    let mut file = std::fs::OpenOptions::new().read(true).write(true).open(&tmp.path)?;
+    let out = change(&mut file, &tmp.path)?;
+    file.sync_all()?;
+    drop(file);
+    Ok((out, Staged { tmp, target }))
+}
+
+/// [`replace_file`], whose new file is staged rather than renamed to `path`.
+pub(crate) fn stage_replace<T>(path: &Path, write: impl FnOnce(&mut std::fs::File) -> Result<T>) -> Result<(T, Staged)> {
     let resolved = match std::fs::symlink_metadata(path) {
         Ok(_) => Some(std::fs::canonicalize(path)?),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e.into()),
     };
-    let path = resolved.as_deref().unwrap_or(path);
-    let permissions = std::fs::metadata(path).ok().map(|m| m.permissions());
-    let tmp = Temporary::next_to(path)?;
+    let target = resolved.unwrap_or_else(|| path.to_path_buf());
+    let permissions = std::fs::metadata(&target).ok().map(|m| m.permissions());
+    let tmp = Temporary::next_to(&target)?;
     let mut file = std::fs::OpenOptions::new().read(true).write(true).truncate(true).open(&tmp.path)?;
     let out = write(&mut file)?;
     if let Some(permissions) = permissions {
@@ -570,8 +596,38 @@ pub(crate) fn replace_file<T>(path: &Path, write: impl FnOnce(&mut std::fs::File
     }
     file.sync_all()?;
     drop(file);
-    tmp.persist(path)?;
-    Ok(out)
+    Ok((out, Staged { tmp, target }))
+}
+
+/// Renames two staged files over their targets, `first` then `second`. When `second` cannot be
+/// renamed, `first`'s target is put back as it was (or removed, when it was new), so that the
+/// two files change together or not at all.
+pub(crate) fn persist_both(first: Staged, second: Staged) -> Result<()> {
+    // A link to (else a copy of) the file `first` replaces, to put back.
+    let backup = if first.target.is_file() {
+        let backup = Temporary::next_to(&first.target)?;
+        std::fs::remove_file(&backup.path)?;
+        if std::fs::hard_link(&first.target, &backup.path).is_err() {
+            std::fs::copy(&first.target, &backup.path)?;
+        }
+        Some(backup)
+    } else {
+        None
+    };
+    let target = first.target.clone();
+    first.persist()?;
+    if let Err(error) = second.persist() {
+        match backup {
+            Some(backup) => {
+                let _ = backup.persist(&target);
+            }
+            None => {
+                let _ = std::fs::remove_file(&target);
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -611,6 +667,37 @@ mod tests {
             let b = crate::LazyRaster::from_tiff_bytes(out).unwrap().unwrap().read().unwrap();
             assert_eq!(a.raster.data.to_f64_vec(), b.raster.data.to_f64_vec());
         }
+    }
+
+    /// Two staged files change together: when the second cannot be renamed into place, the
+    /// first is put back as it was, or removed when it was new.
+    #[test]
+    fn persist_both_puts_the_first_back_when_the_second_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first");
+        std::fs::write(&first, b"old").unwrap();
+        // A non-empty directory, which a file cannot be renamed over.
+        let blocked = dir.path().join("blocked");
+        let stage = |path: &Path, bytes: &'static [u8]| stage_replace(path, |f| Ok(f.write_all(bytes)?)).unwrap().1;
+        // Stage before creating the directory: copying directory permissions onto a file is
+        // invalid on Windows, and this test must reach the publication failure and rollback.
+        let blocked_existing = stage(&blocked, b"new");
+        let blocked_fresh = stage(&blocked, b"new");
+        std::fs::create_dir(&blocked).unwrap();
+        std::fs::write(blocked.join("inside"), b"x").unwrap();
+        let err = persist_both(stage(&first, b"new"), blocked_existing);
+        assert!(err.is_err());
+        assert_eq!(std::fs::read(&first).unwrap(), b"old");
+        let fresh = dir.path().join("fresh");
+        assert!(persist_both(stage(&fresh, b"new"), blocked_fresh).is_err());
+        assert!(!fresh.exists());
+        // Only the targets remain: no temporary is left behind.
+        let mut names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        names.sort();
+        assert_eq!(names, ["blocked", "first"]);
+        let second = dir.path().join("second");
+        persist_both(stage(&first, b"new"), stage(&second, b"two")).unwrap();
+        assert_eq!((std::fs::read(&first).unwrap(), std::fs::read(&second).unwrap()), (b"new".to_vec(), b"two".to_vec()));
     }
 
     #[test]

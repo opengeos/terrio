@@ -32,11 +32,6 @@ fn codes(v: &Value) -> Vec<u32> {
     v.as_array().unwrap().iter().map(|c| c.as_u64().unwrap() as u32).collect()
 }
 
-/// Deprecated geographic 3D and geocentric CRSs PROJ transforms by other operations than terrio
-/// (NAD83(CSRS) 3D and geocentric, RGNC 1991 geocentric): left for the geocentric CRSs of
-/// opengeos/terrio#1012, item 8.
-const PENDING: &[u32] = &[4359, 4360, 4382, 4968];
-
 /// Every deprecated code PROJ transforms is placed as PROJ places it, by its own definition.
 #[test]
 fn deprecated_codes_are_placed_by_their_own_definition_as_proj_does() {
@@ -73,10 +68,6 @@ fn deprecated_codes_are_placed_by_their_own_definition_as_proj_does() {
         }
     }
     assert_eq!(compared, 501);
-    // The pending codes still differ: remove one from `PENDING` once it matches.
-    let matching: Vec<u32> = PENDING.iter().copied().filter(|c| !bad.iter().any(|b| b.starts_with(&format!("EPSG:{c}:")))).collect();
-    assert!(matching.is_empty(), "pending codes that now match PROJ: {matching:?}");
-    bad.retain(|b| !PENDING.iter().any(|c| b.starts_with(&format!("EPSG:{c}:"))));
     assert!(bad.is_empty(), "{} of {compared} differ:\n{}", bad.len(), bad.join("\n"));
 }
 

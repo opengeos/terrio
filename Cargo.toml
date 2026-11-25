@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "python", "js", "js/fetch", "js/zarr", "js/cog"]
+members = ["crates/*", "python", "js", "js/fetch", "js/zarr", "js/cog", "js/geoparquet"]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.90"
@@ -14,8 +14,8 @@ authors = ["Qiusheng Wu <giswqs@gmail.com>"]
 [workspace.dependencies]
 # Memory-mapped reads of SQLite files (GeoPackage, MBTiles), native builds only.
 memmap2 = "0.9"
-terrio = { path = "crates/terrio", version = "0.9.0" }
-terrio-crs = { path = "crates/terrio-crs", version = "0.2.4", default-features = false }
+terrio = { path = "crates/terrio", version = "0.10.0" }
+terrio-crs = { path = "crates/terrio-crs", version = "0.3.0", default-features = false }
 # For the Python package (not published to crates.io), so without a version to keep in step.
 terrio-cli = { path = "crates/terrio-cli" }
 
@@ -57,7 +57,7 @@ quick-xml = "0.42"
 # GDAL's iconv recoding applied on top (drivers/vector/shapefile_cjk.rs).
 encoding_rs = "0.8.35"
 # Its Zstandard (zstd 0.13, a C library) is enabled by terrio-crs's `libzstd` feature only, for
-# terrio-crs built on its own: terrio decodes GeoTIFF Zstandard itself (zstd 0.14 or `ruzstd`).
+# terrio-crs built on its own: terrio decodes GeoTIFF Zstandard itself (zstd 0.14 or `zrip`).
 tiff = { version = "0.11", features = ["webp"] }
 half = "2"
 flate2 = "1"
@@ -65,7 +65,7 @@ fdeflate = "0.3"
 weezl = "0.2"
 png = "0.18"
 lz4_flex = { version = "0.14", default-features = false, features = ["alloc", "safe-decode", "checked-decode"] }
-ruzstd = "0.9"
+zrip = { version = "0.8.25", default-features = false, features = ["std", "simd"] }
 # 0.10 reads HDF5 files written in the earliest format with version 1/2 compound datatypes
 # (every HEC-RAS geometry and plan file, among others) and old fill value messages
 # (roteiro-gis/netcdf-rust#95). Keep netcdf-reader and the direct hdf5-reader on compatible
@@ -192,7 +192,11 @@ jxl-render = { opt-level = 3 }
 jxl-frame = { opt-level = 3 }
 jxl-coding = { opt-level = 3 }
 jxl-grid = { opt-level = 3 }
-ruzstd = { opt-level = 3 }
+zrip = { opt-level = 3 }
+zrip-core = { opt-level = 3 }
+zrip-decode = { opt-level = 3 }
+zrip-encode = { opt-level = 3 }
+fearless_simd = { opt-level = 3 }
 lerc-core = { opt-level = 3 }
 lerc-reader = { opt-level = 3 }
 lerc-writer = { opt-level = 3 }

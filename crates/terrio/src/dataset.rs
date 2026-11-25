@@ -1762,11 +1762,36 @@ pub struct RasterWriteOptions {
     pub color_table: Vec<[u8; 4]>,
     /// GeoTIFF overviews to build, as decimation factors such as `[2, 4, 8]`.
     pub overviews: Vec<usize>,
+    /// GeoTIFF or COG overviews written as they are, from the largest: as GDAL's COG driver writes
+    /// a source's existing overviews (`OVERVIEWS=AUTO` or `FORCE_USE_EXISTING`), and its GTiff
+    /// driver with `COPY_SRC_OVERVIEWS=YES`, without a source file to hold them. Only their
+    /// pixels are read: each has the raster's bands and data type, and is smaller than the level
+    /// before it (no larger in either dimension), as `gdaladdo`'s `ceil(n / factor)` sizes and
+    /// the COG driver's halved ones are. Neither overview factors ([`Self::overviews`]) nor a
+    /// resampling apply to them; a COG with `OVERVIEWS=IGNORE_EXISTING` or `NONE` refuses them.
+    /// They are written whole, not in rows, and only by the GeoTIFF and COG writers.
+    pub overview_data: Vec<std::sync::Arc<Raster>>,
+    /// Dataset metadata items (GDAL's default domain) set over the raster's own, as
+    /// `gdal_translate -mo` sets them: GeoTIFF and COG store them in the `GDAL_METADATA` tag (an
+    /// `AREA_OR_POINT` item sets the raster type). For duplicate keys, the last explicit value
+    /// wins. Other formats refuse them.
+    pub metadata: Vec<(String, String)>,
     /// The overview resampling, as GDAL names it: `nearest`, `average`, `rms`, `bilinear`,
     /// `cubic`, `cubicspline`, `lanczos` or `mode` (and terrio's `min` and `max` for GeoTIFF
     /// overviews). GeoTIFF overviews default to `nearest`; COGs to GDAL's COG driver's default,
     /// `cubic` (`nearest` for paletted rasters), and also take the `OVERVIEW_RESAMPLING` and
     /// `RESAMPLING` creation options, which come first.
+    ///
+    /// terrio's `area_matched` (and `area_matched_mode` for categorical rasters), which GDAL
+    /// 3.12 and 3.13 do not have, builds GeoTIFF and COG overviews of GDAL's sizes whose valid
+    /// cells cover the valid area of the full-resolution image (to the nearest cell) rather than
+    /// growing it at every level as `average` does: the cells covering the most valid pixels
+    /// are kept and hold their mean (or mode). It needs one shared nodata value across all bands;
+    /// per-dataset masks, alpha and complex bands, distinct per-band nodata, copied source
+    /// overviews and row-streamed COG writes are refused. Each band's metadata records:
+    /// `OVERVIEW_AREA_RATIOS` (per level, nominal area kept over the valid full-resolution area,
+    /// comma-separated) and `OVERVIEW_BASE_VALID_PIXELS` (the valid full-resolution pixels),
+    /// default-domain items that GDAL's COG and GTiff drivers copy along with the band.
     pub overview_resampling: Option<String>,
     /// The geotransform to write in place of the raster's own: a rotated or south-up one, which
     /// GeoTIFFs store in a `ModelTransformationTag`, as GDAL writes them.
@@ -1841,7 +1866,7 @@ pub fn read_gcps(path: &str) -> Result<Vec<Gcp>> {
 
 /// Writes a raster, declaring its nodata value.
 pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -> Result<()> {
-    write_raster_with_nodata(raster, Some(raster.nodata), false, path, options)
+    write_raster_with_nodata(raster, Some(raster.nodata), &[], false, path, options, None)
 }
 
 /// Writes a raster dataset, declaring a nodata value only when the dataset has one.
@@ -1881,12 +1906,12 @@ pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWrit
     let options = options.inherited_from(ds, driver);
     let pam = needs_nodata_pam(ds) && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
     let tag = if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) { tiff_nodata(ds) } else { ds.nodata() };
-    write_raster_with_nodata(&ds.raster, tag, ds.complex, path, &options)?;
+    let values = if ds.band_nodata.is_empty() { vec![ds.nodata(); ds.raster.bands] } else { ds.band_nodata.clone() };
+    write_raster_with_nodata(&ds.raster, tag, &ds.band_nodata, ds.complex, path, &options, Some(&values))?;
     if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
         let mut aux = std::ffi::OsString::from(path);
         aux.push(".aux.xml");
         if pam || crate::memfs::exists(Path::new(&aux)) {
-            let values = if ds.band_nodata.is_empty() { vec![ds.nodata(); ds.raster.bands] } else { ds.band_nodata.clone() };
             crate::drivers::common::write_band_nodata_pam(Path::new(path), &values)?;
         }
     }
@@ -1951,7 +1976,18 @@ pub(crate) fn color_options(ds: &RasterDataset, path: &str, options: &RasterWrit
     })
 }
 
-fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool, path: &str, options: &RasterWriteOptions) -> Result<()> {
+/// Writes `raster`, declaring `nodata`. `sidecar`: the band nodata the caller then writes to a
+/// GeoTIFF's `.aux.xml`; `None` when the sidecar already there is kept (see
+/// `TiffOptions::sparse_unless_sidecar_differs`).
+fn write_raster_with_nodata(
+    raster: &Raster,
+    nodata: Option<f64>,
+    band_nodata: &[Option<f64>],
+    complex: bool,
+    path: &str,
+    options: &RasterWriteOptions,
+    sidecar: Option<&[Option<f64>]>,
+) -> Result<()> {
     ensure_writable_location(path)?;
     let driver = match options.driver.or_else(|| RasterDriver::for_extension(path)) {
         Some(d) => d,
@@ -1961,6 +1997,11 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool,
             if let Some(d) = crate::gdal_backend::driver_for_path(path, false) {
                 if !options.gcps.is_empty() || options.mask.is_some() || !options.rpc.is_empty() {
                     return Err(Error::Unsupported(format!("GCPs, masks and RPCs are not written through GDAL's {d} driver")));
+                }
+                if !options.overview_data.is_empty() || !options.metadata.is_empty() {
+                    return Err(Error::Unsupported(format!(
+                        "supplied overviews and metadata items are not written through GDAL's {d} driver"
+                    )));
                 }
                 let mut co = options.creation_options.clone();
                 if let Some(c) = &options.compression
@@ -1982,11 +2023,42 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool,
         // terrio's writer handles the compressions it encodes; wbraster the others.
         if let Some(mut opts) = crate::drivers::gtiff_write::TiffOptions::from_write_options(options, driver == RasterDriver::Cog, nodata)?
         {
+            let area_matched = if opts.cog {
+                opts.cog_area_matched.is_some()
+            } else {
+                matches!(opts.overview_resampling, crate::drivers::gtiff_write::OverviewResampling::AreaMatched(_))
+            };
+            // These overview images declare TIFF's one shared sentinel. Per-band PAM describes
+            // the base image only, so accepting distinct sentinels would misclassify their cells.
+            if area_matched
+                && band_nodata.iter().take(raster.bands).any(|value| match (*value, nodata) {
+                    (Some(a), Some(b)) => a != b && !(a.is_nan() && b.is_nan()),
+                    (None, None) => false,
+                    _ => true,
+                })
+            {
+                return Err(Error::Unsupported("area-matched overviews require one shared nodata value across all bands".into()));
+            }
             // Complex bands as complex samples, as GDAL writes CInt16... CFloat64 GeoTIFFs.
             opts.complex = complex;
+            opts.sparse_unless_sidecar_differs(path, sidecar, raster.bands / if complex { 2 } else { 1 }, raster.data_type);
             return crate::drivers::gtiff_write::write(raster, path, &opts);
         }
+        if options
+            .creation_options
+            .iter()
+            .rev()
+            .find(|(key, _)| key.eq_ignore_ascii_case("SPARSE_OK"))
+            .is_some_and(|(_, value)| crate::drivers::gtiff_write::yes(value))
+        {
+            if driver == RasterDriver::Cog {
+                crate::warnings::warn(crate::drivers::gtiff_write::SPARSE_COG_WARNING.into());
+            } else {
+                return Err(Error::Unsupported("SPARSE_OK needs a compression handled by the native GeoTIFF writer".into()));
+            }
+        }
     }
+    options.check_written_by_tiff_writer(driver)?;
     // Complex samples: GeoTIFFs written above, and GDAL's HFA driver below.
     if complex && !(cfg!(feature = "gdal") && driver == RasterDriver::HFA) {
         return Err(Error::Unsupported(format!(
@@ -2103,6 +2175,14 @@ pub struct VectorWriteOptions {
     /// Unknown declarations allow optional Z. Required/optional source dimensional
     /// hints are not represented by Layer and cannot be reproduced by this option.
     pub preserve_declared_geometry_type: bool,
+    /// GeoPackage: use [`crate::Feature::fid`] as the SQLite primary key, interpreted by
+    /// [`crate::signed_fid`]. IDs must be unique per layer and, when appending, unused
+    /// in the destination. A case-insensitive attribute matching the primary-key column
+    /// must be an integer field; its non-null values must equal their feature IDs.
+    /// The matching field is represented by the primary key. Missing or null attributes
+    /// leave the feature ID in effect. This preserves IDs already assigned by readers.
+    /// By default, the writer uses its existing attribute-based or sequential assignment.
+    pub preserve_fid: bool,
     /// How to write CSV files.
     pub csv: crate::drivers::vector::csv::CsvOptions,
     /// How to write GeoJSON files.
@@ -2157,12 +2237,11 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
         (_, []) => Err(Error::InvalidArgument("no layers to write".into())),
         #[cfg(feature = "sqlite")]
         (VectorDriver::GPKG, _) => {
-            if options.preserve_declared_geometry_type {
-                std::fs::write(path, crate::drivers::vector::geopackage::to_bytes_with_geometry_types(layers, true)?)?;
-                Ok(())
-            } else {
-                crate::drivers::vector::geopackage::write(layers, path)
+            if !options.preserve_fid && !options.preserve_declared_geometry_type {
+                return crate::drivers::vector::geopackage::write(layers, path);
             }
+            std::fs::write(path, crate::drivers::vector::geopackage::to_bytes_with_options(layers, options)?)?;
+            Ok(())
         }
         #[cfg(feature = "cad")]
         (d @ (VectorDriver::DXF | VectorDriver::DWG), _) => {
@@ -2228,6 +2307,9 @@ pub(crate) fn ensure_vector_options_apply(options: &VectorWriteOptions, driver: 
     if options.preserve_declared_geometry_type && driver != Some(VectorDriver::GPKG) {
         return Err(Error::InvalidArgument("preserve_declared_geometry_type applies to GPKG output".into()));
     }
+    if options.preserve_fid && driver != Some(VectorDriver::GPKG) {
+        return Err(Error::InvalidArgument("preserve_fid applies to GPKG output".into()));
+    }
     let xlsx = &options.xlsx;
     if (xlsx.geometry != crate::CsvGeometry::None || xlsx.macro_enabled || xlsx.has_layout()) && driver != Some(VectorDriver::XLSX) {
         return Err(Error::InvalidArgument("the XLSX write options apply to XLSX output".into()));
@@ -2292,7 +2374,10 @@ impl RasterWriteOptions {
             return None;
         }
         let predictor = co("PREDICTOR").unwrap_or("1").trim().to_ascii_uppercase();
-        (matches!(compression.as_str(), "" | "NONE" | "PACKBITS") || matches!(predictor.as_str(), "1" | "NO" | "NONE")).then_some(first)
+        // A COG also reads FALSE and OFF as no predictor, as GDAL's COG driver does.
+        let no_predictor = matches!(predictor.as_str(), "1" | "NO" | "NONE")
+            || (driver == RasterDriver::Cog && matches!(predictor.as_str(), "FALSE" | "OFF"));
+        (matches!(compression.as_str(), "" | "NONE" | "PACKBITS") || no_predictor).then_some(first)
     }
 
     /// Metadata inheritance shared by whole-image and row-streamed TIFF writers.
@@ -2330,6 +2415,25 @@ impl RasterWriteOptions {
             ..self.clone()
         }
     }
+    /// Refuses supplied overviews and metadata items for a write that terrio's GeoTIFF and COG
+    /// writer does not make (another format, or a compression only wbraster encodes), which would
+    /// leave them out.
+    pub(crate) fn check_written_by_tiff_writer(&self, driver: RasterDriver) -> Result<()> {
+        if !self.overview_data.is_empty() {
+            return Err(Error::Unsupported(format!(
+                "supplied overviews are written by the GeoTIFF and COG writer (in a compression it encodes), not the {} one",
+                driver.name()
+            )));
+        }
+        if !self.metadata.is_empty() {
+            return Err(Error::Unsupported(format!(
+                "metadata items are written to GeoTIFF and COG files (in a compression terrio encodes), not by the {} writer",
+                driver.name()
+            )));
+        }
+        Ok(())
+    }
+
     pub(crate) fn inherited_gcps(&self, ds: &RasterDataset, driver: Option<RasterDriver>) -> Vec<Gcp> {
         if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog))
             && self.gcps.is_empty()
@@ -2504,6 +2608,53 @@ pub(crate) mod fallible {
 
 #[cfg(test)]
 mod tests {
+    /// A compression outside the native writer must not silently store every block when sparse
+    /// output was requested, even when COMPRESS is given only through creation options.
+    #[test]
+    fn sparse_writes_do_not_fall_back_to_a_dense_legacy_writer() {
+        let raster = wbraster::Raster::from_data_native(
+            wbraster::RasterConfig { cols: 2, rows: 2, bands: 1, data_type: wbraster::DataType::U8, ..Default::default() },
+            wbraster::raster::RasterData::U8(vec![0; 4]),
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.tif");
+        let options = super::RasterWriteOptions {
+            driver: Some(crate::formats::RasterDriver::GTiff),
+            creation_options: vec![("COMPRESS".into(), "UNKNOWN".into()), ("SPARSE_OK".into(), "YES".into())],
+            ..Default::default()
+        };
+        let error = super::write_raster(&raster, path.to_str().unwrap(), &options).unwrap_err();
+        assert!(matches!(error, crate::Error::Unsupported(_)), "{error}");
+        assert!(error.to_string().contains("SPARSE_OK"), "{error}");
+        assert!(!path.exists(), "no dense file is published");
+    }
+
+    /// COG fallback keeps the same warn-and-write contract as the native COG writer, including
+    /// when the native compression parser declines an option supplied through creation options.
+    #[test]
+    fn sparse_cog_fallback_warns_and_writes_every_tile() {
+        let raster = wbraster::Raster::from_data_native(
+            wbraster::RasterConfig { cols: 2, rows: 2, bands: 1, data_type: wbraster::DataType::U8, nodata: 0., ..Default::default() },
+            wbraster::raster::RasterData::U8(vec![0; 4]),
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.tif");
+        let options = super::RasterWriteOptions {
+            driver: Some(crate::formats::RasterDriver::Cog),
+            creation_options: vec![("COMPRESS".into(), "UNKNOWN".into()), ("SPARSE_OK".into(), "YES".into())],
+            ..Default::default()
+        };
+        let _ = crate::warnings::take();
+        super::write_raster(&raster, path.to_str().unwrap(), &options).unwrap();
+        assert_eq!(crate::warnings::take(), ["SPARSE_OK is not supported for COGs: every tile is written"]);
+        let mut decoder = tiff::decoder::Decoder::new(std::io::Cursor::new(std::fs::read(&path).unwrap())).unwrap();
+        let tables = crate::geotiff::ChunkTables::read(&mut decoder).unwrap();
+        assert!(!tables.counts.is_empty());
+        assert!(tables.counts.iter().all(|&count| count > 0), "every tile is stored");
+    }
+
     /// A file no driver reads names its path once, with the fallback hint after the reason.
     #[test]
     fn unrecognized_format_names_its_path_once() {

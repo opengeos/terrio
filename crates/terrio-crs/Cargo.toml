@@ -1,6 +1,6 @@
 [package]
 name = "terrio-crs"
-version = "0.2.4"
+version = "0.3.0"
 description = "Coordinate reference systems and transformations in Rust, with EPSG/ESRI/IAU tables and datum grids"
 readme = "README.md"
 edition.workspace = true
@@ -20,7 +20,7 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 thiserror.workspace = true
 tiff.workspace = true
-ruzstd.workspace = true
+zrip.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # O_NONBLOCK, so that opening a grid replaced by a FIFO cannot block.

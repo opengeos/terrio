@@ -650,7 +650,7 @@ fn encode(compression: u16, data: &[u8]) -> Vec<u8> {
             z.finish().unwrap()
         }
         5 => weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(data).unwrap(),
-        50000 => ruzstd::encoding::compress_to_vec(data, ruzstd::encoding::CompressionLevel::Fastest),
+        50000 => zrip::compress(data, 1).unwrap(),
         32773 => {
             let mut out = Vec::new();
             let mut i = 0;
@@ -936,8 +936,7 @@ fn rows_of_big_endian_strips_with_predictors_keep_their_values() {
 #[test]
 fn a_compressed_strip_cut_short_is_invalid_where_a_window_reaches_the_cut() {
     // 256 x 600 UInt16 pixels (307 KB) that compress little, cut in their last eighth: Zstandard
-    // codes them in three blocks, and its decoder hands out bytes once they leave its 128 KiB
-    // window, so the cut is in the third.
+    // codes them in three blocks, so the cut is in the third.
     let (cols, rows) = (256usize, 600usize);
     let values = scattered(cols * rows);
     let raw: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
@@ -1003,11 +1002,39 @@ fn a_compressed_strip_cut_short_is_invalid_where_a_window_reaches_the_cut() {
         std::fs::write(&path, strip_tiff(false, (cols as u32, rows as u32, 1), (16, 1), (compression, 1), &encode(compression, &raw)))
             .unwrap();
         let mut r = LazyRaster::open_tiff_with_limits(path.to_str().unwrap(), limits).unwrap().unwrap();
-        // The first part of the stored bytes (64 KiB) is in the file, the next is not: Zstandard's
-        // decoder reads past it itself.
+        // The first part of the stored bytes (64 KiB) is in the file, the next is not.
         std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(70_000).unwrap();
         let e = r.read_window(end, &band1()).unwrap_err();
         assert!(matches!(e, terrio::Error::Io(_)), "compression {compression}: {e}");
+    }
+}
+
+/// A window of a Zstandard strip whose last row ends a block reads, though the next block's header
+/// is corrupt: decoding stops once the window's rows are out. A window reaching the next block is
+/// refused as invalid data, as a whole decode of the strip is.
+#[test]
+fn a_window_ending_at_a_zstandard_block_reads_before_a_corrupt_block() {
+    // 256 x 64 UInt16 pixels: a raw block of the first 16 rows, then a block header of the
+    // reserved type, in a frame of a 128 KiB window and no content size.
+    let (cols, rows, top) = (256usize, 64usize, 16usize);
+    let values = scattered(cols * top);
+    let raw: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let mut stream = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x38];
+    stream.extend_from_slice(&((raw.len() as u32) << 3).to_le_bytes()[..3]);
+    stream.extend_from_slice(&raw);
+    stream.extend_from_slice(&[0x0f, 0x00, 0x00]);
+    let file = strip_tiff(false, (cols as u32, rows as u32, 1), (16, 1), (50000, 1), &stream);
+    // 16 rows: the strip declares four times the limit, and is read by rows.
+    let limits = TiffReadLimits { chunk_bytes: top * cols * 2 };
+    let read = |limits, w: Window| {
+        let mut r = LazyRaster::from_tiff_bytes_with_limits(file.clone(), limits).unwrap().unwrap();
+        r.read_window(w, &band1()).map(|ds| ds.raster.data.to_f64_vec())
+    };
+    let first = Window::new(0, 0, cols, top);
+    assert_eq!(read(limits, first).unwrap(), values.iter().map(|v| f64::from(*v)).collect::<Vec<_>>());
+    for (limits, w) in [(limits, Window::new(0, top - 1, 3, 2)), (TiffReadLimits::unlimited(), first)] {
+        let e = read(limits, w).unwrap_err();
+        assert!(matches!(e, terrio::Error::InvalidData(_)), "{limits:?}: {e}");
     }
 }
 
@@ -1297,4 +1324,32 @@ fn a_strip_declared_past_the_end_of_the_file_is_not_read_by_rows() {
     let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes, TiffReadLimits { chunk_bytes: 64 }).unwrap().unwrap();
     let e = r.read_window(Window::new(0, 1, 4, 1), &band1()).unwrap_err();
     assert!(matches!(e, terrio::Error::DecodedLimitExceeded { limit: 64, .. }), "{e}");
+}
+
+/// A strip a sparse file leaves out (offset and byte count 0) reads as nodata beside strips over
+/// the limit that are read by their rows: nothing is read for it, at offset 0 or anywhere.
+#[test]
+fn a_strip_left_out_reads_as_nodata_beside_strips_read_by_rows() {
+    use terrio::raster::RasterData;
+    // 64 x 48 UInt16 pixels of nodata 7 in strips of 16 rows (2,048 bytes); the middle strip, all
+    // nodata, is left out.
+    let (cols, rows) = (64, 48);
+    let values: Vec<u16> = (0..cols * rows).map(|i| if (16..32).contains(&(i / cols)) { 7 } else { (i % 1000 + 8) as u16 }).collect();
+    let cfg = terrio::RasterConfig { cols, rows, bands: 1, data_type: terrio::DataType::U16, nodata: 7.0, ..Default::default() };
+    let ds = terrio::RasterDataset::new(terrio::Raster::from_data_native(cfg, RasterData::U16(values.clone())).unwrap(), true);
+    let options = terrio::RasterWriteOptions {
+        compression: Some("NONE".into()),
+        creation_options: [("BLOCKYSIZE", "16"), ("SPARSE_OK", "YES")].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        ..Default::default()
+    };
+    let bytes = terrio::memory::write_raster_bytes(&ds, "sparse.tif", &options).unwrap();
+    // Ten rows (1,280 bytes) fit the limit; a strip does not.
+    let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes, TiffReadLimits { chunk_bytes: 10 * cols * 2 }).unwrap().unwrap();
+    assert_eq!(r.tiff_block_range(1, 0, 1, None).unwrap(), Some((0, 0)));
+    let v = &values;
+    for w in [Window::new(3, 12, 20, 8), Window::new(0, 16, cols, 10), Window::new(5, 28, 30, 8)] {
+        let expected: Vec<f64> =
+            (w.y..w.y + w.height).flat_map(|y| (w.x..w.x + w.width).map(move |x| f64::from(v[y * cols + x]))).collect();
+        assert_eq!(r.read_window(w, &band1()).unwrap().raster.data.to_f64_vec(), expected, "{w:?}");
+    }
 }

@@ -100,9 +100,7 @@ fn tables() -> &'static Tables {
 
 pub(super) fn decompress(data: &[u8]) -> String {
     let mut text = String::new();
-    if let Ok(mut d) = ruzstd::decoding::StreamingDecoder::new(data) {
-        let _ = std::io::Read::read_to_string(&mut d, &mut text);
-    }
+    let _ = std::io::Read::read_to_string(&mut zrip::FrameDecoder::new(data), &mut text);
     text
 }
 

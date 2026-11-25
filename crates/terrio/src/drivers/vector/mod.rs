@@ -8,6 +8,30 @@ pub(crate) fn document_error(format: &str, detail: impl std::fmt::Display) -> cr
     crate::Error::InvalidData(format!("{format}: {INVALID_DOCUMENT} {detail}"))
 }
 
+/// A rectangle `(min_x, min_y, max_x, max_y)` by its corners' extent: an inverted one (its corners
+/// swapped, such as `(10, 10, 0, 0)`) as the rectangle it spans, as `SpatialFilter` takes it. A NaN
+/// corner gives the empty rectangle `(+inf, +inf, -inf, -inf)`, which every reader's test
+/// excludes, whether it compares for overlap (`min <= x1`) or for separation (`min > x1`).
+#[cfg_attr(not(any(feature = "parquet", feature = "flatgeobuf", feature = "sqlite")), allow(dead_code))]
+pub(crate) fn corners_extent((x0, y0, x1, y1): (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    if [x0, y0, x1, y1].iter().any(|v| v.is_nan()) {
+        return (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    }
+    (x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1))
+}
+
+#[cfg(test)]
+mod corners_extent_tests {
+    #[test]
+    fn corners_extent_orders_corners_and_makes_nan_empty() {
+        assert_eq!(super::corners_extent((10.0, 10.0, 0.0, 0.0)), (0.0, 0.0, 10.0, 10.0));
+        assert_eq!(super::corners_extent((0.0, 10.0, 10.0, 0.0)), (0.0, 0.0, 10.0, 10.0));
+        assert_eq!(super::corners_extent((1.0, 2.0, 3.0, 4.0)), (1.0, 2.0, 3.0, 4.0));
+        let empty = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        assert_eq!(super::corners_extent((f64::NAN, 0.0, 10.0, 10.0)), empty);
+    }
+}
+
 /// These format refusals must not be retried as empty datasets by optional readers.
 #[cfg(any(test, feature = "gdal"))]
 pub(crate) fn is_document_error(error: &crate::Error) -> bool {
@@ -329,7 +353,7 @@ pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &Vect
     }
     Ok(Some(match driver {
         #[cfg(feature = "sqlite")]
-        VectorDriver::GPKG => geopackage::to_bytes_with_geometry_types(layers, options.preserve_declared_geometry_type)?,
+        VectorDriver::GPKG => geopackage::to_bytes_with_options(layers, options)?,
         #[cfg(feature = "cad")]
         VectorDriver::DXF | VectorDriver::DWG => cad::to_bytes(layers, driver)?,
         VectorDriver::GPX => gpx::layers_to_string(layers)?.into_bytes(),

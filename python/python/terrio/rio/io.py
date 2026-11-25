@@ -2619,6 +2619,9 @@ class DatasetWriter(DatasetReader):
     # A copy's source (`shutil.copy`), whose pixels the file is written from as it is written,
     # when it is written in rows: they are then not held (see `_streams_on_flush`).
     _copy_of: Any = None
+    # A copy's overviews read from a source terrio cannot copy them from (`shutil.copy`), written
+    # as they are (`Raster.write(overviews=[arrays])`), as GDAL's COG driver writes a source's.
+    _overview_data: list[Any] = []
     # The temporary file that holds the pixels, above the in-memory limit.
     _data_spill: _Spill | None = None
 
@@ -2679,6 +2682,7 @@ class DatasetWriter(DatasetReader):
         rpcs = kwargs.pop("rpcs", None)
         copy_of = kwargs.pop("_copy_of", None)
         copy_mask = bool(kwargs.pop("_copy_mask", False))
+        self._overview_data = list(kwargs.pop("_overview_data", None) or [])
         complex_sample = kwargs.pop("_complex_dtype", None)
         if mode in ("w", "w+"):
             if not isinstance(driver, str):
@@ -2949,8 +2953,29 @@ class DatasetWriter(DatasetReader):
             ns = {"INTERLEAVE": s.interleave}
             if s.compression:
                 ns["COMPRESSION"] = s.compression
-                if o.get("PREDICTOR", "1") not in ("1", "NO", "NONE"):
-                    ns["PREDICTOR"] = {"YES": "2"}.get(o["PREDICTOR"].upper(), o["PREDICTOR"])
+                cog = self._out_driver.upper() == "COG"
+                predictor = o.get("PREDICTOR", "1").upper()
+                # As the writer: only LZW, DEFLATE and ZSTD take a predictor, and complex
+                # samples none, so the others are written (and reported) without one.
+                takes_predictor = (
+                    s.compression in ("LZW", "DEFLATE", "ZSTD")
+                    and np.dtype(self._dtype).kind != "c"
+                )
+                if (
+                    takes_predictor
+                    and predictor not in ("1", "NO", "NONE")
+                    and not (cog and predictor in ("FALSE", "OFF"))
+                ):
+                    if cog and predictor in ("YES", "ON", "TRUE"):
+                        # GDAL's COG driver: 3 for floating-point data, 2 otherwise.
+                        predictor = "3" if np.dtype(self._dtype).kind == "f" else "2"
+                    elif cog:
+                        predictor = {"STANDARD": "2", "FLOATING_POINT": "3"}.get(
+                            predictor, predictor
+                        )
+                    else:
+                        predictor = {"YES": "2"}.get(predictor, predictor)
+                    ns["PREDICTOR"] = predictor
             s.namespaces["IMAGE_STRUCTURE"] = ns
             s.tags = {"AREA_OR_POINT": "Area"}
         return s
@@ -3472,13 +3497,18 @@ class DatasetWriter(DatasetReader):
         if file_backed is None:
             file_backed = isinstance(self._data, np.memmap) or self._copy_of is not None
         cog = self._out_driver == "COG"
+        overview_method = str(
+            self._options.get("OVERVIEW_RESAMPLING", self._options.get("RESAMPLING", ""))
+        ).lower()
         return (
             (file_backed or cog)
+            and overview_method not in ("area_matched", "area_matched_mode")
             and (
                 self._out_driver == "GTiff"
                 or (cog and self._mask is None and "@COPY_SRC_OVERVIEWS" not in self._options)
             )
             and not self._overview_factors
+            and not self._overview_data
             and str(self._options.get("COMPRESS", "NONE")).upper()
             in ("NONE", "LZW", "DEFLATE", "ZIP", "ZSTD", "PACKBITS")
         )
@@ -3652,7 +3682,7 @@ class DatasetWriter(DatasetReader):
                 options=opts,
                 band_metadata=band_md if any(band_md) else None,
                 colormap=colormap,
-                overviews=self._overview_factors or None,
+                overviews=self._overview_data or self._overview_factors or None,
                 overview_resampling=self._overview_resampling,
                 **extra,
             )
@@ -3779,8 +3809,10 @@ class DatasetWriter(DatasetReader):
         """
         cog = self._out_driver == "COG"
         writer = _terrio.CogWriter if cog else _terrio.GeoTiffWriter
-        # A copy's mask is its source's, whose rows are read with the pixels'.
-        copy_mask = self._copy_of is not None and self._copy_mask
+        # A copy's mask is its source's, whose rows are read with the pixels'. A mask the dataset
+        # was given replaces it, as in a copy written whole: into the file, or to a `.msk`
+        # sidecar, with no mask given to the writer.
+        copy_mask = self._copy_of is not None and self._copy_mask and self._mask is None
         kw: dict[str, Any] = {"overview_resampling": self._overview_resampling} if cog else {}
         w = writer(
             target,
@@ -3793,7 +3825,8 @@ class DatasetWriter(DatasetReader):
             self._nodata,
             tags,
             compress=compress,
-            options=opts,
+            # The `.aux.xml` the file is read with is beside its path, not beside `target`.
+            options={**opts, "@FINAL_PATH": self._path},
             band_metadata=band_md if any(band_md) else None,
             colormap=colormap,
             gcps=extra.get("gcps"),

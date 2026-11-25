@@ -1,6 +1,8 @@
 """Vector layers read as streams: `open_stream`, `iter_features`, Arrow streams and streamed
 `convert`, compared with whole reads and with GDAL."""
 
+from pathlib import Path
+
 import pytest
 
 import terrio
@@ -150,6 +152,62 @@ def test_streams_select_columns_and_rows(tmp_path):
         assert [f["properties"]["i"] for f in features] == whole_i, ext
 
 
+def test_a_geoparquet_stream_with_a_bbox_chooses_its_rows_when_read(tmp_path):
+    """Opening reads the footer, not the covering column: the Arrow export, which reads the file
+    itself, would otherwise read the rows' bounding boxes twice.
+
+    Args:
+        tmp_path: Isolated vector fixture directory.
+    """
+    io = Path("/proc/self/io")
+    if not io.exists():
+        pytest.skip("bytes read are counted from Linux's /proc/self/io")
+
+    def rchar():
+        """Return the process's cumulative bytes read.
+
+        Returns:
+            int: Characters returned by read-like system calls.
+        """
+        return int(dict(line.split(": ") for line in io.read_text().splitlines())["rchar"])
+
+    p = str(tmp_path / "s.parquet")
+    squares(30000).write(p)
+    box = (-100.0, -80.0, -90.0, -70.0)
+    before = rchar()
+    terrio.open_stream(p)
+    plain = rchar() - before
+    before = rchar()
+    stream = terrio.open_stream(p, bbox=box)
+    filtered = rchar() - before
+    assert filtered < plain + 16384, (filtered, plain)
+    # The rows are still chosen: by iteration, as by `open_vector`.
+    assert len(stream.read_all()) == len(terrio.open_vector(p, bbox=box)[0]) > 0
+
+
+@pytest.mark.parametrize("method", ["next", "read_all"])
+def test_a_deferred_geoparquet_open_can_retry_after_io_failure(tmp_path, method):
+    """Preserve a pending filtered read after opening its source fails.
+
+    Args:
+        tmp_path: Isolated source and temporary backup directory.
+        method: Feature reading entry point to retry.
+    """
+    path = tmp_path / "retry.parquet"
+    squares(1000).write(str(path))
+    box = (-100.0, -80.0, -90.0, -70.0)
+    expected = len(terrio.open_vector(str(path), bbox=box)[0])
+    stream = terrio.open_stream(str(path), bbox=box, batch_size=2000)
+    backup = tmp_path / "backup.parquet"
+    path.rename(backup)
+    read = (lambda: next(stream)) if method == "next" else stream.read_all
+    for _ in range(2):
+        with pytest.raises(terrio.TerrioIOError):
+            read()
+    backup.rename(path)
+    assert len(read()) == expected > 0
+
+
 def test_geoparquet_streams_read_files_in_archives(tmp_path):
     pa = pytest.importorskip("pyarrow")
     import zipfile
@@ -162,6 +220,26 @@ def test_geoparquet_streams_read_files_in_archives(tmp_path):
     table = pa.table(terrio.open_stream(f"/vsizip/{z}/s.parquet"))
     assert table.num_rows == 1000
     assert table["i"].to_pylist() == list(range(1000))
+
+
+def test_a_filtered_archive_stream_retains_its_eager_fallback(tmp_path):
+    """Keep the filtered whole-file fallback instead of reopening its archive.
+
+    Args:
+        tmp_path: Isolated GeoParquet source and ZIP archive directory.
+    """
+    import zipfile
+
+    path = tmp_path / "s.parquet"
+    squares(1000).write(str(path))
+    box = (-100.0, -80.0, -90.0, -70.0)
+    expected = len(terrio.open_vector(str(path), bbox=box)[0])
+    archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.write(path, "s.parquet")
+    stream = terrio.open_stream(f"/vsizip/{archive}/s.parquet", bbox=box)
+    archive.rename(tmp_path / "moved.zip")
+    assert len(stream.read_all()) == expected > 0
 
 
 def test_geoparquet_streams_give_a_geodataframe_in_crs84(tmp_path):

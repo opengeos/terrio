@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The merge queue's commit: main's ruleset requires this workflow's checks on it.
+  merge_group:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -20,9 +22,9 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  # Whether the real-data job runs: on every push to main, and for pull requests unless they
-  # change only documentation, the npm package's JavaScript (js/, tested by the wasm job) or
-  # other workflows. When the file list is unavailable, it runs.
+  # Whether the real-data job runs: on every push to main and merge queue commit, and for pull
+  # requests unless they change only documentation, the npm package's JavaScript (js/, tested by
+  # the wasm job) or other workflows. When the file list is unavailable, it runs.
   changes:
     runs-on: ubuntu-latest
     permissions:
@@ -343,6 +345,15 @@ jobs:
           # Without the CRS engine: none of its EPSG names (Pulkovo, which the full module's tables hold).
           grep -qaF Pulkovo js/pkg-node/terrio_bg.wasm || { echo "::error::the full module lacks the EPSG name the guard looks for"; exit 1; }
           if grep -qaF Pulkovo js/pkg-node/cog/terrio_bg.wasm; then echo "::error::terrio-js/cog links the CRS engine"; exit 1; fi
+      # The GeoParquet-only module, `terrio-js/geoparquet` (its own crate, js/geoparquet).
+      - name: Build and test terrio-js/geoparquet (Node.js)
+        run: |
+          wasm-pack build js/geoparquet --release --target nodejs --out-dir ../pkg-node/geoparquet --out-name terrio --no-pack
+          node --test js/tests/geoparquet.test.mjs
+          # Its GeoJSON glue is a wasm-bindgen snippet, which the package must ship (js/build.mjs).
+          test -d js/pkg-node/geoparquet/snippets || { echo "::error::terrio-js/geoparquet has no snippets/"; exit 1; }
+          # Without the CRS engine, as terrio-js/cog (the full module holds the name, checked above).
+          if grep -qaF Pulkovo js/pkg-node/geoparquet/terrio_bg.wasm; then echo "::error::terrio-js/geoparquet links the CRS engine"; exit 1; fi
 
   # The cargo features (see crates/terrio/Cargo.toml): each builds on its own, and so does the
   # core without them, natively and for WebAssembly.
@@ -485,7 +496,8 @@ jobs:
         working-directory: python
         run: |
           python -c "import os, rasterio, rio_cogeo.cogeo; print('Reference GDAL:', rasterio.__gdal_version__); assert rasterio.__gdal_version__ == os.environ['GDAL_REFERENCE_VERSION'], rasterio.__gdal_version__"
-          python -m pytest -v tests/test_cog_validate.py::test_external_overviews_agree_with_rio_cogeo
+          python -m pytest -v tests/test_cog_validate.py::test_external_overviews_agree_with_rio_cogeo \
+            tests/test_cog_validate.py::test_agrees_with_rio_cogeo tests/test_cog_validate.py::test_non_square_blocks_agree_with_rio_cogeo
 
   # The Rust and Python tests on real data. The comparison scripts (point clouds, conformance) are
   # in ci-extended.yml, with the same GDAL environment and data; this job saves the data cache.

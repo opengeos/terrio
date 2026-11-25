@@ -157,6 +157,11 @@ pub(crate) struct Op {
     pub unknown_area: bool,
     /// Whether this is PROJ's "ballpark" transformation (no datum shift, as a last resort).
     pub ballpark: bool,
+    /// Whether PROJ frames it with a ballpark (see `route::OperationContext::framed`): from or into
+    /// a CRS on a renamed datum, or chained with its ballpark vertical transformation when no
+    /// geoid model can be used. A concatenation with a ballpark step, which PROJ refuses with the
+    /// ballpark.
+    pub framed: bool,
     /// Whether it chains several transformations through intermediate datums.
     pub concatenated: bool,
     /// Whether PROJ's database registers it between geographic 3D CRSs, which PROJ does not
@@ -170,6 +175,14 @@ pub(crate) struct Op {
     pub priority: bool,
     /// Whether the pipeline keeps heights between 2D CRSs (PROJ's `push v_3` and `pop v_3`).
     pub keeps_height: bool,
+    /// Whether it keeps heights only across its leg at the WGS 84 end, from its last conversion
+    /// to geocentric coordinates on: a geocentric CRS's transformation beside a CRS without
+    /// heights, whose legs between geocentric CRSs PROJ runs after `pop v_3` (#1012 item 8).
+    pub keeps_wgs84_leg_height: bool,
+    /// Whether PROJ keeps heights across its leg at the WGS 84 end between 3D CRSs too: one
+    /// registered between 2D CRSs, which PROJ runs between `push v_3` and `pop v_3` (PZ-90 to
+    /// WGS 84 (1) in PZ-90.11's chain, LUREF to WGS 84 (4)).
+    pub keeps_height_3d: bool,
     pub steps: Vec<Step>,
     /// PROJ's name for it, the names of its steps joined by ` + ` (empty for ballparks), by which
     /// PROJ breaks the last ties when it sorts the chains it makes.
@@ -613,11 +626,14 @@ impl Op {
             offshore: false,
             unknown_area: false,
             ballpark: false,
+            framed: false,
             concatenated: false,
             between_3d: false,
             geocentric: false,
             priority: false,
             keeps_height: true,
+            keeps_wgs84_leg_height: false,
+            keeps_height_3d: false,
             steps,
             name: String::new(),
         }
@@ -628,6 +644,12 @@ impl Op {
     pub fn as_concatenated(&self) -> Self {
         let priority = self.priority || is_priority(&self.name);
         Self { accuracy: self.chain_accuracy, bounds: self.chain_bounds, priority, ..self.clone() }
+    }
+
+    /// Whether PROJ takes it for a ballpark when it refuses those (`ALLOW_BALLPARK=NO`): its
+    /// ballpark, or one framed by it.
+    pub fn has_ballpark(&self) -> bool {
+        self.ballpark || self.framed
     }
 
     /// PROJ's measure of the size of the area, for ranking transformations of equal accuracy.
@@ -681,6 +703,12 @@ impl Op {
         self.grids().iter().all(|(name, optional)| *optional || grid::available(name))
     }
 
+    /// Whether every grid it requires can be had (see [`grid::obtainable`]): PROJ's candidate
+    /// lists keep those it lists for direct download (CDN or not) as if installed.
+    pub fn obtainable(&self) -> bool {
+        self.grids().iter().all(|(name, optional)| *optional || grid::obtainable(name))
+    }
+
     /// Whether a grid it requires was asked for on the network and not obtained.
     pub fn network_failed(&self) -> bool {
         self.grids().iter().any(|(name, optional)| !*optional && grid::fetch_failed(name))
@@ -726,7 +754,36 @@ pub(crate) fn run(steps: &[Step], p: Point, reverse: bool, heights: bool) -> Opt
 
 /// Runs an op on a point: its heights change unless it keeps them between 2D CRSs.
 pub(crate) fn run_op(op: &Op, p: Point, reverse: bool, three_d: bool) -> Option<Point> {
+    if keeps_wgs84_leg_height(op, three_d) {
+        // The leg at the WGS 84 end (the steps' end), after the last geographic point between
+        // two legs, keeps the height; the legs before it, on geocentric coordinates, move it. A
+        // transformation of one leg keeps it unless it runs between geocentric CRSs.
+        let k = wgs84_leg_boundary(op);
+        let (rest, leg) = op.steps.split_at(k);
+        return if reverse {
+            let q = run(leg, p, true, false)?;
+            run(rest, q, true, true)
+        } else {
+            let q = run(rest, p, false, true)?;
+            run(leg, q, false, false)
+        };
+    }
     run(&op.steps, p, reverse, three_d || !op.keeps_height)
+}
+
+/// Whether an operation keeps heights across its leg at the WGS 84 end only: between 3D CRSs as
+/// PROJ runs it, else as `Def::beside_2d` set it.
+pub(crate) fn keeps_wgs84_leg_height(op: &Op, three_d: bool) -> bool {
+    if three_d { op.keeps_height_3d } else { op.keeps_wgs84_leg_height }
+}
+
+/// The start of an operation's WGS 84 leg, after its last intermediate geographic point.
+pub(crate) fn wgs84_leg_boundary(op: &Op) -> usize {
+    match op.steps.windows(2).rposition(|w| matches!(w, [Step::Cart { inv: true, .. }, Step::Cart { inv: false, .. }])) {
+        Some(i) => i + 1,
+        None if op.geocentric => op.steps.len(),
+        None => 0,
+    }
 }
 
 /// Whether `op` ranks before `best` for a point both hold, as PROJ's

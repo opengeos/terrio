@@ -53,7 +53,13 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   when terrio identifies it, the shift alone; into one on the source CRS's own datum, no shift,
   whatever the target; to a CRS without transformations, the source CRS's own, else PROJ's
   ballpark); such a shift wins over the EPSG code of a source CRS terrio identifies, and over the
-  `TOWGS84` of a WKT 1 source CRS (GDAL's `GEOGCS` or `PROJCS` in `SOURCECRS`). Their PROJ
+  `TOWGS84` of a WKT 1 source CRS (GDAL's `GEOGCS` or `PROJCS` in `SOURCECRS`). A target that is
+  bound itself (a `BOUNDCRS`) is not chained through, as PROJ does not chain through it, nor
+  through a WKT 1 target with its own `TOWGS84`; PROJ links such CRSs by its ballpark. When a
+  `BOUNDCRS`'s transformation is not applied (that case, a WKT 1 target, which terrio does not
+  read where PROJ does, or a grid's transformation), each transformer using the CRS warns
+  (`take_warnings`), and its points are placed without it (by the source CRS's own
+  transformations when terrio identifies it, else by the ballpark). Their PROJ
   string leaves out a shift to a CRS other than WGS 84, as PROJ's does. Their scale difference is a
   ratio in unity (`1.0000067`, as PROJ writes it) or in the unit given (parts per million, where
   PROJ 9.9.0 misreads 6.7 ppm as the ratio 6.7, which terrio does not follow); without a unit, a
@@ -204,15 +210,17 @@ than Terrio's raster/vector library:
 
 ```toml
 [dependencies]
-terrio-crs = "0.2.4"
+terrio-crs = "0.3.0"
 ```
 
-The [published crate](https://crates.io/crates/terrio-crs/0.2.4) works offline by
+The [published crate](https://crates.io/crates/terrio-crs/0.3.0) works offline by
 default. Enable `wbprojection-fallback` when Terrio's wider projection coverage
 is required; the feature matrix below describes the supported configurations.
 Since 0.2.4, Eckert IV and Natural Earth are in the default build; 0.2.3 and earlier
 provide them only through that feature. The native method counts in the matrix below
-describe 0.2.4.
+count the 117-method test corpus only. They are the same in 0.3.0 as in 0.2.4: neither the
+Transverse Mercator Zoned Grid System that 0.3.0 adds nor `isea`, which now follows PROJ 9.9.0's
+algorithm, is in that corpus.
 
 ```rust
 use terrio_crs::{SpatialRef, Transformer};
@@ -255,7 +263,7 @@ Each queue retains its own order, but the combined order is not chronological
 across queues. A custom transformer warning handler is also available.
 
 The standalone default omits `wbprojection`; Terrio enables the fallback to retain
-its existing coverage. Bundled tables use portable `ruzstd` decompression on all
+its existing coverage. Bundled tables use portable `zrip` decompression on all
 targets. The standalone default has no C dependency: Zstandard TIFF grids are read only with the
 `libzstd` feature, which uses the zstd C library and which Terrio does not enable. The PROJ CDN's
 grids are Deflate-compressed (all 11 sampled, among them those this page and the tests name), so this
@@ -687,11 +695,19 @@ finds come from `crates/terrio-crs/data/crs_names.tsv.zst` (`scripts/gen_crs_nam
 
 PROJ's datum pivot, which tries the datum's CRSs in order of code, the geocentric ones too, is
 followed: ESRI's ONGD14 (EPSG:7373) without its code gets "ONGD14 to WGS 84 (1)", registered between
-the geocentric CRSs, as in PROJ, while EPSG:7373 by its code keeps "(2)". One of PROJ's steps is not
-followed yet: the ballpark PROJ goes through, of unknown accuracy, when the datum's name is not its
-ID's (`DATUM["Local datum",...,ID["EPSG",6806]]`). When either CRS has such a datum, terrio does not
-search at all, for either side, and that CRS keeps its code's area. The transformation is then the
-one between the codes.
+the geocentric CRSs, as in PROJ, while EPSG:7373 by its code keeps "(2)". PROJ pivots from an
+unresolved CRS, and into one only when it cannot find it by its name (ONGD14 renamed); into one it
+finds, it goes by the code's own transformations. Under the code's name, it takes the first of the
+datum's CRSs of that name with transformations, alone. When the datum's name is not its ID's
+(`DATUM["Local datum",...,ID["EPSG",6806]]`), PROJ goes into the datum's CRSs by its ballpark, of
+unknown accuracy, and so are the chains and the transformations through geocentric CRSs it makes;
+the CRS's own registered transformations keep their accuracy. A renamed Monte Mario (Rome) then
+goes through Monte Mario, 72 m from EPSG:4806's own transformation, and a renamed Georgia Geodetic
+Datum (EPSG:10831) through Pulkovo 1942, 7 m away. A prime meridian in grads (Carthage (Paris),
+EPSG:4816) is not PROJ's registered one to the last digit, so PROJ rotates the longitudes instead,
+without the ballpark, and the accuracies are kept. One step is not followed yet: from a WKT with an
+ID of an authority PROJ does not know (`AUTHORITY["LOCAL","1"]`), PROJ's pivot takes only the first
+of the datum's CRSs with transformations; terrio places it by the code.
 terrio also does not follow PROJ for an ESRI ATF (Paris) (EPSG:4901) WKT without a code. PROJ takes
 IGNF's ATIG geocentric chain, which applies the Paris prime meridian twice and lands 178 km from
 PROJ's own placement of EPSG:4901. terrio, which has no IGNF transformations, identifies the WKT as
@@ -707,6 +723,17 @@ Conversions (projections, units) are not named, and geoid models are named witho
 let t = terrio_crs::Transformer::new(&SpatialRef::parse("EPSG:27700")?, &SpatialRef::parse("EPSG:4326")?)?;
 let op = t.operation_at(530000.0, 180000.0, 0.0)?;   // "OSGB36 to WGS 84 (9)", 1 m, OSTN15
 ```
+
+`Transformer::has_non_ballpark_operation()` tells whether any transformation but PROJ's ballpark
+links the two CRSs within their extents, as PROJ 9.9.0's candidate operations
+(`proj_create_operations`) do. It is false when only the ballpark does, so that no datum
+transformation is known between them in those extents: for a datum known by its ellipsoid alone,
+for example. It is true between CRSs of one datum. A transformation whose grid is missing counts
+when PROJ's catalog lists a direct-download URL, including non-CDN URLs, regardless of the network
+setting. Locally available grids count too; other missing grids do not (SIRGAS-CON SIR17P01's
+`SIRGAS2000-to-SIRGAS-CONSIR17P01.gsb`). This checks horizontal datums, including geocentric, 3D
+and compound CRSs, and excludes vertical transformations and geoid models. It is currently a
+standalone `terrio-crs` Rust API, intended for callers such as RustGIS.
 
 ### Datum shift grids
 
@@ -765,8 +792,7 @@ there, the next operation's grids come up. Between compound CRSs, the grid of th
 between their vertical CRSs (VERTCON...) is listed too, but geoid models are not (`+geoidgrids`, nor
 those of a geoid model's CRS, from a geographic 3D CRS too), and between CRSs with heights the
 horizontal grids listed are those between their geographic CRSs. With `ONLY_BEST=YES`, the error for
-a missing grid names it too. (Not in terrio-crs 0.2.4: on `main`, as a git dependency, until the
-next release.)
+a missing grid names it too. (Since terrio-crs 0.3.0.)
 
 ```rust
 use terrio_crs::{SpatialRef, Transformer, register_grid};
@@ -831,9 +857,32 @@ before OSGM15 for British National Grid with ODN heights), and 3D datum transfor
 ellipsoidal heights. Vertical units (US survey feet) and depths are converted. A vertical CRS
 without geoid models of its own uses those of the vertical CRSs of its datum, as PROJ does:
 NAVD88 height (ftUS) (`EPSG:6360`), NAVD88 height (ft) (`EPSG:8228`) and NAVD88 depth go
-through NAVD88 height's GEOID18. When no geoid model applies, heights are kept, as PROJ's
-ballpark vertical transformation does. Between 2D CRSs, heights are kept as GDAL keeps them (or
+through NAVD88 height's GEOID18. A geoid model without grid that EPSG registers (Saba to Saba
+height (1), whose heights are Saba's ellipsoidal heights) is applied as one. When no geoid model
+applies, heights are kept, as PROJ's ballpark vertical transformation does. When the vertical
+CRS has no geoid model or transformation that can be used (their grids missing), PROJ chains that
+ballpark with each horizontal transformation, which makes every one of unknown accuracy, and uses
+for a point the one of the smallest area that holds it. So does terrio: from WGS 84 (3D) into
+`EPSG:7405` without OSGM15's grid, (-2°, 54°) goes through OSGB36 to WGS 84 (3), not (6), 5.2 m
+apart (from WGS 84 (2D), which has no heights, through (6)). The height runs through the
+horizontal transformation in the vertical CRS's unit, where PROJ's pipeline converts it, and
+`ALLOW_BALLPARK=NO` refuses such an operation. Between 2D CRSs, heights are kept as GDAL keeps them (or
 transformed, for the pipelines PROJ runs on heights).
+
+Between a 2D CRS and a geographic 3D or geocentric CRS, the height is kept through the datum
+shift too, as PROJ keeps it (`push v_3` and `pop v_3`), and converted to or from geocentric
+coordinates on the geocentric CRS's own ellipsoid: WGS 84 (2D) at (0°, 0°, 0 m) is
+X = 6378136 m in PZ-90 (geocentric) (`EPSG:4922`), on PZ-90's ellipsoid, and 6378137 m from
+WGS 84 (3D). Transformations PROJ runs between geocentric CRSs (PZ-90 to PZ-90.11 (1)) still
+move it. Between 3D CRSs too, PROJ keeps it across a transformation registered between 2D CRSs at
+the WGS 84 end of a chain (PZ-90 to WGS 84 (1) into PZ-90.11, 1 m), and so does terrio.
+A geographic 3D or geocentric CRS goes by the transformations PROJ 9.9.0 lists for it in each
+direction, which can differ: from a geocentric CRS PROJ ranks them otherwise than from its
+geographic 3D CRS (GDA94 (geocentric) through WGS 84 (G1762)), from WGS 84 otherwise than into it
+(ONGD14 to WGS 84 (2) into ONGD14, (1) out of it, 1.2 m apart), and beside WGS 84 (2D) otherwise
+than beside WGS 84 (3D) (LUREF to WGS 84 (4) before (3), 2 mm).
+An exception is a 2D CRS's own unnamed `+towgs84` operation beside a geocentric CRS: it still
+runs on geocentric coordinates and can change the ellipsoidal height.
 With `TransformOptions { promote_to_3d: true, .. }` (Rust), the heights of 2D CRSs are ellipsoidal
 heights that datum transformations change, as GDAL gives them after `PromoteTo3D`: EPSG:28992
 (85000, 447000, 0) is 43.576 m above the WGS 84 ellipsoid in EPSG:4979, where it stays 0 by default. Vector layer

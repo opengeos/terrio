@@ -5,8 +5,8 @@
 //! The files live outside the repository: set `TERRIO_TEST_DATA` to their directory (see
 //! `scripts/fetch_test_data.sh`). Without it, these tests pass without checking anything.
 
-use terrio::VectorOpenOptions;
 use terrio::ops::vector_filter::{VectorTranslateOptions, WriteMode, translate, write_vector_with_mode};
+use terrio::{Feature, FieldDef, FieldType, FieldValue, Geometry, Layer, VectorOpenOptions, VectorWriteOptions, signed_fid};
 
 #[path = "common/test_data.rs"]
 mod test_data;
@@ -70,4 +70,146 @@ fn appends_to_a_gdal_file_as_ogr2ogr() {
     // Overwriting gives the layer back.
     write_vector_with_mode(std::slice::from_ref(&layer), out, &Default::default(), WriteMode::Overwrite).unwrap();
     assert_eq!(open(out, None).len(), 176);
+}
+
+const SOURCE_POINTS: &str = r#"{"type":"FeatureCollection","features":[
+  {"type":"Feature","id":91,"properties":{},"geometry":{"type":"Point","coordinates":[0,0]}},
+  {"type":"Feature","id":205,"properties":{},"geometry":{"type":"Point","coordinates":[1,1]}}
+]}"#;
+
+fn ids(layer: &Layer) -> Vec<i64> {
+    layer.features.iter().map(signed_fid).collect()
+}
+
+fn preserve_fid() -> VectorWriteOptions {
+    VectorWriteOptions { preserve_fid: true, ..Default::default() }
+}
+
+/// The explicit IDs also match `ogr2ogr -preserve_fid` in GDAL 3.13.2.
+#[test]
+fn preserves_geojson_ids_only_on_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("points.geojson");
+    std::fs::write(&src, SOURCE_POINTS).unwrap();
+    let src = src.to_str().unwrap();
+    let mut layer = open(src, None);
+    assert_eq!(ids(&layer), [91, 205]);
+    let path = dir.path().join("points.gpkg");
+    let path = path.to_str().unwrap();
+    for (options, expected) in [(Default::default(), [1, 2]), (preserve_fid(), [91, 205])] {
+        terrio::write_vector(std::slice::from_ref(&layer), path, &options).unwrap();
+        assert_eq!(ids(&open(path, None)), expected);
+    }
+
+    // The legacy integer attribute overrides Feature::fid by default.
+    layer.add_field(FieldDef::new("FID", FieldType::Integer));
+    layer.features[0].attributes = vec![FieldValue::Integer(701)];
+    layer.features[1].attributes = vec![FieldValue::Integer(802)];
+    terrio::write_vector(std::slice::from_ref(&layer), path, &Default::default()).unwrap();
+    assert_eq!(ids(&open(path, None)), [701, 802]);
+    let before = std::fs::read(path).unwrap();
+    let err = terrio::write_vector(&[layer], path, &preserve_fid()).unwrap_err();
+    assert!(matches!(err, terrio::Error::InvalidArgument(msg) if msg.contains("value 701 conflicts with feature ID 91")));
+    assert_eq!(std::fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn writes_signed_feature_ids_and_indexes_per_layer() {
+    let numbers = [i64::MAX, -1, i64::MIN, 0, 9_007_199_254_740_993];
+    let mut layer = Layer::new("points").with_epsg(4326);
+    layer.add_field(FieldDef::new("FID", FieldType::Integer));
+    for (i, id) in numbers.into_iter().enumerate() {
+        let attributes = match id {
+            -1 => Vec::new(),
+            0 => vec![FieldValue::Null],
+            _ => vec![FieldValue::Integer(id)],
+        };
+        layer.push(Feature { fid: id as u64, attributes, geometry: Some(Geometry::point(i as f64, 1.0)) });
+    }
+    let mut second = layer.clone();
+    second.name = "second".into();
+    let bytes = terrio::memory::write_vector_bytes(&[layer.clone(), second], "signed.gpkg", &preserve_fid()).unwrap();
+    let layers = terrio::memory::open_vector_bytes(bytes.clone(), "signed.gpkg", &Default::default()).unwrap().layers;
+    for read in layers {
+        assert_eq!(ids(&read), [i64::MIN, -1, 0, 9_007_199_254_740_993, i64::MAX]);
+        assert!(read.schema.fields().is_empty());
+        for feature in &read.features {
+            let i = numbers.iter().position(|&id| id == signed_fid(feature)).unwrap();
+            assert_eq!(feature.geometry, Some(Geometry::point(i as f64, 1.0)));
+        }
+    }
+    let read = terrio::memory::open_vector_bytes(
+        bytes,
+        "signed.gpkg",
+        &VectorOpenOptions { spatial_filter: Some((1.9, 0.9, 2.1, 1.1)), ..Default::default() },
+    )
+    .unwrap();
+    assert_eq!(ids(&read.layers[0]), [i64::MIN]);
+    let mut invalid = layer.clone();
+    invalid.features[0].attributes = vec![FieldValue::Float(12.5)];
+    assert!(
+        terrio::memory::write_vector_bytes(&[invalid], "bad.gpkg", &preserve_fid()).unwrap_err().to_string().contains("integer or null")
+    );
+    let err = terrio::memory::write_vector_bytes(&[layer], "bad.geojson", &preserve_fid()).unwrap_err();
+    assert!(err.to_string().contains("preserve_fid applies to GPKG"));
+}
+
+#[test]
+fn append_and_replace_preserve_ids_and_refuse_duplicates() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("points.gpkg");
+    let path = path.to_str().unwrap();
+    let points = |name, ids: &[i64]| {
+        let mut layer = Layer::new(name).with_epsg(4326);
+        for (i, &id) in ids.iter().enumerate() {
+            layer.push(Feature { fid: id as u64, geometry: Some(Geometry::point(i as f64, 1.0)), attributes: Vec::new() });
+        }
+        layer
+    };
+    let options = preserve_fid();
+    terrio::write_vector(&[points("first", &[91, 205]), points("second", &[91])], path, &options).unwrap();
+    write_vector_with_mode(&[points("first", &[i64::MAX, 107, i64::MIN])], path, &options, WriteMode::Append).unwrap();
+    assert_eq!(ids(&open(path, None)), [i64::MIN, 91, 107, 205, i64::MAX]);
+    let before = std::fs::read(path).unwrap();
+    for (mode, incoming, message) in [
+        (WriteMode::Append, vec![501, 205], "feature ID 205 already exists"),
+        (WriteMode::Overwrite, vec![501, 501], "duplicate feature ID 501"),
+        (WriteMode::Create, vec![501, 501], "duplicate feature ID 501"),
+    ] {
+        let err = write_vector_with_mode(&[points("first", &incoming)], path, &options, mode).unwrap_err();
+        assert!(matches!(err, terrio::Error::InvalidArgument(msg) if msg.contains("'first'") && msg.contains(message)));
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+    let err = write_vector_with_mode(&[points("first", &[501])], path, &Default::default(), WriteMode::Append).unwrap_err();
+    assert!(err.to_string().contains("SQLite's integer limit"));
+    assert_eq!(std::fs::read(path).unwrap(), before);
+
+    write_vector_with_mode(&[points("first", &[501, 150])], path, &options, WriteMode::Overwrite).unwrap();
+    let layers = terrio::open_vector(path, &Default::default()).unwrap().layers;
+    let by_name = |name| ids(layers.iter().find(|l| l.name == name).unwrap());
+    assert_eq!(by_name("first"), [150, 501]);
+    assert_eq!(by_name("second"), [91]);
+}
+
+#[test]
+fn buffered_writer_checks_ids_across_chunks_before_replacing_output() {
+    use terrio::stream::{FeatureWriter, LayerProfile, schema_of};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("points.gpkg");
+    std::fs::write(&path, b"existing").unwrap();
+    let path = path.to_str().unwrap();
+    let mut layer = terrio::memory::open_vector_bytes(SOURCE_POINTS.as_bytes().to_vec(), "points.geojson", &Default::default())
+        .unwrap()
+        .layers
+        .remove(0);
+    let schema = schema_of(&layer);
+    let mut profile = LayerProfile::new(&schema);
+    profile.add(&layer.features);
+    let mut writer = FeatureWriter::create(path, &schema, Some(&profile), &preserve_fid()).unwrap();
+    writer.write(&layer).unwrap();
+    layer.features.pop();
+    writer.write(&layer).unwrap();
+    assert!(writer.finish().unwrap_err().to_string().contains("duplicate feature ID 91"));
+    assert_eq!(std::fs::read(path).unwrap(), b"existing");
 }

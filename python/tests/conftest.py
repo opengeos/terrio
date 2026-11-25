@@ -2,6 +2,7 @@
 
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -193,6 +194,28 @@ def ogr():
     ogr = pytest.importorskip("osgeo.ogr")
     ogr.UseExceptions()
     return ogr
+
+
+@pytest.fixture
+def in_a_new_thread():
+    """Calls a function in a thread of its own, away from earlier tests' PROJ objects (#1218).
+
+    rasterio's GDAL and pyproj each keep the objects their PROJ builds from its database per
+    thread. A thread that has looked datum EPSG:6326 up as a single datum builds the CRSs of
+    WGS 84 codes (EPSG:4326, 3857, the UTM zones) on that datum from then on, instead of the
+    datum ensemble. In rasterio's, opening a GeoTIFF on the WGS 84 ellipsoid without a datum
+    code has that effect; in either, writing as WKT 1 a CRS on WGS 84 without an identifier has
+    it, which `terrio.pyogrio` does through pyproj when it reads such a `.prj`.
+
+    Returns:
+        Callable: `call(build)`, which returns what `build()` returns, built in a new thread.
+    """
+
+    def call(build):
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(build).result()
+
+    return call
 
 
 @pytest.fixture(autouse=True)

@@ -6,7 +6,7 @@ crates/terrio        the library
   formats.rs         the driver registry, with GDAL's short names
   drivers/           terrio's own raster drivers; drivers/vector/ its vector drivers
   geotiff.rs, cog.rs GeoTIFF tags and decoding, lazy window and overview reads
-  block_cache.rs     process-wide LRU cache of decoded GeoTIFF tiles and strips
+  block_cache.rs     process-wide LRU cache of decoded GeoTIFF tiles and strips and GRIB bands
   resampled_read.rs  overview-aware resampled window reads (GDAL RasterIO semantics)
   catalog.rs         GTI-compatible indexed raster catalogs with bounded source caching
   stac.rs, stacta.rs STAC items, API searches, STACIT mosaics and STACTA tiled assets
@@ -80,14 +80,18 @@ and parallel iterators everywhere else.
 The default builds have no C dependencies, and CI builds them without a C compiler. Three choices
 keep it so:
 
-- Zstandard is decoded and written with `ruzstd`, GeoParquet's pages included. The optional
-  `libzstd` feature uses the zstd C library natively instead, which decodes faster and compresses
-  better: `ruzstd` writes at its fastest level, about zstd's level 1, whatever level is asked for.
+- Zstandard is decoded and written with `zrip`, GeoParquet's pages included. The optional
+  `libzstd` feature uses the zstd C library natively instead, which writes levels above 4: `zrip`
+  writes levels up to 4, and level 4 for higher ones.
 - HTTPS uses `rustls` with `rustls-graviola`, whose cryptography is Rust and assembly and needs no
   C compiler. It requires `aes`, `pclmulqdq`, `ssse3`, `avx`, `avx2`, `adx`, `bmi1` and `bmi2` on
-  x86-64 (most CPUs since about 2014), and `aes`, `sha2`, `pmull` and `neon` on AArch64: without the
-  ones it checks, an HTTPS request panics, naming the missing feature. Other
-  architectures, for which no release is built, use `ring`, which needs a C compiler.
+  x86-64 (most CPUs since about 2014), and `aes`, `sha2`, `pmull` and `neon` on AArch64. terrio
+  checks them once per process, before the first HTTPS request: on a CPU without them (an Intel
+  before Haswell or Broadwell, an AMD before Zen, many Atom, Celeron and Pentium parts, or a
+  virtual machine that hides the flags), HTTPS requests fail with an error naming the missing
+  features, where graviola itself would panic, and plain HTTP works. The opt-in `ring-fallback`
+  feature uses `ring` on those CPUs instead, at the cost of a C compiler. Other architectures, for
+  which no release is built, use `ring`, which needs a C compiler.
 - GeoParquet is written with Snappy, which needs no C. Reading also takes Zstandard, gzip, LZ4 and
   Brotli.
 

@@ -105,8 +105,8 @@ coordinates and point clouds with theirs.
 ## GEOS, JTS and GeoRust
 
 [JTS Topology Suite](https://github.com/locationtech/jts) 1.20.0 (Martin Davis and
-other contributors) supplies the source algorithms for topology-preserving simplification,
-convex and concave hulls, their triangulations, integer tile validity, spatial packing and
+other contributors) supplies the source algorithms for topology-preserving and Douglas-Peucker
+simplification, convex and concave hulls, their triangulations, integer tile validity, spatial packing and
 robust clipping envelopes. These ports use JTS's Eclipse Distribution License 1.0;
 the exact revisions, copyrights and adaptations are recorded in
 [`NOTICE`](https://github.com/opengeos/terrio/blob/main/NOTICE) and
@@ -166,6 +166,13 @@ therefore differ from libdeflate's; decoded raster values and metadata are check
 with GDAL 3.13.3. At every level, the searches over a GeoTIFF or COG chunk's rows also examine the
 position one row back.
 
+## ras2cng
+
+terrio's area-matched overviews (`OVERVIEW_RESAMPLING=AREA_MATCHED`,
+`crates/terrio/src/drivers/area_matched.rs`) are translated from
+[ras2cng](https://github.com/gpt-cmdr/ras2cng)'s `build_area_matched_overviews`
+(copyright 2024 William M. Katzenmeyer, P.E., C.F.M. / CLB Engineering, MIT).
+
 ## fdlibm
 
 terrio's vectorized aspect, and with the default (GDAL 3.12) kernel its slope in degrees and its
@@ -193,7 +200,7 @@ terrio reads and writes its formats with these crates, among others:
 | [`rusty_av1d`](https://crates.io/crates/rusty_av1d) | AVIF, a port of [dav1d](https://code.videolan.org/videolan/dav1d) |
 | [`jxl-oxide`](https://crates.io/crates/jxl-oxide), [`zune-jpegxl`](https://crates.io/crates/zune-jpegxl) | JPEG XL |
 | [`lerc-reader`](https://crates.io/crates/lerc-reader), [`lerc-writer`](https://crates.io/crates/lerc-writer) | LERC |
-| [`flate2`](https://crates.io/crates/flate2), [`ruzstd`](https://crates.io/crates/ruzstd), [`zstd`](https://crates.io/crates/zstd), [`lz4_flex`](https://crates.io/crates/lz4_flex), [`lzma-rust2`](https://crates.io/crates/lzma-rust2), [`zip`](https://crates.io/crates/zip) | Compression and archives |
+| [`flate2`](https://crates.io/crates/flate2), [`zrip`](https://crates.io/crates/zrip), [`zstd`](https://crates.io/crates/zstd), [`lz4_flex`](https://crates.io/crates/lz4_flex), [`lzma-rust2`](https://crates.io/crates/lzma-rust2), [`zip`](https://crates.io/crates/zip) | Compression and archives |
 | [`flatgeobuf`](https://crates.io/crates/flatgeobuf) | FlatGeobuf |
 | [Apache Arrow and Parquet](https://github.com/apache/arrow-rs) | GeoParquet and Arrow |
 | [`netcdf-reader`](https://crates.io/crates/netcdf-reader), [`hdf5-reader`](https://crates.io/crates/hdf5-reader) | netCDF and HDF5 |

@@ -11,7 +11,6 @@ use super::geoparquet::{covering_leaves, file_geo, group_bboxes, perr};
 use super::geoparquet_zstd::{self, SharedInput};
 use crate::{Error, Result};
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Float32Type, Float64Type};
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, RecordBatchReader};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use parquet::arrow::ProjectionMask;
@@ -29,7 +28,8 @@ pub struct GeoParquetReadOptions {
     pub columns: Option<Vec<String>>,
     /// Only the rows whose bounding box intersects `(min_x, min_y, max_x, max_y)`, in the file's
     /// CRS: whole row groups are skipped by covering or native geometry statistics, and rows by covering
-    /// values (or by their geometries' bounding boxes without one).
+    /// values (or by their geometries' bounding boxes without one). An inverted rectangle (its
+    /// corners swapped) is taken by its corners' extent.
     pub bbox: Option<(f64, f64, f64, f64)>,
     /// The most rows in a batch.
     pub batch_size: usize,
@@ -195,6 +195,7 @@ impl GeoParquetBatches {
     /// Opens the file `input` holds; `prefetch` is told the column chunks of each window of row
     /// groups before they are decoded.
     pub(crate) fn open<R: ChunkReader + 'static>(input: R, options: &GeoParquetReadOptions, prefetch: Option<Prefetcher>) -> Result<Self> {
+        let bbox = options.bbox.map(super::corners_extent);
         let input = SharedInput(Arc::new(input));
         // With the page index, when the file has one: rows a filter leaves out skip whole pages.
         let reader_options = parquet::arrow::arrow_reader::ArrowReaderOptions::new()
@@ -245,7 +246,7 @@ impl GeoParquetBatches {
             })
             .collect();
         let geom_index = index(&primary).filter(|_| !geo.is_null());
-        let filter = options.bbox.map(|rect| match covering.clone().filter(|(c, _)| index(c).is_some()) {
+        let filter = bbox.map(|rect| match covering.clone().filter(|(c, _)| index(c).is_some()) {
             Some((c, members)) => (rect, Filter::Covering(c, members)),
             None => (rect, geom_index.map_or(Filter::None, |g| Filter::Geometry(file_schema.field(g).name().clone()))),
         });
@@ -300,7 +301,7 @@ impl GeoParquetBatches {
         let leaves = covering_leaves(&pmeta, &geo);
         let bboxes = group_bboxes(&pmeta, leaves);
         let groups: Vec<usize> = (0..pmeta.num_row_groups())
-            .filter(|&g| match (options.bbox, bboxes[g]) {
+            .filter(|&g| match (bbox, bboxes[g]) {
                 (Some((x0, y0, x1, y1)), Some(b)) => b[0] <= x1 && b[2] >= x0 && b[1] <= y1 && b[3] >= y0,
                 _ => true,
             })
@@ -462,13 +463,10 @@ fn has_member(data_type: &DataType, path: &str) -> bool {
     })
 }
 
-/// The values of a covering member, as `f64`.
+/// The values of a covering member, as `f64`, with nulls as NaN in both read paths.
 fn floats(a: &dyn Array) -> Result<Vec<f64>> {
-    if let Some(a) = a.as_primitive_opt::<Float64Type>() {
-        return Ok(a.values().to_vec());
-    }
-    if let Some(a) = a.as_primitive_opt::<Float32Type>() {
-        return Ok(a.values().iter().map(|&v| v as f64).collect());
+    if matches!(a.data_type(), DataType::Float32 | DataType::Float64) {
+        return Ok(super::geoparquet::f64_values(a));
     }
     Err(perr(&format!("a covering member of type {}", a.data_type())))
 }
@@ -574,6 +572,24 @@ fn wkb_extend(b: &[u8], at: &mut usize, bb: &mut [f64; 4], depth: u32) -> Option
 
 #[cfg(test)]
 mod tests {
+    /// A missing bound cannot match a rectangle through the Arrow covering filter (GDAL
+    /// 3.13.3 reference); a complete covering of the same rectangle still matches.
+    #[test]
+    fn null_covering_members_do_not_match_a_rectangle() {
+        use super::*;
+        use arrow_array::{Float64Array, StructArray};
+        let bounds = StructArray::from(vec![
+            (Arc::new(Field::new("xmin", DataType::Float64, true)), Arc::new(Float64Array::from(vec![Some(0.), None])) as ArrayRef),
+            (Arc::new(Field::new("ymin", DataType::Float64, false)), Arc::new(Float64Array::from(vec![0., 0.])) as ArrayRef),
+            (Arc::new(Field::new("xmax", DataType::Float64, false)), Arc::new(Float64Array::from(vec![1., 1.])) as ArrayRef),
+            (Arc::new(Field::new("ymax", DataType::Float64, false)), Arc::new(Float64Array::from(vec![1., 1.])) as ArrayRef),
+        ]);
+        let batch = RecordBatch::try_from_iter(vec![("bbox", Arc::new(bounds) as ArrayRef)]).unwrap();
+        let filter = Filter::Covering("bbox".into(), ["xmin", "ymin", "xmax", "ymax"].map(String::from));
+        let keep = filter.rows(&batch, (0., 0., 1., 1.), "point").unwrap();
+        assert_eq!(keep.values().iter().collect::<Vec<_>>(), vec![true, false]);
+    }
+
     use super::wkb_bbox;
     use wbvector::{Coord, Geometry, Ring};
 
@@ -691,6 +707,14 @@ mod tests {
             // the footer and one row group's id, covering and geometry chunks
             assert!(fetched(&seen) * 5 < data.len(), "{} of {} bytes fetched: {seen:?}", fetched(&seen), data.len());
         }
+        // An inverted rectangle reads the rows of its corners' extent (after the byte budget above,
+        // which counts the first read's requests only).
+        let inverted = GeoParquetReadOptions { bbox: Some((99.5, 1.0, 10.0, -1.0)), ..options.clone() };
+        let again: Vec<RecordBatch> =
+            open_geoparquet(&format!("{base}/points_by_chunks.parquet"), &inverted).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        let inverted_ids: Vec<i64> =
+            again.iter().flat_map(|b| b.column(0).as_any().downcast_ref::<Int64Array>().unwrap().values().to_vec()).collect();
+        assert_eq!(inverted_ids, ids);
 
         // `open_vector` and `open_stream` read a URL in place too, not downloaded whole.
         let url = format!("{base}/points_by_features.parquet");

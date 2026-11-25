@@ -65,21 +65,22 @@ fn eq(a: &str, b: &str) -> bool {
 
 /// Updates a GeoPackage file in place: see [`gu::update`]. `Ok(false)` when the file cannot be
 /// changed in place; it is then untouched.
+#[cfg(all(test, unix))]
 pub(super) fn update_in_place(path: &Path, layers: &[Layer], mode: UpdateMode) -> Result<bool> {
-    update_in_place_with_geometry_types(path, layers, mode, false)
+    update_in_place_with_options(path, layers, mode, &Default::default())
 }
 
-pub(super) fn update_in_place_with_geometry_types(
+pub(super) fn update_in_place_with_options(
     path: &Path,
     layers: &[Layer],
     mode: UpdateMode,
-    preserve_declared_geometry_type: bool,
+    options: &crate::VectorWriteOptions,
 ) -> Result<bool> {
     let mut ed = match Editor::open(path)? {
         Ok(e) => e,
         Err(_) => return Ok(false),
     };
-    match apply(&mut ed, layers, mode, preserve_declared_geometry_type)? {
+    match apply(&mut ed, layers, mode, options)? {
         Ok(()) => {
             ed.commit()?;
             Ok(true)
@@ -88,7 +89,7 @@ pub(super) fn update_in_place_with_geometry_types(
     }
 }
 
-fn apply(ed: &mut Editor, layers: &[Layer], mode: UpdateMode, preserve_declared_geometry_type: bool) -> Result<Outcome> {
+fn apply(ed: &mut Editor, layers: &[Layer], mode: UpdateMode, options: &crate::VectorWriteOptions) -> Result<Outcome> {
     // The schema.
     let mut entries = Vec::new();
     for (rowid, payload) in ed.scan(1)? {
@@ -148,7 +149,7 @@ fn apply(ed: &mut Editor, layers: &[Layer], mode: UpdateMode, preserve_declared_
         let found = existing.iter().find(|n| eq(n, &layer.name)).cloned();
         match (found, mode) {
             (Some(name), UpdateMode::Append) => {
-                if let Err(e) = append(ed, &mut d, &entries, &dropped, &name, layer)? {
+                if let Err(e) = append(ed, &mut d, &entries, &dropped, &name, layer, options.preserve_fid)? {
                     return Ok(Err(e));
                 }
             }
@@ -160,11 +161,7 @@ fn apply(ed: &mut Editor, layers: &[Layer], mode: UpdateMode, preserve_declared_
                     }
                 }
                 d.remove_layer(&name);
-                if preserve_declared_geometry_type {
-                    d.add_layer_with_geometry_type(layer, true)?;
-                } else {
-                    d.add_layer(layer)?;
-                }
+                d.add_layer(layer, options)?;
             }
             (None, _) => {
                 let taken = entries.iter().any(|e| !dropped.contains(&e.rowid) && eq(&e.name, &layer.name)) || d.has(&layer.name);
@@ -174,11 +171,7 @@ fn apply(ed: &mut Editor, layers: &[Layer], mode: UpdateMode, preserve_declared_
                         layer.name
                     )));
                 }
-                if preserve_declared_geometry_type {
-                    d.add_layer_with_geometry_type(layer, true)?;
-                } else {
-                    d.add_layer(layer)?;
-                }
+                d.add_layer(layer, options)?;
             }
         }
     }
@@ -220,7 +213,15 @@ fn table_indexes(entries: &[Entry], table: &Entry) -> std::result::Result<Vec<(u
 }
 
 /// Appends the features of `layer` to the layer `name`, in place.
-fn append(ed: &mut Editor, d: &mut Database, entries: &[Entry], dropped: &BTreeSet<i64>, name: &str, layer: &Layer) -> Result<Outcome> {
+fn append(
+    ed: &mut Editor,
+    d: &mut Database,
+    entries: &[Entry],
+    dropped: &BTreeSet<i64>,
+    name: &str,
+    layer: &Layer,
+    preserve_fid: bool,
+) -> Result<Outcome> {
     let live = |e: &&Entry| !dropped.contains(&e.rowid);
     let Some(table) = entries.iter().filter(live).find(|e| e.kind == "table" && eq(&e.name, name)).cloned() else {
         return Err(Error::InvalidData(format!("GeoPackage: no table '{name}'")));
@@ -254,10 +255,19 @@ fn append(ed: &mut Editor, d: &mut Database, entries: &[Entry], dropped: &BTreeS
         _ => None,
     };
 
-    let next = d.sequence(name).max(ed.max_rowid(table.root)?) + 1;
-    let enc: Encoded = gu::encode_append(&table.sql, geometry.as_ref(), layer, next);
+    let enc: Encoded =
+        gu::encode_append(&table.sql, geometry.as_ref(), layer, preserve_fid, || Ok(d.sequence(name).max(ed.max_rowid(table.root)?)))?;
     let records: Vec<(i64, Vec<u8>)> = crate::par::map_range(enc.rows.len(), |i| (enc.rows[i].0, w::record(&enc.rows[i].1)));
-    ed.append(table.root, records)?;
+    if preserve_fid {
+        for (id, _) in &enc.rows {
+            if ed.lookup(table.root, *id)?.is_some() {
+                return Err(gu::existing_fid(name, *id));
+            }
+        }
+        ed.upsert(table.root, records)?;
+    } else {
+        ed.append(table.root, records)?;
+    }
     if !indexes.is_empty() {
         let rows: Vec<(i64, Vec<w::Value>)> = ed
             .scan(table.root)?

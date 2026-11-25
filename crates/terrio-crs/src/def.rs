@@ -72,6 +72,8 @@ pub(crate) struct Def {
     /// The EPSG geographic CRS that a CRS on a datum no CRS is on is identified as by its name
     /// ([`Def::registered_datum`]). Its transformations are not those of that CRS.
     named_geog: Option<u32>,
+    /// The EPSG code whose registered transformations `ops` are, for [`Def::facing`].
+    code: Option<u32>,
     /// All the operations of a datum found by its name ([`Def::datum_by_name`]), those whose
     /// grids are missing included, as `geog`'s registry entry gives them otherwise.
     all_ops: Option<Vec<Arc<Op>>>,
@@ -91,6 +93,9 @@ pub(crate) struct Def {
     bound: Option<Arc<Bound>>,
     /// Set for a WKT whose CRS PROJ does not resolve to the EPSG CRS terrio reads it as.
     unresolved: Option<Unresolved>,
+    /// Why a `BOUNDCRS`'s transformation is not applied, warned of by the transformers using it
+    /// (#1012 item 12).
+    unapplied: Option<Arc<str>>,
 }
 
 /// A WKT whose CRS PROJ 9.8.1 does not resolve to an EPSG CRS (`CRS::getResolvedCRS`,
@@ -101,9 +106,18 @@ pub(crate) struct Def {
 /// through other datums, as [`route`] follows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Unresolved {
-    /// Whether the datum has an ID its name is not a name of (`DATUM["Local datum",...,
-    /// ID["EPSG",6806]]`), which PROJ then reaches by its ballpark, of unknown accuracy.
-    pub datum_renamed: bool,
+    /// Whether PROJ reaches the CRSs of its datum by its ballpark, of unknown accuracy: the datum
+    /// has an ID its name is not a name of (`DATUM["Local datum",..., ID["EPSG",6806]]`), and
+    /// the prime meridian is the registered one in radians (else PROJ rotates the longitudes, of
+    /// an accuracy of 0: its WKT reader keeps a grad factor of 0.0157079632679489, where its
+    /// database has 0.01570796326794895).
+    pub ballpark: bool,
+    /// Whether PROJ finds a CRS by the WKT's name (into one it does not, PROJ pivots through the
+    /// CRSs of its datum).
+    pub named: bool,
+    /// Whether the WKT's geographic CRS has its code's geographic CRS name, which PROJ's datum
+    /// pivot tries first (the base geographic CRS for a projected WKT).
+    pub same_name: bool,
 }
 
 /// A WKT 2 `BOUNDCRS` with a Helmert transformation, or a coded CRS with a `TOWGS84` of its own.
@@ -562,6 +576,7 @@ impl Def {
         if let Some(e) = entry {
             let mut d = Self::from_proj(&e.proj)?;
             d.ops = epsg::usable(&e.ops, &e.grid_ops);
+            d.code = s.epsg;
             d.datum = (e.datum != 0).then_some(e.datum);
             d.geog = (e.geog != 0).then_some(e.geog);
             d.three_d = e.three_d;
@@ -600,6 +615,10 @@ impl Def {
                 Some(w) => Some(Self::from_wkt(w)?),
                 None => None,
             };
+            // Why its transformation is not applied, whatever replaces the code's (#1012 item 12).
+            if let Some(bound) = &bound {
+                d.unapplied = bound.unapplied.clone();
+            }
             if let Some(bound) = bound
                 && bound.datum.is_none()
             {
@@ -997,6 +1016,7 @@ impl Def {
             datum: None,
             geog: None,
             named_geog: None,
+            code: None,
             all_ops: None,
             three_d: false,
             dynamic: false,
@@ -1005,6 +1025,7 @@ impl Def {
             params: Some(Arc::new(params)),
             bound: None,
             unresolved: None,
+            unapplied: None,
         };
         // The datum transformation.
         // A pipeline step's `+datum=` is the shift PROJ's `pj_datum_set` gives it, from WGS 84 to
@@ -1329,6 +1350,7 @@ impl Def {
         let converted = if wkt2::handles(&root) { Some(crate::model::wkt2_to_proj(w)?) } else { crate::model::wkt1_to_proj(w) };
         if let Some(c) = converted {
             let mut d = Self::from_proj(&c.proj)?;
+            d.unapplied = c.unapplied.as_deref().map(Arc::from);
             // A `BOUNDCRS`'s Helmert transformation that `+towgs84` cannot stand for (a full
             // rotation matrix, a Molodensky-Badekas evaluation point), as PROJ applies it.
             let helmert = c.helmert.as_ref().map(|h| datum::helmert(h.t, h.r, h.s, h.position_vector, h.exact, h.pivot));
@@ -1341,11 +1363,18 @@ impl Def {
                 // A WKT 2 `BOUNDCRS` to another CRS: its Helmert transformation to that CRS, then
                 // each of that CRS's transformations to WGS 84, as PROJ concatenates them. With
                 // none, the source CRS's own, as PROJ uses them (else its ballpark to WGS 84).
-                let wkt1::BoundTo { target, shift } = &**bound;
+                let wkt1::BoundTo { target, shift, name, target_name } = &**bound;
                 let mut source = d.clone();
                 source.registered_datum(&c, own_geogcs_text(w, &c));
                 // A target terrio cannot read is left out, as one it cannot convert is.
                 let Ok(mut t) = Self::from_proj(&target.proj) else {
+                    let why =
+                        format!("the BOUNDCRS transformation \"{name}\" is not applied: its target CRS \"{target_name}\" is not read");
+                    // Kept with a source `BOUNDCRS`'s own, as the reader keeps them.
+                    source.unapplied = Some(Arc::from(match source.unapplied.as_deref() {
+                        Some(inner) => format!("{inner}; {why}"),
+                        None => why,
+                    }));
                     return Ok(source);
                 };
                 t.registered_datum(target, None);
@@ -1368,6 +1397,16 @@ impl Def {
                 // In PROJ's order, which decides between those of one area ("OSGB36 to WGS 84
                 // (3)" before "(2)").
                 route::sort_as_proj(&mut ops);
+                // Then the shift and PROJ's ballpark from the target CRS, which PROJ's nested
+                // search keeps even where its search from the target code drops it (DHDN, CH1903,
+                // Tokyo, NTF): it drops the ballpark only when a transformation needing no grid
+                // holds the area of interest, here the world (the bound CRS has no area in
+                // terrio). Where only that ballpark is left for the area of interest, the route
+                // drops it, as PROJ does (`route::nested`).
+                if !ops.is_empty() && !ops.iter().any(|op| op.ballpark) {
+                    let accuracy = -1.0;
+                    ops.push(Arc::new(Op { accuracy, chain_accuracy: accuracy, ballpark: true, ..Op::world(to_target.clone()) }));
+                }
                 if ops.is_empty() {
                     // The datum stays `None`: `Def::new` tells by it that a bound CRS over a code
                     // has the bound's transformations, and `on_bound_source` covers the source's.
@@ -1447,6 +1486,7 @@ impl Def {
                 datum: None,
                 geog: None,
                 named_geog: None,
+                code: None,
                 all_ops: None,
                 three_d: false,
                 dynamic: false,
@@ -1455,6 +1495,7 @@ impl Def {
                 params: None,
                 bound: None,
                 unresolved: None,
+                unapplied: None,
             };
             if !geographic {
                 d.proj = Some(Arc::new(WbProj { crs, a: ell.a }));
@@ -1723,6 +1764,40 @@ impl Def {
         self.bound.as_deref().is_some_and(|b| b.source_datum.is_some() && b.source_datum == other.datum)
     }
 
+    /// Why a `BOUNDCRS`'s transformation is not applied, if it is not.
+    pub(crate) fn unapplied(&self) -> Option<&str> {
+        self.unapplied.as_deref()
+    }
+
+    /// Whether this is a WKT 2 `BOUNDCRS` to a CRS other than WGS 84, whose transformations to
+    /// WGS 84 are its shift followed by each of that CRS's, then by that CRS's ballpark.
+    pub fn bound_elsewhere(&self) -> bool {
+        self.bound.as_deref().is_some_and(|b| b.target.is_some())
+    }
+
+    /// For a CRS PROJ reads as bound to a hub CRS (a WKT 2 `BOUNDCRS`, a `+towgs84` or
+    /// `+nadgrids` shift to WGS 84) and that has no geographic CRS of its own: the hub CRS, and the
+    /// shift into it. The hub has no area of its own, as PROJ gives the bound CRS none
+    /// (`getExtent`), so the search from it is for the other CRS's area.
+    pub fn hub(&self) -> Option<(Def, Arc<Op>)> {
+        if self.geog.is_some() {
+            return None;
+        }
+        if let Some((target, shift)) = self.bound.as_deref().and_then(|b| b.target.as_ref()) {
+            let mut hub = target.clone();
+            hub.area = None;
+            return Some((hub, shift.clone()));
+        }
+        match self.ops.as_slice() {
+            [op] if !op.ballpark && !op.steps.is_empty() => {
+                let mut wgs84 = Def::new(&SpatialRef { epsg: Some(4326), ..Default::default() }).ok()?;
+                wgs84.area = None;
+                Some((wgs84, op.clone()))
+            }
+            _ => None,
+        }
+    }
+
     /// The datum transformations to WGS 84, in the order they are tried.
     pub fn ops(&self) -> &[Arc<Op>] {
         &self.ops
@@ -1731,14 +1806,50 @@ impl Def {
     /// A definition with all registered grid operations, including unavailable grids.
     pub fn with_all_operations(&self) -> Self {
         let mut out = self.clone();
-        if let Some(all) = &self.all_ops {
+        if let Some(all) = self.adjustable_all_ops() {
             out.ops = all.clone();
-        } else if let Some(e) = self.geog.and_then(epsg::get)
-            && !e.grid_ops.is_empty()
-        {
-            out.ops = e.grid_ops.clone();
+            out.all_ops = Some(all);
         }
         out
+    }
+
+    /// The registry entry of an EPSG geographic 3D or geocentric CRS whose transformations the
+    /// definition still has (not a definition's own `TOWGS84`, nor those of another direction).
+    fn registered_3d(&self) -> Option<&'static epsg::Entry> {
+        let e = epsg::get(self.code?).filter(|e| e.three_d)?;
+        let registered = epsg::usable(&e.ops, &e.grid_ops);
+        (self.ops.len() == registered.len() && self.ops.iter().zip(&registered).all(|(a, b)| Arc::ptr_eq(a, b))).then_some(e)
+    }
+
+    /// The transformations PROJ lists for this side of a transformation from or into WGS 84,
+    /// for an EPSG geographic 3D or geocentric CRS whose own are those into WGS 84 (3D): from
+    /// WGS 84 (`target`), or beside a CRS without heights (`beside_heights` false), when they
+    /// differ (ONGD14 from WGS 84; LUREF beside WGS 84 (2D)). Before [`Def::beside_2d`], which
+    /// sets how they keep heights.
+    pub fn facing(&mut self, target: bool, beside_heights: bool) {
+        let direction = match (target, beside_heights) {
+            (false, true) => return,
+            (true, true) => epsg::Direction::From3d,
+            (false, false) => epsg::Direction::Into2d,
+            (true, false) => epsg::Direction::From2d,
+        };
+        let Some(code) = self.registered_3d().and(self.code) else { return };
+        let Some((ops, grid_ops)) = epsg::directed(code, direction) else { return };
+        self.ops = epsg::usable(ops, grid_ops);
+        self.all_ops = Some(if grid_ops.is_empty() { ops } else { grid_ops }.clone());
+    }
+
+    /// The explicit all-grid list, or the registered list `with_all_operations` selects: a
+    /// geographic 3D or geocentric CRS's own (GDA94 (geocentric) goes through WGS 84 (G1762),
+    /// which GDA94's list has not), else its geographic CRS's grid list.
+    fn adjustable_all_ops(&self) -> Option<Vec<Arc<Op>>> {
+        if let Some(all) = &self.all_ops {
+            return Some(all.clone());
+        }
+        if let Some(e) = self.registered_3d() {
+            return Some(if e.grid_ops.is_empty() { &e.ops } else { &e.grid_ops }.clone());
+        }
+        self.geog.and_then(epsg::get).filter(|e| !e.grid_ops.is_empty()).map(|e| e.grid_ops.clone())
     }
 
     /// The parameters of the PROJ string the definition was read from.
@@ -1787,6 +1898,43 @@ impl Def {
         if !self.geocentric && self.vertical.is_none() {
             self.three_d = true;
         }
+    }
+
+    /// A geographic 3D CRS, or a geocentric CRS's [`Def::geographic_endpoint`], beside a CRS
+    /// without heights (WGS 84 (2D)): 2D, as PROJ runs the datum shift then.
+    ///
+    /// Its transformations are those PROJ runs between 3D CRSs, which move heights. Beside a CRS
+    /// without heights PROJ keeps them across the leg at the WGS 84 end (`push v_3` and `pop v_3`
+    /// around it), and runs the legs between geocentric CRSs before it on geocentric coordinates
+    /// (PZ-90 to PZ-90.11 (1) for PZ-90.11), converted on the CRS's own ellipsoid (#1012 item 8).
+    /// A geocentric CRS's own `+towgs84` (an operation without a name) still runs on geocentric
+    /// coordinates, as GDAL runs it (PROJ 9.9.0 ignores it on `+proj=geocent`).
+    pub fn beside_2d(&mut self, was_geocentric: bool) {
+        fn keep_wgs84_leg_height(ops: &[Arc<Op>], was_geocentric: bool) -> Vec<Arc<Op>> {
+            ops.iter()
+                .map(|o| match o.name.is_empty() {
+                    false => Arc::new(Op { keeps_height: false, keeps_wgs84_leg_height: true, ..(**o).clone() }),
+                    true if was_geocentric && !o.ballpark => Arc::new(Op { keeps_height: false, ..(**o).clone() }),
+                    true => o.clone(),
+                })
+                .collect()
+        }
+        self.three_d = false;
+        self.all_ops = self.adjustable_all_ops().as_deref().map(|ops| keep_wgs84_leg_height(ops, was_geocentric));
+        self.ops = keep_wgs84_leg_height(&self.ops, was_geocentric);
+    }
+
+    /// A CRS without heights beside a geocentric CRS: its own `+towgs84` (an operation without a
+    /// name) runs into WGS 84 (geocentric) on geocentric coordinates and moves heights, as PROJ
+    /// 9.9.0 and GDAL run it.
+    pub fn beside_geocentric(&mut self) {
+        fn move_own_shift_height(ops: &[Arc<Op>]) -> Vec<Arc<Op>> {
+            ops.iter()
+                .map(|o| if o.name.is_empty() && !o.ballpark { Arc::new(Op { keeps_height: false, ..(**o).clone() }) } else { o.clone() })
+                .collect()
+        }
+        self.all_ops = self.adjustable_all_ops().as_deref().map(move_own_shift_height);
+        self.ops = move_own_shift_height(&self.ops);
     }
 
     /// Whether it is a geographic 3D or a geocentric CRS.
@@ -1884,10 +2032,8 @@ impl Def {
         if let Some(r) = r
             && !r.resolved
         {
-            self.unresolved = Some(Unresolved { datum_renamed: r.datum_renamed });
-            if !r.datum_renamed {
-                self.area = r.area;
-            }
+            self.unresolved = Some(Unresolved { ballpark: r.ballpark, named: r.named, same_name: r.same_name });
+            self.area = r.area;
         }
     }
 }
@@ -1961,8 +2107,9 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
     // the CRS up by its name instead), but then searches only among the CRSs of that authority
     // (`findsOpsInRegistryWithIntermediate`), so finds no chain through another datum: the CRS's
     // own transformations, as for a resolved CRS.
+    // `named` and `same_name` are read for an unresolved CRS only.
     if has_id(root) {
-        return Some(Resolution { resolved: true, area: area(code), datum_renamed });
+        return Some(Resolution { resolved: true, area: area(code), datum_renamed, ballpark: false, named: false, same_name: false });
     }
     // ESRI's WKT reader maps a `PROJCS` name after a `GCS_` geographic CRS or a `D_` datum.
     let esri =
@@ -1995,7 +2142,43 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
                     f == Some(g) && axes(base, !is_wkt1, g)
                 })
         };
-    Some(Resolution { resolved, area: area(found), datum_renamed })
+    // PROJ goes from the WKT into a CRS of its datum by a longitude rotation, not its ballpark,
+    // when their prime meridians differ in radians: it compares them exactly (`getSIValue`).
+    // The registered meridian, as PROJ's database gives it: Paris in grads of
+    // 0.01570796326794895 rad (the only registered prime meridian not in degrees), the others in
+    // degrees (`proj_prime_meridian` gives a meridian of its table the table's value).
+    let registered_pm = geog.and_then(epsg::get).map_or(0.0, |e| {
+        let p = Params::parse(&e.proj);
+        proj_prime_meridian(p.str("pm").and_then(|v| v.parse::<f64>().ok().or_else(|| prime_meridian(v))).unwrap_or(0.0))
+    });
+    let registered_si =
+        if (registered_pm - 2.33722917).abs() < 1e-6 { 2.5969213 * 0.01570796326794895 } else { registered_pm.to_radians() };
+    let pm_rotated = base.child("PRIMEM").is_some_and(|pm| {
+        let unit = pm.child("ANGLEUNIT").or_else(|| base.child("UNIT")).and_then(|u| u.num(1)).unwrap_or(1f64.to_radians());
+        let value = pm.num(1).unwrap_or(0.0);
+        if (unit - 1f64.to_radians()).abs() <= 1e-10 * unit {
+            // PROJ's WKT reader takes a unit within 1e-10 of the degree for the degree, and a
+            // meridian of its table for the table's (Rome's 12.4523333333333°): compared as
+            // `proj_prime_meridian` matches them, within 1e-10 rad.
+            (proj_prime_meridian(value) - registered_pm).to_radians().abs() > 1e-10
+        } else {
+            // Another unit keeps its factor, so the meridian's radians are compared exactly, as
+            // PROJ compares them: 0 rad is Greenwich, Paris's 2.5969213 grads of
+            // 0.0157079632679489 rad are not the database's (PROJ 9.9.0).
+            value * unit != registered_si
+        }
+    });
+    // The name of the geographic CRS, for a projected one, which PROJ pivots through.
+    let geog_name = if projected { base.name() } else { root.name() };
+    let same_name = geog.and_then(epsg::get).is_some_and(|e| geog_name == Some(e.name.as_str()));
+    Some(Resolution {
+        resolved,
+        area: area(found),
+        datum_renamed,
+        ballpark: datum_renamed && !pm_rotated,
+        named: found.is_some(),
+        same_name,
+    })
 }
 
 /// What [`proj_resolution`] tells of a WKT.
@@ -2005,8 +2188,14 @@ struct Resolution {
     resolved: bool,
     /// The area PROJ uses for it: that of the CRS it finds by the WKT's name, if any.
     area: Option<[f64; 4]>,
-    /// Whether the datum is renamed (see [`Unresolved`]).
+    /// Whether the datum has an ID its name is not a name of.
     datum_renamed: bool,
+    /// Whether PROJ reaches the CRSs of the datum by its ballpark (see [`Unresolved::ballpark`]).
+    ballpark: bool,
+    /// See [`Unresolved::named`].
+    named: bool,
+    /// See [`Unresolved::same_name`].
+    same_name: bool,
 }
 
 /// PROJ's rule for an ellipsoid of the Earth: a semi-major axis within 0.7% of its mean radius
@@ -2432,6 +2621,50 @@ mod resolution_tests {
         assert_eq!(resolution(&own, Some(4806)).map(|r| (r.0, r.2)), Some((true, false)));
     }
 
+    /// Whether PROJ reaches the CRSs of a WKT's datum by its ballpark, whether it finds a CRS by
+    /// the WKT's name, and whether the WKT has its code's name.
+    fn framing(w: &str, code: u32) -> (bool, bool, bool) {
+        let r = proj_resolution(&wkt1::parse(w).unwrap(), Some(code), None, &|_| false).unwrap();
+        (r.ballpark, r.named, r.same_name)
+    }
+
+    #[test]
+    fn a_renamed_datum_is_reached_by_the_ballpark_unless_the_prime_meridian_differs() {
+        // PROJ 9.9.0 goes from a renamed Monte Mario (Rome), its prime meridian in degrees, into
+        // EPSG:4806 by "Ballpark geographic offset from Local to Monte Mario (Rome)".
+        let rome = r#"GEOGCRS["Local",DATUM["Local datum",ELLIPSOID["International 1924",6378388,297,LENGTHUNIT["metre",1]],ID["EPSG",6806]],PRIMEM["Rome",12.4523333333333,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["geodetic longitude (Lon)",east,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]]]"#;
+        assert_eq!(framing(rome, 4806), (true, false, false));
+        assert_eq!(framing(&rome.replacen(r#"GEOGCRS["Local""#, r#"GEOGCRS["Monte Mario (Rome)""#, 1), 4806), (true, true, true));
+        // From a renamed Carthage (Paris), its prime meridian in grads of 0.0157079632679489 rad
+        // (PROJ's database has 0.01570796326794895), by "Transformation from Local to Carthage
+        // (Paris)", a longitude rotation of an accuracy of 0.
+        let paris = r#"GEOGCRS["Local",DATUM["Local datum",ELLIPSOID["Clarke 1880 (IGN)",6378249.2,293.466021293627,LENGTHUNIT["metre",1]],ID["EPSG",6816]],PRIMEM["Paris",2.5969213,ANGLEUNIT["grad",0.0157079632679489]],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],ANGLEUNIT["grad",0.0157079632679489]],AXIS["geodetic longitude (Lon)",east,ORDER[2],ANGLEUNIT["grad",0.0157079632679489]]]"#;
+        assert_eq!(framing(paris, 4816), (false, false, false));
+        // On another prime meridian than the registered one (Greenwich for Monte Mario (Rome)),
+        // a longitude rotation too.
+        let greenwich = rome.replacen(r#"PRIMEM["Rome",12.4523333333333"#, r#"PRIMEM["Greenwich",0"#, 1);
+        assert_eq!(framing(&greenwich, 4806), (false, false, false));
+        // In radians, compared exactly with PROJ's database's 12.452333333333332° (PROJ 9.9.0): by
+        // the ballpark at 0.2173342162225072 rad, by a longitude rotation at 12.4523333333333°'s
+        // 0.21733421622250665 rad.
+        let radian_rome = |radians: &str| {
+            rome.replace(
+                r#"PRIMEM["Rome",12.4523333333333,ANGLEUNIT["degree",0.0174532925199433]]"#,
+                &format!(r#"PRIMEM["Rome",{radians},ANGLEUNIT["radian",1]]"#),
+            )
+        };
+        assert_eq!(framing(&radian_rome("0.2173342162225072"), 4806), (true, false, false));
+        assert_eq!(framing(&radian_rome("0.21733421622250665"), 4806), (false, false, false));
+        let tokyo: serde_json::Value = serde_json::from_str(include_str!("../tests/data/wkt_unresolved.json")).unwrap();
+        let tokyo = tokyo["wkts"]["5132 wkt2 datum id, renamed"].as_str().unwrap();
+        let radian_greenwich = tokyo
+            .replace(r#"PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]]"#, r#"PRIMEM["Greenwich",0,ANGLEUNIT["radian",1]]"#);
+        assert_ne!(radian_greenwich, tokyo);
+        assert_eq!(framing(&radian_greenwich, 5132), (true, false, false));
+        // On its datum's own name, no ballpark.
+        assert!(!framing(&rome.replacen(r#"DATUM["Local datum""#, r#"DATUM["Monte Mario (Rome)""#, 1), 4806).0);
+    }
+
     #[test]
     fn a_projected_crs_on_a_geographic_crs_with_its_id_is_resolved() {
         // A custom Transverse Mercator without code: PROJ takes its geographic CRS by its ID,
@@ -2489,6 +2722,79 @@ mod resolution_tests {
         assert_eq!(resolution(&wgs84_3d, Some(4979)).map(|r| r.0), Some(true));
         let renamed_3d = wgs84_3d.replacen(r#"GEOGCRS["WGS 84""#, r#"GEOGCRS["Local""#, 1);
         assert_eq!(resolution(&renamed_3d, Some(4979)), Some((false, None, false)));
+    }
+}
+
+#[cfg(test)]
+mod endpoint_height_policy_tests {
+    use super::*;
+
+    #[test]
+    fn unnamed_ballpark_keeps_height_beside_geocentric() {
+        let mut base = Def::new(&SpatialRef::from_epsg(4326).unwrap()).unwrap();
+        let own = Op::world(datum::helmert_steps(base.ell, base.ell, &[10.0, 0.0, 0.0]));
+        base.ops = vec![Arc::new(own.clone()), Arc::new(Op { ballpark: true, ..own })];
+        let point = datum::Point { lon: 0.0, lat: 0.0, h: 100.0, t: None };
+        for demote in [false, true] {
+            let mut adjusted = base.clone();
+            if demote {
+                adjusted.beside_2d(true);
+            } else {
+                adjusted.beside_geocentric();
+            }
+            assert!((datum::run_op(&adjusted.ops[0], point, false, false).unwrap().h - 110.0).abs() < 1e-6);
+            assert_eq!(datum::run_op(&adjusted.ops[1], point, false, false).unwrap().h, 100.0);
+        }
+    }
+
+    #[test]
+    fn a_geocentric_crs_expands_to_its_own_registered_operations() {
+        // GDA94 (geocentric)'s transformations go through WGS 84 (G1762), which GDA94's grid list
+        // (its geographic 2D CRS's) has not.
+        let base = Def::new(&SpatialRef::from_epsg(4938).unwrap()).unwrap().geographic_endpoint();
+        let all = base.with_all_operations();
+        assert!(
+            all.ops.iter().any(|o| o.name.contains("GDA94 to WGS 84 (G1762) (1)")),
+            "{:?}",
+            all.ops.iter().map(|o| &o.name).collect::<Vec<_>>()
+        );
+        let mut beside = base.clone();
+        beside.beside_2d(true);
+        assert!(beside.with_all_operations().ops.iter().any(|o| o.name.contains("GDA94 to WGS 84 (G1762) (1)")));
+    }
+
+    #[test]
+    fn height_policy_survives_expanding_registered_operations() {
+        let base = Def::new(&SpatialRef::from_epsg(5332).unwrap()).unwrap().geographic_endpoint();
+        assert!(base.all_ops.is_none());
+        let mut adjusted_first = base.clone();
+        adjusted_first.beside_2d(true);
+        let adjusted_first = adjusted_first.with_all_operations();
+        let mut expanded_first = base.with_all_operations();
+        expanded_first.beside_2d(true);
+        assert_eq!(adjusted_first.ops.len(), expanded_first.ops.len());
+        let point = datum::Point { lon: 134f64.to_radians(), lat: -25f64.to_radians(), h: 100.0, t: Some(2000.0) };
+        let mut checked = 0;
+        let mut moved_height = false;
+        for (got, want) in adjusted_first.ops.iter().zip(&expanded_first.ops) {
+            assert_eq!(got.name, want.name);
+            if !want.name.contains("GDA94") || !want.available() {
+                continue;
+            }
+            for reverse in [false, true] {
+                let actual = datum::run_op(got, point, reverse, false).unwrap();
+                let expected = datum::run_op(want, point, reverse, false).unwrap();
+                assert_eq!(
+                    (actual.lon, actual.lat, actual.h),
+                    (expected.lon, expected.lat, expected.h),
+                    "{}; reverse={reverse}",
+                    want.name
+                );
+                moved_height |= (expected.h - point.h).abs() > 1e-6;
+                checked += 1;
+            }
+        }
+        assert!(checked > 0 && moved_height, "exercise a geocentric leg that changes height");
     }
 }
 

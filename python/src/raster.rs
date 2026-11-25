@@ -35,7 +35,8 @@ pub struct PyRaster {
 /// that overlaps one in progress (which holds the raster's own reader) takes one of them, or
 /// opens one, and leaves it for the next. Opening again reads the headers from the process-wide
 /// caches. Each reader has its own file handle; their decoded chunks share the process-wide block
-/// cache, under its one byte cap, without being shared between readers.
+/// cache, under its one byte cap, without being shared between readers, except the bands of a
+/// local GRIB file, which the readers of one version of the file share on Unix.
 #[pyclass(frozen)]
 pub(crate) struct Readers {
     path: String,
@@ -1121,24 +1122,37 @@ impl PyRaster {
     ///         leave it unset when assigning new colour roles.
     ///     colormap: The color table of a single-band Byte or UInt16 GeoTIFF: `(r, g, b, a)`
     ///         entries from index 0.
-    ///     overviews: GeoTIFF overviews to build, as decimation factors such as `[2, 4]`.
+    ///     overviews: GeoTIFF overviews to build, as decimation factors such as `[2, 4]`; or
+    ///         GeoTIFF/COG overviews to write as they are, from the largest: `Raster`s or
+    ///         `(rows, cols)` / `(bands, rows, cols)` arrays of the raster's bands and dtype, each
+    ///         smaller than the level before it (`gdaladdo`'s `ceil(n / factor)` sizes qualify).
+    ///         As GDAL's COG driver writes a source's existing overviews with `OVERVIEWS=AUTO`
+    ///         or `FORCE_USE_EXISTING`; `OVERVIEWS=NONE` or `IGNORE_EXISTING` and an overview
+    ///         resampling refuse them. Only their pixels are read.
     ///     overview_resampling: As GDAL names them: `"nearest"`, `"average"`, `"rms"`,
     ///         `"bilinear"`, `"cubic"`, `"cubicspline"`, `"lanczos"`, `"mode"` (and terrio's
     ///         `"min"` and `"max"` for GeoTIFF overviews). GeoTIFF overviews default to
     ///         `"nearest"`; COGs to GDAL's COG driver's `"cubic"` (`"nearest"` when paletted).
     ///         The `OVERVIEW_RESAMPLING` and `RESAMPLING` creation options come first.
+    ///         terrio's `"area_matched"` (`"area_matched_mode"` for classes) builds GeoTIFF and
+    ///         COG overviews that keep the valid area of a raster with nodata, and records the
+    ///         area each level keeps in the band metadata items `OVERVIEW_AREA_RATIOS` and
+    ///         `OVERVIEW_BASE_VALID_PIXELS`.
     ///     gcps: GeoTIFF ground control points, in the raster's CRS: `(pixel, line, x, y, z)`
     ///         tuples, written as tie points instead of the geotransform.
     ///     mask: A per-dataset validity mask, a 2-D uint8 array (0 for invalid pixels), written
     ///         as GDAL's internal GeoTIFF mask. If omitted, GeoTIFF/COG preserve the source mask.
     ///     rpc: The 92 rational polynomial coefficients of the GeoTIFF `RPCCoefficientTag`.
+    ///     metadata: Dataset metadata items (GDAL's default domain) set over the raster's own, as
+    ///         `gdal_translate -mo` sets them: a mapping, or `(key, value)` pairs. GeoTIFF and COG
+    ///         store them in the `GDAL_METADATA` tag; other formats refuse them.
     ///
     /// Raises:
     ///     TerrioError: If the raster cannot be written.
     #[pyo3(signature = (
         path, driver=None, compress=None, tile_size=None, bigtiff=false, options=None, *,
         band_metadata=None, colormap=None, overviews=None, overview_resampling=None, gcps=None,
-        mask=None, rpc=None
+        mask=None, rpc=None, metadata=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn write(
@@ -1152,11 +1166,12 @@ impl PyRaster {
         options: Option<std::collections::BTreeMap<String, String>>,
         band_metadata: Option<Vec<Bound<'_, PyDict>>>,
         colormap: Option<Vec<[u8; 4]>>,
-        overviews: Option<Vec<usize>>,
+        overviews: Option<Vec<Bound<'_, PyAny>>>,
         overview_resampling: Option<String>,
         gcps: Option<Vec<GcpTuple>>,
         mask: Option<numpy::PyReadonlyArray2<'_, u8>>,
         rpc: Option<Vec<f64>>,
+        metadata: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<()> {
         let mut options_ = write_options(driver, compress, tile_size, bigtiff)?;
         options_.gcps = parse_gcps(gcps);
@@ -1177,8 +1192,19 @@ impl PyRaster {
         options_.creation_options = validated_creation_options(options)?;
         options_.band_metadata = band_metadata.unwrap_or_default().iter().map(parse_band_metadata).collect::<PyResult<_>>()?;
         options_.color_table = colormap.unwrap_or_default();
-        options_.overviews = overviews.unwrap_or_default();
+        let overviews = overviews.unwrap_or_default();
+        let factors: Vec<Option<usize>> = overviews.iter().map(|o| o.extract::<usize>().ok()).collect();
+        if factors.iter().all(Option::is_some) {
+            options_.overviews = factors.into_iter().flatten().collect();
+        } else if factors.iter().all(Option::is_none) {
+            let complex = self.is_complex();
+            let component = self.inner.data_type();
+            options_.overview_data = overviews.iter().map(|o| overview_raster(o, complex, component)).collect::<PyResult<_>>()?;
+        } else {
+            return Err(invalid("overviews are all factors (ints) or all levels (Rasters or arrays)"));
+        }
         options_.overview_resampling = overview_resampling;
+        options_.metadata = metadata.map(string_pairs).transpose()?.unwrap_or_default();
         self.write_with_options(py, path, options_)
     }
 
@@ -1247,6 +1273,40 @@ impl PyRaster {
             if self.inner.is_lazy() { " lazy" } else { "" }
         )
     }
+}
+
+/// A supplied overview: a `Raster` (read whole), or a `(rows, cols)` or `(bands, rows, cols)`
+/// array (complex dtypes as for `Raster.from_array`). Only its pixels are written, so an array
+/// needs no georeferencing. A level's bands are complex exactly when the raster's are (`complex`):
+/// each complex band is two component bands, so a level of the other kind can match their count
+/// and type and would otherwise be written as the wrong samples.
+fn overview_raster(obj: &Bound<'_, PyAny>, complex: bool, component: DataType) -> PyResult<std::sync::Arc<terrio::Raster>> {
+    let kind = |c: bool| if c { "complex" } else { "real" };
+    let check = |level: bool| {
+        if level == complex {
+            Ok(())
+        } else {
+            Err(invalid(format!("an overview's bands are {}, the raster's {}", kind(level), kind(complex))))
+        }
+    };
+    if let Ok(r) = obj.cast::<PyRaster>() {
+        // `write` already holds this raster's borrow when it is its own overview.
+        let mut r = r.try_borrow_mut().map_err(|_| invalid("a raster cannot be its own overview"))?;
+        let (raster, level) = r.with_dataset(|ds| Ok((ds.raster.clone(), ds.complex))).py()?;
+        check(level)?;
+        return Ok(std::sync::Arc::new(raster));
+    }
+    let array = obj.cast::<PyUntypedArray>().map_err(|_| invalid("an overview is a Raster or a NumPy array (or every one a factor)"))?;
+    let (bands, rows, cols) = match array.shape()[..] {
+        [r, c] => (1, r, c),
+        [b, r, c] => (b, r, c),
+        _ => return Err(invalid("an overview array is 2-D (rows, cols) or 3-D (bands, rows, cols)")),
+    };
+    let (data, level) = raster_array_data(array, complex.then_some(component))?;
+    check(level)?;
+    let cfg =
+        terrio::RasterConfig { cols, rows, bands: bands * if level { 2 } else { 1 }, data_type: data.data_type(), ..Default::default() };
+    Ok(std::sync::Arc::new(terrio::raster_from_data(cfg, data).py()?))
 }
 
 /// A GCP as Python gives it: `(pixel, line, x, y, z)`.
@@ -1378,6 +1438,7 @@ impl PyGeoTiffWriter {
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
+        py: Python<'_>,
         path: &str,
         width: usize,
         height: usize,
@@ -1429,7 +1490,7 @@ impl PyGeoTiffWriter {
         if mask {
             o.mask = Some(Vec::new());
         }
-        let inner = terrio::GeoTiffWriter::create(path, &header, &o).py()?;
+        let inner = crate::with_warnings(py, || terrio::GeoTiffWriter::create(path, &header, &o))?;
         Ok(Self { inner: Some(inner), width, count, data_type, complex })
     }
 
@@ -1450,9 +1511,13 @@ impl PyGeoTiffWriter {
     ///     mask: The mask's rows.
     ///
     /// Raises:
-    ///     InvalidArgumentError: If the shapes or dtype do not match, or the writer is closed.
+    ///     InvalidArgumentError: If the array's shape or dtype, or the mask's shape, is not the
+    ///         writer's, a mask is given to a writer without one or none to a writer with one, or
+    ///         the writer is closed.
+    ///     TypeError: If the mask is not a 2-D uint8 array.
     #[pyo3(signature = (array, mask=None))]
     fn write(&mut self, py: Python<'_>, array: &Bound<'_, PyUntypedArray>, mask: Option<numpy::PyReadonlyArray2<'_, u8>>) -> PyResult<()> {
+        let w = self.inner.as_mut().ok_or_else(|| invalid("the writer is closed"))?;
         let shape = array.shape().to_vec();
         let (bands, rows, cols) = match shape[..] {
             [r, c] => (1, r, c),
@@ -1466,8 +1531,14 @@ impl PyGeoTiffWriter {
         if complex != self.complex || data.data_type() != self.data_type {
             return Err(invalid("the array's dtype is not the writer's"));
         }
-        let mask: Option<Vec<u8>> = mask.map(|m| m.as_array().iter().copied().collect());
-        let w = self.inner.as_mut().ok_or_else(|| invalid("the writer is closed"))?;
+        // Flattened, a mask of the same size in another shape would mask other pixels.
+        let mask: Option<Vec<u8>> = match mask {
+            Some(m) if m.shape() != [rows, cols].as_slice() => {
+                return Err(invalid(format!("expected a mask of {rows} rows of {cols} columns, got one of shape {:?}", m.shape())));
+            }
+            Some(m) => Some(m.as_array().iter().copied().collect()),
+            None => None,
+        };
         with_warnings(py, || w.write_rows(&data, rows, mask.as_deref()))
     }
 

@@ -13,8 +13,8 @@
 //     frmts/gtiff/gt_overview.cpp (the planar configuration of `.ovr` images)
 
 //! Overviews: their selection for warping, following GDAL's `-ovr` choices, and their management
-//! in GeoTIFFs as `gdaladdo` and `gdal raster overview add/delete/refresh` manage them
-//! ([`add_overviews`], [`delete_overviews`], [`refresh_overviews`]).
+//! in GeoTIFFs and EHdr rasters, following GDAL's `gdaladdo` and
+//! `gdal raster overview add/delete/refresh` ([`add_overviews`], [`delete_overviews`], [`refresh_overviews`]).
 //!
 //! Overviews are added to a GeoTIFF in place (internal overviews) or written to its `.ovr`
 //! sidecar (external overviews, which [`crate::LazyRaster`] reads as the raster's overviews when
@@ -26,11 +26,12 @@
 //! gets mask overviews. The full-resolution image is read once, by strips of rows, rather than
 //! whole, for whole levels (partial refreshes read the rows over their region). The file is
 //! changed through a copy renamed over it, so a failure leaves it as it was. External overviews
-//! leave the GeoTIFF itself untouched, so it may be read-only, as with `gdaladdo -ro`.
+//! leave the GeoTIFF itself untouched, so it may be read-only, as with `gdaladdo -ro`; for a
+//! GeoTIFF with a `.msk` sidecar mask, the mask's overviews go to its `.msk.ovr`, as GDAL builds
+//! them (the `.ovr` levels take them as their masks).
 //! [`add_overviews_with_progress`] reports progress and can be cancelled.
 //!
-//! Overviews are managed for GeoTIFFs only: terrio reads an `.ovr` sidecar as the overviews of a
-//! GeoTIFF, not of other formats.
+//! EHdr rasters also support building and reading external TIFF overviews, such as `dem.flt.ovr`.
 //!
 //! ```no_run
 //! use terrio::ops::Resampling;
@@ -45,8 +46,10 @@
 //! # Ok::<(), terrio::Error>(())
 //! ```
 
+use crate::cog::ovr_path;
 use crate::drivers::gtiff_update::{self, Appender, Directory, Entry, Tiff};
 use crate::drivers::gtiff_write::{self as gw, AddOverviewsResampling as OverviewResampling, CodecParams, Compression, Layout, Value};
+use crate::formats::RasterDriver;
 use crate::ops::Resampling;
 use crate::ops::overview_kernel as kernel;
 use crate::{Error, LazyRaster, Result, Window, WindowOptions};
@@ -132,8 +135,9 @@ pub struct OverviewOptions {
     pub min_size: usize,
     /// The resampling: nearest (the default), average, min, max or mode.
     pub resampling: Resampling,
-    /// Write the overviews to the `.ovr` sidecar instead of into the file, which may then be
-    /// read-only (`gdaladdo -ro`). A new sidecar is a BigTIFF when its images take more than
+    /// Write the overviews to the `.ovr` sidecar (required for EHdr) instead of into the file, which may then be
+    /// read-only (`gdaladdo -ro`), and, for a `.msk` sidecar mask, the mask's overviews to its
+    /// `.msk.ovr`. A new sidecar is a BigTIFF when its images take more than
     /// about 4 GiB; an existing classic TIFF sidecar that would grow past 4 GiB is refused.
     pub external: bool,
     /// The overviews' compression (GDAL's `COMPRESS_OVERVIEW`): by default the full-resolution
@@ -225,9 +229,9 @@ fn matches_factor(overview: (usize, usize), full: (usize, usize), factor: usize)
     f == factor || f == adjusted
 }
 
-/// Adds (or rebuilds) overviews of a local GeoTIFF, in place or in its `.ovr` sidecar, as
-/// `gdaladdo` does. Existing overviews of the sizes asked for are recomputed; the others are
-/// kept. Returns the sizes of the raster's overviews afterwards, largest first.
+/// Adds (or rebuilds) overviews of a local GeoTIFF or, with `external`, an EHdr raster.
+/// Existing overviews of the sizes asked for are recomputed; the others are kept.
+/// Returns the sizes of the raster's overviews afterwards, largest first.
 ///
 /// Internal overviews need a writable file. External ones leave the file as it is, so it may be
 /// read-only (`gdaladdo -ro`): they need a writable directory, and a writable `.ovr` when one
@@ -270,16 +274,22 @@ type Report<'a> = dyn FnMut(f64) -> Result<()> + 'a;
 fn add_overviews_reporting(path: &str, options: &OverviewOptions, report: &mut Report<'_>) -> Result<Vec<(usize, usize)>> {
     // External overviews leave the file itself as it is (`gdaladdo -ro`).
     let file = if options.external { gtiff_update::local_file(path)? } else { gtiff_update::writable_local_file(path)? };
-    let mut src = open_source(path)?;
+    let mut src = open_source(path, options.external)?;
     let method = overview_method(options.resampling)?;
     let factors = factors(&src, &options.levels, options.min_size)?;
     report(0.0)?;
     if options.external {
         let ovr = ovr_path(std::path::Path::new(path));
-        let main = parse_file(&file)?;
-        if main.dirs.iter().any(Directory::is_overview) {
-            return Err(Error::InvalidArgument(format!("'{path}' has internal overviews: external ones cannot be added (as in GDAL)")));
-        }
+        let main_dir = if src.driver() == RasterDriver::EHdr {
+            ehdr_overview_template(&src)
+        } else {
+            let mut main = parse_file(&file)?;
+            if main.dirs.iter().any(Directory::is_overview) {
+                return Err(Error::InvalidArgument(format!("'{path}' has internal overviews: external ones cannot be added (as in GDAL)")));
+            }
+            let index = images(&main).main.unwrap_or(0);
+            main.dirs.swap_remove(index)
+        };
         let sizes: Vec<(usize, usize)> = factors.iter().map(|f| (src.width().div_ceil(*f), src.height().div_ceil(*f))).collect();
         let existing = if ovr.is_file() { Some(parse_file(&ovr)?) } else { None };
         if sizes.is_empty() {
@@ -289,35 +299,50 @@ fn add_overviews_reporting(path: &str, options: &OverviewOptions, report: &mut R
             // The sidecar is replaced through a copy, which keeps a read-only mode: refuse it here.
             gtiff_update::writable_local_file(&ovr.to_string_lossy())?;
         }
+        // A `.msk` sidecar's overviews go to its own `.msk.ovr`, as GDAL builds them.
+        let mut mask = if src.has_sidecar_mask() { Some(MaskSidecar::open(path)?) } else { None };
         let compression = options.compression.as_deref().unwrap_or("NONE");
-        let main_dir = &main.dirs[images(&main).main.unwrap_or(0)];
         let mut all_sizes = sizes.clone();
+        // The share of the work the data takes, the mask's overviews taking the rest.
+        let share = match &mask {
+            Some(_) => src.band_count() as f64 / (src.band_count() + 1) as f64,
+            None => 1.0,
+        };
         // Open the same publication temporary before computing the pyramid: an unwritable
-        // directory must fail before expensive work, without a separate preflight file.
+        // directory must fail before expensive work, without a separate preflight file. The
+        // mask's overviews are computed after the data's, as GDAL computes them. Both sidecars
+        // are staged, then renamed into place together (the `.msk.ovr` first, put back should
+        // the `.ovr` fail): a failure or a cancellation leaves both as they were.
         let build = |previous: Option<&[Directory]>| {
-            let levels = build_new_levels(&mut src, main_dir, &sizes, method, compression, options.compression.is_some(), previous, report);
+            let levels =
+                build_new_levels(&mut src, &main_dir, &sizes, method, compression, options.compression.is_some(), previous, &mut |f| {
+                    report(f * share)
+                });
             drop(src);
-            levels
+            let levels = levels?;
+            let masks = match mask.as_mut() {
+                Some(m) => {
+                    Some(m.build(&sizes, method, compression, options.compression.is_some(), &mut |f| report(share + f * (1.0 - share)))?)
+                }
+                None => None,
+            };
+            Ok::<_, Error>((levels, mask.map(|m| (m, masks.unwrap_or_default()))))
         };
         if let Some(existing) = existing {
             all_sizes.extend(existing.dirs.iter().filter(|d| d.is_overview() && !d.is_mask()).map(Directory::size));
-            gtiff_update::update_file(&ovr, |f| {
-                let levels = build(Some(&existing.dirs))?;
-                let mut a = Appender::new(f, existing.big)?;
-                let mut dirs = existing.dirs;
-                for img in levels {
-                    let mut dir = a.image(img)?;
-                    shared_tags(main_dir, &mut dir);
-                    match dirs.iter().position(|old| !old.is_mask() && old.size() == dir.size()) {
-                        Some(i) => dirs[i] = dir,
-                        None => dirs.push(dir),
-                    }
-                }
-                dirs.sort_by_key(|d| std::cmp::Reverse(d.size()));
-                a.finish(&dirs)
+            let (mask, staged) = gtiff_update::stage_update(&ovr, |f, _| {
+                let (levels, mask) = build(Some(&existing.dirs))?;
+                append_ovr(f, existing, levels, &main_dir)?;
+                mask.map(|(m, images)| m.stage(images)).transpose()
             })?;
+            publish_sidecars(staged, mask)?;
         } else {
-            gtiff_update::replace_file(&ovr, |f| write_ovr(f, build(None)?, main_dir))?;
+            let (mask, staged) = gtiff_update::stage_replace(&ovr, |f| {
+                let (levels, mask) = build(None)?;
+                write_ovr(f, levels, &main_dir)?;
+                mask.map(|(m, images)| m.stage(images)).transpose()
+            })?;
+            publish_sidecars(staged, mask)?;
         }
         return Ok(sorted_sizes(all_sizes));
     }
@@ -393,7 +418,7 @@ pub fn delete_overviews_from_bytes(tiff: &[u8], options: &DeleteOptions) -> Resu
 /// `.ovr` sidecar leaves the GeoTIFF itself as it is: it may be read-only.
 pub fn refresh_overviews(path: &str, options: &RefreshOptions) -> Result<Vec<(usize, usize)>> {
     let file = if options.external { gtiff_update::local_file(path)? } else { gtiff_update::writable_local_file(path)? };
-    let mut src = open_source(path)?;
+    let mut src = open_source(path, false)?;
     let target = if options.external { ovr_path(std::path::Path::new(path)) } else { file };
     if options.external && !target.is_file() {
         return Err(Error::InvalidArgument(format!("'{}' has no external overviews ({} is missing)", path, target.display())));
@@ -469,25 +494,28 @@ pub fn like_bounds(path: &str, likes: &[String]) -> Result<Vec<[f64; 4]>> {
     likes.iter().map(|src| dataset_bounds(src, &crs)).collect()
 }
 
-/// The `.ovr` sidecar of a file.
-fn ovr_path(file: &std::path::Path) -> std::path::PathBuf {
-    let mut p = file.as_os_str().to_owned();
-    p.push(".ovr");
-    p.into()
-}
-
 fn parse_file(path: &std::path::Path) -> Result<Tiff> {
     gtiff_update::parse(&mut std::io::BufReader::new(std::fs::File::open(path)?))
 }
 
-/// Opens a GeoTIFF to compute overviews from (with its `.msk` and `.ovr` sidecars, as any open
-/// reads them).
-fn open_source(path: &str) -> Result<LazyRaster> {
+/// Opens the source to compute overviews from, with its `.msk` and `.ovr` sidecars.
+fn open_source(path: &str, allow_ehdr: bool) -> Result<LazyRaster> {
     let r = LazyRaster::open(path)?;
-    if r.driver() != crate::formats::RasterDriver::GTiff || !r.is_lazy() {
-        return Err(Error::Unsupported(format!("overviews are managed for GeoTIFFs only, not '{path}'")));
+    if r.is_lazy() && (r.driver() == RasterDriver::GTiff || (allow_ehdr && r.driver() == RasterDriver::EHdr)) {
+        return Ok(r);
     }
-    Ok(r)
+    let required = if allow_ehdr { "a GeoTIFF, or an EHdr raster with external overviews" } else { "a GeoTIFF" };
+    Err(Error::Unsupported(format!("overview management for '{path}' requires {required}")))
+}
+
+/// TIFF tags for new overview images of an EHdr raster.
+/// The shared writer supplies the default overview tile layout and sample format.
+fn ehdr_overview_template(src: &LazyRaster) -> Directory {
+    let mut dir = Directory { entries: vec![Entry::new(258, &Value::Shorts(vec![(src.data_type().size_bytes() * 8) as u16]), false)] };
+    if let Some(nodata) = src.nodata() {
+        dir.set(Entry::new(42113, &Value::Ascii(gw::format_nodata_for(nodata, src.data_type())), false));
+    }
+    dir
 }
 
 /// The overview method of a resampling.
@@ -566,11 +594,10 @@ fn layout_like(
     new_image: bool,
     data_type: DataType,
 ) -> Result<(Layout, Compression, CodecParams)> {
-    if matches!(dir.uint(339), Some(5 | 6)) {
-        return Err(Error::Unsupported("overviews of complex GeoTIFF samples are not supported".into()));
-    }
+    // A complex sample holds two parts, each one band of `data_type`.
+    let parts = if matches!(dir.uint(339), Some(5 | 6)) { 2 } else { 1 };
     let bits = dir.uint(258).unwrap_or(1) as usize;
-    if bits != data_type.size_bytes() * 8 {
+    if bits != parts * data_type.size_bytes() * 8 {
         return Err(Error::Unsupported(format!("overviews of {bits}-bit samples are not supported")));
     }
     let own = Compression::from_tiff(dir.uint(259).unwrap_or(1) as u16, dir.get(50674).and_then(|e| e.uints().get(1).copied()));
@@ -583,6 +610,13 @@ fn layout_like(
             Compression::Deflate
         }),
     };
+    if parts == 2
+        && !matches!(compression, Compression::None | Compression::Lzw | Compression::Deflate | Compression::PackBits | Compression::Zstd)
+    {
+        return Err(Error::Unsupported(
+            "overviews of complex GeoTIFF samples are written uncompressed or with LZW, DEFLATE, PACKBITS or ZSTD".into(),
+        ));
+    }
     let samples = dir.uint(277).unwrap_or(1) as usize;
     let mut photometric = dir.uint(262).unwrap_or(1) as u16;
     if photometric == 6 && compression != Compression::Jpeg {
@@ -596,7 +630,7 @@ fn layout_like(
     } else {
         None
     };
-    let predictor = if compression.takes_predictor() { dir.uint(317).unwrap_or(1) as u16 } else { 1 };
+    let predictor = if compression.takes_predictor() && parts == 1 { dir.uint(317).unwrap_or(1) as u16 } else { 1 };
     let layout = Layout {
         tile,
         rows_per_strip: if tile.is_none() { dir.uint(278).map(|r| r as u32) } else { None },
@@ -604,7 +638,7 @@ fn layout_like(
         photometric,
         extra: dir.get(338).map(|e| e.uints().into_iter().map(|v| v as u16).collect()).unwrap_or_default(),
         predictor,
-        parts: 1,
+        parts,
         nbits: None,
     };
     let codec = CodecParams { jpeg_ycbcr: photometric == 6, ..Default::default() };
@@ -821,10 +855,11 @@ fn from_values(data_type: DataType, values: Vec<f64>) -> RasterData {
     }
 }
 
-/// Whether a level of width `width` scheduled with `sched` is computed from the previous level
-/// computed (of width `prev_width`), rather than from full resolution.
-fn cascades(sched: Schedule, prev_width: usize, width: usize) -> bool {
-    sched.from_prev && prev_width > width
+/// Whether a level scheduled with `sched` is computed from the previous, larger level
+/// rather than from full resolution. GDAL 3.13.2's per-band path cascades height-only
+/// reductions; its multiband path requires the width to decrease.
+fn cascades(sched: Schedule, prev: (usize, usize), size: (usize, usize)) -> bool {
+    sched.from_prev && (prev.0 > size.0 || (sched.chunk_rows.is_some() && prev.1 > size.1))
 }
 
 /// What a level is computed from: the previous level (computed, or stored at `level`) or full
@@ -836,7 +871,7 @@ fn source_of<'c>(
     full: (usize, usize),
     overviews: &[(usize, usize)],
 ) -> ((usize, usize), Option<usize>, Option<&'c Computed>) {
-    match prev.filter(|p| cascades(sched, p.size.0, size.0)) {
+    match prev.filter(|p| cascades(sched, p.size, size)) {
         Some(p) => (p.size, overviews.iter().position(|s| *s == p.size), Some(p)),
         None => (full, None, None),
     }
@@ -883,6 +918,23 @@ pub(crate) fn alpha_band(src: &mut LazyRaster) -> Option<usize> {
     header.band_metadata.get(last).is_none_or(|m| m.color_interp.is_none()).then_some(last)
 }
 
+/// The number of bands GDAL sees: a complex band is one, whose parts are two of terrio's.
+fn gdal_band_count(src: &LazyRaster) -> usize {
+    if src.is_complex() { src.band_count() / 2 } else { src.band_count() }
+}
+
+/// Refuses the methods GDAL does not compute for complex bands (`GDALResampleChunkC32R` takes
+/// nearest and average; terrio's minimum and maximum have no complex order).
+fn complex_method(src: &LazyRaster, method: OverviewResampling) -> Result<()> {
+    if src.is_complex() && !matches!(method, OverviewResampling::Nearest | OverviewResampling::Average) {
+        return Err(Error::Unsupported(format!(
+            "'{}' overviews of complex bands are not supported: use nearest or average",
+            method.gdal_name().to_ascii_lowercase()
+        )));
+    }
+    Ok(())
+}
+
 /// The schedules GDAL computes the levels of `sizes` (largest first, with their blocks) with:
 /// for the data, and for the mask when the raster has one.
 #[allow(clippy::too_many_arguments)]
@@ -893,37 +945,45 @@ fn schedules(
     blocks: &[(usize, usize)],
     method: OverviewResampling,
     data_type: DataType,
+    complex: bool,
     multiband: bool,
     has_mask: bool,
 ) -> (Vec<Schedule>, Vec<Option<Schedule>>) {
     let factor = |src: (usize, usize), dst: (usize, usize)| {
         ((src.0 as f64 / dst.0 as f64 + 0.5) as usize).max((src.1 as f64 / dst.1 as f64 + 0.5) as usize).max(1)
     };
-    // GDALRegenerateOverviewsEx on a band whose values are `value_size` bytes; `cascadable` for
-    // averages and modes whose mask is the nodata value (or none).
-    let ex = |value_size: usize, cascadable: bool| -> Vec<Schedule> {
-        let cascade = method != OverviewResampling::Nearest && sizes.len() > 1 && cascadable;
+    let max = sizes.iter().map(|s| factor(full, *s)).max().unwrap_or(1);
+    // GDALRegenerateOverviewsEx on a band whose values are `value_size` bytes (of `complex`
+    // values); `cascadable` for averages and modes whose mask is the nodata value (or none).
+    let ex = |value_size: usize, complex: bool, cascadable: bool| -> Vec<Schedule> {
+        // Complex bands GDAL cannot hand to GDALRegenerateOverviewsMultiBand cascade their
+        // nearest neighbours instead.
+        let cascade = sizes.len() > 1
+            && if method == OverviewResampling::Nearest {
+                complex && kernel::ex_chunk_oversized(full.0, base_block, max, value_size)
+            } else {
+                cascadable
+            };
         if cascade {
             return (0..sizes.len())
                 .map(|i| {
                     let (src, block) = if i == 0 { (full, base_block) } else { (sizes[i - 1], blocks[i - 1]) };
-                    let rows = kernel::ex_chunk_rows(src.0, src.1, block, factor(src, sizes[i]), value_size);
+                    let rows = kernel::ex_chunk_rows(src.0, src.1, block, factor(src, sizes[i]), value_size, complex);
                     Schedule { from_prev: true, chunk_rows: rows }
                 })
                 .collect();
         }
-        let max = sizes.iter().map(|s| factor(full, *s)).max().unwrap_or(1);
-        match kernel::ex_chunk_rows(full.0, full.1, base_block, max, value_size) {
+        match kernel::ex_chunk_rows(full.0, full.1, base_block, max, value_size, complex) {
             Some(rows) => vec![Schedule { from_prev: false, chunk_rows: Some(rows) }; sizes.len()],
             None => vec![Schedule { from_prev: true, chunk_rows: None }; sizes.len()],
         }
     };
-    let data = if multiband {
+    let data = if multiband && !complex {
         vec![Schedule { from_prev: true, chunk_rows: None }; sizes.len()]
     } else {
-        ex(kernel::work_size(method, data_type), !has_mask)
+        ex(kernel::work_size(method, data_type, complex), complex, !has_mask)
     };
-    let mask = if has_mask { ex(1, true).into_iter().map(Some).collect() } else { vec![None; sizes.len()] };
+    let mask = if has_mask { ex(1, false, true).into_iter().map(Some).collect() } else { vec![None; sizes.len()] };
     (data, mask)
 }
 
@@ -946,7 +1006,7 @@ fn compute(
 ) -> Result<Computed> {
     let full = (srcs.src.width(), srcs.src.height());
     let overviews = srcs.src.overviews();
-    let (bands, data_type, nodata) = (srcs.src.band_count(), srcs.src.data_type(), srcs.src.nodata());
+    let (bands, data_type) = (srcs.src.band_count(), srcs.src.data_type());
     // The mask's overview.
     let new_mask = match mask {
         Some(ms) => {
@@ -956,7 +1016,7 @@ fn compute(
             let m = m.ok_or_else(|| Error::InvalidData("the raster's mask could not be read".into()))?;
             let values: Vec<f64> = m.iter().map(|v| *v as f64).collect();
             let valid: Option<Vec<bool>> = (method != OverviewResampling::Nearest).then(|| m.iter().map(|v| *v != 0).collect());
-            let t = kernel::Target { width: size.0, height: size.1, data_type: DataType::U8, nodata: None, method };
+            let t = kernel::Target { width: size.0, height: size.1, data_type: DataType::U8, nodata: None, method, complex: false };
             let out = resample_band(&values, valid.as_deref(), msize, mrows, &t, rows.clone(), ms.chunk_rows, group_origin);
             Some(out.into_iter().map(|v| v as u8).collect::<Vec<u8>>())
         }
@@ -968,11 +1028,12 @@ fn compute(
     let want_mask = masked && (mask.is_some() || (srcs.src.has_mask() && computed.is_none()));
     let (src_data, src_mask) = srcs.rows(level, dsize, drows.clone(), computed, want_mask)?;
     let n = dsize.0 * drows.len();
-    let t = kernel::Target { width: size.0, height: size.1, data_type, nodata, method };
     let alpha: Option<Vec<bool>> =
         srcs.alpha.filter(|_| masked && src_mask.is_none()).map(|a| band_values(&src_data, a, n).iter().map(|v| *v != 0.0).collect());
     let mut out = Vec::with_capacity(size.0 * rows.len() * bands);
     for b in 0..bands {
+        let nodata = overview_nodata(srcs.src, b + 1);
+        let t = kernel::Target { width: size.0, height: size.1, data_type, nodata, method, complex: srcs.src.is_complex() };
         let values = band_values(&src_data, b, n);
         // GDAL's mask band: the per-dataset mask, else the alpha band, else the nodata value.
         let valid: Option<Vec<bool>> = match (&src_mask, &alpha, nodata) {
@@ -1037,7 +1098,7 @@ fn whole_levels(
     let from_prev = |k: usize, mask: bool| {
         let l = &levels[k];
         let sched = if mask { l.mask } else { Some(l.data) };
-        k > 0 && sched.is_some_and(|s| cascades(s, levels[k - 1].size.0, l.size.0)) && (!mask || levels[k - 1].mask.is_some())
+        k > 0 && sched.is_some_and(|s| cascades(s, levels[k - 1].size, l.size)) && (!mask || levels[k - 1].mask.is_some())
     };
     let parts_of = |k: usize| [Some(false), levels[k].mask.map(|_| true)].into_iter().flatten().map(move |mask| Job { level: k, mask });
     let first: Vec<Job> = (0..levels.len()).flat_map(parts_of).filter(|j| !from_prev(j.level, j.mask)).collect();
@@ -1207,6 +1268,16 @@ fn steps(
     }
 }
 
+/// A band's overview nodata comparison value. GDAL 3.13.2 compares Float32 EHdr
+/// declarations in the stored sample type, while the base header retains its f64 declaration.
+fn overview_nodata(src: &LazyRaster, band: usize) -> Option<f64> {
+    src.band_nodata(band).map(
+        |nd| {
+            if src.driver() == RasterDriver::EHdr && src.data_type() == DataType::F32 { nd as f32 as f64 } else { nd }
+        },
+    )
+}
+
 /// Computes `jobs` from `prev` (the previous level, of `src_size`), or from the full-resolution
 /// image when `prev` is `None`: their steps run in the order of their last source rows, so the
 /// image is read forward once and only the rows the current steps need are held. After each
@@ -1223,7 +1294,9 @@ fn run_jobs(
     if jobs.is_empty() {
         return Ok(());
     }
-    let (bands, data_type, nodata, has_mask) = (srcs.src.band_count(), srcs.src.data_type(), srcs.src.nodata(), srcs.src.has_mask());
+    let (bands, data_type, has_mask) = (srcs.src.band_count(), srcs.src.data_type(), srcs.src.has_mask());
+    let nodata: Vec<_> = (1..=bands).map(|b| overview_nodata(srcs.src, b)).collect();
+    let complex = srcs.src.is_complex();
     // GDAL's mask band for the data of a method other than nearest: the per-dataset mask (the
     // mask's overview for a previous level), else the alpha band, else the nodata value.
     let use_mask = |l: &WholeLevel| l.method != OverviewResampling::Nearest && (prev.is_some() || l.mask.is_some() || has_mask);
@@ -1289,7 +1362,14 @@ fn run_jobs(
             let m = held.mask(&rows, w).ok_or_else(|| Error::InvalidData("the raster's mask could not be read".into()))?;
             let values: Vec<f64> = m.iter().map(|v| *v as f64).collect();
             let valid: Option<Vec<bool>> = masked.then(|| m.iter().map(|v| *v != 0).collect());
-            let t = kernel::Target { width: l.size.0, height: l.size.1, data_type: DataType::U8, nodata: None, method: l.method };
+            let t = kernel::Target {
+                width: l.size.0,
+                height: l.size.1,
+                data_type: DataType::U8,
+                nodata: None,
+                method: l.method,
+                complex: false,
+            };
             let out = band(&values, valid.as_deref(), &t);
             let dst = parts[job.level].1.as_mut().expect("the mask is allocated");
             for (d, v) in dst[out_rows.start * l.size.0..].iter_mut().zip(out) {
@@ -1298,14 +1378,14 @@ fn run_jobs(
             continue;
         }
         let src_mask = held.mask(&rows, w).filter(|_| use_mask(l));
-        let t = kernel::Target { width: l.size.0, height: l.size.1, data_type, nodata, method: l.method };
         // The mask's or the alpha band's validity, shared by the bands; else each band's nodata.
         let shared: Option<Vec<bool>> = match src_mask {
             _ if !masked => None,
             Some(m) => Some(m.iter().map(|v| *v != 0).collect()),
             None => srcs.alpha.map(|a| held.band(a, &rows, w).iter().map(|v| *v != 0.0).collect()),
         };
-        for b in 0..bands {
+        for (b, &nodata) in nodata.iter().enumerate() {
+            let t = kernel::Target { width: l.size.0, height: l.size.1, data_type, nodata, method: l.method, complex };
             let values = held.band(b, &rows, w);
             let own: Option<Vec<bool>> = match (&shared, nodata) {
                 (None, Some(nd)) if masked => Some(values.iter().map(|v| !(*v == nd || (v.is_nan() && nd.is_nan()))).collect()),
@@ -1347,7 +1427,7 @@ fn new_level_image(
 ) -> Result<(gw::Image, Option<gw::Image>)> {
     let (mut layout, compression, codec) = layout_like(like, compression, true, data_type)?;
     if let Some(planar) = planar {
-        layout.planar = planar && bands > 1;
+        layout.planar = planar && bands / layout.parts > 1;
     }
     let level = gw::Level { cols: c.size.0, rows: c.size.1, bands, data: std::borrow::Cow::Borrowed(&c.data) };
     let mut img = level.image(data_type, compression, &codec, &layout)?;
@@ -1402,6 +1482,7 @@ fn build_new_levels(
     report: &mut Report<'_>,
 ) -> Result<Vec<gw::Image>> {
     warn_integer_precision(src.data_type());
+    complex_method(src, method)?;
     let sizes = sorted_sizes(sizes.to_vec());
     let (layout, new_compression, ..) = layout_like(like, Some(compression), true, src.data_type())?;
     let blocks: Vec<(usize, usize)> = sizes
@@ -1413,10 +1494,20 @@ fn build_new_levels(
         .collect::<Result<_>>()?;
     let alpha = alpha_band(src);
     // New levels are band-separate as GDAL writes them, which decides how it computes them.
-    let planar = ovr_planar(src.band_count(), new_compression);
+    let planar = ovr_planar(gdal_band_count(src), new_compression);
     let multiband = gdal_multiband(!planar, true, new_compression != Compression::None, alpha.is_some());
     let base_block = base_block(src);
-    let (data, _) = schedules((src.width(), src.height()), base_block, &sizes, &blocks, method, src.data_type(), multiband, src.has_mask());
+    let (data, _) = schedules(
+        (src.width(), src.height()),
+        base_block,
+        &sizes,
+        &blocks,
+        method,
+        src.data_type(),
+        src.is_complex(),
+        multiband,
+        src.has_mask(),
+    );
     let levels: Vec<WholeLevel> = sizes.iter().zip(data).map(|(&size, data)| WholeLevel { size, method, data, mask: None }).collect();
     let mut srcs = Sources { src, base: None, alpha, read_bytes: READ_BYTES, strip_values: STRIP_VALUES };
     let mut out = Vec::new();
@@ -1452,6 +1543,198 @@ fn write_ovr(f: &mut std::fs::File, images: Vec<gw::Image>, main: &Directory) ->
         dirs.push(dir);
     }
     a.finish(&dirs)
+}
+
+/// Adds overview images to a copy of an existing `.ovr` sidecar (`existing`, parsed from it):
+/// each replaces the image of its size, or joins the others, largest first.
+fn append_ovr(f: &mut std::fs::File, existing: Tiff, images: Vec<gw::Image>, main: &Directory) -> Result<()> {
+    let mut a = Appender::new(f, existing.big)?;
+    let mut dirs = existing.dirs;
+    for img in images {
+        let mut dir = a.image(img)?;
+        shared_tags(main, &mut dir);
+        match dirs.iter().position(|old| !old.is_mask() && old.size() == dir.size()) {
+            Some(i) => dirs[i] = dir,
+            None => dirs.push(dir),
+        }
+    }
+    dirs.sort_by_key(|d| std::cmp::Reverse(d.size()));
+    a.finish(&dirs)
+}
+
+/// The `.msk` sidecar of a raster whose external overviews are built, and its `.msk.ovr`, which
+/// takes the mask's overviews. GDAL builds them as the overviews of the mask dataset, once the
+/// data's are built (GDAL 3.13.2, `GDALDefaultOverviews::BuildOverviews`), with the same method:
+/// the mask band is its own mask (`IsMaskBand`), so only its valid pixels count, as an alpha
+/// band's do. GDAL's band of an `.ovr` level then takes the `.msk.ovr` image of its size as its
+/// mask ([`crate::LazyRaster::read_level_mask`]).
+struct MaskSidecar {
+    /// The `.msk`, opened as a GeoTIFF of its own.
+    src: LazyRaster,
+    /// Its full-resolution image.
+    dir: Directory,
+    /// The `.msk.ovr`, and its images when it exists.
+    ovr: std::path::PathBuf,
+    existing: Option<Tiff>,
+}
+
+impl MaskSidecar {
+    /// Opens the `.msk` sidecar of `path`, refusing before any work what GDAL cannot build: a
+    /// `.msk` with internal overviews, or a `.msk.ovr` that cannot be replaced.
+    fn open(path: &str) -> Result<Self> {
+        let msk = format!("{path}.msk");
+        let src = LazyRaster::open_tiff_unchecked(&msk)?.ok_or_else(|| Error::InvalidData(format!("'{msk}' is not a TIFF file")))?;
+        let tiff = parse_file(std::path::Path::new(&msk))?;
+        if tiff.dirs.iter().any(Directory::is_overview) {
+            return Err(Error::InvalidArgument(format!(
+                "'{msk}' has internal overviews: external overviews of its mask cannot be added (as in GDAL)"
+            )));
+        }
+        let dir = tiff.dirs[images(&tiff).main.unwrap_or(0)].clone();
+        let ovr = ovr_path(std::path::Path::new(&msk));
+        let existing = if ovr.is_file() {
+            gtiff_update::writable_local_file(&ovr.to_string_lossy())?;
+            Some(parse_file(&ovr)?)
+        } else {
+            None
+        };
+        Ok(Self { src, dir, ovr, existing })
+    }
+
+    /// Computes the mask's overviews of `sizes` as GDAL computes them, as images like the
+    /// `.msk`'s (or like the `.msk.ovr`'s existing image of a size): the images to write. JPEG
+    /// compression is DEFLATE for masks, as in GDAL.
+    ///
+    /// GDAL first computes the new levels (`GTIFFBuildOverviews`): together, block by block,
+    /// when they are compressed; else band by band, which recomputes every level of the
+    /// `.msk.ovr` with them, the ones it had too. It then refreshes the requested levels the
+    /// `.msk.ovr` had, band by band. Band by band, a mask's levels cascade, each from the
+    /// previous one (`GDALRegenerateOverviewsEx`'s mask band is the band itself).
+    fn build(
+        &mut self,
+        sizes: &[(usize, usize)],
+        method: OverviewResampling,
+        compression: &str,
+        override_compression: bool,
+        report: &mut Report<'_>,
+    ) -> Result<Vec<gw::Image>> {
+        let compression = if compression.eq_ignore_ascii_case("JPEG") { "DEFLATE" } else { compression };
+        let had: Vec<(usize, usize)> =
+            self.existing.as_ref().map_or_else(Vec::new, |t| t.dirs.iter().filter(|d| !d.is_mask()).map(Directory::size).collect());
+        let (_, new_compression, ..) = layout_like(&self.dir, Some(compression), true, DataType::U8)?;
+        let multiband = gdal_multiband(true, true, new_compression != Compression::None, false);
+        let new: Vec<(usize, usize)> = sizes.iter().filter(|s| !had.contains(s)).copied().collect();
+        let refreshed: Vec<(usize, usize)> = sizes.iter().filter(|s| had.contains(s)).copied().collect();
+        let first = if multiband || new.is_empty() { new } else { sorted_sizes([had.clone(), new].concat()) };
+        let pixels = |set: &[(usize, usize)]| set.iter().map(|s| s.0 as f64 * s.1 as f64).sum::<f64>();
+        let total = (pixels(&first) + pixels(&refreshed)).max(1.0);
+        let mut images: Vec<((usize, usize), gw::Image)> = Vec::new();
+        let mut done = 0.0;
+        for (set, multiband) in [(first, multiband), (refreshed, false)] {
+            if set.is_empty() {
+                continue;
+            }
+            let share = pixels(&set) / total;
+            let at = done;
+            let computed =
+                self.compute(&set, multiband, method, compression, sizes, override_compression, &mut |f| report(at + f * share))?;
+            done += share;
+            for (size, img) in computed {
+                match images.iter().position(|(s, _)| *s == size) {
+                    Some(i) => images[i].1 = img,
+                    None => images.push((size, img)),
+                }
+            }
+        }
+        Ok(images.into_iter().map(|(_, img)| img).collect())
+    }
+
+    /// Computes the mask's levels of `set` in one GDAL pass: block by block (`multiband`), or
+    /// band by band, cascading. A level keeps the compression of the `.msk.ovr`'s image of its
+    /// size unless it is `requested` with `override_compression`.
+    #[allow(clippy::too_many_arguments)]
+    fn compute(
+        &mut self,
+        set: &[(usize, usize)],
+        multiband: bool,
+        method: OverviewResampling,
+        compression: &str,
+        requested: &[(usize, usize)],
+        override_compression: bool,
+        report: &mut Report<'_>,
+    ) -> Result<Vec<((usize, usize), gw::Image)>> {
+        let Self { src, dir: like, existing, .. } = self;
+        let existing = existing.as_ref().map(|t| t.dirs.as_slice());
+        let old = |size: (usize, usize)| existing.and_then(|dirs| dirs.iter().find(|d| !d.is_mask() && d.size() == size));
+        let sizes = sorted_sizes(set.to_vec());
+        let (layout, ..) = layout_like(like, Some(compression), true, DataType::U8)?;
+        let blocks: Vec<(usize, usize)> = sizes
+            .iter()
+            .map(|&size| match old(size) {
+                Some(dir) => layout_like(dir, None, false, DataType::U8).map(|(l, ..)| chunk_size(&l, size.0)),
+                None => Ok(chunk_size(&layout, size.0)),
+            })
+            .collect::<Result<_>>()?;
+        // Scheduled as a band without a mask of its own, which cascades.
+        let (data, _) =
+            schedules((src.width(), src.height()), base_block(src), &sizes, &blocks, method, DataType::U8, false, multiband, false);
+        let levels: Vec<WholeLevel> = sizes.iter().zip(data).map(|(&size, data)| WholeLevel { size, method, data, mask: None }).collect();
+        let metadata = mask_metadata(like, method);
+        // The band's nonzero pixels are its valid ones, as an alpha band's.
+        let mut srcs = Sources { src, base: None, alpha: Some(0), read_bytes: READ_BYTES, strip_values: STRIP_VALUES };
+        let mut out = Vec::new();
+        whole_levels(&mut srcs, &levels, report, |_, _, c| {
+            let old = old(c.size);
+            let compression = match old {
+                Some(_) if !(override_compression && requested.contains(&c.size)) => None,
+                _ => Some(compression),
+            };
+            let (mut img, _) = new_level_image(c, old.unwrap_or(like), compression, method, DataType::U8, 1, Some(false))?;
+            for (tag, value) in &mut img.tags {
+                if *tag == 42112 {
+                    *value = Value::Ascii(metadata.clone());
+                }
+            }
+            out.push((c.size, img));
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// Writes the mask's overview images to a staged `.msk.ovr`: a new file, or a copy of the
+    /// existing one, to rename over it.
+    fn stage(self, images: Vec<gw::Image>) -> Result<gtiff_update::Staged> {
+        let like = &self.dir;
+        let ((), staged) = match self.existing {
+            Some(existing) => gtiff_update::stage_update(&self.ovr, |f, _| append_ovr(f, existing, images, like))?,
+            None => gtiff_update::stage_replace(&self.ovr, |f| write_ovr(f, images, like))?,
+        };
+        Ok(staged)
+    }
+}
+
+/// Renames the staged `.ovr` into place, with the staged `.msk.ovr` when there is one: both or
+/// neither.
+fn publish_sidecars(ovr: gtiff_update::Staged, mask: Option<gtiff_update::Staged>) -> Result<()> {
+    match mask {
+        Some(mask) => gtiff_update::persist_both(mask, ovr),
+        None => ovr.persist(),
+    }
+}
+
+/// The `GDAL_METADATA` of a mask's overview: the method, and the mask flags of the `.msk` it is
+/// an overview of (`INTERNAL_MASK_FLAGS_n`), as GDAL writes them.
+fn mask_metadata(msk: &Directory, method: OverviewResampling) -> String {
+    let mut xml = format!("<GDALMetadata><Item name=\"RESAMPLING\" sample=\"0\">{}</Item>", method.gdal_name());
+    let own = msk.get(42112).and_then(Entry::ascii).unwrap_or_default();
+    for item in gw::gdal_metadata_items(&own) {
+        if let Some(name) = item.attr("name").filter(|n| n.starts_with("INTERNAL_MASK_FLAGS_")) {
+            let (name, value) = (crate::drivers::common::xml_escape(name), crate::drivers::common::xml_escape(item.text.trim()));
+            xml.push_str(&format!("<Item name=\"{name}\">{value}</Item>"));
+        }
+    }
+    xml.push_str("</GDALMetadata>");
+    xml
 }
 
 /// Adds overviews of these factors to a TIFF (the file, or a copy of it), reporting the progress
@@ -1493,6 +1776,7 @@ fn add_internal<F: Read + Write + Seek>(
             "average overviews of palette images are not supported (GDAL averages their colors): use nearest or mode".into(),
         ));
     }
+    complex_method(src, method)?;
     // The block of each level: an existing level's own, else the one new images take.
     let (new_layout, ..) = layout_like(main_dir, compression, true, src.data_type())?;
     let blocks: Vec<(usize, usize)> = sizes
@@ -1503,11 +1787,12 @@ fn add_internal<F: Read + Write + Seek>(
         })
         .collect::<Result<_>>()?;
     let alpha = alpha_band(src);
-    let multiband = gdal_multiband(contiguous(main_dir, src.band_count()), false, true, alpha.is_some());
-    let (mut data, masks) = schedules((w, h), base_block(src), &sizes, &blocks, method, src.data_type(), multiband, im.main_mask);
+    let multiband = gdal_multiband(contiguous(main_dir, gdal_band_count(src)), false, true, alpha.is_some());
+    let complex = src.is_complex();
+    let (mut data, masks) = schedules((w, h), base_block(src), &sizes, &blocks, method, src.data_type(), complex, multiband, im.main_mask);
     if !im.main_mask && src.has_mask() {
         // A `.msk` sidecar: its pixels count, and GDAL cannot cascade over it.
-        data = schedules((w, h), base_block(src), &sizes, &blocks, method, src.data_type(), multiband, true).0;
+        data = schedules((w, h), base_block(src), &sizes, &blocks, method, src.data_type(), complex, multiband, true).0;
     }
     let plan: Vec<WholeLevel> =
         sizes.iter().zip(data).zip(masks).map(|((&size, data), mask)| WholeLevel { size, method, data, mask }).collect();
@@ -1596,7 +1881,8 @@ pub(crate) fn replace_chunks<F: Write + Seek>(
     let (img, chunk) = match mask_of {
         None => {
             let (layout, compression, codec) = layout_like(dir, None, false, data_type)?;
-            if dir.uint(277).unwrap_or(1) as usize != bands {
+            // A complex sample is two of the raster's bands.
+            if dir.uint(277).unwrap_or(1) as usize * layout.parts != bands {
                 return Err(Error::InvalidData("an overview has another band count than the raster".into()));
             }
             let data = if whole {
@@ -1624,6 +1910,10 @@ pub(crate) fn replace_chunks<F: Write + Seek>(
             (gw::mask_image(&m, x1 - x0, rows_n, mask_block(chunk, rows_n, tiled))?, chunk)
         }
     };
+    // Replacement chunks and their decoding metadata must agree. In particular, complex
+    // whole refreshes encode without prediction even when the old overview used Predictor=2.
+    // Partial complex refreshes are refused by the public entry point.
+    let predictor = img.tags.iter().find(|(tag, _)| *tag == 317).map(|(_, value)| value.clone());
     let (cw, ch) = (chunk.0, chunk.1.min(h.max(1)));
     if !c.rows.start.is_multiple_of(ch) || (c.rows.end != h && !c.rows.end.is_multiple_of(ch)) {
         return Err(Error::InvalidData("refreshed overview rows are not aligned to its blocks".into()));
@@ -1651,6 +1941,12 @@ pub(crate) fn replace_chunks<F: Write + Seek>(
     }
     let mut out = dir.clone();
     let big = a.is_big();
+    if mask_of.is_none() {
+        match predictor {
+            Some(value) => out.set(Entry::new(317, &value, big)),
+            None => out.remove(317),
+        }
+    }
     let (o, cn) = if dir.tiled() { (324, 325) } else { (273, 279) };
     out.set(Entry::new(o, &Value::Offsets(offsets), big));
     out.set(Entry::new(cn, &Value::Offsets(counts), big));
@@ -1736,14 +2032,21 @@ pub(crate) fn refresh<F: Read + Write + Seek>(file: &mut F, src: &mut LazyRaster
         .collect::<Result<_>>()?;
     let alpha = alpha_band(src);
     let multiband = match im.main {
-        Some(m) => gdal_multiband(contiguous(&tiff.dirs[m], src.band_count()), false, true, alpha.is_some()),
+        Some(m) => gdal_multiband(contiguous(&tiff.dirs[m], gdal_band_count(src)), false, true, alpha.is_some()),
         None => {
             let first = &tiff.dirs[targets[0].1];
-            gdal_multiband(contiguous(first, src.band_count()), true, first.uint(259).unwrap_or(1) != 1, alpha.is_some())
+            gdal_multiband(contiguous(first, gdal_band_count(src)), true, first.uint(259).unwrap_or(1) != 1, alpha.is_some())
         }
     };
     let has_mask = targets.iter().all(|t| t.2.is_some());
     let whole = region == [0, 0, w, h];
+    let complex = src.is_complex();
+    if complex && !whole {
+        return Err(Error::Unsupported("partial refreshes of complex GeoTIFF overviews are not supported: refresh them whole".into()));
+    }
+    for &method in &methods {
+        complex_method(src, method)?;
+    }
     let mut a = Appender::new(file, tiff.big)?;
     let mut dirs = tiff.dirs.clone();
     let mut srcs = Sources { src, base: None, alpha, read_bytes: READ_BYTES, strip_values: STRIP_VALUES };
@@ -1754,7 +2057,7 @@ pub(crate) fn refresh<F: Read + Write + Seek>(file: &mut F, src: &mut LazyRaster
         .enumerate()
         .map(|(k, (&(size, _, mask), &method))| {
             let (mut data, mut masks) =
-                schedules((w, h), base_block(srcs.src), &sizes, &blocks, method, srcs.src.data_type(), multiband, has_mask);
+                schedules((w, h), base_block(srcs.src), &sizes, &blocks, method, srcs.src.data_type(), complex, multiband, has_mask);
             if !whole {
                 // Partial refreshes compute whole windows (GDALRegenerateOverviewsMultiBand's region).
                 for s in data.iter_mut().chain(masks.iter_mut().flatten()) {
@@ -1861,6 +2164,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn complex_refresh_replaces_the_stored_predictor_with_the_encoded_layout() {
+        // GDAL 3.13.2 permits Predictor=2 on CInt16 (32 bits per complex sample).
+        // Replacement does not decode the old chunks and must replace their predictor tag.
+        let raster = wbraster::Raster::from_data(
+            wbraster::RasterConfig { cols: 2, rows: 2, bands: 1, data_type: DataType::I16, ..Default::default() },
+            vec![1., 2., 3., 4.],
+        )
+        .unwrap();
+        let mut file = std::io::Cursor::new(gw::encode(&raster, &gw::TiffOptions::default()).unwrap());
+        let tiff = gtiff_update::parse(&mut file).unwrap();
+        let mut dir = tiff.dirs[0].clone();
+        dir.set(Entry::new(258, &Value::Shorts(vec![32]), tiff.big));
+        dir.set(Entry::new(339, &Value::Shorts(vec![5]), tiff.big));
+        dir.set(Entry::new(259, &Value::Shorts(vec![8]), tiff.big));
+        dir.set(Entry::new(317, &Value::Shorts(vec![2]), tiff.big));
+        let expected = vec![1i16, 2, 3, 4, -5, -6, -7, -8];
+        let computed = Computed { size: (2, 2), rows: 0..2, data: RasterData::I16(expected.clone()), mask: None };
+        let mut appender = Appender::new(&mut file, tiff.big).unwrap();
+        let out = replace_chunks(&mut appender, &dir, &computed, 0..2, DataType::I16, 2, None).unwrap();
+        assert_eq!(out.uint(317).unwrap_or(1), 1);
+        appender.finish(&[out]).unwrap();
+        let mut raster = LazyRaster::from_tiff_bytes(file.into_inner()).unwrap().unwrap();
+        assert!(raster.is_complex());
+        assert_eq!(raster.read().unwrap().raster.data.to_f64_vec(), expected.iter().map(|&v| f64::from(v)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn average_cascades_when_only_the_height_decreases() {
+        let schedule = Schedule { from_prev: true, chunk_rows: Some(8) };
+        assert!(cascades(schedule, (1, 8), (1, 4)));
+        assert!(!cascades(Schedule { chunk_rows: None, ..schedule }, (1, 8), (1, 4)));
+        assert!(cascades(schedule, (8, 1), (4, 1)));
+        assert!(!cascades(schedule, (1, 4), (1, 4)));
+        assert!(!cascades(Schedule { from_prev: false, ..schedule }, (1, 8), (1, 4)));
+    }
+
+    #[test]
     fn gdal_ratios_and_fallbacks() {
         let levels = [(512, 512), (256, 256), (128, 128)];
         assert_eq!(OverviewSelection::Auto.select(1024, &levels, 1.0), None);
@@ -1943,7 +2283,7 @@ mod tests {
             let tiff = gw::encode(&raster, &options).unwrap();
             for method in methods {
                 for multiband in [false, true] {
-                    let (data, masks) = schedules((w, h), (64, 64), &sizes, &blocks, method, data_type, multiband, false);
+                    let (data, masks) = schedules((w, h), (64, 64), &sizes, &blocks, method, data_type, false, multiband, false);
                     let mut whole = LazyRaster::from_tiff_bytes(tiff.clone()).unwrap().unwrap();
                     let mut srcs = Sources { src: &mut whole, base: None, alpha: None, read_bytes: READ_BYTES, strip_values: STRIP_VALUES };
                     let mut expected: Vec<Computed> = Vec::new();
@@ -2028,7 +2368,7 @@ mod tests {
             let tiff = gw::encode(&raster, &options).unwrap();
             for method in [OverviewResampling::Nearest, OverviewResampling::Average] {
                 for multiband in [false, true] {
-                    let (data, masks) = schedules((w, h), (256, 256), &sizes, &blocks, method, DataType::F64, multiband, has_mask);
+                    let (data, masks) = schedules((w, h), (256, 256), &sizes, &blocks, method, DataType::F64, false, multiband, has_mask);
                     // The levels as computed from the whole image.
                     let mut whole = LazyRaster::from_tiff_bytes(tiff.clone()).unwrap().unwrap();
                     let mut srcs = Sources { src: &mut whole, base: None, alpha, read_bytes: READ_BYTES, strip_values: STRIP_VALUES };

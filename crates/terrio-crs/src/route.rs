@@ -64,8 +64,8 @@ pub(crate) enum OpKind {
     Vertical,
 }
 
-/// Records that an operation was used, run in reverse or not: `None` (or an unnamed one without
-/// steps) for PROJ's ballpark.
+/// Records an operation, including registered no-step datum transformations and geoid models.
+/// `None` or an unregistered no-step fallback records PROJ's ballpark.
 pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
     USED.with(|u| {
         let mut u = u.borrow_mut();
@@ -75,7 +75,15 @@ pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
             // WGS 84 (1), ETRS89 to WGS 84 (1)), or a concatenation of them (Inverse of ETRS89 to
             // ETRF89 + ETRS89 to WGS 84 (1)), which PROJ 9.8.1 names: not a ballpark. So is a
             // WKT 2 `BOUNDCRS`'s zero Helmert transformation, which PROJ names too.
-            Some(op) if !op.ballpark && (!op.steps.is_empty() || (!op.name.is_empty() && matches!(kind, OpKind::Datum))) => {
+            // Registered no-step geoid models have a declared accuracy; the missing-grid
+            // placeholder does not. Use the same distinction as the model runner.
+            Some(op)
+                if !op.ballpark
+                    && match kind {
+                        OpKind::Datum => !op.steps.is_empty() || !op.name.is_empty(),
+                        OpKind::Vertical => crate::is_geoid_model(op),
+                    } =>
+            {
                 let names = step_names(op, reverse);
                 let name = if names.is_empty() {
                     let unnamed = match kind {
@@ -86,7 +94,8 @@ pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
                 } else {
                     names.join(" + ")
                 };
-                Used { name, accuracy: op.accuracy, grids: op.grids().into_iter().map(|(g, _)| g).collect(), ballpark: false }
+                // One PROJ frames with its ballpark has a ballpark step.
+                Used { name, accuracy: op.accuracy, grids: op.grids().into_iter().map(|(g, _)| g).collect(), ballpark: op.framed }
             }
             _ => {
                 let name = match kind {
@@ -116,9 +125,47 @@ struct Chain {
 }
 
 impl Chain {
-    /// Runs the chain's transformations on a point, heights through all of them.
-    fn run(&self, p: Point) -> Option<Point> {
-        self.legs.iter().try_fold(p, |q, l| datum::run(&l.op.steps, q, l.reverse, true))
+    /// Runs a chain, keeping height across its WGS 84 leg and an adjoining custom shift.
+    fn run(&self, p: Point, three_d: bool) -> Option<Point> {
+        run_chain(self.legs.iter().map(|l| (l.op.as_ref(), l.reverse)), p, three_d)
+    }
+}
+
+/// Runs raw legs, preserving height across the WGS 84 leg and the adjoining custom operations.
+fn run_chain<'a>(legs: impl Clone + Iterator<Item = (&'a Op, bool)>, p: Point, three_d: bool) -> Option<Point> {
+    fn run<'a>(mut legs: impl Iterator<Item = (&'a Op, bool)>, p: Point) -> Option<Point> {
+        legs.try_fold(p, |q, (op, reverse)| datum::run(&op.steps, q, reverse, true))
+    }
+    let Some((i, (marked, reverse))) = legs.clone().enumerate().find(|(_, (op, _))| datum::keeps_wgs84_leg_height(op, three_d)) else {
+        return run(legs, p);
+    };
+    let (rest, wgs84) = marked.steps.split_at(datum::wgs84_leg_boundary(marked));
+    let q = run(legs.clone().take(i), p)?;
+    // Between 3D CRSs only the WGS 84 leg keeps the height: the legs before and after it move it
+    // (PZ-90 to WGS 84 (1) in PZ-90.11's chain). Beside a CRS without heights, the height the
+    // chain ends with is the one it started with (reverse) or had before the leg (forward).
+    // In 3D, the legs after it by the same rule (another leg kept across).
+    let tail = |q: Point| -> Option<Point> {
+        if three_d {
+            let tail: Vec<(&Op, bool)> = legs.clone().skip(i + 1).collect();
+            run_chain(tail.into_iter(), q, true)
+        } else {
+            run(legs.clone().skip(i + 1), q)
+        }
+    };
+    if reverse {
+        let height = if three_d { q.h } else { p.h };
+        let q = datum::run(wgs84, q, true, true)?;
+        let q = datum::run(rest, Point { h: height, ..q }, true, true)?;
+        tail(q)
+    } else {
+        let q = datum::run(rest, q, false, true)?;
+        let height = q.h;
+        let q = datum::run(wgs84, q, false, true)?;
+        if three_d {
+            return tail(Point { h: height, ..q });
+        }
+        tail(q).map(|q| Point { h: height, ..q })
     }
 }
 
@@ -151,6 +198,9 @@ pub(crate) struct Route {
     /// The target's transformations to WGS 84, for `Hub`.
     dst_ops: Vec<Arc<Op>>,
     src_ops: Vec<Arc<Op>>,
+    /// Candidate-area constraints for the hub availability query; point execution keeps its
+    /// existing per-point operation selection.
+    hub_areas: [Option<[f64; 4]>; 3],
 }
 
 fn legs(ops: &[Arc<Op>], reverse: bool) -> Vec<Leg> {
@@ -250,7 +300,15 @@ fn pseudo_area(a: &[f64; 4]) -> f64 {
 /// The area the transformations between two CRSs must intersect: the smaller of their areas of
 /// use, as PROJ's `SourceTargetCRSExtentUse::SMALLEST`.
 fn area_of_interest(src: &Def, dst: &Def) -> Option<[f64; 4]> {
-    smaller(src.area(), dst.area())
+    smaller(extent(src), extent(dst))
+}
+
+/// A CRS's area as PROJ takes it for its search: none for a WKT 2 `BOUNDCRS` to another CRS,
+/// which PROJ neither looks up by name nor gives an area beyond its base CRS's own `USAGE`
+/// (`getExtent`), and terrio reads no `USAGE`: the area of a code terrio identifies it as is not
+/// PROJ's (a bound CRS on Saba to ED50, placed by ED50's ballpark on the island as in PROJ).
+fn extent(d: &Def) -> Option<[f64; 4]> {
+    if d.bound_elsewhere() { None } else { d.area() }
 }
 
 /// The smaller of two areas, as PROJ measures them.
@@ -261,26 +319,105 @@ fn smaller(a: Option<[f64; 4]>, b: Option<[f64; 4]>) -> Option<[f64; 4]> {
     }
 }
 
+/// The transformations of a WKT 2 `BOUNDCRS` to another CRS (see [`Def::bound_elsewhere`]) as
+/// PROJ's nested search from that CRS gives them: when only its ballpark is left for the area of
+/// interest, PROJ excludes it ("artificial transformations from the hub", in
+/// `createOperationsBoundToGeog`) and applies no shift: between a bound CRS to CH1903 and UTM zone
+/// 33N, whose area CH1903's transformation does not reach.
+fn nested(def: &Def, kind: Kind) -> Kind {
+    match kind {
+        Kind::List(legs) if def.bound_elsewhere() && legs.iter().all(|l| l.op.ballpark) => Kind::List(Vec::new()),
+        kind => kind,
+    }
+}
+
 /// Whether PROJ considers a transformation between two CRSs: its area must intersect both CRSs'
 /// areas (as PROJ queries its database) and the area of interest.
 fn relevant(op: &Op, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>) -> bool {
-    op.ballpark || [src.area().as_ref(), dst.area().as_ref(), aoi].into_iter().flatten().all(|a| intersects(&op.bounds, a))
+    op.ballpark || [extent(src).as_ref(), extent(dst).as_ref(), aoi].into_iter().flatten().all(|a| intersects(&op.bounds, a))
+}
+
+/// What a route between two CRSs is searched in (#1058 step 7c): the CRSs, PROJ's area of
+/// interest between them ([`area_of_interest`]), and whether every grid counts as present, as in
+/// PROJ's candidate list, which keeps the transformations whose grids are missing
+/// ([`Route::all`]), or only the grids found ([`Route::new`]).
+struct OperationContext<'a> {
+    src: &'a Def,
+    dst: &'a Def,
+    aoi: Option<[f64; 4]>,
+    all: bool,
+    /// Whether the transformations PROJ makes between the CRSs are framed by a ballpark, of
+    /// unknown accuracy: into the CRSs of a renamed datum, from either CRS (see
+    /// [`Def::unresolved`]), or chained with PROJ's ballpark vertical transformation
+    /// (`ballpark_heights`).
+    framed: bool,
+    /// Whether every transformation is chained with PROJ's ballpark vertical transformation,
+    /// which makes it of unknown accuracy (see [`Route::with_ballpark_heights`]).
+    ballpark_heights: bool,
+}
+
+impl<'a> OperationContext<'a> {
+    fn new(src: &'a Def, dst: &'a Def, all: bool) -> Self {
+        let framed = [src, dst].iter().any(|d| d.unresolved().is_some_and(|u| u.ballpark));
+        Self { src, dst, aoi: area_of_interest(src, dst), all, framed, ballpark_heights: false }
+    }
+
+    /// A transformation as PROJ frames it between the CRSs: of unknown accuracy, when framed by a
+    /// ballpark.
+    fn framed(&self, op: Op) -> Op {
+        if self.framed { Op { accuracy: -1.0, chain_accuracy: -1.0, framed: true, ..op } } else { op }
+    }
+
+    fn aoi(&self) -> Option<&[f64; 4]> {
+        self.aoi.as_ref()
+    }
+
+    /// Whether PROJ considers a transformation between the CRSs ([`relevant`]).
+    fn keep(&self, op: &Op) -> bool {
+        relevant(op, self.src, self.dst, self.aoi())
+    }
+
+    /// The direct transformations between two EPSG geographic CRSs from GDAL's table, with those
+    /// whose grids are missing when every grid counts, and whether they run in reverse.
+    fn pair(&self, a: u32, b: u32) -> Option<(Vec<Arc<Op>>, bool)> {
+        if self.all { epsg::pair_all(a, b) } else { epsg::pair(a, b) }
+    }
 }
 
 impl Route {
     /// The route from `src` to `dst`.
     pub fn new(src: &Def, dst: &Def) -> Self {
-        Self::build(src, dst, false)
+        Self::build(&OperationContext::new(src, dst, false))
+    }
+
+    /// The route from `src` to `dst` when heights go through PROJ's ballpark vertical
+    /// transformation (no geoid model or transformation between the vertical CRSs can be used):
+    /// PROJ chains it with each horizontal transformation, which makes every one of unknown
+    /// accuracy, so that the one of the smallest area holding a point is used for it. From
+    /// WGS 84 (3D) into OSGB36 / British National Grid + ODN height (EPSG:7405) without OSGM15's
+    /// grid, PROJ 9.9.0 places (-2°, 54°) by OSGB36 to WGS 84 (3), not (6) (#1012 item 47).
+    pub fn with_ballpark_heights(src: &Def, dst: &Def) -> Self {
+        let ctx = OperationContext { framed: true, ballpark_heights: true, ..OperationContext::new(src, dst, false) };
+        Self::build(&ctx)
     }
 
     /// The route assuming all grids are available.
     pub fn all(src: &Def, dst: &Def) -> Self {
-        Self::build(&src.with_all_operations(), &dst.with_all_operations(), true)
+        let (src, dst) = (src.with_all_operations(), dst.with_all_operations());
+        Self::build(&OperationContext::new(&src, &dst, true))
     }
 
-    fn build(src: &Def, dst: &Def, all: bool) -> Self {
-        let aoi = area_of_interest(src, dst);
-        let keep = |op: &Op| relevant(op, src, dst, aoi.as_ref());
+    /// Every candidate, including missing grids, with the same ballpark-height framing as
+    /// [`Self::with_ballpark_heights`]. Strict selection must retain that ordering.
+    pub fn all_with_ballpark_heights(src: &Def, dst: &Def) -> Self {
+        let (src, dst) = (src.with_all_operations(), dst.with_all_operations());
+        let ctx = OperationContext { framed: true, ballpark_heights: true, ..OperationContext::new(&src, &dst, true) };
+        Self::build(&ctx)
+    }
+
+    fn build(ctx: &OperationContext) -> Self {
+        let (src, dst, aoi) = (ctx.src, ctx.dst, ctx.aoi());
+        let keep = |op: &Op| ctx.keep(op);
         // Unless both CRSs are 3D (geographic 3D or geocentric), PROJ makes a concatenation
         // through a transformation its database registers between geocentric CRSs only where no
         // transformation of the area links the datums directly (PROJ filters the direct ones by
@@ -309,15 +446,12 @@ impl Route {
             )
         };
         // A CRS PROJ does not resolve to its EPSG CRS: its search beyond the CRSs' own.
-        // A CRS on a renamed datum (even under its code's name) turns the search off for both
-        // sides, the other one too: PROJ's way through its ballpark is step 2's, for pairs too.
-        let renamed_datum = [src, dst].iter().any(|d| d.unresolved().is_some_and(|u| u.datum_renamed));
-        let searching = !renamed_datum && (src.unresolved().is_some() || dst.unresolved().is_some());
+        let searching = src.unresolved().is_some() || dst.unresolved().is_some();
         let searched = |kind: Kind| match (kind, src.geog(), dst.geog()) {
-            (Kind::List(l), Some(a), Some(b)) if searching => unresolved_search(l, a, b, src, dst, aoi.as_ref(), all),
+            (Kind::List(l), Some(a), Some(b)) if searching => unresolved_search(l, a, b, ctx),
             (kind, ..) => kind,
         };
-        let kind = if src.on_bound_source(dst) || dst.on_bound_source(src) {
+        let mut kind = if src.on_bound_source(dst) || dst.on_bound_source(src) {
             // A WKT 2 `BOUNDCRS` into a CRS on its source CRS's datum: PROJ's null
             // transformation.
             Kind::Same
@@ -329,12 +463,12 @@ impl Route {
         } else if src.same_datum(dst) {
             Kind::Same
         } else if dst.is_wgs84() {
-            searched(list(src.ops(), false))
+            searched(nested(src, list(src.ops(), false)))
         } else if src.is_wgs84() {
-            searched(list(dst.ops(), true))
+            searched(nested(dst, list(dst.ops(), true)))
         } else {
             match (src.geog(), dst.geog()) {
-                (Some(a), Some(b)) => match if all { epsg::pair_all(a, b) } else { epsg::pair(a, b) } {
+                (Some(a), Some(b)) => match ctx.pair(a, b) {
                     // PROJ looks for transformations through other datums when its database has
                     // none it can use between the two for the CRSs' areas (NAD83(CSRS) to NAD83
                     // between Arctic CRSs, outside the offshore area of their only one, or with
@@ -345,16 +479,31 @@ impl Route {
                         // area of interest, PROJ sorts the transformations for theirs.
                         // The search sorts the list itself, for a CRS PROJ does not resolve.
                         if !searching {
-                            resort(&mut kind, a, b, aoi.as_ref());
+                            resort(&mut kind, a, b, aoi);
                         }
                         searched(kind)
                     }
-                    _ => chains(a, b, src, dst, aoi.as_ref(), all),
+                    _ => chains(a, b, ctx),
                 },
-                _ => Kind::Hub,
+                _ => shifted(ctx).unwrap_or(Kind::Hub),
             }
         };
-        Self { kind, boxes: OnceLock::new(), hub_boxes: OnceLock::new(), dst_ops: dst.ops().to_vec(), src_ops: src.ops().to_vec() }
+        if ctx.ballpark_heights
+            && let Kind::List(list) = &mut kind
+        {
+            for leg in list.iter_mut() {
+                leg.op = Arc::new(ctx.framed((*leg.op).clone()));
+            }
+            sort_legs(&mut kind, aoi);
+        }
+        Self {
+            kind,
+            boxes: OnceLock::new(),
+            hub_boxes: OnceLock::new(),
+            dst_ops: dst.ops().to_vec(),
+            src_ops: src.ops().to_vec(),
+            hub_areas: [extent(src), extent(dst), ctx.aoi],
+        }
     }
 
     /// Refuse ballpark alternatives while retaining usable accurate operations.
@@ -362,11 +511,12 @@ impl Route {
         match &mut self.kind {
             Kind::Same => true,
             Kind::List(list) => {
-                list.retain(|l| !l.op.ballpark);
+                list.retain(|l| !l.op.has_ballpark());
                 !list.is_empty()
             }
             Kind::Chains { chains, ballpark } => {
                 *ballpark = None;
+                chains.retain(|c| !c.rank.has_ballpark());
                 !chains.is_empty()
             }
             Kind::Hub => {
@@ -406,16 +556,37 @@ impl Route {
                 datum::run_op(op, p, leg.reverse, three_d).inspect(|_| note(Some(op), leg.reverse, OpKind::Datum))
             }
             Kind::Chains { chains, .. } => {
-                if op.ballpark {
+                // A shift and a ballpark is a chain (see `shifted`); the ballpark alone, no shift.
+                let Some(c) = chains.iter().find(|c| std::ptr::eq(&c.rank, op)) else {
+                    if !op.ballpark {
+                        return None;
+                    }
                     note(None, false, OpKind::Datum);
                     return Some(p);
-                }
-                let c = chains.iter().find(|c| std::ptr::eq(&c.rank, op))?;
-                let q = c.run(p)?;
+                };
+                let q = c.run(p, three_d)?;
                 note(Some(&c.rank), false, OpKind::Datum);
                 Some(if three_d || !c.rank.keeps_height { q } else { Point { h: p.h, ..q } })
             }
             _ => self.apply(src, x, y, p, three_d),
+        }
+    }
+
+    /// Whether any retained candidate is not a ballpark: a transformation between the
+    /// datums whose grids can be had (see [`Op::obtainable`]), or none needed (one datum). False
+    /// when only PROJ's ballpark links the CRSs (or the shift into a hub CRS with it, which PROJ
+    /// counts as one). Candidates have already been filtered by the CRSs' extents and area of
+    /// interest; this does not select a particular point within those areas.
+    pub fn has_transformation(&self) -> bool {
+        let usable = |op: &Op| !op.has_ballpark() && op.obtainable();
+        match &self.kind {
+            Kind::Same => true,
+            Kind::List(list) => list.iter().any(|l| usable(&l.op)),
+            Kind::Chains { chains, .. } => chains.iter().any(|c| !c.rank.framed && c.legs.iter().all(|l| usable(&l.op))),
+            // Through WGS 84: a transformation on each side.
+            Kind::Hub => [&self.src_ops, &self.dst_ops]
+                .iter()
+                .all(|ops| ops.iter().any(|op| usable(op) && self.hub_areas.iter().flatten().all(|area| intersects(&op.bounds, area)))),
         }
     }
 
@@ -523,7 +694,7 @@ impl Route {
                 // conversion to geodetic coordinates and back between them cancelling out), and
                 // are restored after them when the chain keeps them.
                 let run = |c: &Chain| {
-                    let r = c.run(p)?;
+                    let r = c.run(p, three_d)?;
                     Some(if three_d || !c.rank.keeps_height { r } else { Point { h: p.h, ..r } })
                 };
                 let c = self.candidates(src, true).expect("chains");
@@ -555,7 +726,7 @@ impl Route {
             Kind::Hub => match self.hub_pick(src, &at) {
                 (Some(s), Some(d)) => {
                     // Heights go through both, as in PROJ's pipeline (see the chains).
-                    let r = datum::run(&s.steps, p, false, true).and_then(|q| datum::run(&d.steps, q, true, true))?;
+                    let r = run_chain([(s, false), (d, true)].into_iter(), p, three_d)?;
                     let result = Some(if three_d || !(s.keeps_height && d.keeps_height) { r } else { Point { h: p.h, ..r } });
                     if result.is_some() {
                         note(Some(s), false, OpKind::Datum);
@@ -604,7 +775,7 @@ impl Route {
                 for i in c.tries(&at) {
                     let Some(chain) = chains.get(i) else { return Vec::new() };
                     if chain.legs.iter().any(|l| !l.op.available())
-                        || chain.run(p).is_some()
+                        || chain.run(p, false).is_some()
                         || chain.legs.iter().any(|l| l.op.network_failed())
                     {
                         return legs(chain);
@@ -757,7 +928,8 @@ const NULL_OFFSET: &str = "Null geographic offset";
 /// Transformations PROJ's database replaces by another it finds too are left out, as are those
 /// whose grids are missing. PROJ ends the list with its ballpark (no shift) unless a chain that
 /// needs no grid holds the area of interest.
-fn chains(a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>, all: bool) -> Kind {
+fn chains(a: u32, b: u32, ctx: &OperationContext) -> Kind {
+    let (src, dst, all) = (ctx.src, ctx.dst, ctx.all);
     let reg = epsg::registry();
     let (Some(ga), Some(gb)) = (reg.geodetic.get(&a), reg.geodetic.get(&b)) else {
         return Kind::Chains { chains: Vec::new(), ballpark: Some(ballpark_op(src, dst)) };
@@ -786,7 +958,7 @@ fn chains(a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>, all: boo
     if reverse {
         found = found.into_iter().map(Found::reversed).collect();
     }
-    finish(ranked(reg, found, aoi), src, dst, aoi)
+    finish(ranked(reg, found, ctx), ctx)
 }
 
 /// The areas of two CRSs PROJ queries its database's transformations for: those it knows, but
@@ -809,50 +981,111 @@ fn crs_extents(src: &Def, dst: &Def) -> Vec<[f64; 4]> {
 ///
 /// PROJ's datum pivot tries the CRSs of the datum in order of code, the geocentric and 3D ones
 /// too, and frames each transformation with the operation from the CRS into that CRS: so, for an
-/// unresolved source CRS, the static transformations registered from the datum's other CRSs to
-/// the target's datum join the list, filtered and sorted as the CRSs' own. The framing is a
-/// ballpark of unknown accuracy when the datum's name is not its ID's, which terrio does not
-/// follow yet (opengeos/terrio#1012): when either CRS has a renamed datum, `Route::build` does not
-/// search at all, for both sides, and that CRS keeps its code's area: the route is the one
-/// between the codes.
-fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>, all: bool) -> Kind {
+/// unresolved source CRS, and into an unresolved target CRS PROJ cannot find by its name, the
+/// static transformations registered from the datum's other CRSs to the other datum join the
+/// list, filtered and sorted as the CRSs' own. The framing is PROJ's ballpark, of unknown
+/// accuracy, when the datum's name is not its ID's ([`crate::def::Unresolved::ballpark`]): then every
+/// transformation PROJ makes of several (the chains, and those framed with conversions into
+/// geocentric CRSs) is of unknown accuracy, and the registered ones of the CRS itself keep theirs
+/// (PROJ leaves a ballpark alone out of the chain). A WKT with an ID of an authority PROJ does
+/// not know (`AUTHORITY["LOCAL","1"]`) is taken for resolved, as PROJ's search through
+/// intermediate datums finds nothing for it; from it, PROJ's datum pivot also takes only the
+/// first CRS with transformations, which terrio does not follow yet (opengeos/terrio#1012).
+fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, ctx: &OperationContext) -> Kind {
+    let (src, dst, aoi, all) = (ctx.src, ctx.dst, ctx.aoi(), ctx.all);
     let reg = epsg::registry();
     if !list.iter().any(|l| !l.op.ballpark) {
-        return chains(a, b, src, dst, aoi, all);
+        return chains(a, b, ctx);
     }
+    // Those PROJ makes of several (a chain, or one framed with conversions into geocentric CRSs),
+    // framed by a ballpark: of unknown accuracy. The registered ones keep theirs.
+    let list: Vec<Leg> = list
+        .into_iter()
+        .map(|l| if l.op.concatenated || l.op.geocentric { Leg { op: Arc::new(ctx.framed((*l.op).clone())), ..l } } else { l })
+        .collect();
     // CRSs PROJ's registry of chainable CRSs lacks: their own list, sorted as when no search
     // follows (every path sorts once; the CRS-pair branch leaves the sorting to this function).
     let (Some(ga), Some(gb)) = (reg.geodetic.get(&a), reg.geodetic.get(&b)) else {
         let mut kind = Kind::List(list);
-        resort(&mut kind, a, b, aoi);
+        // Framed, the accuracies are not GDAL's: sorted again.
+        if ctx.framed {
+            sort_legs(&mut kind, aoi)
+        } else {
+            resort(&mut kind, a, b, aoi)
+        }
         return kind;
     };
-    // PROJ's datum pivot also tries the other CRSs of an unresolved source CRS's datum (its
-    // geocentric and 3D ones), with the conversion into each: their transformations to the target
-    // CRS's datum join the list (ONGD14's Esri WKT, without ID, takes "ONGD14 to WGS 84 (1)",
-    // registered between the geocentric CRSs, at 0.1 m, over the geographic 2D CRS's null
-    // transformation). Not for an unresolved target: PROJ 9.8.1 goes from WGS 84 into that WKT
-    // by the code's own transformations.
+    // PROJ's datum pivot also tries the other CRSs of an unresolved CRS's datum (its geocentric
+    // and 3D ones), with the conversion into each: their transformations to the other datum join
+    // the list (ONGD14's Esri WKT, without ID, takes "ONGD14 to WGS 84 (1)", registered between
+    // the geocentric CRSs, at 0.1 m, over the geographic 2D CRS's null transformation).
     let mut list = list;
     let mut pivot: Vec<(usize, bool)> = Vec::new();
-    if src.unresolved().is_some() {
-        for code in reg.by_datum.get(&ga.datum).into_iter().flatten().filter(|c| **c != ga.code) {
-            for &i in reg.at.get(code).into_iter().flatten() {
-                let r = &reg.ops[i];
-                let (end, from_code) = if r.source == *code { (r.target, true) } else { (r.source, false) };
-                // As the CRSs' own: static, between the datums, available, and relevant to the
-                // CRSs' areas and the area of interest.
-                if r.time_dependent || r.ensemble || !reg.geodetic.get(&end).is_some_and(|g| g.datum == gb.datum) {
-                    continue;
-                }
-                if (!all && !r.op.available()) || !relevant(&r.op, src, dst, aoi) {
-                    continue;
-                }
-                // Run from the source CRS to the target: forward when the registered operation
-                // leaves the source CRS's datum.
-                pivot.push((i, !from_code));
+    // The registered transformations from a CRS `code` of `side`'s datum to the other's datum,
+    // run from the source CRS to the target: as the CRSs' own, static, between the datums,
+    // available, and relevant to the CRSs' areas and the area of interest.
+    let from = |code: u32, other: u32, source_side: bool| -> Vec<(usize, bool)> {
+        let mut found = Vec::new();
+        for &i in reg.at.get(&code).into_iter().flatten() {
+            let r = &reg.ops[i];
+            let (end, from_code) = if r.source == code { (r.target, true) } else { (r.source, false) };
+            if r.time_dependent || r.ensemble || !reg.geodetic.get(&end).is_some_and(|g| g.datum == other) {
+                continue;
             }
+            if (!all && !r.op.available()) || !ctx.keep(&r.op) {
+                continue;
+            }
+            // Forward when the registered operation leaves the source CRS's datum.
+            found.push((i, if source_side { !from_code } else { from_code }));
         }
+        found
+    };
+    // The datum pivot from one side: through the other CRSs of its datum, in order of code. One
+    // named as the WKT's code is tried first, alone: PROJ's datum pivot takes those named as the
+    // WKT first and stops at the first with transformations, its own CRS's too (so ESRI's
+    // `ONGD14` takes only "ONGD14 to WGS 84 (1)", between the geocentric CRSs, and not "(2)",
+    // between the geographic 2D ones). Its own CRS's are the list's.
+    let mut exclusive = false;
+    let mut side = |g: &epsg::Geodetic, other: u32, same_name: bool, source_side: bool| {
+        let codes = reg.by_datum.get(&g.datum).into_iter().flatten().copied();
+        if same_name {
+            let named = |c: &u32| reg.geodetic.get(c).is_some_and(|n| n.name == g.name);
+            for code in codes.clone().filter(named) {
+                // The CRS itself first in code order, with registered transformations of its own:
+                // those alone, the list as it is.
+                if code == g.code {
+                    if list.iter().any(|l: &Leg| !l.op.ballpark && !l.op.concatenated && !l.op.geocentric) {
+                        return;
+                    }
+                    continue;
+                }
+                // Another CRS of the name with transformations: its alone, without the list's.
+                let found = from(code, other, source_side);
+                if !found.is_empty() {
+                    pivot.extend(found);
+                    exclusive = true;
+                    return;
+                }
+            }
+            // None of the name has any: PROJ goes on through all the datum's CRSs.
+        }
+        // Under another name, every other CRS of the datum, with the list.
+        for code in codes.filter(|c| *c != g.code) {
+            pivot.extend(from(code, other, source_side));
+        }
+    };
+    // From an unresolved source CRS; into an unresolved target CRS PROJ cannot find by its name
+    // (into one it finds, it goes by the code's own transformations).
+    if let Some(u) = src.unresolved() {
+        side(ga, gb.datum, u.same_name, true);
+    }
+    if let Some(u) = dst.unresolved().filter(|u| !u.named) {
+        side(gb, ga.datum, u.same_name, false);
+    }
+    // Another CRS's transformations alone: the list holds the CRS's own only so far (the pivot's
+    // join it below), so all of them go but the ballpark.
+    if exclusive {
+        list.retain(|l| l.op.ballpark);
     }
     // Without those another of them replaces, and those the list has (by name: a list between
     // projected CRSs holds them flattened).
@@ -865,7 +1098,11 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: 
             continue;
         }
         let flat = concatenated && (op.chain_accuracy != op.accuracy || op.chain_bounds != op.bounds);
-        list.push(Leg { op: if flat { Arc::new(op.as_concatenated()) } else { op.clone() }, reverse });
+        let op = if flat { op.as_concatenated() } else { (**op).clone() };
+        // A pivot uses another CRS's operation, so even a registered geographic 2D operation
+        // has a framing step from the unresolved CRS. The code's own registered operations
+        // above have no such step and keep their accuracy.
+        list.push(Leg { op: Arc::new(ctx.framed(op)), reverse });
         pivoted = true;
     }
     let direct: Vec<&Leg> = list.iter().filter(|l| !l.op.ballpark).collect();
@@ -879,7 +1116,7 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: 
     if !search {
         let mut kind = Kind::List(list);
         // The transformations the datum pivot adds are sorted in with the CRSs' own.
-        if pivoted {
+        if pivoted || ctx.framed {
             sort_legs(&mut kind, aoi);
         } else {
             resort(&mut kind, a, b, aoi);
@@ -893,9 +1130,9 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: 
     if reverse {
         found = found.into_iter().map(Found::reversed).collect();
     }
-    let mut out = ranked(reg, found, aoi);
+    let mut out = ranked(reg, found, ctx);
     out.extend(direct.into_iter().map(|l| direct_chain(l, aoi)));
-    finish(out, src, dst, aoi)
+    finish(out, ctx)
 }
 
 /// The names of PROJ's null transformations between the WGS 84 ensemble and its realizations, and
@@ -947,7 +1184,8 @@ fn sort_legs(kind: &mut Kind, aoi: Option<&[f64; 4]>) {
 
 /// The chains found, each with what PROJ sorts it by: without those whose legs' areas do not
 /// intersect, or not the area of interest.
-fn ranked(reg: &epsg::Registry, found: Vec<Found>, aoi: Option<&[f64; 4]>) -> Vec<(SortKey, Chain)> {
+fn ranked(reg: &epsg::Registry, found: Vec<Found>, ctx: &OperationContext) -> Vec<(SortKey, Chain)> {
+    let aoi = ctx.aoi();
     let mut out: Vec<(SortKey, Chain)> = Vec::new();
     for f in found {
         let [(i1, r1), (i2, r2)] = f.legs;
@@ -977,14 +1215,18 @@ fn ranked(reg: &epsg::Registry, found: Vec<Found>, aoi: Option<&[f64; 4]>) -> Ve
             // an unknown area.
             unknown_area: named.is_none_or(|o| o.unknown_area),
             ballpark: false,
+            framed: false,
             concatenated: true,
             between_3d: o1.between_3d,
             geocentric: o1.geocentric || o2.geocentric,
             priority: o1.priority || o2.priority || datum::is_priority(&name),
             keeps_height: o1.keeps_height && o2.keeps_height,
+            keeps_wgs84_leg_height: false,
+            keeps_height_3d: false,
             steps: o1.steps.iter().chain(&o2.steps).cloned().collect(),
             name,
         };
+        let rank = ctx.framed(rank);
         let legs = vec![Leg { op: o1.clone(), reverse: r1 }, Leg { op: o2.clone(), reverse: r2 }];
         let key = SortKey::new(&rank, rank.name.clone(), pipeline_steps(&[(o1, r1), (o2, r2)]), aoi);
         out.push((key, Chain { legs, rank }));
@@ -994,13 +1236,14 @@ fn ranked(reg: &epsg::Registry, found: Vec<Found>, aoi: Option<&[f64; 4]>) -> Ve
 
 /// PROJ's list from the chains it found, sorted: then its ballpark, unless a chain that needs no
 /// grid holds the area of interest (even one it then drops itself).
-fn finish(mut out: Vec<(SortKey, Chain)>, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>) -> Kind {
+fn finish(mut out: Vec<(SortKey, Chain)>, ctx: &OperationContext) -> Kind {
+    let aoi = ctx.aoi();
     out.sort_by(|x, y| x.0.cmp(&y.0));
     // PROJ drops its ballpark when a chain that needs no grid holds the area of interest, even
     // one it then drops itself.
     let ballpark = !aoi.is_some_and(|a| out.iter().any(|(_, c)| !c.rank.needs_grids() && contains(&c.rank.bounds, a)));
     let chains = remove_uninteresting(out.into_iter().map(|(_, c)| c).collect());
-    Kind::Chains { chains, ballpark: ballpark.then(|| ballpark_op(src, dst)) }
+    Kind::Chains { chains, ballpark: ballpark.then(|| ballpark_op(ctx.src, ctx.dst)) }
 }
 
 /// The chains PROJ keeps once sorted: without one that brings nothing over the previous one kept
@@ -1337,6 +1580,63 @@ fn ballpark_op(src: &Def, dst: &Def) -> Op {
     Op { accuracy, chain_accuracy: accuracy, ballpark: true, ..Op::world(Vec::new()) }
 }
 
+/// The route between a CRS bound to a hub CRS (see [`Def::hub`]) and a CRS with its own
+/// transformations, as PROJ makes it (`createOperationsBoundToGeog`): the shift into the hub,
+/// then each of PROJ's transformations from the hub to the other CRS (the reverse the other way),
+/// each of unknown accuracy, sorted again for the other CRS's area; then the shift alone (with
+/// PROJ's ballpark from the hub), which this search drops only when a transformation that needs
+/// no grid holds the area of interest, as PROJ does (a bound CRS to DHDN into ETRS89 keeps it,
+/// which the codes' own list drops). With no transformation from the hub but that ballpark, PROJ
+/// excludes it ("artificial transformations from the hub"): no shift, which ALLOW_BALLPARK=NO
+/// refuses as a ballpark. `None` when neither CRS alone is bound to a hub, or
+/// the search from the hub is not one of a list or chains.
+fn shifted(ctx: &OperationContext) -> Option<Kind> {
+    let (src, dst) = (ctx.src, ctx.dst);
+    let (hub, shift, forward) = match (src.hub(), dst.hub()) {
+        (Some((hub, shift)), None) if dst.geog().is_some() => (hub, shift, true),
+        (None, Some((hub, shift))) if src.geog().is_some() => (hub, shift, false),
+        _ => return None,
+    };
+    let hubbed = if forward { OperationContext::new(&hub, dst, ctx.all) } else { OperationContext::new(src, &hub, ctx.all) };
+    let (inner, aoi) = (Route::build(&hubbed), hubbed.aoi);
+    let shift = Leg { op: shift, reverse: !forward };
+    let mut found: Vec<(Vec<Leg>, Op)> = Vec::new();
+    match inner.kind {
+        Kind::List(list) => {
+            for l in list.iter().filter(|l| !l.op.ballpark) {
+                let (_, c) = direct_chain(l, aoi.as_ref());
+                found.push((c.legs, c.rank));
+            }
+        }
+        Kind::Chains { chains, .. } => found.extend(chains.into_iter().map(|c| (c.legs, c.rank))),
+        _ => return None,
+    }
+    if found.is_empty() {
+        return Some(Kind::List(Vec::new()));
+    }
+    let ballpark = !aoi.is_some_and(|a| found.iter().any(|(_, rank)| !rank.needs_grids() && contains(&rank.bounds, &a)));
+    let around = |legs: Vec<Leg>| -> Vec<Leg> {
+        let s = std::iter::once(shift.clone());
+        if forward { s.chain(legs).collect() } else { legs.into_iter().chain(s).collect() }
+    };
+    let unknown = |rank: Op| Op { accuracy: -1.0, chain_accuracy: -1.0, ..rank };
+    let mut out: Vec<(SortKey, Chain)> = found
+        .into_iter()
+        .map(|(legs, rank)| {
+            let legs = around(legs);
+            let rank = unknown(rank);
+            let steps = pipeline_steps(&legs.iter().map(|l| (l.op.as_ref(), l.reverse)).collect::<Vec<_>>());
+            (SortKey::new(&rank, rank.name.clone(), steps, aoi.as_ref()), Chain { legs, rank })
+        })
+        .collect();
+    out.sort_by(|x, y| x.0.cmp(&y.0));
+    let mut chains: Vec<Chain> = out.into_iter().map(|(_, c)| c).collect();
+    if ballpark {
+        chains.push(Chain { legs: vec![shift], rank: Op { ballpark: true, ..unknown(Op::world(Vec::new())) } });
+    }
+    Some(Kind::Chains { chains, ballpark: None })
+}
+
 /// What PROJ sorts a transformation by, in its order: known accuracy first (unknown ones with
 /// grids first), then decreasing area within the area of interest, then accuracy, those without
 /// grids first, then those of fewer steps, then of fewer pipeline steps, then of shorter name,
@@ -1476,6 +1776,51 @@ mod tests {
     use crate::{SpatialRef, Transformer};
 
     #[test]
+    fn a_3d_chain_keeps_the_height_only_across_its_wgs84_leg() {
+        // A transformation PROJ keeps the height across between 3D CRSs, chained before and
+        // after transformations that move it: their changes stay.
+        let ell = crate::math::Ell::wgs84();
+        let kept = Op { keeps_height_3d: true, ..Op::world(datum::towgs84_steps(ell, &[0.0, 0.0, 10.0])) };
+        let moving = Op { keeps_height: false, ..Op::world(datum::towgs84_steps(ell, &[0.0, 0.0, 5.0])) };
+        let p = Point { lon: 10_f64.to_radians(), lat: 50_f64.to_radians(), h: 100.0, t: None };
+        for reverse in [false, true] {
+            let legs = [(&moving, reverse), (&kept, reverse), (&moving, reverse), (&kept, reverse), (&moving, reverse)];
+            let expected = legs.iter().try_fold(p, |q, (op, r)| datum::run_op(op, q, *r, true)).unwrap();
+            let chained = run_chain(legs.into_iter(), p, true).unwrap();
+            assert!((chained.h - expected.h).abs() < 1e-9 && (chained.h - p.h).abs() > 1.0, "reverse {reverse}: {chained:?} {expected:?}");
+        }
+    }
+
+    #[test]
+    fn hub_availability_excludes_operations_outside_the_crs_extents() {
+        let src = Def::new(&SpatialRef::from_epsg(27700).unwrap()).unwrap();
+        let dst = Def::new(&SpatialRef::from_epsg(2154).unwrap()).unwrap();
+        let mut route = Route::new(&src, &dst);
+        route.kind = Kind::Hub;
+        let world = Arc::new(Op::world(Vec::new()));
+        route.src_ops = vec![world.clone()];
+        route.dst_ops = vec![world.clone()];
+        assert!(route.has_transformation());
+        let outside = Arc::new(Op { bounds: [120., 20., 121., 21.], ..Op::world(Vec::new()) });
+        route.src_ops = vec![outside.clone()];
+        assert!(!route.has_transformation());
+        route.src_ops = vec![world];
+        route.dst_ops = vec![outside];
+        assert!(!route.has_transformation());
+    }
+
+    #[test]
+    fn ballpark_legs_are_excluded_from_list_and_chain_availability() {
+        for ballpark in [false, true] {
+            let leg = Leg { op: Arc::new(Op { ballpark, ..Op::world(Vec::new()) }), reverse: false };
+            let list = route_of(Kind::List(vec![leg.clone()]));
+            let chain = route_of(Kind::Chains { chains: vec![direct_chain(&leg, None).1], ballpark: None });
+            assert_eq!(list.has_transformation(), !ballpark);
+            assert_eq!(chain.has_transformation(), !ballpark);
+        }
+    }
+
+    #[test]
     fn recording_cleans_up_after_unwind() {
         assert!(
             std::panic::catch_unwind(|| recording(|| {
@@ -1522,6 +1867,7 @@ mod tests {
             hub_boxes: OnceLock::new(),
             src_ops: Vec::new(),
             dst_ops: Vec::new(),
+            hub_areas: [None; 3],
         };
         let p = Point { lon: 110_f64.to_radians(), lat: 35_f64.to_radians(), h: 0.0, t: None };
         let used_ballpark = std::cell::Cell::new(false);
@@ -1531,7 +1877,7 @@ mod tests {
 
     /// A route of one kind, for tests.
     fn route_of(kind: Kind) -> Route {
-        Route { kind, boxes: OnceLock::new(), hub_boxes: OnceLock::new(), src_ops: Vec::new(), dst_ops: Vec::new() }
+        Route { kind, boxes: OnceLock::new(), hub_boxes: OnceLock::new(), src_ops: Vec::new(), dst_ops: Vec::new(), hub_areas: [None; 3] }
     }
 
     #[test]

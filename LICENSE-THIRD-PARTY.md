@@ -10,8 +10,8 @@ LICENSE-THIRD-PARTY.md`, from `about.toml`.
 
 ## Overview
 
-- Apache License 2.0 (265)
-- MIT License (73)
+- Apache License 2.0 (266)
+- MIT License (77)
 - ISC License (20)
 - BSD 3-Clause "New" or "Revised" License (15)
 - BSD 2-Clause "Simplified" License (9)
@@ -261,17 +261,17 @@ Used by:
 
 Used by:
 
-- [arrow-array 58.4.1](https://github.com/apache/arrow-rs)
-- [arrow-buffer 58.4.1](https://github.com/apache/arrow-rs)
-- [arrow-data 58.4.1](https://github.com/apache/arrow-rs)
-- [arrow-ipc 58.4.1](https://github.com/apache/arrow-rs)
-- [arrow-schema 58.4.1](https://github.com/apache/arrow-rs)
-- [arrow-select 58.4.1](https://github.com/apache/arrow-rs)
+- [arrow-array 58.4.2](https://github.com/apache/arrow-rs)
+- [arrow-buffer 58.4.2](https://github.com/apache/arrow-rs)
+- [arrow-data 58.4.2](https://github.com/apache/arrow-rs)
+- [arrow-ipc 58.4.2](https://github.com/apache/arrow-rs)
+- [arrow-schema 58.4.2](https://github.com/apache/arrow-rs)
+- [arrow-select 58.4.2](https://github.com/apache/arrow-rs)
 - [cmov 0.5.4](https://github.com/RustCrypto/utils)
 - [ctutils 0.4.8](https://github.com/RustCrypto/utils)
 - [encoding_rs 0.8.44](https://github.com/hsivonen/encoding_rs)
 - [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op)
-- [parquet 58.4.1](https://github.com/apache/arrow-rs)
+- [parquet 58.4.2](https://github.com/apache/arrow-rs)
 - [siphasher 1.0.4](https://github.com/jedisct1/rust-siphash)
 - [spade 2.15.1](https://github.com/Stoeoef/spade)
 - [static_assertions 1.1.0](https://github.com/nvzqz/static-assertions-rs)
@@ -2830,9 +2830,9 @@ Used by:
 
 Used by:
 
-- [clap 4.6.7](https://github.com/clap-rs/clap)
+- [clap 4.6.9](https://github.com/clap-rs/clap)
 - [clap_builder 4.6.7](https://github.com/clap-rs/clap)
-- [clap_derive 4.6.7](https://github.com/clap-rs/clap)
+- [clap_derive 4.6.9](https://github.com/clap-rs/clap)
 - [clap_lex 1.1.1](https://github.com/clap-rs/clap)
 
 ```text
@@ -6585,6 +6585,7 @@ Used by:
 - [atomig-macro 0.4.0](https://github.com/LukasKalbertodt/atomig/)
 - [constant_time_eq 0.6.1](https://codeberg.org/cesarb/constant_time_eq)
 - [fdeflate 0.3.7](https://github.com/image-rs/fdeflate)
+- [fearless_simd 1.2.0](https://github.com/linebender/fearless_simd)
 - [flatbuffers 24.12.23](https://github.com/google/flatbuffers)
 - [flatbuffers 25.12.19](https://github.com/google/flatbuffers)
 - [geo-traits 0.3.0](https://github.com/georust/geo)
@@ -6648,7 +6649,7 @@ Used by:
 - [sif-itree 0.4.1](https://codeberg.org/adamreichold/sif-itree)
 - [simdutf8 0.1.5](https://github.com/rusticstuff/simdutf8)
 - [syn 2.0.119](https://github.com/dtolnay/syn)
-- [syn 3.0.9](https://github.com/dtolnay/syn)
+- [syn 3.0.10](https://github.com/dtolnay/syn)
 - [thiserror-impl 1.0.69](https://github.com/dtolnay/thiserror)
 - [thiserror-impl 2.0.21](https://github.com/dtolnay/thiserror)
 - [thiserror 1.0.69](https://github.com/dtolnay/thiserror)
@@ -8795,7 +8796,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- [bytes 1.12.1](https://github.com/tokio-rs/bytes)
+- [bytes 1.12.2](https://github.com/tokio-rs/bytes)
 
 ```text
 Copyright (c) 2018 Carl Lerche
@@ -9146,7 +9147,6 @@ SOFTWARE.
 Used by:
 
 - [ruzstd 0.8.3](https://github.com/KillingSpark/zstd-rs)
-- [ruzstd 0.9.1](https://github.com/KillingSpark/zstd-rs)
 
 ```text
 MIT License
@@ -9242,7 +9242,7 @@ SOFTWARE.
 
 Used by:
 
-- [arrow-array 58.4.1](https://github.com/apache/arrow-rs)
+- [arrow-array 58.4.2](https://github.com/apache/arrow-rs)
 
 ```text
 MIT License
@@ -9440,6 +9440,37 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
+- [zrip 0.8.25](https://github.com/paddor/zrip)
+
+```text
+MIT License
+
+Copyright (c) 2026 Patrik Wenger
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+## MIT License
+
+Used by:
+
 - terrio (terrio's own crate)
 - terrio-cli (terrio's own crate)
 - terrio-crs (terrio's own crate)
@@ -9484,11 +9515,15 @@ Used by:
 - terrio-js (terrio's own crate)
 - terrio-js-cog (terrio's own crate)
 - terrio-js-fetch (terrio's own crate)
+- terrio-js-geoparquet (terrio's own crate)
 - terrio-js-zarr (terrio's own crate)
 - [gdal-sys 0.12.0](https://github.com/georust/gdal)
 - [gdal 0.19.0](https://github.com/georust/gdal)
 - [i_key_sort 0.10.3](https://github.com/iShape-Rust/iKeySort)
 - [libm 0.2.16](https://github.com/rust-lang/compiler-builtins)
+- [zrip-core 0.14.1](https://github.com/paddor/zrip)
+- [zrip-decode 0.8.19](https://github.com/paddor/zrip)
+- [zrip-encode 0.10.2](https://github.com/paddor/zrip)
 
 ```text
 MIT License
@@ -9748,7 +9783,7 @@ Used by:
 
 - [tracing-core 0.1.36](https://github.com/tokio-rs/tracing)
 - [zip 8.6.0](https://github.com/zip-rs/zip2)
-- [zip 9.7.0](https://github.com/zip-rs/zip2)
+- [zip 9.8.2](https://github.com/zip-rs/zip2)
 
 ```text
 The MIT License (MIT)

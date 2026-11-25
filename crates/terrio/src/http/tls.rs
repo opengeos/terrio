@@ -10,8 +10,9 @@
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use rustls::crypto::CryptoProvider;
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use ureq::unversioned::resolver::DefaultResolver;
@@ -22,12 +23,122 @@ use ureq::unversioned::transport::{
 
 use super::Http10CloseConnector;
 
-/// Use the same crypto provider as the ordinary native client, without global state.
-pub(super) fn crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    return Arc::new(rustls_graviola::default_provider());
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    Arc::new(rustls::crypto::ring::default_provider())
+/// The TLS cryptography of every native client, or why this build has none on this CPU.
+pub(super) type Provider = Result<Arc<CryptoProvider>, String>;
+
+/// The CPU features `rustls-graviola` needs, as `std::arch` names them. graviola 0.4 asserts
+/// `aes`, `pclmulqdq`, `bmi1`, `adx`, `avx` and `avx2` at each of its entry points (a panic at the
+/// first handshake, not when the provider is made). Its README also requires `ssse3` and `bmi2`,
+/// which its assembly uses (`mulx`) without checking.
+#[cfg(target_arch = "x86_64")]
+const GRAVIOLA_CPU_FEATURES: [&str; 8] = ["aes", "pclmulqdq", "ssse3", "avx", "avx2", "adx", "bmi1", "bmi2"];
+/// The CPU features `rustls-graviola` asserts on AArch64.
+#[cfg(target_arch = "aarch64")]
+const GRAVIOLA_CPU_FEATURES: [&str; 4] = ["neon", "aes", "pmull", "sha2"];
+
+/// Whether this CPU has `feature`, one of [`GRAVIOLA_CPU_FEATURES`].
+#[cfg(target_arch = "x86_64")]
+fn cpu_has(feature: &str) -> bool {
+    match feature {
+        "aes" => std::arch::is_x86_feature_detected!("aes"),
+        "pclmulqdq" => std::arch::is_x86_feature_detected!("pclmulqdq"),
+        "ssse3" => std::arch::is_x86_feature_detected!("ssse3"),
+        "avx" => std::arch::is_x86_feature_detected!("avx"),
+        "avx2" => std::arch::is_x86_feature_detected!("avx2"),
+        "adx" => std::arch::is_x86_feature_detected!("adx"),
+        "bmi1" => std::arch::is_x86_feature_detected!("bmi1"),
+        "bmi2" => std::arch::is_x86_feature_detected!("bmi2"),
+        _ => false,
+    }
+}
+
+/// Whether this CPU has `feature`, one of [`GRAVIOLA_CPU_FEATURES`].
+#[cfg(target_arch = "aarch64")]
+fn cpu_has(feature: &str) -> bool {
+    match feature {
+        "neon" => std::arch::is_aarch64_feature_detected!("neon"),
+        "aes" => std::arch::is_aarch64_feature_detected!("aes"),
+        "pmull" => std::arch::is_aarch64_feature_detected!("pmull"),
+        "sha2" => std::arch::is_aarch64_feature_detected!("sha2"),
+        _ => false,
+    }
+}
+
+/// The features graviola needs that `has` reports missing, in [`GRAVIOLA_CPU_FEATURES`] order.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn graviola_missing(has: impl Fn(&str) -> bool) -> Vec<&'static str> {
+    GRAVIOLA_CPU_FEATURES.into_iter().filter(|feature| !has(feature)).collect()
+}
+
+/// graviola when no feature it needs is missing, otherwise the fallback when the build has one.
+/// Without one, the missing features, so that HTTPS fails naming them instead of panicking.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn select<T>(
+    missing: Vec<&'static str>,
+    graviola: impl FnOnce() -> T,
+    fallback: Option<impl FnOnce() -> T>,
+) -> Result<T, Vec<&'static str>> {
+    match (missing.is_empty(), fallback) {
+        (true, _) => Ok(graviola()),
+        (false, Some(fallback)) => Ok(fallback()),
+        (false, None) => Err(missing),
+    }
+}
+
+/// Why HTTPS is unavailable on a CPU that lacks `missing`.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn unsupported_cpu(missing: &[&str]) -> String {
+    let architecture = if cfg!(target_arch = "x86_64") { "x86-64" } else { "AArch64" };
+    format!(
+        "HTTPS is unavailable on this CPU: its TLS cryptography (rustls-graviola) needs the {architecture} features {}, \
+         and this CPU lacks {}. Plain HTTP works; terrio built with the `ring-fallback` feature (which needs a C compiler) \
+         uses ring here instead",
+        GRAVIOLA_CPU_FEATURES.join(", "),
+        missing.join(", ")
+    )
+}
+
+/// graviola where the CPU has what it needs; elsewhere ring, when the build has it.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn detect_provider() -> Provider {
+    #[cfg(feature = "ring-fallback")]
+    let fallback = Some(rustls::crypto::ring::default_provider);
+    #[cfg(not(feature = "ring-fallback"))]
+    let fallback = None::<fn() -> CryptoProvider>;
+    select(graviola_missing(cpu_has), rustls_graviola::default_provider, fallback)
+        .map(Arc::new)
+        .map_err(|missing| unsupported_cpu(&missing))
+}
+
+/// ring, on the architectures graviola does not support.
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn detect_provider() -> Provider {
+    Ok(Arc::new(rustls::crypto::ring::default_provider()))
+}
+
+/// The same crypto provider for the ordinary and additional-CA clients, without global state.
+/// The CPU is checked once per process.
+pub(super) fn crypto_provider() -> Provider {
+    static PROVIDER: OnceLock<Provider> = OnceLock::new();
+    PROVIDER.get_or_init(detect_provider).clone()
+}
+
+/// Fails each HTTPS connection with why there is no TLS cryptography, before it is opened; plain
+/// HTTP connections go on. `None` lets every connection through.
+#[derive(Debug)]
+pub(super) struct TlsUnavailable(pub(super) Option<String>);
+
+impl Connector<()> for TlsUnavailable {
+    type Out = ();
+
+    fn connect(&self, details: &ConnectionDetails, chained: Option<()>) -> Result<Option<()>, ureq::Error> {
+        match &self.0 {
+            Some(reason) if details.needs_tls() => {
+                Err(ureq::Error::Other(Box::new(io::Error::new(io::ErrorKind::Unsupported, reason.clone()))))
+            }
+            _ => Ok(chained),
+        }
+    }
 }
 
 /// Keep default anchors byte-for-byte, including constraints applied outside the DER.
@@ -72,9 +183,11 @@ fn read_bundle(path: &Path) -> Result<RootCertStore, String> {
 
 /// ureq's DER-only RootCerts::Specific cannot represent Mozilla's applied constraints.
 /// Use its public proxy/TCP adapters with a rustls verifier built from complete anchors.
-pub(super) fn with_bundle(config: ureq::config::Config, path: &Path) -> ureq::Agent {
-    let configured = read_bundle(path).and_then(|roots| {
-        ClientConfig::builder_with_provider(crypto_provider())
+/// Without TLS cryptography (`provider` is an error), HTTPS fails with its reason, as it does with
+/// a bundle that cannot be read.
+pub(super) fn with_bundle(config: ureq::config::Config, path: &Path, provider: Provider) -> ureq::Agent {
+    let configured = provider.and_then(|provider| read_bundle(path).map(|roots| (provider, roots))).and_then(|(provider, roots)| {
+        ClientConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
             .map(|builder| builder.with_root_certificates(roots).with_no_client_auth())
             .map_err(|_| "TERRIO_HTTP_CAINFO: cannot configure TLS protocol versions".into())
@@ -196,6 +309,65 @@ impl fmt::Debug for AdditionalRootsTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A CPU without AVX2, ADX and BMI2 (an Ivy Bridge, say) gets the fallback when the build has
+    /// one, and otherwise the features it lacks, not graviola, which would panic.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn a_cpu_without_avx2_adx_and_bmi2_gets_the_fallback_or_the_missing_features() {
+        let ivy_bridge = |feature: &str| !matches!(feature, "avx2" | "adx" | "bmi2");
+        assert_eq!(graviola_missing(ivy_bridge), ["avx2", "adx", "bmi2"]);
+        assert_eq!(select(graviola_missing(ivy_bridge), || "graviola", Some(|| "ring")), Ok("ring"));
+        assert_eq!(select(graviola_missing(ivy_bridge), || "graviola", None::<fn() -> &'static str>), Err(vec!["avx2", "adx", "bmi2"]));
+        // One missing feature is enough: graviola asserts each.
+        let no_adx = |feature: &str| feature != "adx";
+        assert_eq!(select(graviola_missing(no_adx), || "graviola", None::<fn() -> &'static str>), Err(vec!["adx"]));
+        let message = unsupported_cpu(&graviola_missing(ivy_bridge));
+        assert!(message.contains("needs the x86-64 features aes, pclmulqdq, ssse3, avx, avx2, adx, bmi1, bmi2"), "{message}");
+        assert!(message.contains("this CPU lacks avx2, adx, bmi2"), "{message}");
+        assert!(message.contains("`ring-fallback`"), "{message}");
+    }
+
+    /// An AArch64 CPU without the cryptography extensions (a Cortex-A53 without them, say).
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn a_cpu_without_the_cryptography_extensions_gets_the_fallback_or_the_missing_features() {
+        let no_crypto = |feature: &str| feature == "neon";
+        assert_eq!(graviola_missing(no_crypto), ["aes", "pmull", "sha2"]);
+        assert_eq!(select(graviola_missing(no_crypto), || "graviola", Some(|| "ring")), Ok("ring"));
+        assert_eq!(select(graviola_missing(no_crypto), || "graviola", None::<fn() -> &'static str>), Err(vec!["aes", "pmull", "sha2"]));
+        assert!(unsupported_cpu(&["aes"]).contains("needs the AArch64 features neon, aes, pmull, sha2"));
+    }
+
+    /// A CPU with every feature keeps graviola, whether the build has a fallback or not.
+    #[test]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    fn a_cpu_with_every_feature_keeps_graviola() {
+        assert!(graviola_missing(|_| true).is_empty());
+        assert_eq!(select(graviola_missing(|_| true), || "graviola", Some(|| "ring")), Ok("graviola"));
+        assert_eq!(select(graviola_missing(|_| true), || "graviola", None::<fn() -> &'static str>), Ok("graviola"));
+    }
+
+    /// The provider this process gets agrees with its CPU: graviola's, which then completes a
+    /// handshake's first cryptography (random bytes and a key share) without panicking, or ring's
+    /// with `ring-fallback`, or the error naming what is missing.
+    #[test]
+    fn the_process_provider_follows_the_cpu() {
+        match crypto_provider() {
+            Ok(provider) => {
+                let mut random = [0u8; 32];
+                provider.secure_random.fill(&mut random).unwrap();
+                let group = provider.kx_groups[0];
+                group.start().unwrap();
+                #[cfg(all(any(target_arch = "x86_64", target_arch = "aarch64"), not(feature = "ring-fallback")))]
+                assert!(graviola_missing(cpu_has).is_empty());
+            }
+            #[cfg(all(any(target_arch = "x86_64", target_arch = "aarch64"), not(feature = "ring-fallback")))]
+            Err(reason) => assert!(!graviola_missing(cpu_has).is_empty(), "{reason}"),
+            #[cfg(any(feature = "ring-fallback", not(any(target_arch = "x86_64", target_arch = "aarch64"))))]
+            Err(reason) => panic!("ring is available to this build: {reason}"),
+        }
+    }
 
     #[test]
     fn relative_ca_paths_are_refused_before_reading_a_file() {
