@@ -2,23 +2,24 @@
 
 ## 0.10.0 (2026-11-24)
 
-### Behavior changes
+### Breaking changes
 
-- **Rust API:** public structs gain fields: `VectorDataset::list_types` (#1047),
+- **Breaking (Rust API):** public structs gain fields: `VectorDataset::list_types` (#1047),
   `RasterWriteOptions::overview_data` and `metadata` (#1268), `VectorWriteOptions::preserve_fid`
   (#1227) and `WarpOptions::periodic_longitude` (#1099). A struct literal naming every field needs
   the new ones, or `..Default::default()` for the options.
-- PROJ strings with ellipsoid, datum or unit names PROJ does not know (`+ellps=foo`, `+units=feet`),
-  or with unreadable origin parameters, are now refused instead of being read as WGS 84, metres or 0
-  (#1062).
-- A deprecated EPSG code keeps its own definition, as PROJ gives it, instead of its replacement's
-  (#1040). A WKT's declared root code is kept only when the WKT's content is that CRS (#1051).
-- The CRS tables move to the EPSG dataset v13.102 (PROJ 9.9.0), and CRSs are identified as PROJ
-  9.9.0 identifies them (#1077, #1119).
-- New external `.ovr` images of several bands are written band-separate (`INTERLEAVE=BAND`), as GDAL
-  writes them (#1045).
-- Without `libzstd`, Zstandard goes through `zrip`, and `ZSTD_LEVEL` now takes effect up to level 4
-  instead of always writing the fastest level (#1247).
+- **Breaking:** PROJ strings with ellipsoid, datum or unit names PROJ does not know (`+ellps=foo`,
+  `+units=feet`), or with unreadable origin parameters, are now refused instead of being read as WGS
+  84, metres or 0 (#1062).
+- **Breaking:** a deprecated EPSG code keeps its own definition, as PROJ gives it, instead of its
+  replacement's (#1040). A WKT's declared root code is kept only when the WKT's content is that CRS
+  (#1051).
+- **Behavior:** the CRS tables move to the EPSG dataset v13.102 (PROJ 9.9.0), and CRSs are
+  identified as PROJ 9.9.0 identifies them (#1077, #1119).
+- **Behavior:** new external `.ovr` images of several bands are written band-separate
+  (`INTERLEAVE=BAND`), as GDAL writes them (#1045).
+- **Behavior:** without `libzstd`, Zstandard goes through `zrip`, and `ZSTD_LEVEL` now takes effect
+  up to level 4 instead of always writing the fastest level (#1247).
 
 ### Features
 
