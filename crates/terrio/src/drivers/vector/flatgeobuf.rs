@@ -327,9 +327,10 @@ pub struct FlatGeobufInfo {
 
 /// Reads a FlatGeobuf file's header, and the features whose bounding box intersects `bbox`
 /// `(min_x, min_y, max_x, max_y)`, found with the packed R-tree spatial index: only the index
-/// nodes on the way and those features are read. All features without a filter (or without an
-/// index: `index_size` is then 0, and the caller filters them, as it does the bounding-box
-/// matches by their geometries). Feature ids are the features' positions in the file, as in GDAL.
+/// nodes on the way and those features are read. Without a filter, all features are read. Without an index
+/// (`index_size` is then 0), every feature is read and those whose bounding box does not intersect
+/// `bbox` are dropped. Callers filter the matches by their geometries. Feature ids are the
+/// features' positions in the file, as in GDAL.
 ///
 /// `prefetch` is told the byte ranges `(offset, length)` about to be read: the index nodes of a
 /// level, then the features (see [`crate::sparse`]). Offsets are 64-bit throughout, so that
@@ -414,6 +415,37 @@ impl PreparedIndex {
     }
 }
 
+/// A remote FlatGeobuf file (a URL whose file name ends in `.fgb`) with a spatial index, read with
+/// a bbox by range requests: its header, the index nodes on the way a level at a time, then the
+/// features found, each step's ranges fetched together through the block cache. Its layer is named
+/// after the file. `None` for other paths and for a file without an index, which the general
+/// route downloads whole.
+#[cfg(remote)]
+pub(crate) fn read_remote(path: &str, bbox: (f64, f64, f64, f64)) -> Result<Option<Layer>> {
+    use crate::formats::VectorDriver;
+    let location = crate::vfs::Location::parse(path);
+    let Some(remote) = location.remote() else { return Ok(None) };
+    let name = location.file_name();
+    if VectorDriver::for_extension(&name) != Some(VectorDriver::FlatGeobuf) {
+        return Ok(None);
+    }
+    crate::formats::check_driver_allowed("FlatGeobuf", path, crate::formats::Kind::Vector)?;
+    let mut file = crate::http::RangeReader::open(&remote)?;
+    let len = file.len();
+    // A file without an index goes to the general route, which parses its header again, so this
+    // parse's Z and M are declared only for an indexed file read here.
+    let (prepared, dims) = with_declared_dims(|| PreparedIndex::open(&mut file, len));
+    let prepared = prepared?;
+    if prepared.info.index_size == 0 {
+        return Ok(None);
+    }
+    dims.into_iter().for_each(|(z, m)| declare(z, m));
+    let prefetcher = file.clone();
+    let prefetch = |ranges: &[(u64, u64)]| -> Result<()> { Ok(prefetcher.prefetch(ranges)?) };
+    let (_, layer) = read_impl(&mut file, len, Some(bbox), false, &prefetch, Some(&prepared))?;
+    Ok(Some(crate::dataset::fix_layer(layer, &name, VectorDriver::FlatGeobuf)))
+}
+
 fn read_impl<R: std::io::Read + std::io::Seek>(
     r: &mut R,
     file_len: u64,
@@ -422,7 +454,7 @@ fn read_impl<R: std::io::Read + std::io::Seek>(
     prefetch: crate::sparse::Prefetch<'_>,
     prepared: Option<&PreparedIndex>,
 ) -> Result<(FlatGeobufInfo, Layer)> {
-    use std::io::SeekFrom;
+    use std::io::{Read, SeekFrom};
     let bbox = bbox.map(super::corners_extent);
     let owned;
     let prepared = if let Some(prepared) = prepared {
@@ -520,14 +552,46 @@ fn read_impl<R: std::io::Read + std::io::Seek>(
             wanted.sort_unstable_by_key(|w| w.1);
         }
         _ => {
-            // Every feature, in order: read the data section whole.
-            let data = read_at(data_start, file_len.saturating_sub(data_start))?;
-            let mut pos = 0usize;
-            let mut fid = 0u64;
-            while let Some((fbuf, next)) = next_feature(&data, pos)? {
-                pos = next;
-                layer.push(decode_feature(fbuf, header, fid)?);
-                fid += 1;
+            // Every feature, in order, read through a buffer rather than the data section whole,
+            // and decoded in parallel a chunk of about 8 MiB at a time. Without an index, a bbox
+            // keeps the features whose bounding box intersects it, as the index would find them.
+            prefetch(&[(data_start, file_len - data_start)])?;
+            r.seek(SeekFrom::Start(data_start))?;
+            let mut data = std::io::BufReader::with_capacity(1 << 20, &mut *r);
+            let (mut pos, mut fid) = (data_start, 0u64);
+            let (mut chunk, mut starts) = (Vec::new(), Vec::new());
+            while pos < file_len {
+                chunk.clear();
+                starts.clear();
+                while pos < file_len && chunk.len() < 8 << 20 {
+                    let mut prefix = [0u8; 4];
+                    if file_len - pos < 4 {
+                        return Err(bad("truncated feature size"));
+                    }
+                    data.read_exact(&mut prefix)?;
+                    // The length is checked against the file's size before anything is allocated.
+                    let len = u64::from(u32::from_le_bytes(prefix));
+                    if len > file_len - pos - 4 {
+                        return Err(bad("truncated feature"));
+                    }
+                    starts.push(chunk.len());
+                    chunk.extend_from_slice(&prefix);
+                    let at = chunk.len();
+                    let end = usize::try_from(len).ok().and_then(|n| at.checked_add(n));
+                    chunk.resize(end.ok_or_else(|| bad("a feature too large for this platform"))?, 0);
+                    data.read_exact(&mut chunk[at..])?;
+                    pos += 4 + len;
+                }
+                let first = fid;
+                let decoded = crate::par::map_range(starts.len(), |k| {
+                    let end = starts.get(k + 1).copied().unwrap_or(chunk.len());
+                    let feature = decode_feature(&chunk[starts[k]..end], header, first + k as u64)?;
+                    Ok::<_, Error>(bbox.is_none_or(|rect| intersects(&feature, rect)).then_some(feature))
+                });
+                fid += starts.len() as u64;
+                for feature in decoded {
+                    layer.features.extend(feature?);
+                }
             }
             check_count(fid, count)?;
             return Ok((info, layer));
@@ -541,13 +605,50 @@ fn read_impl<R: std::io::Read + std::io::Seek>(
         })
         .collect();
     prefetch(&ranges)?;
-    for (&(fid, ..), &(off, _)) in wanted.iter().zip(&ranges) {
-        let size = read_at(off, 4)?;
-        let len = u32::from_le_bytes([size[0], size[1], size[2], size[3]]) as u64;
-        let fbuf = read_at(off, 4 + len)?;
-        layer.push(decode_feature(&fbuf, header, fid)?);
+    // Features next to each other in the file, as a bbox's features mostly are, are read together
+    // in runs of at most `RUN_BYTES`, then decoded in parallel. A feature is the bytes its size
+    // prefix gives; one that does not fit in its run (or a range too long for one) is read alone.
+    const RUN_BYTES: u64 = 8 << 20;
+    let mut i = 0;
+    while i < wanted.len() {
+        let start = ranges[i].0;
+        let (mut end, mut j) = (start, i);
+        while j < wanted.len() && ranges[j].0 == end && ranges[j].1 <= RUN_BYTES - (end - start) {
+            end = end.saturating_add(ranges[j].1);
+            j += 1;
+        }
+        let j = j.max(i + 1);
+        let run = if end > start { read_at(start, end - start)? } else { Vec::new() };
+        let mut features = Vec::with_capacity(j - i);
+        for &(off, _) in &ranges[i..j] {
+            let at = (off - start) as usize;
+            let in_run = run
+                .get(at..)
+                .and_then(|b| b.get(..4))
+                .and_then(|p| (u32::from_le_bytes([p[0], p[1], p[2], p[3]]) as usize).checked_add(4 + at))
+                .and_then(|feature_end| run.get(at..feature_end));
+            features.push(match in_run {
+                Some(bytes) => std::borrow::Cow::Borrowed(bytes),
+                None => {
+                    let size = read_at(off, 4)?;
+                    let len = u32::from_le_bytes([size[0], size[1], size[2], size[3]]) as u64;
+                    std::borrow::Cow::Owned(read_at(off, 4 + len)?)
+                }
+            });
+        }
+        let decoded = crate::par::map_range(features.len(), |k| decode_feature(&features[k], header, wanted[i + k].0));
+        for feature in decoded {
+            layer.push(feature?);
+        }
+        i = j;
     }
     Ok((info, layer))
+}
+
+/// Whether a feature's bounding box intersects `(min_x, min_y, max_x, max_y)`; a feature without
+/// a geometry does not.
+pub(crate) fn intersects(feature: &Feature, (x0, y0, x1, y1): (f64, f64, f64, f64)) -> bool {
+    feature.geometry.as_ref().and_then(|g| g.bbox()).is_some_and(|b| b.max_x >= x0 && b.min_x <= x1 && b.max_y >= y0 && b.min_y <= y1)
 }
 
 fn from_fgb_type(t: FgbType) -> Option<GeometryType> {
@@ -1474,6 +1575,112 @@ mod tests {
             }
             let expected = u64::try_from(total * 40).unwrap();
             assert_eq!(index_size(count, node_size), expected);
+        }
+    }
+
+    /// A grid of 100 x 100 points, each with a 300-byte text, with a spatial index or without.
+    fn grid(index: bool) -> Vec<u8> {
+        let mut l = Layer::new("grid").with_epsg(4326);
+        l.add_field(FieldDef::new("payload", FieldType::Text));
+        for i in 0..10_000u64 {
+            let geometry = (index || i != 9_999).then(|| Geometry::point((i % 100) as f64, (i / 100) as f64));
+            l.push(Feature { fid: i, geometry, attributes: vec![FieldValue::Text(format!("{i:0>300}"))] });
+        }
+        to_bytes(&l).unwrap()
+    }
+
+    #[test]
+    fn indexed_bbox_reads_read_the_features_found_in_runs() {
+        /// A reader that counts its reads and the bytes they return.
+        struct Counting<R>(R, std::rc::Rc<std::cell::Cell<(usize, usize)>>);
+        impl<R: std::io::Read> std::io::Read for Counting<R> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.0.read(buf)?;
+                let (calls, bytes) = self.1.get();
+                self.1.set((calls + 1, bytes + n));
+                Ok(n)
+            }
+        }
+        impl<R: std::io::Seek> std::io::Seek for Counting<R> {
+            fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+                self.0.seek(pos)
+            }
+        }
+        let bytes = grid(true);
+        let rect = (20.5, 30.5, 45.5, 50.5);
+        let counts = std::rc::Rc::new(std::cell::Cell::new((0, 0)));
+        let mut r = Counting(std::io::Cursor::new(&bytes), counts.clone());
+        let (_, layer) = read_filtered(&mut r, bytes.len() as u64, Some(rect), &|_| Ok(())).unwrap();
+        let whole: Vec<u64> = parse(&bytes).unwrap().features.iter().filter(|f| intersects(f, rect)).map(|f| f.fid).collect();
+        assert_eq!(layer.features.iter().map(|f| f.fid).collect::<Vec<_>>(), whole);
+        assert_eq!(whole.len(), 25 * 20);
+        let (calls, read) = counts.get();
+        // Two header reads, a read per run of index nodes and per run of features: before, two
+        // reads per feature.
+        assert!(calls < whole.len() / 4, "{calls} reads for {} features", whole.len());
+        let needed: usize = whole.len() * 340;
+        assert!(read < 2 * needed, "read {read} bytes for {} features", whole.len());
+    }
+
+    /// The bytes a test server's requests asked for, and how many requests it saw.
+    #[cfg(remote)]
+    fn fetched(seen: &std::sync::Mutex<Vec<Option<String>>>, size: usize) -> (usize, usize) {
+        let seen = seen.lock().unwrap();
+        let bytes = seen
+            .iter()
+            .map(|r| match r.as_deref().and_then(|r| r.strip_prefix("bytes=")).and_then(|r| r.split_once('-')) {
+                Some((a, b)) => b.parse::<usize>().unwrap().min(size - 1) + 1 - a.parse::<usize>().unwrap(),
+                None => size,
+            })
+            .sum();
+        (bytes, seen.len())
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn remote_indexed_bbox_reads_fetch_the_index_nodes_and_features_found() {
+        let rect = (20.5, 30.5, 25.5, 33.5);
+        let options = crate::VectorOpenOptions { spatial_filter: Some(rect), ..Default::default() };
+        for index in [true, false] {
+            let bytes = grid(index);
+            let size = bytes.len();
+            let dir = tempfile::tempdir().unwrap();
+            let local = dir.path().join("grid.fgb");
+            std::fs::write(&local, &bytes).unwrap();
+            let expected = crate::open_vector(local.to_str().unwrap(), &options).unwrap();
+            let (base, seen) = crate::http::test_server(bytes);
+            let (remote, declared) = crate::config::with_options(&[("TERRIO_HTTP_BLOCK_SIZE", "4096")], || {
+                crate::dataset::open_vector_declared(&format!("{base}/grid.fgb"), &options).unwrap()
+            });
+            let (l, r) = (&expected.layers[0], &remote.layers[0]);
+            // The local read keeps what a whole read finds, in the file's order.
+            let whole: Vec<u64> =
+                parse(&std::fs::read(&local).unwrap()).unwrap().features.iter().filter(|f| intersects(f, rect)).map(|f| f.fid).collect();
+            assert_eq!(l.features.iter().map(|f| f.fid).collect::<Vec<_>>(), whole);
+            // x in 21..=25 and y in 31..=33.
+            assert_eq!(r.features.len(), 15, "index: {index}");
+            assert_eq!(r.name, "grid");
+            assert_eq!(r.crs_epsg(), Some(4326));
+            assert_eq!(declared, [Some((false, false))]);
+            assert_eq!(r.features.iter().map(|f| f.fid).collect::<Vec<_>>(), l.features.iter().map(|f| f.fid).collect::<Vec<_>>());
+            for (r, l) in r.features.iter().zip(&l.features) {
+                assert_eq!((&r.geometry, &r.attributes), (&l.geometry, &l.attributes));
+            }
+            // A stream of the URL reads it the same way.
+            let streamed = crate::config::with_options(&[("TERRIO_HTTP_BLOCK_SIZE", "4096")], || {
+                crate::stream::open_layers(&format!("{base}/grid.fgb"), &options, 7).unwrap().remove(0).read_all().unwrap()
+            });
+            assert_eq!(streamed.features.iter().map(|f| f.fid).collect::<Vec<_>>(), l.features.iter().map(|f| f.fid).collect::<Vec<_>>());
+            let (fetched, requests) = fetched(&seen, size);
+            if index {
+                // The header, four index levels and the features, for both reads: a request or two
+                // each.
+                assert!(fetched * 20 < size, "fetched {fetched} of {size} bytes");
+                assert!(requests <= 10, "{requests} requests: {:?}", seen.lock().unwrap());
+            } else {
+                // Without an index, the file is downloaded whole, as before.
+                assert!(fetched >= size, "fetched {fetched} of {size} bytes");
+            }
         }
     }
 

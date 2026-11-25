@@ -1103,6 +1103,16 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
         layers.iter_mut().for_each(|l| options.keep_range(l));
         return Ok(finish_vector(layers, path, VectorDriver::Parquet));
     }
+    // A remote FlatGeobuf with a spatial index is read with a bbox by range requests: the index
+    // nodes on the way and the features found, not the whole file.
+    #[cfg(all(remote, feature = "flatgeobuf"))]
+    if let Some(bbox) = options.spatial_filter
+        && let Some(layer) = crate::drivers::vector::flatgeobuf::read_remote(path, bbox)?
+    {
+        let mut layers = select_layers(vec![layer], path, options)?;
+        layers.iter_mut().for_each(|l| options.keep_range(l));
+        return Ok(finish_vector(layers, path, VectorDriver::FlatGeobuf));
+    }
     let local = vfs::resolve(path)?;
     match open_local(local.as_str(), options).map_err(|e| naming_resolved_dataset(e, path, &local))? {
         Dataset::Vector(v) => {

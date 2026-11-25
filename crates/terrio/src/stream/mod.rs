@@ -820,14 +820,8 @@ impl FeatureSource for FgbSource {
             crate::par::map_range(raw.len(), |i| fgb::decode_feature(&raw[i], h, first + i as u64)).into_iter().collect();
         self.fid += raw.len() as u64;
         let mut features = features?;
-        if let Some((min_x, min_y, max_x, max_y)) = self.bbox {
-            features.retain(|feature| {
-                feature
-                    .geometry
-                    .as_ref()
-                    .and_then(|geometry| geometry.bbox())
-                    .is_some_and(|bounds| bounds.max_x >= min_x && bounds.min_x <= max_x && bounds.max_y >= min_y && bounds.min_y <= max_y)
-            });
+        if let Some(rect) = self.bbox {
+            features.retain(|feature| fgb::intersects(feature, rect));
         }
         Ok(Some(features))
     }
@@ -854,9 +848,8 @@ fn open_fgb(path: &str, batch: usize, bbox: Option<(f64, f64, f64, f64)>) -> Res
         return Err(Error::InvalidData("FlatGeobuf: truncated index".into()));
     }
     r.seek_relative(header.index_size as i64)?;
-    // Match eager candidate semantics: an unindexed file retains every feature,
-    // even with a bbox. Indexed streams filter while scanning, without using the index.
-    let bbox = bbox.filter(|_| header.index_size > 0);
+    // The features whose bounding box intersects the bbox, as the eager reader keeps them (through
+    // the index when there is one): found while scanning, without the index.
     Ok((layer, Box::new(FgbSource { r, header, fid: 0, batch, batch_bytes: source_bytes(CHUNK_BYTES), bbox })))
 }
 
