@@ -1206,12 +1206,19 @@ fn own_towgs84(crs: &SpatialRef) -> Option<Vec<f64>> {
     (matches!(t.len(), 3 | 7) && !(wgs84 && t.iter().all(|x| *x == 0.0))).then_some(t)
 }
 
-/// The datum shift of a compound CRS's horizontal CRS (`code`) of its own: a `TOWGS84` in its WKT,
-/// as [`own_towgs84`] finds it for a horizontal CRS.
-fn compound_horizontal_shift(crs: &SpatialRef, code: u32) -> Option<Vec<f64>> {
+/// The horizontal CRS of a compound CRS's WKT, of WKT 1 (`PROJCS`, `GEOGCS`) or WKT 2 (a
+/// projected, geographic or geodetic CRS, or a `BOUNDCRS` of one).
+fn compound_horizontal_crs(crs: &SpatialRef) -> Option<SpatialRef> {
     let root = crate::parsed::tree(crs.wkt.as_deref()?)?;
-    let horizontal = root.compound_horizontal()?.to_wkt();
-    own_towgs84(&SpatialRef { epsg: Some(code), wkt: Some(horizontal), proj4: None, ..crs.clone() })
+    let horizontal = root.first_in(crate::keywords::HORIZONTAL_CRS)?.to_wkt();
+    Some(SpatialRef { wkt: Some(horizontal), proj4: None, ..crs.clone() })
+}
+
+/// The datum shift of a compound CRS's horizontal CRS (`code`) of its own: a `TOWGS84` in its WKT
+/// 1, or a WKT 2 `BOUNDCRS`'s Helmert transformation to WGS 84, as [`own_towgs84`] finds it for a
+/// horizontal CRS.
+fn compound_horizontal_shift(crs: &SpatialRef, code: u32) -> Option<Vec<f64>> {
+    own_towgs84(&SpatialRef { epsg: Some(code), ..compound_horizontal_crs(crs)? })
 }
 
 /// Whether a PROJ string is on WGS 84: its datum or ellipsoid by name, or the ellipsoid's axis and
@@ -1600,7 +1607,12 @@ impl SpatialRef {
         // A compound CRS of EPSG CRSs: its horizontal CRS's keys, its vertical CRS's and its name,
         // in GeoTIFF 1.1 as GDAL 3.12.1 writes them (`GTIFSetFromOGISDefnEx`); a compound code in
         // a horizontal key reads as another CRS.
+        // Not one whose horizontal CRS is a `BOUNDCRS` GeogTOWGS84GeoKey cannot carry: its WKT
+        // keeps the shift.
         let compound = (!engineering).then(|| self.compound_parts()).flatten().and_then(|(h, v)| {
+            if compound_horizontal_crs(self).is_some_and(|h| bound_beyond_towgs84(&h)) {
+                return None;
+            }
             let (h, geographic) = horizontal_geokey(h)?;
             Some((h, u16::try_from(gdal_code(v)?).ok()?, geographic))
         });
