@@ -6,9 +6,8 @@
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use std::io::Write;
-use terrio::formats::VectorDriver;
 use terrio::memory::{open_vector_bytes, open_vector_or_geometries};
-use terrio::pointcloud::{PointReadOptions, open_points, open_points_bytes};
+use terrio::pointcloud::{open_points, open_points_bytes};
 
 #[test]
 fn tab_dat_out_of_bounds_header_and_zero_record_len_return_error() {
@@ -59,20 +58,43 @@ fn tab_seamless_rejects_parent_traversal_absolute_paths_and_cycles() {
         std::fs::write(path.with_extension("dat"), &dat).unwrap();
     };
 
-    // Self-referential cycle must fail cleanly instead of overflowing the stack.
+    // Create an actual valid sibling table outside `sub/` so containment errors are pinned
+    // instead of failing merely because the target file is missing.
+    let outside_tab = dir.path().join("outside.tab");
+    {
+        let tab = "!table\n!version 300\n!charset Neutral\nDefinition Table\n  Type NATIVE Charset \"Neutral\"\n  Fields 1\n    Name Char (8) ;\n";
+        let mut dat = vec![0u8; 32 + 32 + 1 + 9];
+        dat[4..8].copy_from_slice(&1u32.to_le_bytes());
+        dat[8..10].copy_from_slice(&65u16.to_le_bytes());
+        dat[10..12].copy_from_slice(&9u16.to_le_bytes());
+        dat[32..36].copy_from_slice(b"Name");
+        dat[32 + 11] = b'C';
+        dat[32 + 16] = 8;
+        dat[64] = 0x0d;
+        dat[65] = b' ';
+        dat[66..70].copy_from_slice(b"test");
+        std::fs::write(&outside_tab, tab).unwrap();
+        std::fs::write(outside_tab.with_extension("dat"), &dat).unwrap();
+    }
+    assert!(terrio::open_vector(outside_tab.to_str().unwrap(), &Default::default()).is_ok());
+
+    // Self-referential cycle must hit cycle detection, not the depth cap or stack overflow.
     let self_tab = sub.join("loop.tab");
     make_seamless(&self_tab, "loop.tab");
-    assert!(terrio::open_vector(self_tab.to_str().unwrap(), &Default::default()).is_err());
+    let err = terrio::open_vector(self_tab.to_str().unwrap(), &Default::default()).unwrap_err().to_string();
+    assert!(err.contains("cyclic"), "expected cycle error, got: {err}");
 
-    // Parent directory traversal must be refused.
+    // Parent directory traversal must be refused by the containment check.
     let parent_tab = sub.join("escape.tab");
     make_seamless(&parent_tab, "../outside.tab");
-    assert!(terrio::open_vector(parent_tab.to_str().unwrap(), &Default::default()).is_err());
+    let err = terrio::open_vector(parent_tab.to_str().unwrap(), &Default::default()).unwrap_err().to_string();
+    assert!(err.contains("escapes"), "expected escape error, got: {err}");
 
-    // Absolute path must be refused.
+    // Absolute path to an existing valid table must also be refused by the containment check.
     let abs_tab = sub.join("abs.tab");
-    make_seamless(&abs_tab, "/etc/hosts");
-    assert!(terrio::open_vector(abs_tab.to_str().unwrap(), &Default::default()).is_err());
+    make_seamless(&abs_tab, outside_tab.to_str().unwrap());
+    let err = terrio::open_vector(abs_tab.to_str().unwrap(), &Default::default()).unwrap_err().to_string();
+    assert!(err.contains("escapes"), "expected escape error, got: {err}");
 }
 
 #[test]
@@ -85,13 +107,9 @@ fn deeply_nested_xml_wkt_and_mif_return_errors_without_stack_overflow() {
     let deep_wkt = format!("{}POINT(0 0){}", "GEOMETRYCOLLECTION(".repeat(200), ")".repeat(200));
     assert!(open_vector_or_geometries(&deep_wkt, &Default::default()).is_err());
 
-    // Deeply nested MIF Collection (>64 levels) fails cleanly.
+    // Deeply nested MIF Collection (>64 levels) hits the depth cap and returns an error.
     let deep_mif = format!("Version 300\nColumns 0\nData\n{}Point 0 0\n", "Collection 1\n".repeat(200));
-    let res = open_vector_bytes(deep_mif.into_bytes(), "deep.mif", &Default::default());
-    // MIF ignores unparseable statements or errors cleanly without stack overflow.
-    if let Ok(ds) = res {
-        assert!(ds.layers[0].features.is_empty());
-    }
+    assert!(open_vector_bytes(deep_mif.into_bytes(), "deep.mif", &Default::default()).is_err());
 }
 
 #[test]
@@ -121,7 +139,6 @@ fn ept_zero_span_is_rejected_on_open() {
     std::fs::write(dir.path().join("ept.json"), serde_json::to_vec(&ept).unwrap()).unwrap();
     let res = open_points(dir.path().to_str().unwrap());
     assert!(res.is_err());
-    let _ = PointReadOptions::default();
 }
 
 #[test]
@@ -136,5 +153,4 @@ fn mvt_gzip_bomb_hits_decoded_limit_and_does_not_oom() {
     assert!(bomb.len() < 1024 * 1024);
     let res = open_vector_bytes(bomb, "0_0_0.mvt", &Default::default());
     assert!(res.is_err(), "gzipped MVT exceeding 64 MiB must fail cleanly");
-    let _ = VectorDriver::MVT;
 }

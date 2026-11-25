@@ -1243,27 +1243,28 @@ pub(crate) fn read_consistent(path: &Path) -> Result<Vec<u8>> {
         && let Some((original, page_size, pages)) = journal_pages(&journal)
     {
         // Pages are restored in reverse, so that the first image of a page journaled twice wins.
-        let max_bytes = data.len().saturating_add(journal.len()).max(page_size);
+        let orig_bytes = (original as usize)
+            .checked_mul(page_size)
+            .ok_or_else(|| Error::InvalidData("SQLite journal original size overflows".into()))?;
         for (pgno, page) in pages.iter().rev() {
             let start = (*pgno as usize).checked_sub(1).and_then(|p| p.checked_mul(page_size));
             let end = start.and_then(|s| s.checked_add(page_size));
             let (Some(start), Some(end)) = (start, end) else {
                 return Err(Error::InvalidData("SQLite journal page offset overflows".into()));
             };
-            if end > max_bytes {
+            if end > orig_bytes {
                 return Err(Error::InvalidData(format!(
-                    "SQLite journal page {pgno} exceeds consistent database size ({end} > {max_bytes})"
+                    "SQLite journal page {pgno} exceeds declared original database size ({end} > {orig_bytes})"
                 )));
             }
             if data.len() < end {
+                let extra = end - data.len();
+                data.try_reserve(extra).map_err(|_| Error::ResourceLimit(format!("SQLite journal page {pgno} requires {end} bytes")))?;
                 data.resize(end, 0);
             }
             data[start..end].copy_from_slice(page);
         }
         if original > 0 {
-            let orig_bytes = (original as usize)
-                .checked_mul(page_size)
-                .ok_or_else(|| Error::InvalidData("SQLite journal original size overflows".into()))?;
             data.truncate(orig_bytes);
         }
     }

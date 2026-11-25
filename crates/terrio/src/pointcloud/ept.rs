@@ -252,8 +252,8 @@ impl EptReader {
             return Err(Error::InvalidData("EPT: span must be positive".into()));
         }
         let b = info.bounds;
-        if !b.iter().all(|v| v.is_finite()) || !(b[3] > b[0] && b[4] > b[1] && b[5] > b[2]) || !(b[3] - b[0]).is_finite() {
-            return Err(Error::InvalidData("EPT: bounds must be finite and non-empty".into()));
+        if !b.iter().all(|v| v.is_finite()) || !(b[3] >= b[0] && b[4] >= b[1] && b[5] >= b[2]) {
+            return Err(Error::InvalidData("EPT: bounds must be finite and ordered".into()));
         }
         let srs = &json["srs"];
         let horizontal = match (srs["wkt"].as_str(), srs["authority"].as_str(), srs["horizontal"].as_str()) {

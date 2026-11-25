@@ -85,7 +85,6 @@ fn read_seamless(p: &Path, tab: &[u8], visited: &mut std::collections::HashSet<P
             || rel
                 .components()
                 .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_)))
-            || normalized.as_bytes().get(1) == Some(&b':')
         {
             return Err(bad(format!("seamless table part '{part}' escapes the table directory")));
         }
