@@ -958,7 +958,7 @@ impl ChunkCodec {
         } else {
             let d = lerc_reader::decode(&blob).map_err(lerc_err)?;
             if matches!(d.info.version, lerc_core::Version::Lerc2(v) if v >= 6) && d.info.remaining_band_count != 0 {
-                return Err(invalid("LERC: Lerc2 v6 remaining-band count exceeds the payload"));
+                return Err(invalid("LERC: a single Lerc2 v6 blob declaring further bands"));
             }
             // Every sample, of the image's own type: the result as decoded.
             if d.pixels.len() == n * self.spp {
@@ -1878,6 +1878,11 @@ mod tests {
         let blob = lerc_writer::encode(view!(&i16s[..]), None, lerc_writer::EncodeOptions::new()).unwrap();
         let Ok(DecodingResult::I16(out)) = codec(Sample::I16, 16).lerc(blob, w, h) else { panic!("Int16 expected") };
         assert_eq!(out, i16s);
+        // A blob whose checksum does not match its bytes is refused: the decoder checks it.
+        let mut blob = lerc_writer::encode(view!(&f32s[..]), Some(mask), lerc_writer::EncodeOptions::new()).unwrap();
+        *blob.last_mut().unwrap() ^= 0x55;
+        let Err(e) = codec(Sample::F32, 32).lerc(blob, w, h) else { panic!("a corrupt blob decoded") };
+        assert!(e.to_string().to_lowercase().contains("checksum"), "{e}");
     }
 
     #[cfg(feature = "lerc")]
