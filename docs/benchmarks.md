@@ -335,7 +335,7 @@ one-time costs (CRS database, thread pools) are reported as `init`. Operations r
 path only. `--threads` sets both tools' threads: Rayon's, `GDAL_NUM_THREADS`, and `gdalwarp`'s
 `NUM_THREADS` with `-multi`. Cases ending in `_t1` run with one thread in both tools.
 With `GDAL_NUM_THREADS=4`, GDAL's terrain took more CPU and wall time than with 1 on the
-development machine (hillshade 89 ms against 45 ms), so the `_t1` terrain cases are GDAL's
+development machine (hillshade about twice the wall time), so the `_t1` terrain cases are GDAL's
 faster setting. GDAL's proximity and `gdal_calc.py` (NumPy) compute in one thread.
 
 terrio's warp runs in its GDAL reproduction mode: `kernel_version="3.13"` and

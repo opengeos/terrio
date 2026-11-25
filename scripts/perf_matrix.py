@@ -1670,6 +1670,9 @@ def main() -> None:
         return
     if a.cmd == "run" and a.access and (bad := set(a.access) - set(FORMATS[a.format].ACCESS)):
         p.error(f"--access {' '.join(sorted(bad))}: {a.format} reads are {' '.join(FORMATS[a.format].ACCESS)}")
+    sources = getattr(FORMATS[a.format], "SOURCES", ["local", "http"])
+    if a.cmd == "run" and a.source and (bad := set(a.source) - set(sources)):
+        p.error(f"--source {' '.join(sorted(bad))}: {a.format} runs from {' '.join(sources)}")
     # absolute: the readers take a relative path as a URL
     a.dir = a.dir.expanduser().resolve() / getattr(FORMATS[a.format], "DIR", a.format)
     a.dir.mkdir(parents=True, exist_ok=True)

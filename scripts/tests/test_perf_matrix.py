@@ -552,6 +552,15 @@ def test_run_rejects_invalid_measurement_limits(tmp_path, monkeypatch, option, v
     assert not (tmp_path / "geotiff").exists()
 
 
+def test_operations_refuse_an_http_source(tmp_path, monkeypatch):
+    """Operations run from a local path only, so `--source http` is refused before any work."""
+    monkeypatch.setattr(sys, "argv", ["perf_matrix.py", "run", "--format", "warp", "--dir", str(tmp_path), "--source", "http"])
+    with pytest.raises(SystemExit) as exc:
+        perf_matrix.main()
+    assert exc.value.code == 2
+    assert not (tmp_path / "geotiff").exists()
+
+
 def test_posted_artifact_markdown_cannot_close_its_text_fence(tmp_path):
     """Execute the posting step with a PR artifact containing Markdown delimiters.
 
