@@ -9,6 +9,14 @@ use std::io::Write;
 use terrio::memory::{open_vector_bytes, open_vector_or_geometries};
 use terrio::pointcloud::{open_points, open_points_bytes};
 
+/// Opens a table that terrio's native TAB reader refuses and returns the refusal. With the `gdal`
+/// feature the refusal falls back to GDAL, which reads a seamless table as a plain table, so only
+/// the absence of a panic or stack overflow is checked and `None` is returned.
+fn native_tab_refusal(path: &std::path::Path) -> Option<terrio::Error> {
+    let result = terrio::open_vector(path.to_str().unwrap(), &Default::default());
+    if cfg!(feature = "gdal") { None } else { Some(result.unwrap_err()) }
+}
+
 #[test]
 fn tab_dat_out_of_bounds_header_and_zero_record_len_return_error() {
     let tab = b"!table\n!version 300\n!charset Neutral\nDefinition Table\n  Type NATIVE Charset \"Neutral\"\n  Fields 0\n";
@@ -85,20 +93,23 @@ fn tab_seamless_rejects_parent_traversal_absolute_paths_and_cycles() {
     // Self-referential cycle must hit cycle detection, not the depth cap or stack overflow.
     let self_tab = sub.join("loop.tab");
     make_seamless(&self_tab, "loop.tab");
-    let err = terrio::open_vector(self_tab.to_str().unwrap(), &Default::default()).unwrap_err().to_string();
-    assert!(err.contains("cyclic"), "expected cycle error, got: {err}");
+    if let Some(err) = native_tab_refusal(&self_tab) {
+        assert!(err.to_string().contains("cyclic"), "expected cycle error, got: {err}");
+    }
 
     // Parent directory traversal must be refused by the containment check.
     let parent_tab = sub.join("escape.tab");
     make_seamless(&parent_tab, "../outside.tab");
-    let err = terrio::open_vector(parent_tab.to_str().unwrap(), &Default::default()).unwrap_err().to_string();
-    assert!(err.contains("escapes"), "expected escape error, got: {err}");
+    if let Some(err) = native_tab_refusal(&parent_tab) {
+        assert!(err.to_string().contains("escapes"), "expected escape error, got: {err}");
+    }
 
     // Absolute path to an existing valid table must also be refused by the containment check.
     let abs_tab = sub.join("abs.tab");
     make_seamless(&abs_tab, outside_tab.to_str().unwrap());
-    let err = terrio::open_vector(abs_tab.to_str().unwrap(), &Default::default()).unwrap_err().to_string();
-    assert!(err.contains("escapes"), "expected escape error, got: {err}");
+    if let Some(err) = native_tab_refusal(&abs_tab) {
+        assert!(err.to_string().contains("escapes"), "expected escape error, got: {err}");
+    }
 
     // A flat seamless table referencing >1024 parts still opens cleanly under the 10_000 budget.
     let flat_dir = dir.path().join("flat");
@@ -152,8 +163,9 @@ fn tab_seamless_rejects_parent_traversal_absolute_paths_and_cycles() {
         std::fs::write(&p, tab).unwrap();
         std::fs::write(p.with_extension("dat"), &dat).unwrap();
     }
-    let err = terrio::open_vector(dag_dir.join("l0.tab").to_str().unwrap(), &Default::default()).unwrap_err();
-    assert!(matches!(err, terrio::Error::ResourceLimit(_)), "expected ResourceLimit for DAG fan-out, got: {err:?}");
+    if let Some(err) = native_tab_refusal(&dag_dir.join("l0.tab")) {
+        assert!(matches!(err, terrio::Error::ResourceLimit(_)), "expected ResourceLimit for DAG fan-out, got: {err:?}");
+    }
 }
 
 #[test]
@@ -173,7 +185,9 @@ fn deeply_nested_xml_wkt_and_mif_return_errors_without_stack_overflow() {
     let ok_mif = format!("Version 300\nColumns 0\nData\n{}Point 0 0\n", "Collection 1\n".repeat(60));
     assert!(open_vector_bytes(ok_mif.into_bytes(), "ok.mif", &Default::default()).is_ok());
     let deep_mif = format!("Version 300\nColumns 0\nData\n{}Point 0 0\n", "Collection 1\n".repeat(65));
-    assert!(open_vector_bytes(deep_mif.into_bytes(), "deep.mif", &Default::default()).is_err());
+    // With the `gdal` feature the native refusal falls back to GDAL, which reads the collection.
+    let deep_mif = open_vector_bytes(deep_mif.into_bytes(), "deep.mif", &Default::default());
+    assert!(cfg!(feature = "gdal") || deep_mif.is_err());
 }
 
 #[test]
