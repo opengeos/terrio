@@ -849,9 +849,7 @@ fn open_fgb(path: &str, batch: usize, bbox: Option<(f64, f64, f64, f64)>) -> Res
     }
     r.seek_relative(header.index_size as i64)?;
     // The features whose bounding box intersects the bbox, as the eager reader keeps them (through
-    // the index when there is one): found while scanning, without the index. Its corners are
-    // ordered as the eager reader orders them.
-    let bbox = bbox.map(crate::drivers::vector::corners_extent);
+    // the index when there is one): found while scanning, without the index.
     Ok((layer, Box::new(FgbSource { r, header, fid: 0, batch, batch_bytes: source_bytes(CHUNK_BYTES), bbox })))
 }
 

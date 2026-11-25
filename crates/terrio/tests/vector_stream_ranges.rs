@@ -260,6 +260,13 @@ fn flatgeobuf_bbox_reads_keep_the_same_features_with_or_without_an_index() {
         }
         assert_eq!(sequences(&streamed), sequences(&eager.layers[0]), "{path}");
     }
+    // A NaN corner selects nothing, in a stream as in an eager read.
+    let options = VectorOpenOptions { spatial_filter: Some((f64::NAN, 0.0, 30.0, 30.0)), ..Default::default() };
+    for path in [&indexed, &unindexed] {
+        let path = path.to_str().unwrap();
+        assert!(terrio::open_vector(path, &options).unwrap().layers[0].features.is_empty(), "{path}");
+        assert!(terrio::stream::open_layers(path, &options, 3).unwrap().remove(0).read_all().unwrap().features.is_empty(), "{path}");
+    }
 }
 
 #[test]

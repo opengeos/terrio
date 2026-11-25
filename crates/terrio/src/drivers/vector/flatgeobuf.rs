@@ -421,8 +421,8 @@ pub(crate) fn read_remote(path: &str, bbox: (f64, f64, f64, f64)) -> Result<Opti
     crate::formats::check_driver_allowed("FlatGeobuf", path, crate::formats::Kind::Vector)?;
     let mut file = crate::http::RangeReader::open(&remote)?;
     let len = file.len();
-    // The general route parses the header of a file without an index again: this parse's Z and M
-    // are recorded only for a file read here.
+    // A file without an index goes to the general route, which parses its header again, so this
+    // parse's Z and M are declared only for an indexed file read here.
     let (prepared, dims) = with_declared_dims(|| PreparedIndex::open(&mut file, len));
     let prepared = prepared?;
     if prepared.info.index_size == 0 {
