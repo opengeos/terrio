@@ -176,3 +176,55 @@ fn a_codeless_wkt1_with_its_own_shift_goes_into_its_own_datum_without_it() {
     let (lon, _) = Transformer::new(&SpatialRef::from_wkt(&foo), &nad83).unwrap().transform(x, y).unwrap();
     assert!((lon + 82.927_597_805_866_5).abs() > 1e-4, "{lon}");
 }
+
+/// A compound CRS whose horizontal CRS has a `TOWGS84` of its own (OSGB36 / British National Grid
+/// with `TOWGS84[375,-111,431,0,0,0,0]`, + ODN height, identified as EPSG:7405) is read with that
+/// shift, as PROJ 9.9.0 reads it into EPSG:4979: (-2.001443992181307, 52.59776558274018), not where
+/// EPSG:7405 places (400000, 300000) (-2.0014460538496945, 52.59781049520809), 5 m away. Its
+/// GeoKeys give the codes with GeogTOWGS84GeoKey, read back with the shift (#1012 item 62).
+#[test]
+fn a_compound_crs_with_its_own_shift_is_read_and_written_with_it() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let bng = SpatialRef::from_epsg(27700).unwrap().to_wkt().unwrap();
+    let airy = r#"SPHEROID["Airy 1830",6377563.396,299.3249646,AUTHORITY["EPSG","7001"]]"#;
+    let shifted = bng.replacen(airy, &format!("{airy},TOWGS84[375,-111,431,0,0,0,0]"), 1);
+    assert_ne!(shifted, bng);
+    let odn = SpatialRef::from_epsg(5701).unwrap().to_wkt().unwrap();
+    let crs = SpatialRef::from_wkt(&format!(r#"COMPD_CS["BNG + ODN",{shifted},{odn}]"#));
+    let wgs84 = SpatialRef::from_epsg(4979).unwrap();
+    let place = |crs: &SpatialRef| Transformer::new(crs, &wgs84).unwrap().transform_3d(400000.0, 300000.0, 10.0).unwrap();
+    let keys = crs.to_geokeys().unwrap();
+    assert!(keys.shorts.contains(&(3072, 27700)) && keys.shorts.contains(&(4096, 5701)), "{:?}", keys.shorts);
+    assert_eq!(&towgs84(&keys)[..3], [375.0, -111.0, 431.0]);
+    let tags = keys.encode().unwrap();
+    let back = terrio_crs::geokeys::read(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).crs.unwrap();
+    for (x, y, _) in [place(&crs), place(&back)] {
+        assert!((x - -2.001443992181307).abs() < 1e-9 && (y - 52.59776558274018).abs() < 1e-9, "({x}, {y})");
+    }
+}
+
+/// A WKT 2 `BOUNDCRS` to a datum other than WGS 84 (ED50), whose shift GeogTOWGS84GeoKey cannot
+/// carry, is written as its WKT in an ESRI PE citation: read back, it places its point where PROJ
+/// 9.9.0 places the WKT (`wkt2_bound.json`'s `proj`), by the shift then ED50's transformations, not
+/// by its base CRS's own (#1012 item 64).
+#[test]
+fn a_bound_crs_to_another_datum_is_written_as_its_wkt() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let cases: serde_json::Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
+    for name in ["over EPSG:4277 to ED50", "projected, to ED50", "to ED50"] {
+        let case = cases["cases"].as_array().unwrap().iter().find(|c| c["name"] == name).unwrap();
+        let keys = SpatialRef::from_wkt(case["wkt"].as_str().unwrap()).to_geokeys().unwrap();
+        assert!(keys.ascii.iter().any(|(id, t)| *id == 3073 && t.starts_with("ESRI PE String = BOUNDCRS")), "{name}: {:?}", keys.ascii);
+        let tags = keys.encode().unwrap();
+        let back = terrio_crs::geokeys::read(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).crs.unwrap();
+        let dst = SpatialRef::parse(case["dst"].as_str().unwrap()).unwrap();
+        let (x, y) = Transformer::new(&back, &dst)
+            .unwrap()
+            .transform(case["point"][0].as_f64().unwrap(), case["point"][1].as_f64().unwrap())
+            .unwrap();
+        let (px, py) = (case["proj"][0].as_f64().unwrap(), case["proj"][1].as_f64().unwrap());
+        assert!((x - px).abs() < 1e-8 && (y - py).abs() < 1e-8, "{name}: ({x}, {y}), PROJ ({px}, {py})");
+    }
+}

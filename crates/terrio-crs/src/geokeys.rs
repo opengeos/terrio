@@ -260,6 +260,16 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
     {
         let registered = crate::compound_code(h, u32::from(v), c.name().as_deref()).and_then(|code| SpatialRef::from_epsg(code).ok());
         let c = registered.unwrap_or(c);
+        // With GeogTOWGS84GeoKey beside the horizontal code: that shift on the horizontal CRS, as
+        // terrio writes a compound CRS with a shift of its own (#1012 item 62).
+        if stated == Some(h)
+            && let Some(horizontal) = with_towgs84(&k, h).and_then(|s| s.wkt)
+            && let Some(vertical) = SpatialRef::from_epsg(u32::from(v)).ok().and_then(|s| s.wkt)
+        {
+            let name = c.name().unwrap_or_else(|| "unnamed".into());
+            let wkt = format!("COMPD_CS[{},{horizontal},{vertical}]", wkt_quoted(&name));
+            return GeoKeysCrs { crs: Some(SpatialRef::from_wkt(&wkt)), unsupported_method };
+        }
         return GeoKeysCrs { crs: Some(SpatialRef { wkt: c.to_wkt(), esri: None, ..c }), unsupported_method };
     }
     // The CRS an identifier is a summary of: the retained definition, else the code's (with the
@@ -1072,6 +1082,17 @@ fn own_towgs84(crs: &SpatialRef) -> Option<Vec<f64>> {
     (matches!(t.len(), 3 | 7) && !(wgs84 && t.iter().all(|x| *x == 0.0))).then_some(t)
 }
 
+/// The datum shift of a compound CRS's horizontal CRS (`code`) of its own: a `TOWGS84` in its WKT,
+/// as [`own_towgs84`] finds it for a horizontal CRS.
+fn compound_horizontal_shift(crs: &SpatialRef, code: u32) -> Option<Vec<f64>> {
+    let root = crate::parsed::tree(crs.wkt.as_deref()?)?;
+    let horizontal = root.args.iter().find_map(|a| match a {
+        crate::wkt1::Arg::Node(n) if n.key.eq_ignore_ascii_case("PROJCS") || n.key.eq_ignore_ascii_case("GEOGCS") => Some(n.to_wkt()),
+        _ => None,
+    })?;
+    own_towgs84(&SpatialRef { epsg: Some(code), wkt: Some(horizontal), proj4: None, ..crs.clone() })
+}
+
 /// Whether a PROJ string is on WGS 84: its datum or ellipsoid by name, or the ellipsoid's axis and
 /// flattening. A zero shift on it is no shift for the writer, for a CRS without a code.
 fn on_wgs84(proj: &str) -> bool {
@@ -1079,15 +1100,16 @@ fn on_wgs84(proj: &str) -> bool {
     has("+datum=WGS84") || has("+ellps=WGS84") || (has("+a=6378137") && has("+rf=298.257223563"))
 }
 
-/// Whether a CRS is a WKT 2 `BOUNDCRS` whose Helmert transformation its `+towgs84` only
-/// approximates: the reader keeps the exact operation beside it (a Molodensky-Badekas evaluation
-/// point, a full rotation matrix).
+/// Whether a CRS is a WKT 2 `BOUNDCRS` whose Helmert transformation GeogTOWGS84GeoKey cannot
+/// carry: one its `+towgs84` only approximates, which the reader keeps beside it (a
+/// Molodensky-Badekas evaluation point, a full rotation matrix), or one to a datum other than
+/// WGS 84 (ED50), which the reader chains with that datum's transformations (#1012 item 64).
 fn bound_beyond_towgs84(crs: &SpatialRef) -> bool {
     let Some(w) = crs.wkt.as_deref().filter(|w| crate::def::is_bound_crs(w)) else { return false };
     crate::parsed::tree(w)
         .filter(|root| crate::wkt2::handles(root))
         .and_then(|_| crate::model::wkt2_to_proj(w).ok())
-        .is_some_and(|c| c.helmert.is_some())
+        .is_some_and(|c| c.helmert.is_some() || c.bound.is_some())
 }
 
 /// GeoKeys from wbprojection's model of a CRS, when terrio is built with it.
@@ -1448,7 +1470,8 @@ impl SpatialRef {
         // identified as EPSG:27700, is 3.1 m from it).
         let shift = own_towgs84(self);
         // A WKT 2 `BOUNDCRS` whose transformation `+towgs84` only approximates (Molodensky-Badekas,
-        // a full rotation matrix): neither its code nor GeogTOWGS84GeoKey, but its WKT.
+        // a full rotation matrix), or to another datum than WGS 84: neither its code nor
+        // GeogTOWGS84GeoKey, but its WKT.
         let exact = bound_beyond_towgs84(self);
         let declared = self.wkt.as_deref().and_then(crate::declared_epsg);
         let registered =
@@ -1466,6 +1489,11 @@ impl SpatialRef {
                 v.shorts.push((if geographic { 2048 } else { 3072 }, h));
                 v.shorts.push((4096, vertical));
                 v.ascii.push((1026, self.name().unwrap_or_else(|| "unnamed".into())));
+                // The horizontal CRS's own shift beside its code, as for a horizontal CRS, read
+                // back on that CRS (#1012 item 62).
+                if let Some(t) = compound_horizontal_shift(self, u32::from(h)) {
+                    v.doubles.extend(t.iter().map(|x| (2062, *x)));
+                }
             }
             (None, Some((code, geographic))) => {
                 v.shorts.push((1024, if geographic { 2 } else { 1 }));

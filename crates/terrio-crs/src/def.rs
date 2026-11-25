@@ -558,8 +558,23 @@ impl Def {
             }
             return Self::from_wkt(wkt);
         }
+        // A compound CRS identified by its code, but not one whose WKT gives its horizontal CRS a
+        // `TOWGS84` of its own, which PROJ 9.9.0 applies: read from its WKT (#1012 item 62).
+        let horizontal_shift = |w: &str| {
+            let root = crate::parsed::tree(w)?;
+            let h = root.args.iter().find_map(|a| match a {
+                crate::wkt1::Arg::Node(n) if n.key.eq_ignore_ascii_case("PROJCS") || n.key.eq_ignore_ascii_case("GEOGCS") => Some(n),
+                _ => None,
+            })?;
+            wkt_towgs84(&h.to_wkt())
+        };
+        let own_shift = s.proj4.is_none()
+            && s.wkt
+                .as_deref()
+                .is_some_and(|w| s.epsg.and_then(epsg::compound).is_none_or(|c| c.wkt != w) && horizontal_shift(w).is_some());
         if let Some(code) = s.epsg
             && let Some(c) = epsg::compound(code)
+            && !own_shift
         {
             let mut d = Self::new(&SpatialRef { epsg: Some(c.horizontal), ..Default::default() })?;
             d.vertical = Vertical::from_epsg(c.vertical).map(Arc::new);
