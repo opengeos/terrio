@@ -210,7 +210,7 @@ pub fn parse(mif: &[u8], mid: Option<&[u8]>, name: &str) -> Result<Layer> {
             toks.skip_line();
             continue;
         }
-        match statement(&mut toks) {
+        match statement(&mut toks, 0) {
             Some(g) => geometries.push(g),
             None => return Err(Error::InvalidData(format!("MIF: cannot read the geometry '{kw}'"))),
         }
@@ -287,8 +287,13 @@ fn ellipse(x1: f64, y1: f64, x2: f64, y2: f64, from: f64, to: f64, n: usize) -> 
         .collect()
 }
 
+const MAX_COLLECTION_DEPTH: usize = 64;
+
 /// Reads one geometry statement. `Some(None)` is the `none` statement.
-fn statement(t: &mut Tokens) -> Option<Option<Geometry>> {
+fn statement(t: &mut Tokens, depth: usize) -> Option<Option<Geometry>> {
+    if depth >= MAX_COLLECTION_DEPTH {
+        return None;
+    }
     let kw = t.next()?.to_ascii_lowercase();
     Some(match kw.as_str() {
         "none" => None,
@@ -360,7 +365,7 @@ fn statement(t: &mut Tokens) -> Option<Option<Geometry>> {
                 while t.peek().is_some_and(|w| STYLES.contains(&w.to_ascii_lowercase().as_str())) {
                     t.skip_line();
                 }
-                if let Some(g) = statement(t)? {
+                if let Some(g) = statement(t, depth + 1)? {
                     parts.push(g);
                 }
             }

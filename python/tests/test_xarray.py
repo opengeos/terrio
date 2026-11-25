@@ -6,6 +6,7 @@ only.
 
 import gc
 import pickle
+import re
 import subprocess
 import sys
 import threading
@@ -1161,5 +1162,98 @@ def test_accessor_leaves_no_reference_cycle(kind):
         refs.update({n: weakref.ref(v.data) for n, v in variables.items() if v.ndim})
         del out, variables
         assert [n for n, r in refs.items() if r() is not None] == []
+    finally:
+        gc.enable()
+
+
+def _with_crs_in(source, value):
+    da = xr.DataArray(np.zeros((2, 2)), dims=("y", "x"), coords={"y": [1.0, 0.0], "x": [0.0, 1.0]})
+    if source in ("spatial_ref", "crs_wkt"):
+        da = da.assign_coords(spatial_ref=xr.DataArray(0, attrs={source: value}))
+        da.attrs["grid_mapping"] = "spatial_ref"
+    elif source in ("proj:wkt2", "proj:code"):
+        da.attrs.update({"zarr_conventions": [{"name": "proj:"}], source: value})
+    else:
+        da.attrs[source] = value
+    return da
+
+
+@pytest.mark.parametrize("source", ["spatial_ref", "crs_wkt", "proj:wkt2", "proj:code", "crs"])
+@pytest.mark.parametrize("value", ["GEOGCS[x]", "EPSG:999999"])
+def test_unreadable_crs_raises_rather_than_reading_as_none(source, value):
+    from terrio.rio.errors import CRSError
+
+    with pytest.raises(CRSError, match=re.escape(value)):
+        _ = _with_crs_in(source, value).terrio.crs
+    assert _with_crs_in(source, "EPSG:4326").terrio.crs == "EPSG:4326"
+
+
+@pytest.mark.parametrize("source", ["spatial_ref", "crs_wkt", "proj:code", "crs"])
+def test_numpy_integer_epsg_code_reads_as_rioxarray_reads_it(source):
+    for code in (np.int64(4326), np.int32(4326)):
+        assert _with_crs_in(source, code).terrio.crs == "EPSG:4326"
+
+
+def test_unreadable_crs_falls_back_to_a_readable_source():
+    da = _with_crs_in("spatial_ref", "GEOGCS[x]")
+    da.spatial_ref.attrs["crs_wkt"] = "EPSG:4326"
+    assert da.terrio.crs == "EPSG:4326"
+    da = _with_crs_in("proj:wkt2", "GEOGCS[x]")
+    da.attrs["crs"] = "EPSG:3857"
+    assert da.terrio.crs == "EPSG:3857"
+
+
+def test_first_unreadable_crs_error_is_raised_when_none_reads():
+    from terrio.rio.errors import CRSError
+
+    da = _with_crs_in("proj:wkt2", "GEOGCS[x]")
+    da.attrs["crs"] = "EPSG:999999"
+    with pytest.raises(CRSError, match=r"GEOGCS\[x\]"):
+        _ = da.terrio.crs
+
+
+def test_unreadable_dataset_crs_falls_back_to_its_variables_or_raises():
+    from terrio.rio.errors import CRSError
+
+    da = xr.DataArray(np.zeros((2, 2)), dims=("y", "x"), coords={"y": [1.0, 0.0], "x": [0.0, 1.0]})
+    proj = {"zarr_conventions": [{"name": "proj:"}], "proj:code": "EPSG:999999"}
+    ds = xr.Dataset({"v": da.assign_attrs(crs="EPSG:4326")}, attrs=proj)
+    assert ds.terrio.crs == "EPSG:4326"
+    with pytest.raises(CRSError, match="EPSG:999999"):
+        _ = xr.Dataset({"v": da}, attrs=proj).terrio.crs
+    with pytest.raises(CRSError, match=r"GEOGCS\[x\]"):
+        _ = _with_crs_in("spatial_ref", "GEOGCS[x]").to_dataset(name="v").terrio.crs
+    # A variable's unreadable CRS raises on every read, not only the first.
+    ds = _with_crs_in("proj:wkt2", "GEOGCS[x]").to_dataset(name="v")
+    for _ in range(2):
+        with pytest.raises(CRSError, match=r"GEOGCS\[x\]"):
+            _ = ds.terrio.crs
+
+
+@pytest.mark.parametrize("kind", ["DataArray", "Dataset"])
+def test_unreadable_crs_read_leaves_no_reference_cycle(kind):
+    """An unreadable source's error does not keep the object alive without the cyclic
+    garbage collector, whether a later source reads or the error is raised."""
+    from terrio.rio.errors import CRSError
+
+    gc.disable()
+    try:
+        for fallback in ("EPSG:4326", None):
+            da = _with_crs_in("spatial_ref", "GEOGCS[x]")
+            if kind == "Dataset":
+                obj = xr.Dataset({"v": da.assign_attrs(crs=fallback) if fallback else da})
+                obj.attrs.update(
+                    {"zarr_conventions": [{"name": "proj:"}], "proj:code": "EPSG:999999"}
+                )
+            else:
+                obj = da.assign_attrs(crs=fallback) if fallback else da
+            ref = weakref.ref(obj.variable.data if kind == "DataArray" else obj["v"].variable.data)
+            if fallback:
+                assert obj.terrio.crs == fallback
+            else:
+                with pytest.raises(CRSError):
+                    _ = obj.terrio.crs
+            del obj, da
+            assert ref() is None, fallback
     finally:
         gc.enable()
