@@ -54,10 +54,12 @@ pub fn query(layers: &[Layer], statement: &str) -> Result<Layer> {
     Ok(layer)
 }
 
-/// [`query`] on the layers of the vector dataset at `path`. A single-layer query on a local
-/// GeoParquet file passes its WHERE clause to the reader, which skips the row groups whose column
-/// statistics exclude it and decodes the other columns of matching rows only; feature IDs stay
-/// the file's. Other queries, remote files and other formats read their layers whole, as
+/// [`query`] on the layers of the vector dataset at `path`. A single-layer query on a GeoParquet
+/// file, local or remote (a URL or `s3://`), passes its WHERE clause to the reader, which skips
+/// the row groups whose column statistics exclude it and decodes the other columns of matching
+/// rows only; feature IDs stay the file's. Remotely (with the `remote` feature), the filter
+/// columns of the row groups kept are fetched together, then the other columns of the groups with
+/// matching rows. Other queries, archives and other formats read their layers whole, as
 /// [`crate::open_vector`] does.
 ///
 /// ```no_run
@@ -83,10 +85,15 @@ pub fn query_path(path: &str, statement: &str, options: &crate::VectorOpenOption
 fn filtered_parquet_layer(path: &str, statement: &str, options: &crate::VectorOpenOptions) -> Result<Option<Layer>> {
     let Ok(select) = Select::parse(statement) else { return Ok(None) };
     let Some(filter) = select.filter.as_ref().filter(|_| select.joins.is_empty()) else { return Ok(None) };
-    // ponytail: local only. Remotely, the predicate pass fetches each row group's filter columns
-    // in its own round trip (27 rounds against 8 for a whole read): batch them to extend it.
-    if crate::formats::VectorDriver::for_extension(path) != Some(crate::formats::VectorDriver::Parquet)
-        || !std::path::Path::new(path).is_file()
+    // Local files qualify, and remote ones: their predicate pass fetches the filter columns of
+    // the row groups together.
+    let location = crate::vfs::Location::parse(path);
+    #[cfg(remote)]
+    let remote = location.remote().is_some();
+    #[cfg(not(remote))]
+    let remote = false;
+    if crate::formats::VectorDriver::for_extension(&location.file_name()) != Some(crate::formats::VectorDriver::Parquet)
+        || !(remote || std::path::Path::new(path).is_file())
     {
         return Ok(None);
     }
