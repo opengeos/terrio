@@ -108,7 +108,7 @@ fn safe_key(key: &str, local: bool, remote_url: bool) -> bool {
     for seg in key.split('/') {
         let bytes = seg.as_bytes();
         if seg == ".."
-            || (local && bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+            || (local && cfg!(windows) && bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
             || (remote_url && (seg.eq_ignore_ascii_case("%2e%2e") || seg.eq_ignore_ascii_case(".%2e") || seg.eq_ignore_ascii_case("%2e.")))
         {
             return false;
@@ -549,7 +549,7 @@ mod tests {
         assert!(safe_key("a/b/c.0", false, true));
         assert!(safe_key("2026-01-01T00:00:00/0", false, true));
         assert!(!safe_key(r"..\..\secret", true, false));
-        assert!(!safe_key("C:secret", true, false));
+        assert_eq!(safe_key("C:secret", true, false), !cfg!(windows));
         assert!(safe_key("x:1", false, true));
         assert!(!safe_key("%2e%2e/secret", false, true));
         assert!(!safe_key(".%2E/secret", false, true));
