@@ -53,6 +53,45 @@ def test_summarize_ranks_only_complete_matching_samples():
     assert "time_ratio" not in partial and partial["terrio"]["read_s"] == 2
 
 
+def test_equal_sums_with_different_bytes_are_not_exact():
+    """Rank a case as `exact` only when every sample's bytes hash as GDAL's."""
+    exact = summarize(_row(terrio=[{**_sample(2), "digest": "a"}], gdal=[{**_sample(1), "digest": "a"}]))
+    assert exact["values"] == "exact" and "digest" not in exact["terrio"]
+    # Two compensating errors keep the sum and count: the bytes still differ.
+    swapped = summarize(_row(terrio=[{**_sample(2), "digest": "b"}], gdal=[{**_sample(1), "digest": "a"}]))
+    assert swapped["values"] == "checksum_match"
+    text = report([exact, swapped])
+    assert "values not byte-identical to GDAL's (sum within 1e-6 and count equal; ranked): 1\n  u8_none" in text
+    # A later sample whose bytes differ is caught too.
+    later = _row(terrio=[{**_sample(2), "digest": "a"}, {**_sample(2), "digest": "b"}], gdal=[{**_sample(1), "digest": "a"}])
+    assert summarize(later)["values"] == "checksum_match"
+
+
+def test_digest_compares_values_not_their_layout():
+    """Hash the values read and their shape: not a band's leading 1, a table's chunks, column order or integer width."""
+    import numpy as np
+
+    a = np.arange(12, dtype="float32").reshape(3, 4)
+    assert perf_matrix.digest([a]) == perf_matrix.digest([a[None]]) == perf_matrix.digest([np.asfortranarray(a)])
+    assert perf_matrix.digest([a]) != perf_matrix.digest([a.astype("float64")])
+    assert perf_matrix.digest([a]) != perf_matrix.digest([a[::-1]])
+    assert perf_matrix.digest([a]) != perf_matrix.digest([a.reshape(a.shape[::-1])])  # same bytes, other shape
+    pa = pytest.importorskip("pyarrow")
+    xy = pa.struct([pa.field("x", pa.float64(), False), pa.field("y", pa.float64(), False)])
+    rings = pa.array([[[{"x": 1.0, "y": 2.0}]], [[{"x": 3.0, "y": 4.0}, {"x": 5.0, "y": 6.0}]]], pa.list_(pa.list_(xy)))
+    t = pa.table({"id": pa.array([1, 2], pa.int32()), "class": ["a", "bb"], "geometry": rings, "wkb": [b"x", b"yy"]})
+    padded = pa.concat_tables([t.slice(0, 1), t]).slice(1)  # sliced, in two chunks
+    wide = t.set_column(0, "id", t.column("id").cast(pa.int64())).select(["wkb", "geometry", "class", "id"])
+    assert perf_matrix.digest([t]) == perf_matrix.digest([padded]) == perf_matrix.digest([(None, wide)])
+    assert perf_matrix.digest([t]) != perf_matrix.digest([t.set_column(0, "id", pa.array([2, 1], pa.int32()))])
+    assert perf_matrix.digest([t]) != perf_matrix.digest([t.rename_columns(["ie", "class", "geometry", "wkb"])])
+    big = pa.table({"id": pa.array([2**63, 1], pa.uint64())})  # past int64: hashed, not a failed sample
+    assert perf_matrix.digest([big]) != perf_matrix.digest([pa.table({"id": pa.array([1, 1], pa.uint64())})])
+
+
+_MACHINE = {"cpu": "A", "cpus": 4, "cpu_quota": "max", "mem_gb": 16, "os": "Linux", "on_ac": True, "load": 0.1, "versions": {}}
+
+
 def test_report_lists_mismatches_and_failures_apart_and_warns_on_mixed_machines():
     ok = summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)]))
     differ = summarize({**_row(terrio=[_sample(9, s=0)], gdal=[_sample(1)]), "fixture": "f32_none"})
@@ -104,6 +143,92 @@ def test_geoparquet_without_statistics_counts_all_row_groups(tmp_path):
                                           for g in range(md.num_row_groups) for c in range(md.num_columns))
     assert perf_matrix.GeoParquet.meta(path, "where")["need_bytes"] == expected
     assert perf_matrix.GeoParquet.meta(path, "bbox")["need_bytes"] == expected
+
+
+def test_geopackage_pages_come_from_the_table_b_tree_and_the_r_tree(tmp_path):
+    """Find every table page from the interior pages, and an R-tree's rows as SQLite does.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+    """
+    import sqlite3
+
+    path = tmp_path / "t.gpkg"
+    con = sqlite3.connect(path)
+    con.execute("PRAGMA page_size = 1024")
+    con.execute("CREATE TABLE data (fid INTEGER PRIMARY KEY, geom BLOB)")
+    con.executemany("INSERT INTO data VALUES (?, ?)", [(i, b"x" * 200) for i in range(1, 3001)])
+    con.commit()
+    pages = con.execute("PRAGMA page_count").fetchone()[0]
+    with open(path, "rb") as f:
+        leaves = perf_matrix.GeoPackage.leaves(f, 1024, 2)
+    interior = {p for _, _, up in leaves for p in up}
+    # Two levels of interior pages; every page but the schema's belongs to the table.
+    assert max(len(up) for _, _, up in leaves) == 2
+    assert len(leaves) + len(interior) == pages - 1
+    assert [hi for hi, _, _ in leaves] == sorted(hi for hi, _, _ in leaves) and leaves[-1][0] == float("inf")
+    try:
+        con.execute("CREATE VIRTUAL TABLE rtree_data_geom USING rtree(id, minx, maxx, miny, maxy)")
+    except sqlite3.OperationalError:
+        pytest.skip("SQLite without the R-tree module")
+    con.executemany("INSERT INTO rtree_data_geom VALUES (?, ?, ?, ?, ?)",
+                    [(i, i % 100, i % 100 + 1.5, i // 100, i // 100 + 1.5) for i in range(1, 3001)])
+    con.commit()
+    boxes = [(10, 3, 20, 7), (95, 25, 99, 28)]
+    ids, nodes = perf_matrix.GeoPackage.rtree(con, "rtree_data_geom", boxes)
+    expected = {i for b in boxes for (i,) in con.execute(
+        "SELECT id FROM rtree_data_geom WHERE minx <= ? AND maxx >= ? AND miny <= ? AND maxy >= ?", (b[2], b[0], b[3], b[1]))}
+    assert ids == expected and len(ids) > 50
+    total = con.execute("SELECT sum(length(data)) FROM rtree_data_geom_node").fetchone()[0]
+    assert 0 < nodes < total
+
+
+def test_geopackage_needed_bytes_read_a_fixture_under_a_directory_with_a_hash(tmp_path):
+    """Open a fixture by its path, even when a directory's name holds a URI fragment's `#`.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+    """
+    ogr = pytest.importorskip("osgeo.ogr")
+    path = tmp_path / "matrix#1" / "t.gpkg"
+    path.parent.mkdir()
+    ds = ogr.GetDriverByName("GPKG").CreateDataSource(str(path))
+    lyr = ds.CreateLayer(perf_matrix.GeoPackage.LAYER, None, ogr.wkbPoint)
+    for i in range(3):
+        f = ogr.Feature(lyr.GetLayerDefn())
+        f.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT ({i} {i})"))
+        lyr.CreateFeature(f)
+    lyr = ds = None
+    need = perf_matrix.GeoPackage.meta(path, "full")["need_bytes"]
+    assert 0 < need <= path.stat().st_size
+
+
+def test_http_ranges_larger_than_a_piece_are_served_whole_and_counted(tmp_path, monkeypatch):
+    """Serve a range across several 1 MiB pieces, and count its bytes once.
+
+    Args:
+        tmp_path: Isolated served directory.
+        monkeypatch: Scoped handler latency.
+    """
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    data = bytes(range(256)) * (3 * 4096 + 7)
+    (tmp_path / "f.bin").write_bytes(data)
+    monkeypatch.setattr(perf_matrix._Handler, "latency", 0)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), lambda *a, **k: perf_matrix._Handler(*a, directory=str(tmp_path), **k))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with perf_matrix._lock:
+            perf_matrix._log.clear()
+        request = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}/f.bin", headers={"Range": "bytes=100-"})
+        with urllib.request.urlopen(request) as answer:
+            assert answer.read() == data[100:]
+        assert [x[2] for x in perf_matrix._settled_log()] == [len(data) - 100]
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_metadata_errors_are_recorded_for_each_case(tmp_path, monkeypatch):
@@ -496,6 +621,7 @@ def test_quick_runs_rotate_tools_between_cases_and_close_the_server(tmp_path, mo
     perf_matrix.run(args)
     assert calls == ["terrio", "gdal", "base", "gdal", "base", "terrio"]
     assert servers[0].socket.fileno() == -1
+    assert servers[0].request_queue_size >= 64  # the threaded reads' connections are not dropped
 
 
 def test_a_fixture_filter_matching_nothing_is_an_error(tmp_path, monkeypatch):
@@ -526,7 +652,9 @@ def test_changed_files_choose_the_formats_to_measure():
     """A format's own file picks it; a shared one picks every format; others pick none."""
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
-    assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "geotiff-write", "geoparquet-write"]
+    assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "geopackage", "geotiff-write", "geoparquet-write"]
+    assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "geopackage"]
+    assert perf_matrix.touched(["crates/terrio/src/ops/sql/select.rs"]) == ["geopackage"]
     assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr", "geotiff-write"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/gtiff_write.rs"]) == ["geotiff-write"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet.rs"]) == ["geoparquet", "geoparquet-write"]
@@ -651,6 +779,22 @@ def test_worker_keeps_the_worst_comparison_of_its_items(monkeypatch):
     assert (result["sum"], result["n"], result["compare"]["max_diff"]) == (1, 20, 30)
 
 
+def test_worker_hashes_no_digest_for_written_files(monkeypatch, tmp_path):
+    """A write's items return the written file: the worker compares it and hashes no values.
+
+    Args:
+        monkeypatch: Scoped format replacement.
+        tmp_path: Where the fake write puts its file.
+    """
+    written = tmp_path / "out.tif"
+    compare = {"mismatch": None, "beyond_tol": 0, "differing": 0, "max_diff": 0}
+    fake = SimpleNamespace(EXT=".tif", reader=lambda *_: (str, [lambda _: written], lambda _: (0, 10, compare), (str, len)))
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
+    for tool in ("terrio", "gdal"):
+        result = perf_matrix.worker({"format": "fake", "tool": tool, "src": "http://localhost/f.tif", "access": "cog", "meta": {}})
+        assert result["digest"] is None and result["compare"] == compare
+
+
 def test_write_comparison_reads_every_level_and_reports_what_differs(tmp_path):
     """Exact copies, one changed pixel, a tolerance, a color interpretation and an overview count."""
     gdal = pytest.importorskip("osgeo.gdal")
@@ -761,3 +905,85 @@ def test_gdal_cog_writes_get_the_cog_drivers_option_names(monkeypatch, tmp_path)
     perf_matrix.GeoTiffWrite.gdal_write(None, tmp_path / "b.tif", "GTiff", opts)
     assert calls == [("COG", ["COMPRESS=ZSTD", "LEVEL=1", "NUM_THREADS=3"]),
                      ("GTiff", ["COMPRESS=ZSTD", "PHOTOMETRIC=RGB", "ZSTD_LEVEL=1", "NUM_THREADS=3"])]
+
+
+def test_threads4_is_measured_with_each_thread_count():
+    """Expand a format's `threads4` to 1, 2, 4 and 8 threads, and keep the explicit name valid."""
+    assert perf_matrix.accesses(perf_matrix.GeoTiff) == ["window", "windows16", "full", "overview",
+                                                         "threads1", "threads2", "threads4", "threads8"]
+    assert [perf_matrix.threads(a) for a in ("threads1", "threads8", "windows16", "bbox16")] == [1, 8, 0, 0]
+    assert perf_matrix.accesses(SimpleNamespace(ACCESS=["full"])) == ["full"]
+
+
+@pytest.mark.parametrize("access,ok", [(["threads4"], True), (["threads8", "window"], True), (["threads3"], False)])
+def test_run_accepts_only_the_measured_thread_counts(tmp_path, monkeypatch, access, ok):
+    """Accept `threads4` as before and the other measured counts, and reject any other count.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped argument and runner replacements.
+        access: The `--access` values.
+        ok: Whether the command line is accepted.
+    """
+    ran = []
+    monkeypatch.setattr(perf_matrix, "run", ran.append)
+    monkeypatch.setattr(sys, "argv", ["perf_matrix.py", "run", "--dir", str(tmp_path), "--access", *access])
+    if ok:
+        perf_matrix.main()
+        assert ran[0].access == access
+    else:
+        with pytest.raises(SystemExit) as exc:
+            perf_matrix.main()
+        assert exc.value.code == 2 and not ran
+
+
+@pytest.mark.parametrize("n", [1, 2, 8])
+def test_threaded_reads_open_a_handle_per_thread_and_keep_the_parts_in_order(monkeypatch, n):
+    """Read a format's 16 `threads4` parts with N handles in N threads, in the parts' order.
+
+    Args:
+        monkeypatch: Scoped format replacement.
+        n: The number of reading threads.
+    """
+    import threading
+
+    opened, given = [], []
+
+    def reader(_tool, access, _meta):
+        """Give 16 parts that record the thread reading them.
+
+        Args:
+            _tool: Reader backend.
+            access: Read pattern the format is asked for.
+            _meta: Fixture metadata.
+
+        Returns:
+            Reader operations and validation.
+        """
+        given.append(access)
+
+        def open_(path):
+            opened.append(threading.get_ident())
+            return path
+
+        items = [lambda _d, i=i: [i] for i in range(16)]
+        return open_, items, perf_matrix.checksum, (lambda p: p, lambda _d: None)
+
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", SimpleNamespace(EXT=".tif", reader=reader))
+    result = perf_matrix.worker({"format": "fake", "tool": "gdal", "src": "http://localhost/f.tif",
+                                 "access": f"threads{n}", "meta": {}})
+    assert given == ["threads4"] and len(opened) == n
+    assert result["digest"] == perf_matrix.digest([[i] for i in range(16)])
+
+
+def test_report_gives_each_tools_speedup_over_one_thread():
+    """Compare each thread count with one thread, per tool, over the cases that have both."""
+    rows = [summarize({**_row(terrio=[_sample(t)], gdal=[_sample(g)]), "access": f"threads{n}"})
+            for n, t, g in ((1, 8.0, 4.0), (2, 4.0, 2.0), (8, 4.0, 1.0))]
+    other = summarize({**_row(terrio=[_sample(1.0)], gdal=[_sample(1.0)]), "format": "zarr", "access": "threads8"})
+    text = report([*rows, other])  # a zarr case without one thread is not mixed into GeoTIFF's
+    assert "geotiff local threads2  terrio x2.00  gdal x2.00  terrio/gdal time x2.00  (1)" in text
+    assert "geotiff local threads8  terrio x2.00  gdal x4.00  terrio/gdal time x4.00  (1)" in text
+    # Files run with different library pools are not merged into one scaling section.
+    mixed = report([{"machine": {**_MACHINE, "threads": 1}}, {"machine": {**_MACHINE, "threads": 4}}, *rows])
+    assert "mix --threads [1, 4]" in mixed and "## Thread scaling" not in mixed
