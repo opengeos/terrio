@@ -4635,6 +4635,8 @@ mod tests {
             read_f64(&mut r, w, &[1, 2, 3], None)
         });
         assert_eq!(got, want);
+        // Each read's requests apart: a block fetched again at any point of a read is caught.
+        let first = seen.lock().unwrap().len();
         // A window within the cache, of a file new to the process-wide cache, decoded by workers.
         let small = Window::new(150, 40, 40, 30);
         let got = crate::config::with_options(&options, || {
@@ -4643,7 +4645,7 @@ mod tests {
         });
         assert_eq!(got, read_f64(&mut LazyRaster::open(path.to_str().unwrap()).unwrap(), small, &[1, 2, 3], None));
         let seen = seen.lock().unwrap();
-        for part in seen.split(|r| r.as_deref() == Some("bytes=0-1023")).filter(|p| !p.is_empty()) {
+        for part in [&seen[..first], &seen[first..]] {
             let mut ranges: Vec<(usize, usize)> = part
                 .iter()
                 .map(|r| {
