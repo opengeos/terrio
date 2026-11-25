@@ -228,7 +228,12 @@ pub(crate) fn count(values: &[f64], nodata: Option<f64>, t: DataType, min: f64, 
 }
 
 /// The first histogram stored for a band (numbered from 1) in a dataset's `.aux.xml` sidecar.
+/// `None` when sidecar discovery is disabled (`GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`), as for
+/// [`stored_range`]'s PAM lookup.
 pub(crate) fn pam_histogram(path: &str, band: usize) -> Option<Histogram> {
+    if crate::config::sidecars_disabled() {
+        return None;
+    }
     let xml = std::fs::read_to_string(format!("{path}.aux.xml")).ok()?;
     let start = xml.find(&format!("<PAMRasterBand band=\"{band}\""))?;
     let block = &xml[start..];
