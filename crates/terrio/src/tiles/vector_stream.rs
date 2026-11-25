@@ -16,9 +16,9 @@ use super::clip::{self, Pt, Rect};
 use super::mvt::{MvtFeature, MvtLayer, MvtValue};
 use super::pyramid::{SpillSink, TileSink};
 use super::vector::{
-    Crossing, LayerStats, TileFrame, add_attr_stat, collect_points, double_value, encode_for_tile, encode_limited_gz,
-    encode_polygons_for_tile, int_value, layer_metadata_json, metadata_items_parts, parse_layer_conf, polygon_rings, resolve_layer_zooms,
-    tile_dim,
+    Crossing, LayerMetaInput, LayerStats, TileFrame, add_attr_stat, build_merged_layer_metadata, collect_points, double_value,
+    encode_for_tile, encode_limited_gz, encode_polygons_for_tile, int_value, metadata_items_parts, parse_layer_conf, polygon_rings,
+    resolve_layer_zooms, tile_dim,
 };
 use super::{MAX_GM, TileWriteOptions, mbtiles, pmtiles};
 use crate::formats::VectorDriver;
@@ -37,6 +37,16 @@ const DEFAULT_RUN_BUDGET_BYTES: usize = 128 << 20;
 
 /// Maximum number of sorted run files opened simultaneously during K-way merge.
 const DEFAULT_MAX_MERGE_WAY: usize = 128;
+
+/// Maximum number of features processed in one parallel sub-batch before spilling.
+const PARALLEL_SUBBATCH_FEATURES: usize = 2048;
+
+/// Maximum estimated tile intersections buffered in one parallel sub-batch before spilling.
+const PARALLEL_SUBBATCH_TILES: u64 = 16_384;
+
+/// Tile-intersection threshold above which a single feature streams directly into the run spiller
+/// with per-tile spill backpressure instead of buffering all its records in a parallel worker.
+const HUGE_FEATURE_TILES: u64 = 1024;
 
 /// Maximum number of tiles batched together for parallel MVT + gzip encoding.
 const TILE_ENCODE_BATCH: usize = 256;
@@ -146,7 +156,13 @@ fn create_temp_run_file(output: &str) -> Result<(PathBuf, File)> {
     let name = out.file_name().and_then(|s| s.to_str()).unwrap_or("tiles");
     let pid = crate::process_id();
     let seq = RUN_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-    let path = out.with_file_name(format!(".{name}.terrio-vrun-{pid}-{seq}.tmp"));
+    let file_name = format!(".{name}.terrio-vrun-{pid}-{seq}.tmp");
+    let dir = match out.parent() {
+        Some(p) if !p.as_os_str().is_empty() && p.exists() => p.to_path_buf(),
+        Some(p) if p.as_os_str().is_empty() => PathBuf::from("."),
+        _ => std::env::temp_dir(),
+    };
+    let path = dir.join(file_name);
     let _ = std::fs::remove_file(&path);
     let file = OpenOptions::new().read(true).write(true).create_new(true).open(&path)?;
     Ok((path, file))
@@ -397,17 +413,188 @@ struct LayerPlan {
     feature_count_seen: usize,
 }
 
-/// Streams vector layers chunk by chunk into a PMTiles archive, MBTiles archive, or MVT tile
-/// directory using bounded memory via external-sort run files and [`SpillSink`].
-pub(crate) struct VectorTileStreamWriter {
-    output: String,
-    driver: VectorDriver,
-    options: TileWriteOptions,
-    web: crate::crs::SpatialRef,
-    layers: Vec<LayerPlan>,
-    global_min: u8,
-    global_max: u8,
+/// Computes a zero-allocation bounding box matching `collect_points` (exterior rings only for
+/// polygons).
+fn geometry_bbox(g: &Geometry) -> Option<Rect> {
+    let mut b: Option<Rect> = None;
+    let mut extend = |x: f64, y: f64| {
+        b = Some(match b {
+            Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+            None => (x, y, x, y),
+        });
+    };
+    match g {
+        Geometry::Point(c) => extend(c.x, c.y),
+        Geometry::MultiPoint(cs) | Geometry::LineString(cs) => {
+            for c in cs {
+                extend(c.x, c.y);
+            }
+        }
+        Geometry::MultiLineString(ls) => {
+            for c in ls.iter().flatten() {
+                extend(c.x, c.y);
+            }
+        }
+        Geometry::Polygon { exterior, .. } => {
+            for c in &exterior.0 {
+                extend(c.x, c.y);
+            }
+        }
+        Geometry::MultiPolygon(polys) => {
+            for (exterior, _) in polys {
+                for c in &exterior.0 {
+                    extend(c.x, c.y);
+                }
+            }
+        }
+        Geometry::GeometryCollection(gs) => {
+            for child in gs {
+                if let Some((x0, y0, x1, y1)) = geometry_bbox(child) {
+                    extend(x0, y0);
+                    extend(x1, y1);
+                }
+            }
+        }
+    }
+    b
+}
+
+/// Estimates how many `(z, tx, ty)` tiles a feature intersects across `layer_min..=layer_max`.
+fn feature_tile_estimate(g: &Geometry, layer_min: u8, layer_max: u8, o: &TileWriteOptions) -> u64 {
+    let part_estimate = |part: &Geometry| -> u64 {
+        let Some(bb) = geometry_bbox(part) else {
+            return 0;
+        };
+        let mut total = 0u64;
+        for z in layer_min..=layer_max {
+            let dim = tile_dim(z);
+            let buffer = dim * o.buffer as f64 / o.extent as f64;
+            let max_tile = (1u64 << z) as i64 - 1;
+            let tx0 = (((bb.0 + MAX_GM - buffer) / dim) as i64).max(0);
+            let ty0 = (((MAX_GM - bb.3 - buffer) / dim) as i64).max(0);
+            let tx1 = (((bb.2 + MAX_GM + buffer) / dim) as i64).min(max_tile);
+            let ty1 = (((MAX_GM - bb.1 + buffer) / dim) as i64).min(max_tile);
+            if tx1 >= tx0 && ty1 >= ty0 {
+                let nx = (tx1 - tx0 + 1) as u64;
+                let ny = (ty1 - ty0 + 1) as u64;
+                total = total.saturating_add(nx.saturating_mul(ny));
+            }
+        }
+        total
+    };
+    match g {
+        Geometry::GeometryCollection(gs) => gs.iter().fold(0u64, |acc, part| acc.saturating_add(part_estimate(part))),
+        other => part_estimate(other),
+    }
+}
+
+struct FeatureOutcome {
+    counted: bool,
     env: Option<Rect>,
+    geom_counts: [usize; 4],
+}
+
+/// Encodes all tile intersections for a single feature, passing each spilled record to `emit`.
+#[allow(clippy::too_many_arguments)]
+fn encode_feature_tiles(
+    f: &Feature,
+    feature_index: usize,
+    layer_u16: u16,
+    layer_min: u8,
+    layer_max: u8,
+    layer_name: &str,
+    schema: &Schema,
+    o: &TileWriteOptions,
+    pts: &mut Vec<Pt>,
+    mut emit: impl FnMut(SpillRecord) -> Result<()>,
+) -> Result<FeatureOutcome> {
+    let Some(g) = &f.geometry else {
+        return Ok(FeatureOutcome { counted: false, env: None, geom_counts: [0; 4] });
+    };
+    let parts: Vec<&Geometry> = match g {
+        Geometry::GeometryCollection(gs) => gs.iter().collect(),
+        g => vec![g],
+    };
+    let mut counted = false;
+    let mut f_env: Option<Rect> = None;
+    let mut geom_counts = [0usize; 4];
+    let mut tags_bytes: Option<Vec<u8>> = None;
+
+    for g in parts {
+        let polys = polygon_rings(g);
+        let bb = match &polys {
+            // Exterior rings only, matching `collect_points`.
+            Some(ps) => match clip::bbox(ps.iter().filter_map(|p| p.first()).flatten()) {
+                Some(b) => b,
+                None => continue,
+            },
+            None => {
+                pts.clear();
+                collect_points(g, pts);
+                match clip::bbox(pts.iter()) {
+                    Some(b) => b,
+                    None => continue,
+                }
+            }
+        };
+        let mut crossings: Option<Vec<Crossing>> = None;
+        f_env = Some(match f_env {
+            Some(e) => (e.0.min(bb.0), e.1.min(bb.1), e.2.max(bb.2), e.3.max(bb.3)),
+            None => bb,
+        });
+        counted = true;
+        let tags = tags_bytes.get_or_insert_with(|| encode_compact_tags(schema, f));
+        for z in layer_min..=layer_max {
+            let dim = tile_dim(z);
+            let buffer = dim * o.buffer as f64 / o.extent as f64;
+            let max_tile = (1u64 << z) as i64 - 1;
+            let tx0 = (((bb.0 + MAX_GM - buffer) / dim) as i64).max(0);
+            let ty0 = (((MAX_GM - bb.3 - buffer) / dim) as i64).max(0);
+            let tx1 = (((bb.2 + MAX_GM + buffer) / dim) as i64).min(max_tile);
+            let ty1 = (((MAX_GM - bb.1 + buffer) / dim) as i64).min(max_tile);
+            let simpl = if z == layer_max { o.simplification_max_zoom.unwrap_or(o.simplification) } else { o.simplification };
+            let tol = dim / o.extent as f64 * simpl;
+            for tx in tx0..=tx1 {
+                for ty in ty0..=ty1 {
+                    let frame = TileFrame::new(z, tx as u32, ty as u32);
+                    let encoded = match &polys {
+                        Some(ps) => encode_polygons_for_tile(ps, bb, &mut crossings, &frame, o.extent, buffer, tol),
+                        None => encode_for_tile(g, &frame, o.extent, buffer, tol, &[]),
+                    };
+                    let encoded = match encoded {
+                        Ok(v) => v,
+                        Err(Error::InvalidData(message)) => {
+                            return Err(Error::InvalidData(format!(
+                                "layer {:?}, feature {} (index {}), tile {z}/{tx}/{ty}: {message}",
+                                layer_name, f.fid, feature_index
+                            )));
+                        }
+                        Err(other) => return Err(other),
+                    };
+                    let Some((geom_type, geometry)) = encoded else {
+                        continue;
+                    };
+                    geom_counts[geom_type as usize] += 1;
+                    let tile_id = pmtiles::zxy_to_tile_id(z, tx as u32, ty as u32);
+                    emit(SpillRecord {
+                        tile_id,
+                        layer_idx: layer_u16,
+                        seq: 0,
+                        geom_type: geom_type as u8,
+                        geom_bytes: encode_geom_cmds(&geometry),
+                        tags_bytes: tags.clone(),
+                    })?;
+                }
+            }
+        }
+    }
+    Ok(FeatureOutcome { counted, env: f_env, geom_counts })
+}
+
+/// Manages the bounded in-memory run buffer, sorted temporary run files, and multi-pass K-way
+/// merge compaction.
+struct RunSpiller {
+    output: String,
     next_seq: u64,
     run_buf: Vec<SpillRecord>,
     run_bytes: usize,
@@ -416,239 +603,27 @@ pub(crate) struct VectorTileStreamWriter {
     temp_runs: TempRunFiles,
 }
 
-impl VectorTileStreamWriter {
-    pub(crate) fn create(output: &str, driver: VectorDriver, schemas: &[Layer], o: &TileWriteOptions) -> Result<Self> {
-        let global_min = o.min_zoom.unwrap_or(0);
-        let global_max = o.max_zoom.unwrap_or(5);
-        if global_min > 30 || global_max > 30 {
-            return Err(Error::InvalidArgument(format!("zoom levels must be at most 30 (got {global_min}..={global_max})")));
-        }
-        if global_min > global_max {
-            return Err(Error::InvalidArgument(format!("the minimum zoom level {global_min} is above the maximum {global_max}")));
-        }
-        if driver == VectorDriver::MVT && Path::new(output).exists() {
-            return Err(Error::InvalidArgument(format!("'{output}' already exists")));
-        }
-        if schemas.len() > u16::MAX as usize {
-            return Err(Error::InvalidArgument(format!("at most {} vector tile layers are supported", u16::MAX)));
-        }
-        let layer_confs = parse_layer_conf(o.conf.as_deref())?;
-        let web = crate::crs::SpatialRef::from_epsg(3857)?;
-        let mut layers = Vec::with_capacity(schemas.len());
-        for schema_layer in schemas {
-            let conf = layer_confs.get(&schema_layer.name);
-            let (min_zoom, max_zoom) = resolve_layer_zooms(&schema_layer.name, global_min, global_max, conf)?;
-            let target_name = conf.and_then(|c| c.target_name.clone()).unwrap_or_else(|| schema_layer.name.clone());
-            let description = conf.and_then(|c| c.description.clone()).unwrap_or_default();
-            let src_crs = crate::crs::SpatialRef::from_layer(schema_layer);
-            let needs_reproject = !src_crs.is_unknown() && src_crs.epsg != Some(3857);
-            let field_names = schema_layer.schema.fields().iter().map(|f| f.name.clone()).collect();
-            layers.push(LayerPlan {
-                src_name: schema_layer.name.clone(),
-                target_name,
-                description,
-                min_zoom,
-                max_zoom,
-                needs_reproject,
-                schema: schema_layer.schema.clone(),
-                field_names,
-                stats: LayerStats::default(),
-                feature_count_seen: 0,
-            });
-        }
-        Ok(Self {
-            output: output.to_string(),
-            driver,
-            options: o.clone(),
-            web,
-            layers,
-            global_min,
-            global_max,
-            env: None,
+impl RunSpiller {
+    fn new(output: String) -> Self {
+        Self {
+            output,
             next_seq: 0,
             run_buf: Vec::new(),
             run_bytes: 0,
             run_budget: DEFAULT_RUN_BUDGET_BYTES,
             max_merge_way: DEFAULT_MAX_MERGE_WAY,
             temp_runs: TempRunFiles::new(),
-        })
+        }
     }
 
-    /// Overrides the spill run budget and merge fan-in (used in tests to exercise multi-run and
-    /// multi-pass external merge on small datasets).
-    #[cfg(test)]
-    pub(crate) fn with_spill_limits(mut self, run_budget: usize, max_merge_way: usize) -> Self {
-        self.run_budget = run_budget.max(1);
-        self.max_merge_way = max_merge_way.max(2);
-        self
-    }
-
-    /// Processes one chunk of features for `layer_idx` in parallel and spills sorted runs when the
-    /// in-memory budget is reached.
-    pub(crate) fn write_chunk(&mut self, layer_idx: usize, mut chunk: Layer) -> Result<()> {
-        if chunk.features.is_empty() {
-            return Ok(());
+    fn push(&mut self, mut rec: SpillRecord) -> Result<()> {
+        rec.seq = self.next_seq;
+        self.next_seq += 1;
+        self.run_bytes += rec.approx_bytes();
+        self.run_buf.push(rec);
+        if self.run_bytes >= self.run_budget {
+            self.flush_run()?;
         }
-        let needs_reproject = self.layers[layer_idx].needs_reproject;
-        if needs_reproject {
-            chunk = crate::vector::reproject_layer_owned(chunk, &self.web)?;
-        }
-
-        let plan = &self.layers[layer_idx];
-        let layer_min = plan.min_zoom;
-        let layer_max = plan.max_zoom;
-        let layer_name = plan.src_name.as_str();
-        let schema = &plan.schema;
-        let base_feature_index = plan.feature_count_seen;
-        let o = &self.options;
-        let layer_u16 = layer_idx as u16;
-
-        // Process features in parallel while keeping per-feature output in exact feature order.
-        let n = chunk.features.len();
-        let stride = crate::par::chunk_len(n, 32);
-        struct FeatureResult {
-            counted: bool,
-            env: Option<Rect>,
-            geom_counts: [usize; 4],
-            records: Vec<SpillRecord>,
-        }
-        let mut results: Vec<Result<Vec<FeatureResult>>> = (0..n.div_ceil(stride)).map(|_| Ok(Vec::new())).collect();
-        crate::par::chunks_mut(&mut results, 1, |chunk_idx, slot| {
-            let start = chunk_idx * stride;
-            let end = (start + stride).min(n);
-            let mut local = Vec::with_capacity(end - start);
-            let mut pts: Vec<Pt> = Vec::new();
-            for (offset, f) in chunk.features.iter().enumerate().take(end).skip(start) {
-                let feature_index = base_feature_index + offset;
-                let Some(g) = &f.geometry else {
-                    local.push(FeatureResult { counted: false, env: None, geom_counts: [0; 4], records: Vec::new() });
-                    continue;
-                };
-                let parts: Vec<&Geometry> = match g {
-                    Geometry::GeometryCollection(gs) => gs.iter().collect(),
-                    g => vec![g],
-                };
-                let mut counted = false;
-                let mut f_env: Option<Rect> = None;
-                let mut geom_counts = [0usize; 4];
-                let mut records = Vec::new();
-                let mut tags_bytes: Option<Vec<u8>> = None;
-                let mut err: Option<Error> = None;
-
-                'parts: for g in parts {
-                    let polys = polygon_rings(g);
-                    let bb = match &polys {
-                        Some(ps) => match clip::bbox(ps.iter().flatten().flatten()) {
-                            Some(b) => b,
-                            None => continue,
-                        },
-                        None => {
-                            pts.clear();
-                            collect_points(g, &mut pts);
-                            match clip::bbox(pts.iter()) {
-                                Some(b) => b,
-                                None => continue,
-                            }
-                        }
-                    };
-                    let mut crossings: Option<Vec<Crossing>> = None;
-                    f_env = Some(match f_env {
-                        Some(e) => (e.0.min(bb.0), e.1.min(bb.1), e.2.max(bb.2), e.3.max(bb.3)),
-                        None => bb,
-                    });
-                    counted = true;
-                    let tags = tags_bytes.get_or_insert_with(|| encode_compact_tags(schema, f));
-                    for z in layer_min..=layer_max {
-                        let dim = tile_dim(z);
-                        let buffer = dim * o.buffer as f64 / o.extent as f64;
-                        let max_tile = (1u64 << z) as i64 - 1;
-                        let tx0 = (((bb.0 + MAX_GM - buffer) / dim) as i64).max(0);
-                        let ty0 = (((MAX_GM - bb.3 - buffer) / dim) as i64).max(0);
-                        let tx1 = (((bb.2 + MAX_GM + buffer) / dim) as i64).min(max_tile);
-                        let ty1 = (((MAX_GM - bb.1 + buffer) / dim) as i64).min(max_tile);
-                        let simpl = if z == layer_max { o.simplification_max_zoom.unwrap_or(o.simplification) } else { o.simplification };
-                        let tol = dim / o.extent as f64 * simpl;
-                        for tx in tx0..=tx1 {
-                            for ty in ty0..=ty1 {
-                                let frame = TileFrame::new(z, tx as u32, ty as u32);
-                                let encoded = match &polys {
-                                    Some(ps) => encode_polygons_for_tile(ps, bb, &mut crossings, &frame, o.extent, buffer, tol),
-                                    None => encode_for_tile(g, &frame, o.extent, buffer, tol, &[]),
-                                };
-                                let encoded = match encoded {
-                                    Ok(v) => v,
-                                    Err(Error::InvalidData(message)) => {
-                                        err = Some(Error::InvalidData(format!(
-                                            "layer {:?}, feature {} (index {}), tile {z}/{tx}/{ty}: {message}",
-                                            layer_name, f.fid, feature_index
-                                        )));
-                                        break 'parts;
-                                    }
-                                    Err(other) => {
-                                        err = Some(other);
-                                        break 'parts;
-                                    }
-                                };
-                                let Some((geom_type, geometry)) = encoded else {
-                                    continue;
-                                };
-                                geom_counts[geom_type as usize] += 1;
-                                let tile_id = pmtiles::zxy_to_tile_id(z, tx as u32, ty as u32);
-                                records.push(SpillRecord {
-                                    tile_id,
-                                    layer_idx: layer_u16,
-                                    seq: 0,
-                                    geom_type: geom_type as u8,
-                                    geom_bytes: encode_geom_cmds(&geometry),
-                                    tags_bytes: tags.clone(),
-                                });
-                            }
-                        }
-                    }
-                }
-                if let Some(e) = err {
-                    slot[0] = Err(e);
-                    return;
-                }
-                local.push(FeatureResult { counted, env: f_env, geom_counts, records });
-            }
-            slot[0] = Ok(local);
-        });
-
-        // Merge stats and records in strict deterministic feature order.
-        let mut feature_cursor = 0usize;
-        for batch_res in results {
-            for fr in batch_res? {
-                if fr.counted {
-                    let f = &chunk.features[feature_cursor];
-                    let stats = &mut self.layers[layer_idx].stats;
-                    stats.count += 1;
-                    for (i, v) in f.attributes.iter().enumerate() {
-                        add_attr_stat(stats, i, v);
-                    }
-                    for g in 0..4 {
-                        stats.geom_counts[g] += fr.geom_counts[g];
-                    }
-                }
-                if let Some(bb) = fr.env {
-                    self.env = Some(match self.env {
-                        Some(e) => (e.0.min(bb.0), e.1.min(bb.1), e.2.max(bb.2), e.3.max(bb.3)),
-                        None => bb,
-                    });
-                }
-                for mut rec in fr.records {
-                    rec.seq = self.next_seq;
-                    self.next_seq += 1;
-                    self.run_bytes += rec.approx_bytes();
-                    self.run_buf.push(rec);
-                }
-                feature_cursor += 1;
-                if self.run_bytes >= self.run_budget {
-                    self.flush_run()?;
-                }
-            }
-        }
-        self.layers[layer_idx].feature_count_seen += n;
         Ok(())
     }
 
@@ -711,23 +686,252 @@ impl VectorTileStreamWriter {
         }
         Ok(())
     }
+}
+
+/// Streams vector layers chunk by chunk into a PMTiles archive, MBTiles archive, or MVT tile
+/// directory using bounded memory via external-sort run files and [`SpillSink`].
+pub(crate) struct VectorTileStreamWriter {
+    driver: VectorDriver,
+    options: TileWriteOptions,
+    web: crate::crs::SpatialRef,
+    layers: Vec<LayerPlan>,
+    global_min: u8,
+    global_max: u8,
+    env: Option<Rect>,
+    spiller: RunSpiller,
+}
+
+impl VectorTileStreamWriter {
+    pub(crate) fn create(output: &str, driver: VectorDriver, schemas: &[Layer], o: &TileWriteOptions) -> Result<Self> {
+        let global_min = o.min_zoom.unwrap_or(0);
+        let global_max = o.max_zoom.unwrap_or(5);
+        if global_min > 30 || global_max > 30 {
+            return Err(Error::InvalidArgument(format!("zoom levels must be at most 30 (got {global_min}..={global_max})")));
+        }
+        if global_min > global_max {
+            return Err(Error::InvalidArgument(format!("the minimum zoom level {global_min} is above the maximum {global_max}")));
+        }
+        if driver == VectorDriver::MVT && Path::new(output).exists() {
+            return Err(Error::InvalidArgument(format!("'{output}' already exists")));
+        }
+        if schemas.len() > u16::MAX as usize {
+            return Err(Error::InvalidArgument(format!("at most {} vector tile layers are supported", u16::MAX)));
+        }
+        let layer_confs = parse_layer_conf(o.conf.as_deref())?;
+        let web = crate::crs::SpatialRef::from_epsg(3857)?;
+        let mut layers = Vec::with_capacity(schemas.len());
+        for schema_layer in schemas {
+            let conf = layer_confs.get(&schema_layer.name);
+            let (min_zoom, max_zoom) = resolve_layer_zooms(&schema_layer.name, global_min, global_max, conf)?;
+            let target_name = conf.and_then(|c| c.target_name.clone()).unwrap_or_else(|| schema_layer.name.clone());
+            let description = conf.and_then(|c| c.description.clone()).unwrap_or_default();
+            let src_crs = crate::crs::SpatialRef::from_layer(schema_layer);
+            let needs_reproject = !src_crs.is_unknown() && src_crs.epsg != Some(3857);
+            let field_names = schema_layer.schema.fields().iter().map(|f| f.name.clone()).collect();
+            layers.push(LayerPlan {
+                src_name: schema_layer.name.clone(),
+                target_name,
+                description,
+                min_zoom,
+                max_zoom,
+                needs_reproject,
+                schema: schema_layer.schema.clone(),
+                field_names,
+                stats: LayerStats::default(),
+                feature_count_seen: 0,
+            });
+        }
+        Ok(Self {
+            driver,
+            options: o.clone(),
+            web,
+            layers,
+            global_min,
+            global_max,
+            env: None,
+            spiller: RunSpiller::new(output.to_string()),
+        })
+    }
+
+    /// Overrides the spill run budget and merge fan-in (used in tests to exercise multi-run and
+    /// multi-pass external merge on small datasets).
+    #[cfg(test)]
+    pub(crate) fn with_spill_limits(mut self, run_budget: usize, max_merge_way: usize) -> Self {
+        self.spiller.run_budget = run_budget.max(1);
+        self.spiller.max_merge_way = max_merge_way.max(2);
+        self
+    }
+
+    /// Applies one feature's stats and envelope after its tile records have been encoded cleanly.
+    fn record_feature_outcome(&mut self, layer_idx: usize, f: &Feature, outcome: &FeatureOutcome) {
+        if outcome.counted {
+            let stats = &mut self.layers[layer_idx].stats;
+            stats.count += 1;
+            for (i, v) in f.attributes.iter().enumerate() {
+                add_attr_stat(stats, i, v);
+            }
+            for g in 0..4 {
+                stats.geom_counts[g] += outcome.geom_counts[g];
+            }
+        }
+        if let Some(bb) = outcome.env {
+            self.env = Some(match self.env {
+                Some(e) => (e.0.min(bb.0), e.1.min(bb.1), e.2.max(bb.2), e.3.max(bb.3)),
+                None => bb,
+            });
+        }
+    }
+
+    /// Processes one chunk of features for `layer_idx` in bounded parallel sub-batches (or direct
+    /// streaming spill for features spanning many tiles) and spills sorted runs when the in-memory
+    /// budget is reached.
+    pub(crate) fn write_chunk(&mut self, layer_idx: usize, mut chunk: Layer) -> Result<()> {
+        if chunk.features.is_empty() {
+            return Ok(());
+        }
+        if self.layers[layer_idx].needs_reproject {
+            chunk = crate::vector::reproject_layer_owned(chunk, &self.web)?;
+        }
+
+        let n = chunk.features.len();
+        let layer_u16 = layer_idx as u16;
+        let mut pos = 0usize;
+        let mut pts: Vec<Pt> = Vec::new();
+
+        while pos < n {
+            let layer_min = self.layers[layer_idx].min_zoom;
+            let layer_max = self.layers[layer_idx].max_zoom;
+            let est = chunk.features[pos].geometry.as_ref().map_or(0, |g| feature_tile_estimate(g, layer_min, layer_max, &self.options));
+
+            if est > HUGE_FEATURE_TILES {
+                // Stream tile records directly into the run spiller so a single wide feature at
+                // high zoom cannot spike RAM beyond `run_budget`.
+                let feature_index = self.layers[layer_idx].feature_count_seen;
+                let f = &chunk.features[pos];
+                let outcome = {
+                    let plan = &self.layers[layer_idx];
+                    encode_feature_tiles(
+                        f,
+                        feature_index,
+                        layer_u16,
+                        layer_min,
+                        layer_max,
+                        &plan.src_name,
+                        &plan.schema,
+                        &self.options,
+                        &mut pts,
+                        |rec| self.spiller.push(rec),
+                    )?
+                };
+                self.record_feature_outcome(layer_idx, f, &outcome);
+                self.layers[layer_idx].feature_count_seen += 1;
+                pos += 1;
+                continue;
+            }
+
+            // Gather a bounded contiguous slice of normal features to encode in parallel.
+            let mut batch_end = pos + 1;
+            let mut batch_tiles = est;
+            while batch_end < n && (batch_end - pos) < PARALLEL_SUBBATCH_FEATURES {
+                let next_est = chunk.features[batch_end]
+                    .geometry
+                    .as_ref()
+                    .map_or(0, |g| feature_tile_estimate(g, layer_min, layer_max, &self.options));
+                if next_est > HUGE_FEATURE_TILES || batch_tiles.saturating_add(next_est) > PARALLEL_SUBBATCH_TILES {
+                    break;
+                }
+                batch_tiles = batch_tiles.saturating_add(next_est);
+                batch_end += 1;
+            }
+
+            let slice = &chunk.features[pos..batch_end];
+            let m = slice.len();
+            let stride = crate::par::chunk_len(m, 32);
+            let base_feature_index = self.layers[layer_idx].feature_count_seen;
+            struct FeatureResult {
+                outcome: FeatureOutcome,
+                records: Vec<SpillRecord>,
+            }
+            let mut results: Vec<Result<Vec<FeatureResult>>> = (0..m.div_ceil(stride)).map(|_| Ok(Vec::new())).collect();
+            {
+                let plan = &self.layers[layer_idx];
+                let layer_name = plan.src_name.as_str();
+                let schema = &plan.schema;
+                let o = &self.options;
+                crate::par::chunks_mut(&mut results, 1, |chunk_idx, slot| {
+                    let start = chunk_idx * stride;
+                    let end = (start + stride).min(m);
+                    let mut local = Vec::with_capacity(end - start);
+                    let mut local_pts: Vec<Pt> = Vec::new();
+                    for (offset, f) in slice.iter().enumerate().take(end).skip(start) {
+                        let mut records = Vec::new();
+                        match encode_feature_tiles(
+                            f,
+                            base_feature_index + offset,
+                            layer_u16,
+                            layer_min,
+                            layer_max,
+                            layer_name,
+                            schema,
+                            o,
+                            &mut local_pts,
+                            |rec| {
+                                records.push(rec);
+                                Ok(())
+                            },
+                        ) {
+                            Ok(outcome) => local.push(FeatureResult { outcome, records }),
+                            Err(e) => {
+                                slot[0] = Err(e);
+                                return;
+                            }
+                        }
+                    }
+                    slot[0] = Ok(local);
+                });
+            }
+
+            // Verify every worker succeeded before mutating any writer state.
+            let batches: Vec<Vec<FeatureResult>> = results.into_iter().collect::<Result<Vec<_>>>()?;
+
+            // Merge stats and records in strict deterministic feature order.
+            let mut feature_cursor = pos;
+            for batch in batches {
+                for fr in batch {
+                    let f = &chunk.features[feature_cursor];
+                    self.record_feature_outcome(layer_idx, f, &fr.outcome);
+                    for rec in fr.records {
+                        self.spiller.push(rec)?;
+                    }
+                    feature_cursor += 1;
+                }
+            }
+            self.layers[layer_idx].feature_count_seen += m;
+            pos = batch_end;
+        }
+        Ok(())
+    }
 
     fn build_metadata(&self) -> Result<(serde_json::Value, [f64; 4], u8, u8)> {
         let (x0, y0, x1, y1) = self.env.ok_or_else(|| Error::InvalidArgument("no geometries to write as vector tiles".into()))?;
         let (lon0, lat0) = super::mercator_to_lonlat(x0, y0);
         let (lon1, lat1) = super::mercator_to_lonlat(x1, y1);
-        let mut vector_layers = Vec::with_capacity(self.layers.len());
-        let mut stat_layers = Vec::with_capacity(self.layers.len());
         let mut archive_min: Option<u8> = None;
         let mut archive_max: Option<u8> = None;
+        let mut meta_inputs = Vec::with_capacity(self.layers.len());
         for plan in &self.layers {
             archive_min = Some(archive_min.map_or(plan.min_zoom, |m| m.min(plan.min_zoom)));
             archive_max = Some(archive_max.map_or(plan.max_zoom, |m| m.max(plan.max_zoom)));
-            let (vl, sl) =
-                layer_metadata_json(&plan.target_name, &plan.description, plan.min_zoom, plan.max_zoom, &plan.schema, &plan.stats);
-            vector_layers.push(vl);
-            stat_layers.push(sl);
+            meta_inputs.push(LayerMetaInput {
+                target_name: &plan.target_name,
+                description: &plan.description,
+                min_zoom: plan.min_zoom,
+                max_zoom: plan.max_zoom,
+                schema: &plan.schema,
+                stats: &plan.stats,
+            });
         }
+        let (vector_layers, stat_layers) = build_merged_layer_metadata(&meta_inputs);
         let json = json!({
             "vector_layers": vector_layers,
             "tilestats": { "layerCount": stat_layers.len(), "layers": stat_layers },
@@ -760,24 +964,31 @@ impl VectorTileStreamWriter {
     /// archive or MVT directory.
     pub(crate) fn finish(mut self) -> Result<()> {
         let (meta_json, bounds, min_zoom, max_zoom) = self.build_metadata()?;
-        let mut stream = if self.temp_runs.paths.is_empty() {
-            self.run_buf.sort_unstable_by_key(SpillRecord::key);
-            RecordStream::Memory(std::mem::take(&mut self.run_buf).into_iter())
+        let mut stream = if self.spiller.temp_runs.paths.is_empty() {
+            self.spiller.run_buf.sort_unstable_by_key(SpillRecord::key);
+            RecordStream::Memory(std::mem::take(&mut self.spiller.run_buf).into_iter())
         } else {
-            self.flush_run()?;
-            self.compact_runs()?;
-            RecordStream::Merged(KWayMerger::open(&self.temp_runs.paths)?)
+            self.spiller.flush_run()?;
+            self.spiller.compact_runs()?;
+            RecordStream::Merged(KWayMerger::open(&self.spiller.temp_runs.paths)?)
         };
 
-        let name = Path::new(&self.output).file_stem().and_then(|s| s.to_str()).unwrap_or("tiles").to_string();
+        let out_path = Path::new(&self.spiller.output);
+        let name = match self.driver {
+            VectorDriver::MVT => out_path.file_name(),
+            _ => out_path.file_stem(),
+        }
+        .and_then(|s| s.to_str())
+        .unwrap_or("tiles")
+        .to_string();
         let md = metadata_items_parts(bounds, min_zoom, max_zoom, &self.options, &name);
 
         match self.driver {
             VectorDriver::PMTiles => {
-                let mut spill = SpillSink::beside(&self.output)?;
+                let mut spill = SpillSink::beside(&self.spiller.output)?;
                 self.encode_stream(&mut stream, |z, x, y, gz| spill.put(z, x, y, gz))?;
                 drop(stream);
-                self.temp_runs.remove_and_clear();
+                self.spiller.temp_runs.remove_and_clear();
 
                 let mut json_map: serde_json::Map<String, serde_json::Value> =
                     md.into_iter().map(|(k, v)| (k, serde_json::Value::String(v))).collect();
@@ -796,7 +1007,7 @@ impl VectorTileStreamWriter {
                 };
                 let metadata_bytes = serde_json::Value::Object(json_map).to_string().into_bytes();
                 let tiles = std::mem::take(&mut spill.tiles);
-                let mut out = BufWriter::with_capacity(RUN_WRITE_BUF, File::create(&self.output)?);
+                let mut out = BufWriter::with_capacity(RUN_WRITE_BUF, File::create(&self.spiller.output)?);
                 let written = (|| -> Result<()> {
                     pmtiles::write_archive_spilled(tiles, spill.file()?, &metadata_bytes, &params, &mut out)?;
                     out.flush()?;
@@ -804,7 +1015,7 @@ impl VectorTileStreamWriter {
                 })();
                 drop(out);
                 if written.is_err() {
-                    let _ = std::fs::remove_file(&self.output);
+                    let _ = std::fs::remove_file(&self.spiller.output);
                 }
                 written
             }
@@ -815,27 +1026,32 @@ impl VectorTileStreamWriter {
                     Ok(())
                 })?;
                 drop(stream);
-                self.temp_runs.remove_and_clear();
+                self.spiller.temp_runs.remove_and_clear();
 
                 let mut md = md;
                 md.push(("scheme".into(), "tms".into()));
                 md.push(("json".into(), serde_json::to_string_pretty(&meta_json).unwrap_or_default()));
                 let bytes = mbtiles::write(&md, tiles)?;
-                let mut out = File::create(&self.output)?;
+                let mut out = File::create(&self.spiller.output)?;
                 let written = out.write_all(&bytes);
                 drop(out);
                 if written.is_err() {
-                    let _ = std::fs::remove_file(&self.output);
+                    let _ = std::fs::remove_file(&self.spiller.output);
                 }
                 written?;
                 Ok(())
             }
             VectorDriver::MVT => {
-                let root = Path::new(&self.output);
-                if root.exists() {
-                    return Err(Error::InvalidArgument(format!("'{}' already exists", root.display())));
+                let root = Path::new(&self.spiller.output);
+                if let Some(parent) = root.parent().filter(|p| !p.as_os_str().is_empty()) {
+                    std::fs::create_dir_all(parent)?;
                 }
-                std::fs::create_dir_all(root)?;
+                if let Err(e) = std::fs::create_dir(root) {
+                    if e.kind() == std::io::ErrorKind::AlreadyExists {
+                        return Err(Error::InvalidArgument(format!("'{}' already exists", root.display())));
+                    }
+                    return Err(e.into());
+                }
                 let written = (|| -> Result<()> {
                     let mut md_map: serde_json::Map<String, serde_json::Value> =
                         md.into_iter().map(|(k, v)| (k, serde_json::Value::String(v))).collect();
@@ -853,7 +1069,7 @@ impl VectorTileStreamWriter {
                     Ok(())
                 })();
                 drop(stream);
-                self.temp_runs.remove_and_clear();
+                self.spiller.temp_runs.remove_and_clear();
                 if written.is_err() {
                     let _ = std::fs::remove_dir_all(root);
                 }
@@ -866,14 +1082,16 @@ impl VectorTileStreamWriter {
     /// Consumes sorted records grouped by `tile_id`, encodes tiles in parallel batches, and hands
     /// each compressed `(z, x, y, gz_bytes)` tile to `emit`.
     fn encode_stream(&self, stream: &mut RecordStream, mut emit: impl FnMut(u8, u32, u32, Vec<u8>) -> Result<()>) -> Result<()> {
-        let mut pending_batch: Vec<(u64, Vec<MvtLayer>)> = Vec::with_capacity(TILE_ENCODE_BATCH);
+        let max_features = self.options.max_features;
+        let mut pending_batch: Vec<(u64, Vec<MvtLayer>, bool)> = Vec::with_capacity(TILE_ENCODE_BATCH);
         let mut batch_bytes = 0usize;
         let mut cur_id: Option<u64> = None;
         let mut cur_recs: Vec<SpillRecord> = Vec::new();
         let mut cur_bytes = 0usize;
+        let mut cur_truncated = false;
 
         let flush_batch =
-            |batch: &mut Vec<(u64, Vec<MvtLayer>)>, emit: &mut dyn FnMut(u8, u32, u32, Vec<u8>) -> Result<()>| -> Result<()> {
+            |batch: &mut Vec<(u64, Vec<MvtLayer>, bool)>, emit: &mut dyn FnMut(u8, u32, u32, Vec<u8>) -> Result<()>| -> Result<()> {
                 if batch.is_empty() {
                     return Ok(());
                 }
@@ -882,7 +1100,7 @@ impl VectorTileStreamWriter {
                 struct TileJob {
                     orig_idx: usize,
                     weight: usize,
-                    input: Option<(u64, Vec<MvtLayer>)>,
+                    input: Option<(u64, Vec<MvtLayer>, bool)>,
                     output: Option<Result<(u64, Vec<u8>)>>,
                 }
                 // Schedule largest tiles first across Rayon threads to avoid straggler tail latency,
@@ -898,8 +1116,8 @@ impl VectorTileStreamWriter {
                 work.sort_unstable_by_key(|job| std::cmp::Reverse(job.weight));
                 crate::par::chunks_mut(&mut work, 1, |_chunk_idx, slice| {
                     for job in slice.iter_mut() {
-                        let (tile_id, layers) = job.input.take().expect("owned once");
-                        job.output = Some(encode_limited_gz(layers, o).map(|gz| (tile_id, gz)));
+                        let (tile_id, layers, pre_truncated) = job.input.take().expect("owned once");
+                        job.output = Some(encode_limited_gz(layers, o, pre_truncated).map(|gz| (tile_id, gz)));
                     }
                 });
                 work.sort_unstable_by_key(|job| job.orig_idx);
@@ -915,16 +1133,26 @@ impl VectorTileStreamWriter {
             let rec_bytes = rec.approx_bytes();
             match cur_id {
                 Some(id) if id == rec.tile_id => {
-                    cur_bytes += rec_bytes;
-                    cur_recs.push(rec);
+                    if cur_recs.len() < max_features {
+                        cur_bytes += rec_bytes;
+                        cur_recs.push(rec);
+                    } else {
+                        cur_truncated = true;
+                    }
                 }
                 Some(prev_id) => {
                     let layers = self.build_tile_layers(std::mem::take(&mut cur_recs))?;
-                    pending_batch.push((prev_id, layers));
+                    pending_batch.push((prev_id, layers, cur_truncated));
                     batch_bytes += cur_bytes;
                     cur_id = Some(rec.tile_id);
-                    cur_bytes = rec_bytes;
-                    cur_recs.push(rec);
+                    if max_features > 0 {
+                        cur_bytes = rec_bytes;
+                        cur_recs.push(rec);
+                        cur_truncated = false;
+                    } else {
+                        cur_bytes = 0;
+                        cur_truncated = true;
+                    }
                     if pending_batch.len() >= TILE_ENCODE_BATCH || batch_bytes >= TILE_ENCODE_BATCH_BYTES {
                         flush_batch(&mut pending_batch, &mut emit)?;
                         batch_bytes = 0;
@@ -932,14 +1160,20 @@ impl VectorTileStreamWriter {
                 }
                 None => {
                     cur_id = Some(rec.tile_id);
-                    cur_bytes = rec_bytes;
-                    cur_recs.push(rec);
+                    if max_features > 0 {
+                        cur_bytes = rec_bytes;
+                        cur_recs.push(rec);
+                        cur_truncated = false;
+                    } else {
+                        cur_bytes = 0;
+                        cur_truncated = true;
+                    }
                 }
             }
         }
         if let Some(last_id) = cur_id {
             let layers = self.build_tile_layers(cur_recs)?;
-            pending_batch.push((last_id, layers));
+            pending_batch.push((last_id, layers, cur_truncated));
         }
         flush_batch(&mut pending_batch, &mut emit)?;
         Ok(())
@@ -1141,5 +1375,149 @@ mod tests {
         assert_eq!(z5.len(), 2);
         assert_eq!(z5[0].features.len(), 80);
         assert_eq!(z5[1].features.len(), 30);
+    }
+
+    #[test]
+    fn mvt_dir_name_atomic_collision_and_missing_parent_spill() {
+        let dir = tempfile::tempdir().unwrap();
+        let layers = sample_layers();
+        let o = TileWriteOptions { min_zoom: Some(3), max_zoom: Some(4), ..Default::default() };
+
+        // Missing parent directories must fall back to temp_dir for spill runs and create parents on finish.
+        let mvt_dir = dir.path().join("nested").join("roads.mvt");
+        let mvt_str = mvt_dir.to_str().unwrap();
+        let schemas: Vec<Layer> = layers.iter().map(crate::stream::schema_of).collect();
+        let mut writer = VectorTileStreamWriter::create(mvt_str, VectorDriver::MVT, &schemas, &o).unwrap().with_spill_limits(512, 3);
+        for (li, layer) in layers.iter().enumerate() {
+            writer.write_chunk(li, layer.clone()).unwrap();
+        }
+        writer.finish().unwrap();
+
+        let md_text = std::fs::read_to_string(mvt_dir.join("metadata.json")).unwrap();
+        let md: serde_json::Value = serde_json::from_str(&md_text).unwrap();
+        assert_eq!(md["name"], "roads.mvt", "MVT directory metadata name must keep full file_name");
+
+        // Writing to an existing MVT directory must fail without deleting it.
+        let sentinel = mvt_dir.join("keep.txt");
+        std::fs::write(&sentinel, b"precious").unwrap();
+        let err = VectorTileStreamWriter::create(mvt_str, VectorDriver::MVT, &schemas, &o).err().unwrap();
+        assert!(matches!(err, Error::InvalidArgument(_)));
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"precious");
+    }
+
+    #[test]
+    fn merged_target_name_deduplicates_metadata_and_matches_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let layers = sample_layers();
+        let o = TileWriteOptions {
+            min_zoom: Some(3),
+            max_zoom: Some(5),
+            conf: Some(
+                r#"{
+                    "places": { "target_name": "combined", "minzoom": 3, "maxzoom": 4, "description": "Merged layer" },
+                    "basins": { "target_name": "combined", "minzoom": 4, "maxzoom": 5 }
+                }"#
+                .into(),
+            ),
+            ..Default::default()
+        };
+        let vt = vector::make_tiles(&layers, &o).unwrap();
+        let expected = super::super::write_vector_archive(&vt, &o, "merged", ArchiveKind::PMTiles).unwrap();
+
+        let out_path = dir.path().join("merged.pmtiles");
+        let out_str = out_path.to_str().unwrap();
+        let schemas: Vec<Layer> = layers.iter().map(crate::stream::schema_of).collect();
+        let mut writer = VectorTileStreamWriter::create(out_str, VectorDriver::PMTiles, &schemas, &o).unwrap().with_spill_limits(1024, 3);
+        for (li, layer) in layers.iter().enumerate() {
+            writer.write_chunk(li, layer.clone()).unwrap();
+        }
+        writer.finish().unwrap();
+
+        assert_eq!(std::fs::read(&out_path).unwrap(), expected);
+        let archive = TileArchive::open_named(out_str).unwrap();
+        let meta = archive.json();
+        let vls = meta["vector_layers"].as_array().unwrap();
+        let sls = meta["tilestats"]["layers"].as_array().unwrap();
+        assert_eq!(vls.len(), 1, "shared target_name must emit one vector_layers entry");
+        assert_eq!(sls.len(), 1, "shared target_name must emit one tilestats entry");
+        assert_eq!(vls[0]["id"], "combined");
+        assert_eq!(vls[0]["minzoom"], 3);
+        assert_eq!(vls[0]["maxzoom"], 5);
+        assert_eq!(sls[0]["count"], 110);
+    }
+
+    #[test]
+    fn max_size_and_max_features_strict_enforcement() {
+        let dir = tempfile::tempdir().unwrap();
+        let layers = sample_layers();
+        // Force both tight MAX_SIZE (220 bytes gzipped) and tight MAX_FEATURES (25).
+        let o = TileWriteOptions { min_zoom: Some(2), max_zoom: Some(3), max_size: 220, max_features: 25, ..Default::default() };
+        let vt = vector::make_tiles(&layers, &o).unwrap();
+        let expected = super::super::write_vector_archive(&vt, &o, "strict", ArchiveKind::PMTiles).unwrap();
+
+        let out_path = dir.path().join("strict.pmtiles");
+        let out_str = out_path.to_str().unwrap();
+        let schemas: Vec<Layer> = layers.iter().map(crate::stream::schema_of).collect();
+        let mut writer = VectorTileStreamWriter::create(out_str, VectorDriver::PMTiles, &schemas, &o).unwrap().with_spill_limits(512, 3);
+        for (li, layer) in layers.iter().enumerate() {
+            writer.write_chunk(li, layer.clone()).unwrap();
+        }
+        writer.finish().unwrap();
+
+        assert_eq!(std::fs::read(&out_path).unwrap(), expected);
+        // Verify every gzipped tile in the archive respects max_size strictly.
+        for (_, _, _, raw) in &vt.tiles {
+            let gz = pmtiles::compress(raw, pmtiles::COMPRESSION_GZIP).unwrap();
+            assert!(gz.len() <= o.max_size, "compressed tile {} exceeded max_size {}", gz.len(), o.max_size);
+        }
+    }
+
+    #[test]
+    fn failed_stream_conversion_preserves_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        // Empty geometry layer fails in finish() with InvalidArgument before creating dst.
+        let mut empty = Layer::new("empty").with_epsg(4326);
+        empty.add_field(FieldDef::new("id", FieldType::Integer));
+        empty.add_feature(None, &[("id", 1i64.into())]).unwrap();
+        let src_path = dir.path().join("empty.gpkg");
+        let src_str = src_path.to_str().unwrap();
+        crate::write_vector(&[empty], src_str, &Default::default()).unwrap();
+
+        let dst_path = dir.path().join("existing.pmtiles");
+        let dst_str = dst_path.to_str().unwrap();
+        std::fs::write(&dst_path, b"existing-archive-bytes").unwrap();
+
+        let mut opts = crate::stream::ConvertOptions::default();
+        opts.write.driver = Some(VectorDriver::PMTiles);
+        let res = crate::stream::convert(src_str, dst_str, &opts);
+        assert!(res.is_err());
+        assert_eq!(std::fs::read(&dst_path).unwrap(), b"existing-archive-bytes");
+    }
+
+    #[test]
+    fn raster_only_gpkg_is_not_streamed_as_vector() {
+        let dir = tempfile::tempdir().unwrap();
+        let gpkg_path = dir.path().join("raster_only.gpkg");
+        let gpkg_str = gpkg_path.to_str().unwrap();
+        let cfg = wbraster::RasterConfig {
+            cols: 4,
+            rows: 4,
+            bands: 1,
+            nodata: -1.0,
+            data_type: crate::DataType::U8,
+            crs: crate::crs::SpatialRef::from_epsg(4326).unwrap().to_crs_info(),
+            ..Default::default()
+        };
+        let mut raster = crate::Raster::new(cfg);
+        raster.x_min = 0.0;
+        raster.y_min = 0.0;
+        raster.cell_size_x = 1.0;
+        raster.cell_size_y = 1.0;
+        crate::write_raster(&raster, gpkg_str, &Default::default()).unwrap();
+
+        let pm_path = dir.path().join("out.pmtiles");
+        let mut opts = crate::stream::ConvertOptions::default();
+        opts.write.driver = Some(VectorDriver::PMTiles);
+        assert!(!crate::stream::can_convert_stream(gpkg_str, pm_path.to_str().unwrap(), &opts));
     }
 }

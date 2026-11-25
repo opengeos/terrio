@@ -646,7 +646,6 @@ pub(crate) fn raster_to_bytes(ds: &crate::RasterDataset, o: &TileWriteOptions, n
 }
 
 /// Writes vector layers as a PMTiles or MBTiles archive of vector tiles.
-#[allow(dead_code)]
 pub(crate) fn vector_to_bytes(layers: &[wbvector::Layer], o: &TileWriteOptions, name: &str, kind: ArchiveKind) -> Result<Vec<u8>> {
     let vt = vector::make_tiles(layers, o)?;
     write_vector_archive(&vt, o, name, kind)

@@ -1008,7 +1008,7 @@ pub(crate) struct LayerStats {
 }
 
 /// Hashable key for O(1) distinct-value tracking in [`AttrStats`].
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 enum AttrValueKey {
     Int(i64),
     FloatBits(u64),
@@ -1025,54 +1025,152 @@ pub(crate) struct AttrStats {
     pub max: Option<f64>,
 }
 
-/// Builds the `vector_layers` and `tilestats` JSON entries for one layer.
-pub(crate) fn layer_metadata_json(
-    target_name: &str,
-    description: &str,
-    min_zoom: u8,
-    max_zoom: u8,
-    schema: &wbvector::Schema,
-    stats: &LayerStats,
-) -> (Json, Json) {
-    let mut fields = serde_json::Map::new();
-    for def in schema.fields() {
-        let t = match def.field_type {
-            FieldType::Integer | FieldType::Float => "Number",
-            FieldType::Boolean => "Boolean",
-            _ => "String",
-        };
-        fields.insert(def.name.clone(), json!(t));
+/// Source layer metadata input for [`build_merged_layer_metadata`].
+pub(crate) struct LayerMetaInput<'a> {
+    pub target_name: &'a str,
+    pub description: &'a str,
+    pub min_zoom: u8,
+    pub max_zoom: u8,
+    pub schema: &'a wbvector::Schema,
+    pub stats: &'a LayerStats,
+}
+
+/// Builds deduplicated `vector_layers` and `tilestats` JSON arrays, merging entries when multiple
+/// source layers target the same MVT layer name via `CONF`.
+pub(crate) fn build_merged_layer_metadata(inputs: &[LayerMetaInput<'_>]) -> (Vec<Json>, Vec<Json>) {
+    struct MergedAttr {
+        name: String,
+        field_type: FieldType,
+        count: usize,
+        values: Vec<Json>,
+        seen: std::collections::HashSet<String>,
+        min: Option<f64>,
+        max: Option<f64>,
     }
-    let vector_layer = json!({
-        "id": target_name, "description": description, "minzoom": min_zoom, "maxzoom": max_zoom, "fields": fields,
-    });
-    let geom = ["", "Point", "LineString", "Polygon"][(1..4).max_by_key(|&i| stats.geom_counts[i]).unwrap_or(3)];
-    let attributes: Vec<Json> = stats
-        .attrs
-        .iter()
-        .filter_map(|(&i, a)| {
-            let def = schema.fields().get(i)?;
-            let t = match def.field_type {
-                FieldType::Integer | FieldType::Float => "number",
-                FieldType::Boolean => "boolean",
-                _ => "string",
+    struct MergedLayer {
+        target_name: String,
+        description: String,
+        min_zoom: u8,
+        max_zoom: u8,
+        fields: Vec<(String, FieldType)>,
+        count: usize,
+        geom_counts: [usize; 4],
+        attrs: Vec<MergedAttr>,
+    }
+    let mut merged: Vec<MergedLayer> = Vec::with_capacity(inputs.len());
+    for inp in inputs {
+        let entry = match merged.iter_mut().find(|m| m.target_name == inp.target_name) {
+            Some(existing) => {
+                if existing.description.is_empty() && !inp.description.is_empty() {
+                    existing.description = inp.description.to_string();
+                }
+                existing.min_zoom = existing.min_zoom.min(inp.min_zoom);
+                existing.max_zoom = existing.max_zoom.max(inp.max_zoom);
+                existing
+            }
+            None => {
+                merged.push(MergedLayer {
+                    target_name: inp.target_name.to_string(),
+                    description: inp.description.to_string(),
+                    min_zoom: inp.min_zoom,
+                    max_zoom: inp.max_zoom,
+                    fields: Vec::new(),
+                    count: 0,
+                    geom_counts: [0; 4],
+                    attrs: Vec::new(),
+                });
+                merged.last_mut().expect("just pushed")
+            }
+        };
+        for def in inp.schema.fields() {
+            if !entry.fields.iter().any(|(n, _)| n == &def.name) {
+                entry.fields.push((def.name.clone(), def.field_type));
+            }
+        }
+        entry.count += inp.stats.count;
+        for g in 0..4 {
+            entry.geom_counts[g] += inp.stats.geom_counts[g];
+        }
+        for (&i, a) in &inp.stats.attrs {
+            let Some(def) = inp.schema.fields().get(i) else { continue };
+            let ma = match entry.attrs.iter_mut().find(|x| x.name == def.name) {
+                Some(x) => x,
+                None => {
+                    entry.attrs.push(MergedAttr {
+                        name: def.name.clone(),
+                        field_type: def.field_type,
+                        count: 0,
+                        values: Vec::new(),
+                        seen: std::collections::HashSet::new(),
+                        min: None,
+                        max: None,
+                    });
+                    entry.attrs.last_mut().expect("just pushed")
+                }
             };
-            let mut o = json!({ "attribute": def.name, "count": a.count, "type": t, "values": a.values });
-            if t == "number" {
-                let n = |v: f64| if v.fract() == 0.0 && v.abs() < 9e15 { json!(v as i64) } else { json!(v) };
-                if let (Some(mn), Some(mx)) = (a.min, a.max) {
-                    o["min"] = n(mn);
-                    o["max"] = n(mx);
+            ma.count += a.count;
+            if let Some(mn) = a.min {
+                ma.min = Some(ma.min.map_or(mn, |cur| cur.min(mn)));
+            }
+            if let Some(mx) = a.max {
+                ma.max = Some(ma.max.map_or(mx, |cur| cur.max(mx)));
+            }
+            if ma.values.len() < 1000 {
+                for v in &a.values {
+                    if ma.values.len() >= 1000 {
+                        break;
+                    }
+                    let key = v.to_string();
+                    if ma.seen.insert(key) {
+                        ma.values.push(v.clone());
+                    }
                 }
             }
-            Some(o)
-        })
-        .collect();
-    let stat_layer = json!({
-        "layer": target_name, "count": stats.count, "geometry": geom,
-        "attributeCount": attributes.len(), "attributes": attributes,
-    });
-    (vector_layer, stat_layer)
+        }
+    }
+
+    let mut vector_layers = Vec::with_capacity(merged.len());
+    let mut stat_layers = Vec::with_capacity(merged.len());
+    for m in merged {
+        let mut fields = serde_json::Map::new();
+        for (name, ft) in &m.fields {
+            let t = match ft {
+                FieldType::Integer | FieldType::Float => "Number",
+                FieldType::Boolean => "Boolean",
+                _ => "String",
+            };
+            fields.insert(name.clone(), json!(t));
+        }
+        vector_layers.push(json!({
+            "id": m.target_name, "description": m.description, "minzoom": m.min_zoom, "maxzoom": m.max_zoom, "fields": fields,
+        }));
+        let geom = ["", "Point", "LineString", "Polygon"][(1..4).max_by_key(|&i| m.geom_counts[i]).unwrap_or(3)];
+        let attributes: Vec<Json> = m
+            .attrs
+            .into_iter()
+            .map(|a| {
+                let t = match a.field_type {
+                    FieldType::Integer | FieldType::Float => "number",
+                    FieldType::Boolean => "boolean",
+                    _ => "string",
+                };
+                let mut o = json!({ "attribute": a.name, "count": a.count, "type": t, "values": a.values });
+                if t == "number" {
+                    let n = |v: f64| if v.fract() == 0.0 && v.abs() < 9e15 { json!(v as i64) } else { json!(v) };
+                    if let (Some(mn), Some(mx)) = (a.min, a.max) {
+                        o["min"] = n(mn);
+                        o["max"] = n(mx);
+                    }
+                }
+                o
+            })
+            .collect();
+        stat_layers.push(json!({
+            "layer": m.target_name, "count": m.count, "geometry": geom,
+            "attributeCount": attributes.len(), "attributes": attributes,
+        }));
+    }
+    (vector_layers, stat_layers)
 }
 
 /// Vector layers cut into tiles: `(z, x, y, tile bytes)` (uncompressed MVT), and the metadata
@@ -1128,8 +1226,7 @@ fn cut_layers(layers: &[Layer], o: &TileWriteOptions) -> Result<CutLayers> {
     let web = crate::crs::SpatialRef::from_epsg(3857)?;
     let mut tiles: BTreeMap<(u8, u32, u32), Vec<MvtLayer>> = BTreeMap::new();
     let mut env: Option<Rect> = None;
-    let mut vector_layers = Vec::new();
-    let mut stat_layers = Vec::new();
+    let mut meta_records: Vec<(String, String, u8, u8, wbvector::Schema, LayerStats)> = Vec::with_capacity(layers.len());
     let mut archive_min: Option<u8> = None;
     let mut archive_max: Option<u8> = None;
     for layer in layers {
@@ -1212,10 +1309,13 @@ fn cut_layers(layers: &[Layer], o: &TileWriteOptions) -> Result<CutLayers> {
                 }
             }
         }
-        let (vl, sl) = layer_metadata_json(target_name, description, layer_min, layer_max, &l.schema, &stats);
-        vector_layers.push(vl);
-        stat_layers.push(sl);
+        meta_records.push((target_name.to_string(), description.to_string(), layer_min, layer_max, l.schema, stats));
     }
+    let meta_inputs: Vec<LayerMetaInput<'_>> = meta_records
+        .iter()
+        .map(|(t, d, lo, hi, s, st)| LayerMetaInput { target_name: t, description: d, min_zoom: *lo, max_zoom: *hi, schema: s, stats: st })
+        .collect();
+    let (vector_layers, stat_layers) = build_merged_layer_metadata(&meta_inputs);
     let (x0, y0, x1, y1) = env.ok_or_else(|| Error::InvalidArgument("no geometries to write as vector tiles".into()))?;
     let (lon0, lat0) = super::mercator_to_lonlat(x0, y0);
     let (lon1, lat1) = super::mercator_to_lonlat(x1, y1);
@@ -1396,16 +1496,16 @@ fn reduce(layers: &[MvtLayer], from: u32, extent: u32) -> Vec<MvtLayer> {
         .collect()
 }
 
-/// Encodes a tile within GDAL's limits (`MAX_FEATURES` features, `MAX_SIZE` bytes once
-/// compressed) and returns both the uncompressed MVT bytes and their gzipped form (avoiding
-/// double compression when callers need gzipped tiles).
-pub(crate) fn encode_limited_gz(mut layers: Vec<MvtLayer>, o: &TileWriteOptions) -> Result<Vec<u8>> {
+/// Shared core of [`encode_limited`] and [`encode_limited_gz`]: enforces `MAX_FEATURES` and
+/// `MAX_SIZE` (halving extent down to 256, then retaining the largest prefix of features ordered
+/// by size whose compressed MVT size stays within `o.max_size`), returning `(raw, gz)`.
+fn encode_limited_inner(mut layers: Vec<MvtLayer>, o: &TileWriteOptions, pre_truncated: bool) -> Result<(Vec<u8>, Vec<u8>)> {
     let compress = |b: &[u8]| super::pmtiles::compress(b, super::pmtiles::COMPRESSION_GZIP);
     // Features beyond the cap are not read, in order.
     let mut left = o.max_features;
-    let mut too_many = false;
+    let mut too_many = pre_truncated;
     for l in &mut layers {
-        if l.features.len() >= left {
+        if l.features.len() > left {
             l.features.truncate(left);
             too_many = true;
         }
@@ -1413,21 +1513,21 @@ pub(crate) fn encode_limited_gz(mut layers: Vec<MvtLayer>, o: &TileWriteOptions)
     }
     let raw = mvt::encode(&layers);
     let gz = compress(&raw)?;
-    let ratio = gz.len() as f64 / raw.len().max(1) as f64;
     let mut too_big = gz.len() > o.max_size;
     if !too_big && !too_many {
-        return Ok(gz);
+        return Ok((raw, gz));
     }
     let mut extent = o.extent;
+    let mut current_raw = raw;
     let mut current_gz = gz;
     while too_big && !too_many && extent >= 256 {
         extent /= 2;
-        let encoded = mvt::encode(&reduce(&layers, o.extent, extent));
-        current_gz = compress(&encoded)?;
+        current_raw = mvt::encode(&reduce(&layers, o.extent, extent));
+        current_gz = compress(&current_raw)?;
         too_big = current_gz.len() > o.max_size;
     }
     if !too_big && !too_many {
-        return Ok(current_gz);
+        return Ok((current_raw, current_gz));
     }
     // Lazily compute geometry sizes at the original extent only when size-based feature dropping
     // is actually needed (skipping geometry decoding on normal tiles).
@@ -1441,67 +1541,49 @@ pub(crate) fn encode_limited_gz(mut layers: Vec<MvtLayer>, o: &TileWriteOptions)
     let source = if extent < o.extent { reduce(&layers, o.extent, extent) } else { layers };
     let mut all: Vec<(usize, &MvtFeature)> = source.iter().enumerate().flat_map(|(i, l)| l.features.iter().map(move |f| (i, f))).collect();
     all.sort_by(|a, b| b.1.size.total_cmp(&a.1.size));
-    let total = all.len();
-    let step = (total / 100).max(1);
-    let mut kept: Vec<MvtLayer> =
-        source.iter().map(|l| MvtLayer { name: l.name.clone(), extent: l.extent, features: Vec::new() }).collect();
-    for (n, (i, f)) in all.into_iter().enumerate() {
-        kept[i].features.push(f.clone());
-        let count = n + 1;
-        if (count == total || (too_big && count % step == 0)) && mvt::encode(&kept).len() as f64 * ratio > o.max_size as f64 {
-            break;
+    let encode_prefix = |count: usize| -> Result<(Vec<u8>, Vec<u8>)> {
+        let mut kept: Vec<MvtLayer> =
+            source.iter().map(|l| MvtLayer { name: l.name.clone(), extent: l.extent, features: Vec::new() }).collect();
+        for &(i, f) in all.iter().take(count) {
+            kept[i].features.push(f.clone());
+        }
+        let r = mvt::encode(&kept);
+        let g = compress(&r)?;
+        Ok((r, g))
+    };
+    if !too_big {
+        let full = encode_prefix(all.len())?;
+        if full.1.len() <= o.max_size {
+            return Ok(full);
         }
     }
-    compress(&mvt::encode(&kept))
+    // Binary search for the largest prefix whose actual gzipped MVT size fits within `o.max_size`.
+    let (mut lo, mut hi) = (0usize, all.len());
+    let mut best = encode_prefix(0)?;
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        let cand = encode_prefix(mid)?;
+        if cand.1.len() <= o.max_size {
+            best = cand;
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    Ok(best)
+}
+
+/// Encodes a tile within GDAL's limits (`MAX_FEATURES` features, `MAX_SIZE` bytes once
+/// compressed) and returns its gzipped bytes directly (avoiding double compression).
+pub(crate) fn encode_limited_gz(layers: Vec<MvtLayer>, o: &TileWriteOptions, pre_truncated: bool) -> Result<Vec<u8>> {
+    Ok(encode_limited_inner(layers, o, pre_truncated)?.1)
 }
 
 /// Encodes a tile within GDAL's limits (`MAX_FEATURES` features, `MAX_SIZE` bytes once
 /// compressed): a tile too large is encoded at lower resolutions (the extent halved down to 256),
 /// then, if still too large, keeps its largest features (by area or length) that fit.
-fn encode_limited(mut layers: Vec<MvtLayer>, o: &TileWriteOptions) -> Vec<u8> {
-    let gz_len = |b: &[u8]| super::pmtiles::compress(b, super::pmtiles::COMPRESSION_GZIP).map(|v| v.len()).unwrap_or(b.len());
-    // Features beyond the cap are not read, in order.
-    let mut left = o.max_features;
-    let mut too_many = false;
-    for l in &mut layers {
-        if l.features.len() >= left {
-            l.features.truncate(left);
-            too_many = true;
-        }
-        left -= l.features.len();
-    }
-    let raw = mvt::encode(&layers);
-    let gz = gz_len(&raw);
-    let ratio = gz as f64 / raw.len().max(1) as f64;
-    let mut too_big = gz > o.max_size;
-    if !too_big && !too_many {
-        return raw;
-    }
-    let mut extent = o.extent;
-    let mut current = raw;
-    while too_big && !too_many && extent >= 256 {
-        extent /= 2;
-        current = mvt::encode(&reduce(&layers, o.extent, extent));
-        too_big = gz_len(&current) > o.max_size;
-    }
-    if !too_big && !too_many {
-        return current;
-    }
-    let source = if extent < o.extent { reduce(&layers, o.extent, extent) } else { layers };
-    let mut all: Vec<(usize, &MvtFeature)> = source.iter().enumerate().flat_map(|(i, l)| l.features.iter().map(move |f| (i, f))).collect();
-    all.sort_by(|a, b| b.1.size.total_cmp(&a.1.size));
-    let total = all.len();
-    let step = (total / 100).max(1);
-    let mut kept: Vec<MvtLayer> =
-        source.iter().map(|l| MvtLayer { name: l.name.clone(), extent: l.extent, features: Vec::new() }).collect();
-    for (n, (i, f)) in all.into_iter().enumerate() {
-        kept[i].features.push(f.clone());
-        let count = n + 1;
-        if (count == total || (too_big && count % step == 0)) && mvt::encode(&kept).len() as f64 * ratio > o.max_size as f64 {
-            break;
-        }
-    }
-    mvt::encode(&kept)
+fn encode_limited(layers: Vec<MvtLayer>, o: &TileWriteOptions) -> Vec<u8> {
+    encode_limited_inner(layers, o, false).map(|(raw, _)| raw).unwrap_or_default()
 }
 
 pub(crate) fn add_attr_stat(stats: &mut LayerStats, i: usize, v: &FieldValue) {

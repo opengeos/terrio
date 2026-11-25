@@ -2036,8 +2036,10 @@ pub fn can_convert_stream(src: &str, dst: &str, options: &ConvertOptions) -> boo
     let ext = crate::formats::extension(src);
     let input = VectorDriver::for_extension(src).filter(|_| ext.as_deref() != Some("json"));
     let pbf = || input == Some(VectorDriver::OSM) && ext.as_deref() == Some("pbf") && osm_sorted(src);
+    let raster_only_gpkg = input == Some(VectorDriver::GPKG) && gpkg_is_raster_only(src);
     options.translate.sql.is_none()
         && !options.write.preserve_fid
+        && !raster_only_gpkg
         && out.is_some_and(can_write_stream)
         && (input.is_some_and(can_read_stream) || pbf())
         && (crate::vfs::Location::parse(src).is_local() || {
@@ -2051,6 +2053,26 @@ pub fn can_convert_stream(src: &str, dst: &str, options: &ConvertOptions) -> boo
             }
         })
         && !same_dataset(src, dst, output_driver(dst, options))
+}
+
+/// Whether `src` is a local GeoPackage containing only raster tables and no vector layers.
+fn gpkg_is_raster_only(src: &str) -> bool {
+    #[cfg(all(feature = "sqlite", not(target_family = "wasm")))]
+    {
+        let path = std::path::Path::new(src);
+        if !path.is_file() {
+            return false;
+        }
+        let Ok(db) = crate::drivers::sqlite::Db::open(path) else {
+            return false;
+        };
+        matches!(gpkg_read::contents(&db), Ok((layers, rasters)) if layers.is_empty() && !rasters.is_empty())
+    }
+    #[cfg(not(all(feature = "sqlite", not(target_family = "wasm"))))]
+    {
+        let _ = src;
+        false
+    }
 }
 
 /// Whether `src` is an OpenStreetMap PBF file sorted by type then id.
@@ -2156,7 +2178,7 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
                 }
                 writer.finish()
             })();
-            return if driver == VectorDriver::MVT { written } else { remove_on_error(dst, driver, written) };
+            return written;
         }
         _ => return Err(one_layer_only(driver)),
     }
@@ -2194,6 +2216,10 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
         }
         writer.finish()
     })();
+    #[cfg(all(feature = "tiles", not(target_family = "wasm")))]
+    if matches!(driver, VectorDriver::PMTiles | VectorDriver::MBTiles | VectorDriver::MVT) {
+        return written;
+    }
     remove_on_error(dst, driver, written)
 }
 
@@ -2279,6 +2305,7 @@ fn convert_osm(src: &str, dst: &str, options: &ConvertOptions) -> Option<Result<
     {
         let local = crate::vfs::Location::parse(src).is_local();
         if options.translate.sql.is_some()
+            || options.open.has_range()
             || VectorDriver::for_extension(src) != Some(VectorDriver::OSM)
             || !local
             || !can_write_stream(output_driver(dst, options))
@@ -2360,7 +2387,7 @@ fn convert_sorted_osm(data: &mut File, src: &str, dst: &str, options: &ConvertOp
             })?;
             writer.finish()
         })();
-        return if driver == VectorDriver::MVT { written } else { remove_on_error(dst, driver, written) };
+        return written;
     }
     let [l] = selected[..] else { return Err(one_layer_only(driver)) };
     let profile = if needs_profile(driver, translators[0].schema()) {
