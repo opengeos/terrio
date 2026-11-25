@@ -83,7 +83,7 @@ fn anchors(s: &SpatialRef) -> Anchors {
         if let Some(epoch) = node.child("ANCHOREPOCH") {
             if node.is(&["VDATUM", "VERTICALDATUM", "VRF"]) {
                 out.vertical = true;
-                out.vertical_epoch = epoch.num(0);
+                out.vertical_epoch = epoch.num(0).filter(|e| e.is_finite());
             } else if node.is(&["DATUM", "GEODETICDATUM", "TRF"]) {
                 out.geodetic = true;
             }
@@ -404,8 +404,11 @@ fn datum(base: &Node, p: &Params, def: &Def, anchored: bool) -> Result<Value> {
     // A WKT 2 datum's `ANCHOREPOCH`, which PROJ 9.9.0 writes (#1012 item 65), else the EPSG
     // datum's where the WKT 2 read had one (`anchored`) but the datum is the registry's here; not
     // for a WKT without one, which PROJ leaves without.
-    if let Some(epoch) =
-        node.and_then(|n| n.child("ANCHOREPOCH")).and_then(|a| a.num(0)).or_else(|| code.filter(|_| anchored).and_then(epsg::anchor_epoch))
+    if let Some(epoch) = node
+        .and_then(|n| n.child("ANCHOREPOCH"))
+        .and_then(|a| a.num(0))
+        .filter(|e| e.is_finite())
+        .or_else(|| code.filter(|_| anchored).and_then(epsg::anchor_epoch))
     {
         d["anchor_epoch"] = epoch.into();
     }

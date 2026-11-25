@@ -20,7 +20,7 @@ use terrio_crs::{SpatialRef, Transformer};
 fn user_defined_geokeys_are_read_as_gdal_reads_them() {
     let data: Value = serde_json::from_str(include_str!("data/geokeys_read_gdal.json")).unwrap();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 24);
+    assert_eq!(cases.len(), 26);
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     for case in cases {
         let name = case["name"].as_str().unwrap();
@@ -190,6 +190,56 @@ fn a_citation_names_no_crs_for_an_unreadable_conversion() {
     doubles[at] = f64::NAN;
     let back = terrio_crs::geokeys::read(&tags.directory, &doubles, tags.ascii.as_bytes()).crs;
     assert!(back.as_ref().is_none_or(|c| c.epsg.is_none()), "{tags:?} {back:?}");
+}
+
+/// With wbprojection, a citation does not name a Mercator CRS of another latitude of true scale:
+/// Mercator 2SP keys at 10° citing WGS 84 / World Mercator (EPSG:3395, true scale at the equator,
+/// whose PROJ string gives no `lat_ts`) give no EPSG:3395; at 0°, EPSG:3395.
+#[cfg(feature = "wbprojection-fallback")]
+#[test]
+fn a_citation_names_its_mercator_only_for_the_same_latitude_of_true_scale() {
+    let citation = b"WGS 84 / World Mercator|\0";
+    let directory = [
+        1u16,
+        1,
+        0,
+        8,
+        1024,
+        0,
+        1,
+        1,
+        1025,
+        0,
+        1,
+        1,
+        1026,
+        34737,
+        citation.len() as u16 - 1,
+        0,
+        2048,
+        0,
+        1,
+        4326,
+        3072,
+        0,
+        1,
+        32767,
+        3075,
+        0,
+        1,
+        7,
+        3078,
+        34736,
+        1,
+        0,
+        3080,
+        34736,
+        1,
+        1,
+    ];
+    let read = |lat_ts: f64| terrio_crs::geokeys::read(&directory, &[lat_ts, 0.0], citation).crs.and_then(|c| c.epsg);
+    assert_eq!(read(10.0), None);
+    assert_eq!(read(0.0), Some(3395));
 }
 
 /// A Stereographic CRS's scale in ProjScaleAtCenterGeoKey alone, as terrio wrote it before, keeps

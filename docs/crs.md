@@ -1391,11 +1391,14 @@ They read and write:
   GDAL, which reads 1) of ProjScaleAtCenterGeoKey, where terrio wrote it before; Laborde
   (CT 4) as `+proj=labrd`. An ellipsoid, datum or prime meridian given by its code without its
   values is the registry's (Airy 1830 for 7001 or for datum 6277, which also gets OSGB36's
-  transformations; the spheres 7035, 7047 and 7048; Paris for 8903), as libgeotiff looks them up.
+  transformations; the spheres 7035, 7047 and 7048; Paris for 8903), as libgeotiff looks them up;
+  axes given beside an ellipsoid code are the ellipsoid's, as GDAL reads them (7030 with a
+  sphere's axes is that sphere).
   A projected code alone (no projection, method, geographic CRS, datum or ellipsoid key) is the
   registry's CRS, a deprecated code's single replacement, in the keys' linear unit
   (ProjLinearUnitsGeoKey, else the stated code's own), without its code when that is not the CRS's
-  unit: EPSG:32633 with ProjLinearUnitsGeoKey 9002 is UTM zone 33N in feet; beside other keys, the
+  unit, on its own datum: EPSG:32633 with ProjLinearUnitsGeoKey 9002 is UTM zone 33N in feet,
+  EPSG:27700 in feet keeps OSGB36 and its transformations; beside other keys, the
   stated code, deprecated or not (EPSG:4855 with GeographicTypeGeoKey 4258 is 4855, not 5105), as
   GDAL 3.12 reads them (#1012 items 32 to 35). Not yet as libgeotiff reads them: without any origin
   latitude, a polar stereographic CRS's ProjStdParallel1GeoKey is still read as its standard

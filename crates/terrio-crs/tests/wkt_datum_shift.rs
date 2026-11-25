@@ -22,8 +22,9 @@
 //! their geographic CRS to the code (an ESRI WKT 1 has no `AXIS`, so longitude first, unlike the
 //! EPSG CRS; a renamed CRS), and then also searches transformations through other datums and other
 //! CRSs of the datum, and may pick one of those (Monte Mario (Rome) through Monte Mario, 72 m from
-//! EPSG:4806's own). terrio follows that search (see `wkt_unresolved.rs`), but PROJ's datum pivot
-//! through the datum's geocentric CRS: ONGD14 (EPSG:7373, `pending`) is still placed by its code.
+//! EPSG:4806's own). terrio follows that search (see `wkt_unresolved.rs`) and PROJ's datum pivot
+//! through the datum's geocentric CRS: ONGD14 (EPSG:7373, `pending` here) is placed as PROJ
+//! places it, through "ONGD14 to WGS 84 (1)".
 
 use serde_json::Value;
 use terrio_crs::{SpatialRef, Transformer};

@@ -352,4 +352,8 @@ fn a_vertical_datum_anchor_epoch_is_written_and_read_back() {
     // Another epoch than the registry's is the WKT's, as PROJ 9.9.0 writes it.
     let other = SpatialRef::from_wkt(&wkt.replace("ANCHOREPOCH[2010]", "ANCHOREPOCH[2011]")).to_projjson().unwrap();
     assert_eq!(vertical_epoch(&other), json!(2011.0), "{other}");
+    // One that is not a number is the registry's, not a `null` the reader refuses.
+    let nan = SpatialRef::from_wkt(&wkt.replace("ANCHOREPOCH[2010]", "ANCHOREPOCH[\"nan\"]")).to_projjson().unwrap();
+    assert_eq!(vertical_epoch(&nan), json!(2010.0), "{nan}");
+    assert!(SpatialRef::from_projjson(&nan).is_ok(), "{nan}");
 }

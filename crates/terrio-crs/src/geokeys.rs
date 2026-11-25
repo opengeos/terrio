@@ -694,7 +694,7 @@ fn geographic_proj(k: &GeoKeys) -> Option<String> {
 }
 
 /// The ellipsoid of GeoKeys, as PROJ parameters: their EPSG geographic CRS's, else their
-/// ellipsoid code's, else their semi-major axis and inverse flattening (or semi-minor axis), else
+/// semi-major axis and inverse flattening (or semi-minor axis), else their ellipsoid code's, else
 /// their datum code's, as libgeotiff looks the codes up (`GTIFGetDefn`, #1012 item 34).
 fn ellipsoid_proj(k: &GeoKeys) -> Option<String> {
     // The ellipsoid of another EPSG geographic CRS, when its datum cannot be named.
@@ -710,10 +710,19 @@ fn ellipsoid_proj(k: &GeoKeys) -> Option<String> {
         _ => None,
     };
     let registered = |(a, rf): (f64, f64)| if rf == 0.0 { format!("+R={a}") } else { format!("+a={a} +rf={rf}") };
-    if let Some(e) = ellipsoid {
-        return Some(e.to_string());
+    // Axes given win over the code, as GDAL 3.12.2 reads them (7030 with a sphere's axes is that
+    // sphere); the code's own axes keep the code's ellipsoid, which GDAL names by it.
+    let code = k.short(2056).filter(|c| *c != USER_DEFINED).and_then(|c| crate::epsg::ellipsoid(u32::from(c)));
+    if let (Some(a), Some((ca, crf))) = (k.double(2057), code) {
+        let rf = k.double(2059).or_else(|| k.double(2058).map(|b| if a == b { 0.0 } else { a / (a - b) }));
+        if (a - ca).abs() < 1e-3 && rf.is_none_or(|rf| (rf - crf).abs() < 1e-6) {
+            return Some(ellipsoid.map(str::to_string).unwrap_or_else(|| registered((ca, crf))));
+        }
     }
     if k.double(2057).is_none() {
+        if let Some(e) = ellipsoid {
+            return Some(e.to_string());
+        }
         // The registry's ellipsoid of the code (Airy 1830, 7001; the spheres 7035 and 7048), else
         // the datum's (OSGB 1936, 6277), without the axes.
         if let Some(e) = k.short(2056).filter(|c| *c != USER_DEFINED).and_then(|c| crate::epsg::ellipsoid(u32::from(c))) {
@@ -951,10 +960,17 @@ fn units(k: &GeoKeys) -> (String, f64) {
 }
 
 /// Whether two PROJ strings give the same standard parallels, latitude of true scale and oblique
-/// azimuths, where both give them (not in [`crate::ProjParams`]).
+/// (and Laborde) azimuths, where both give them (not in [`crate::ProjParams`]).
 fn same_parallels(a: &str, b: &str) -> bool {
     let (a, b) = (crate::params::Params::parse(a), crate::params::Params::parse(b));
-    ["lat_1", "lat_2", "lat_ts", "alpha", "gamma", "lonc"].iter().all(|key| match (a.degrees(key), b.degrees(key)) {
+    // Mercator's latitude of true scale left out is the equator; a second standard parallel left
+    // out is the first, as PROJ takes them (a polar stereographic one left out is the pole's).
+    let value = |p: &crate::params::Params, key: &str| match key {
+        "lat_ts" if p.str("proj") == Some("merc") => Some(p.degrees(key).unwrap_or(0.0)),
+        "lat_2" => p.degrees(key).or_else(|| p.degrees("lat_1")),
+        _ => p.degrees(key),
+    };
+    ["lat_1", "lat_2", "lat_ts", "alpha", "gamma", "lonc", "azi"].iter().all(|key| match (value(&a, key), value(&b, key)) {
         (Some(x), Some(y)) => (x - y).abs() <= 1e-9,
         _ => true,
     })
@@ -989,15 +1005,61 @@ fn in_keys_unit(k: &GeoKeys, code: u32, target: u32) -> Option<SpatialRef> {
     if (crs.metres_per_unit() / size - 1.0).abs() < 1e-12 {
         return None;
     }
+    // The GeoKeys' shift (GeogTOWGS84GeoKey) beside it, the CRS's own, as beside the code
+    // (`with_towgs84`).
+    let towgs84 = k.doubles(2062).filter(|t| matches!(t.len(), 3 | 7) && t.iter().all(|v| v.is_finite()) && t.iter().any(|v| *v != 0.0));
+    if let Some(c) = rescaled_wkt(k, code, &crs, size, towgs84) {
+        return Some(c);
+    }
     let proj = crs.to_proj4()?;
     let tokens: Vec<&str> = proj.split_whitespace().filter(|t| !t.starts_with("+units=") && !t.starts_with("+to_meter=")).collect();
-    // GeogTOWGS84GeoKey beside it, the CRS's own shift, as beside the code (`with_towgs84`).
-    let shift = k
-        .doubles(2062)
-        .filter(|t| matches!(t.len(), 3 | 7) && t.iter().all(|v| v.is_finite()) && t.iter().any(|v| *v != 0.0))
-        .map(|t| format!(" +towgs84={}", t.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")))
-        .unwrap_or_default();
+    let shift = towgs84.map(|t| format!(" +towgs84={}", t.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","))).unwrap_or_default();
     SpatialRef::from_proj4(&format!("{} {unit}{shift}", tokens.join(" "))).ok()
+}
+
+/// The registry's projected CRS `crs` in the GeoKeys' linear unit of `size` metres, as GDAL 3.12
+/// changes it (`SetLinearUnitsAndUpdateParameters`): its WKT 1 with that `UNIT`, its false easting
+/// and northing converted to it, without its code, on its own geographic CRS, so that its datum
+/// keeps its transformations (EPSG:27700 in feet stays on OSGB36), with the keys' `towgs84`.
+/// `None` for a unit without WKT.
+fn rescaled_wkt(k: &GeoKeys, code: u32, crs: &SpatialRef, size: f64, towgs84: Option<&[f64]>) -> Option<SpatialRef> {
+    use crate::wkt1::{Arg, Node};
+    let unit = match k.short(3076) {
+        Some(USER_DEFINED) => linear_unit_wkt(k)?,
+        Some(u) => {
+            let (_, name, m) = LENGTH_UNITS.iter().find(|l| l.0 == u)?;
+            format!("UNIT[\"{name}\",{},AUTHORITY[\"EPSG\",\"{u}\"]]", wkt_number(*m))
+        }
+        // The stated code's own unit.
+        None => crate::wkt1::parse(&SpatialRef::from_epsg(code).ok()?.to_wkt1_strict()?)?.child("UNIT")?.to_wkt(),
+    };
+    let unit = crate::wkt1::parse(&unit)?;
+    let mut root = crate::wkt1::parse(&crs.to_wkt1_strict()?)?;
+    if !root.key.eq_ignore_ascii_case("PROJCS") {
+        return None;
+    }
+    let factor = crs.metres_per_unit() / size;
+    for a in &mut root.args {
+        match a {
+            Arg::Node(n) if n.key.eq_ignore_ascii_case("PARAMETER") => {
+                let offset = n.name().is_some_and(|p| matches!(p.to_ascii_lowercase().as_str(), "false_easting" | "false_northing"));
+                if let (true, Some(Arg::Num(v))) = (offset, n.args.get_mut(1)) {
+                    *v *= factor;
+                }
+            }
+            Arg::Node(n) if n.key.eq_ignore_ascii_case("UNIT") => *n = unit.clone(),
+            _ => {}
+        }
+    }
+    root.args.retain(|a| !matches!(a, Arg::Node(n) if n.key.eq_ignore_ascii_case("AUTHORITY")));
+    if let Some(t) = towgs84 {
+        let datum = datum_node(&mut root)?;
+        datum.args.retain(|a| !matches!(a, Arg::Node(n) if n.key.eq_ignore_ascii_case("TOWGS84")));
+        let at = datum.args.iter().position(|a| matches!(a, Arg::Node(n) if n.key.eq_ignore_ascii_case("SPHEROID")))? + 1;
+        datum.args.insert(at, Arg::Node(Node { key: "TOWGS84".into(), args: t.iter().map(|v| Arg::Num(*v)).collect() }));
+    }
+    let rescaled = SpatialRef::from_wkt(&root.to_wkt());
+    (rescaled.projection_params().is_some() && (rescaled.metres_per_unit() / size - 1.0).abs() < 1e-9).then_some(rescaled)
 }
 
 /// The size in metres of the GeoKeys' linear unit (a metre when they give none).

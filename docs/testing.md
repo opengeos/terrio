@@ -2084,12 +2084,12 @@ datum's ID). WKT 1 with the datum's `AUTHORITY` alone falls under one or the oth
 The WKTs are variants of the 16 geographic CRSs whose ESRI or renamed WKT PROJ places through an
 intermediate datum (Monte Mario (Rome), Tokyo 1892, DHDN, ...), of every 25th EPSG geographic 2D
 CRS, and ESRI WKTs of eight projected CRSs (three with northing first). The points go to and from
-WGS 84 and, for a sample, to ETRS89, NAD83 and ETRS89 / UTM zone 32N: 1,121 cases. 1,100 of them are
-placed within 1 mm of PROJ, 112 of those where PROJ places them otherwise than by the code, by
-0.12 m to 388 m (five, ESRI's ONGD14 to WGS 84 and its variants, by 1.23 m through PROJ's datum
-pivot). The other 21 are pinned at the code's placement: those PROJ places through its ballpark
-into a CRS of a renamed datum (also under the CRS's own name), or by its datum pivot into a CRS it
-cannot find by its name (ONGD14 renamed), which terrio does not follow yet. ATF (Paris) is left
+WGS 84 and, for a sample, to ETRS89, NAD83 and ETRS89 / UTM zone 32N: 1,121 cases, all placed
+within 1 mm of PROJ, 133 of them where PROJ places them otherwise than by the code, by 0.12 m to
+about 390 m: through its search, through its ballpark into a CRS of a renamed datum (also under
+the CRS's own name), or by its datum pivot (ESRI's ONGD14 to WGS 84 and its variants, ONGD14
+renamed and with an ID of an unknown authority, by 1.2 m). None is pinned at the code's placement
+any more. ATF (Paris) is left
 out (its ESRI WKT is checked in `grads_and_prime_meridians`) (`cargo test -p terrio-crs --test wkt_unresolved`;
 regenerate with `scripts/gen_wkt_unresolved.py`, pyproj 3.8.0; the names PROJ looks CRSs up by come
 from `scripts/gen_crs_names.py`).

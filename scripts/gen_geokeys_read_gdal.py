@@ -173,6 +173,20 @@ KEYED = [
         False,
     ),
     (
+        "EPSG:27700 with ProjLinearUnitsGeoKey 9002, in feet on OSGB36",
+        PROJECTED + [(3072, 27700), (3076, 9002)],
+        [],
+        (-1.5, 52.5),
+        False,
+    ),
+    (
+        "ellipsoid 7030 with a sphere's axes, which win",
+        PROJECTED + USER_TM + [(2050, 32767), (2056, 7030)],
+        TM + [(2057, 6371007.0), (2059, 0.0)],
+        (10.0, 50.0),
+        True,
+    ),
+    (
         "ellipsoid 7001 without axes",
         PROJECTED + USER_TM + [(2050, 32767), (2056, 7001)],
         TM,
