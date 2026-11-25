@@ -874,7 +874,7 @@ class FlatGeobuf:
         if count == 0:
             raise ValueError("a spatial index of no features")
         counts, n = [count], count
-        while True:  # at least two levels, as the reference implementation lays out one feature
+        while True:  # the root is a level of its own, even for a few features
             n = -(-n // FlatGeobuf.NODE_SIZE)
             counts.append(n)
             if n == 1:
