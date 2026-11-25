@@ -407,6 +407,25 @@ fn nodes(keyword: &'static str) -> impl Iterator<Item = crate::wkt1::Node> {
     })
 }
 
+/// An EPSG geodetic or vertical datum's anchor epoch, as PROJ 9.9.0's database gives it
+/// (`scripts/gen_datum_anchor_epochs.py`), which PROJ writes in PROJJSON (#1012 item 65).
+pub(crate) fn anchor_epoch(datum: u32) -> Option<f64> {
+    static EPOCHS: OnceLock<HashMap<u32, f64>> = OnceLock::new();
+    EPOCHS
+        .get_or_init(|| {
+            include_str!("../data/datum_anchor_epochs.tsv")
+                .lines()
+                .filter(|l| !l.starts_with('#'))
+                .filter_map(|l| {
+                    let (code, epoch) = l.split_once('\t')?;
+                    Some((code.parse().ok()?, epoch.parse().ok()?))
+                })
+                .collect()
+        })
+        .get(&datum)
+        .copied()
+}
+
 /// The operations GDAL uses given the grids that can be found: those listed with grids, without
 /// the ones whose grids are missing, when at least one operation needing grids remains; else
 /// those listed without grids.

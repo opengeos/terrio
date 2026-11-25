@@ -72,6 +72,7 @@ path = [
     "crates/terrio-crs/data/epsg.tsv.zst",
     "crates/terrio-crs/data/epsg_vertical.tsv.zst",
     "crates/terrio-crs/data/point_motion.tsv",
+    "crates/terrio-crs/data/datum_anchor_epochs.tsv",
 ]
 precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
