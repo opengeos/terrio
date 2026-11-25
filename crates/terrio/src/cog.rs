@@ -3664,12 +3664,29 @@ pub(crate) fn place<T: Copy>(out: &mut [T], vals: &[T], g: &ChunkGeom, w: Window
         }
         let first = (src_row + c0 - g.x0) * g.spp;
         let dst = dst_row + c0 - w.x;
+        let pixels = vals.get(first..first + (c1 - c0) * g.spp);
         for &(sample, band) in map {
-            let src = vals.get(first + sample..).unwrap_or_default().iter().step_by(g.spp);
-            for (o, v) in out[band * band_len + dst..][..c1 - c0].iter_mut().zip(src) {
-                *o = *v;
+            let out = &mut out[band * band_len + dst..][..c1 - c0];
+            // Whole pixels of 2 to 4 samples, as arrays: the copy is vectorized.
+            match (g.spp, pixels) {
+                (2, Some(p)) => sample_of::<T, 2>(out, p, sample),
+                (3, Some(p)) => sample_of::<T, 3>(out, p, sample),
+                (4, Some(p)) => sample_of::<T, 4>(out, p, sample),
+                _ => {
+                    let src = vals.get(first + sample..).unwrap_or_default().iter().step_by(g.spp);
+                    for (o, v) in out.iter_mut().zip(src) {
+                        *o = *v;
+                    }
+                }
             }
         }
+    }
+}
+
+/// Sample `sample` of each pixel of `N` samples, into `out`.
+fn sample_of<T: Copy, const N: usize>(out: &mut [T], pixels: &[T], sample: usize) {
+    for (o, p) in out.iter_mut().zip(pixels.as_chunks::<N>().0) {
+        *o = p[sample];
     }
 }
 
@@ -4608,19 +4625,23 @@ mod tests {
                 }
             }
         }
-        let (dw, dh, spp) = (16, 12, 3);
-        let full: Vec<u16> = (0..(dw * dh * spp) as u16).collect();
-        let maps: [&[(usize, usize)]; 3] = [&[(0, 0), (1, 1), (2, 2)], &[(2, 0), (0, 1)], &[(1, 1)]];
+        let (dw, dh) = (16, 12);
+        let maps: [&[(usize, usize)]; 3] = [&[(0, 0), (1, 1)], &[(1, 0), (0, 1)], &[(1, 1)]];
         let windows = [Window::new(0, 0, 16, 12), Window::new(5, 3, 20, 20), Window::new(10, 7, 4, 3), Window::new(18, 0, 4, 4)];
-        let g = ChunkGeom { x0: 2, y0: 1, dw, dh, spp };
-        for vals in [&full[..], &full[..full.len() - 50]] {
-            for map in maps {
-                for w in windows {
-                    let mut want = vec![u16::MAX; w.width * w.height * 3];
-                    let mut got = want.clone();
-                    by_pixel(&mut want, vals, &g, w, map);
-                    place(&mut got, vals, &g, w, map);
-                    assert_eq!(got, want, "{w:?} {map:?} {} samples", vals.len());
+        // Pixels of 2 to 4 samples (copied as arrays) and of 5 (sample by sample).
+        for spp in 2..=5 {
+            let full: Vec<u16> = (0..(dw * dh * spp) as u16).collect();
+            let all: Vec<(usize, usize)> = (0..spp).map(|s| (s, s % 3)).collect();
+            let g = ChunkGeom { x0: 2, y0: 1, dw, dh, spp };
+            for vals in [&full[..], &full[..full.len() - 50], &full[..full.len() - 1]] {
+                for map in maps.iter().copied().chain([&all[..]]) {
+                    for w in windows {
+                        let mut want = vec![u16::MAX; w.width * w.height * 3];
+                        let mut got = want.clone();
+                        by_pixel(&mut want, vals, &g, w, map);
+                        place(&mut got, vals, &g, w, map);
+                        assert_eq!(got, want, "{w:?} {map:?} {} samples of {spp}", vals.len());
+                    }
                 }
             }
         }
