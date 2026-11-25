@@ -1189,7 +1189,7 @@ pub(crate) struct VectorTiles {
 /// simplified when asked, quantized to the tile grid, and keeps its attributes.
 pub(crate) fn make_tiles(layers: &[Layer], o: &TileWriteOptions) -> Result<VectorTiles> {
     let cut = cut_layers(layers, o)?;
-    let tiles = cut.tiles.into_iter().map(|((z, x, y), layers)| (z, x, y, encode_limited(layers, o))).collect();
+    let tiles = cut.tiles.into_iter().map(|((z, x, y), layers)| Ok((z, x, y, encode_limited(layers, o)?))).collect::<Result<Vec<_>>>()?;
     Ok(VectorTiles { tiles, json: cut.json, bounds: cut.bounds, min_zoom: cut.min_zoom, max_zoom: cut.max_zoom })
 }
 
@@ -1378,8 +1378,8 @@ pub(crate) fn update_tiles(archive: &mut TileArchive, layers: &[Layer], o: &Tile
     let encoded = tiles
         .into_iter()
         .filter(|(_, ls)| ls.iter().any(|l| !l.features.is_empty()))
-        .map(|((z, x, y), ls)| (z, x, y, encode_limited(ls, &o)))
-        .collect();
+        .map(|((z, x, y), ls)| Ok((z, x, y, encode_limited(ls, &o)?)))
+        .collect::<Result<Vec<_>>>()?;
     let bounds = match archive.bounds() {
         Some(b) => [b[0].min(cut.bounds[0]), b[1].min(cut.bounds[1]), b[2].max(cut.bounds[2]), b[3].max(cut.bounds[3])],
         None => cut.bounds,
@@ -1582,8 +1582,8 @@ pub(crate) fn encode_limited_gz(layers: Vec<MvtLayer>, o: &TileWriteOptions, pre
 /// Encodes a tile within GDAL's limits (`MAX_FEATURES` features, `MAX_SIZE` bytes once
 /// compressed): a tile too large is encoded at lower resolutions (the extent halved down to 256),
 /// then, if still too large, keeps its largest features (by area or length) that fit.
-fn encode_limited(layers: Vec<MvtLayer>, o: &TileWriteOptions) -> Vec<u8> {
-    encode_limited_inner(layers, o, false).map(|(raw, _)| raw).unwrap_or_default()
+fn encode_limited(layers: Vec<MvtLayer>, o: &TileWriteOptions) -> Result<Vec<u8>> {
+    encode_limited_inner(layers, o, false).map(|(raw, _)| raw)
 }
 
 pub(crate) fn add_attr_stat(stats: &mut LayerStats, i: usize, v: &FieldValue) {

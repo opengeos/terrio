@@ -522,17 +522,21 @@ fn encode_feature_tiles(
 
     for g in parts {
         let polys = polygon_rings(g);
-        let bb = match &polys {
-            // Exterior rings only, matching `collect_points`.
-            Some(ps) => match clip::bbox(ps.iter().filter_map(|p| p.first()).flatten()) {
-                Some(b) => b,
-                None => continue,
-            },
+        let (bb, all_rings_bb) = match &polys {
+            // Exterior rings for envelope and tile range (matching `collect_points`), and all
+            // rings for `encode_polygons_for_tile`'s `inside` check (matching `encode_for_tile`).
+            Some(ps) => {
+                let Some(ext_bb) = clip::bbox(ps.iter().filter_map(|p| p.first()).flatten()) else {
+                    continue;
+                };
+                let all_bb = clip::bbox(ps.iter().flatten().flatten()).unwrap_or(ext_bb);
+                (ext_bb, all_bb)
+            }
             None => {
                 pts.clear();
                 collect_points(g, pts);
                 match clip::bbox(pts.iter()) {
-                    Some(b) => b,
+                    Some(b) => (b, b),
                     None => continue,
                 }
             }
@@ -558,7 +562,7 @@ fn encode_feature_tiles(
                 for ty in ty0..=ty1 {
                     let frame = TileFrame::new(z, tx as u32, ty as u32);
                     let encoded = match &polys {
-                        Some(ps) => encode_polygons_for_tile(ps, bb, &mut crossings, &frame, o.extent, buffer, tol),
+                        Some(ps) => encode_polygons_for_tile(ps, all_rings_bb, &mut crossings, &frame, o.extent, buffer, tol),
                         None => encode_for_tile(g, &frame, o.extent, buffer, tol, &[]),
                     };
                     let encoded = match encoded {
@@ -1519,5 +1523,31 @@ mod tests {
         let mut opts = crate::stream::ConvertOptions::default();
         opts.write.driver = Some(VectorDriver::PMTiles);
         assert!(!crate::stream::can_convert_stream(gpkg_str, pm_path.to_str().unwrap(), &opts));
+    }
+
+    #[test]
+    fn polygon_with_hole_outside_exterior_matches_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut layer = Layer::new("invalid").with_epsg(4326);
+        layer.add_field(FieldDef::new("name", FieldType::Text));
+        // Hole ring lies outside the exterior ring and crosses a zoom-3 tile boundary.
+        let poly = Geometry::polygon(
+            vec![Coord::xy(10.0, 10.0), Coord::xy(20.0, 10.0), Coord::xy(20.0, 20.0), Coord::xy(10.0, 20.0)],
+            vec![vec![Coord::xy(30.0, 30.0), Coord::xy(50.0, 30.0), Coord::xy(50.0, 50.0), Coord::xy(30.0, 50.0)]],
+        );
+        layer.add_feature(Some(poly), &[("name", "hole_out".into())]).unwrap();
+
+        let o = TileWriteOptions { min_zoom: Some(0), max_zoom: Some(3), ..Default::default() };
+        let vt = vector::make_tiles(std::slice::from_ref(&layer), &o).unwrap();
+        let expected = super::super::write_vector_archive(&vt, &o, "hole_out", ArchiveKind::PMTiles).unwrap();
+
+        let out_path = dir.path().join("hole_out.pmtiles");
+        let out_str = out_path.to_str().unwrap();
+        let schema = crate::stream::schema_of(&layer);
+        let mut writer = VectorTileStreamWriter::create(out_str, VectorDriver::PMTiles, &[schema], &o).unwrap();
+        writer.write_chunk(0, layer).unwrap();
+        writer.finish().unwrap();
+
+        assert_eq!(std::fs::read(&out_path).unwrap(), expected);
     }
 }
