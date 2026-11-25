@@ -729,15 +729,28 @@ fn blosc_decompress(src: &[u8], most: usize) -> Result<Vec<u8>> {
     let nblocks = nbytes.div_ceil(blocksize);
     let byte_shuffle = flags & 0x01 != 0 && typesize > 1;
     let bit_shuffle = flags & 0x01 == 0 && flags & 0x04 != 0;
-    let mut out = crate::dataset::fallible::filled_now(nbytes, 0u8, "a Blosc chunk")?;
+    let size = blocksize.min(nbytes);
+    // Blocks larger than the scratch kept: the chunk and the scratch block are zeroed by the
+    // allocator, their pages resident only once written, so that a block's decoder output, the
+    // chunk and the scratch are not all resident at once (as `main` never had them). Smaller
+    // blocks are written now, which is faster, the overlap a block at most.
+    let large = size > BLOSC_SCRATCH_KEPT;
+    let mut out = if large {
+        crate::dataset::fallible::filled(nbytes, 0u8, "a Blosc chunk")?
+    } else {
+        crate::dataset::fallible::filled_now(nbytes, 0u8, "a Blosc chunk")?
+    };
     // A byte-shuffled block before its unshuffle, or a bit-shuffled one's byte planes: this
     // thread's, reused from chunk to chunk rather than allocated and zeroed for each.
-    let mut block = BLOSC_SCRATCH.take();
-    let size = blocksize.min(nbytes);
+    let mut block = if large { Vec::new() } else { BLOSC_SCRATCH.take() };
     if (byte_shuffle || bit_shuffle) && block.len() < size {
-        let more = size - block.len();
-        crate::dataset::fallible::reserve(&mut block, more, "a Blosc block")?;
-        block.resize(size, 0);
+        if large {
+            block = crate::dataset::fallible::filled(size, 0u8, "a Blosc block")?;
+        } else {
+            let more = size - block.len();
+            crate::dataset::fallible::reserve(&mut block, more, "a Blosc block")?;
+            block.resize(size, 0);
+        }
     }
     let decoded = blosc_blocks(src, flags, typesize, blocksize, nblocks, (byte_shuffle, bit_shuffle), &mut out, &mut block);
     // Kept for the next chunk only when small: a chunk of large blocks does not leave it held.
