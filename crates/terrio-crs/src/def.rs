@@ -125,6 +125,10 @@ pub(crate) struct Unresolved {
     /// Whether the WKT's geographic CRS has its code's geographic CRS name, which PROJ's datum
     /// pivot tries first (the base geographic CRS for a projected WKT).
     pub same_name: bool,
+    /// Whether the WKT has an ID of an authority PROJ does not know (`AUTHORITY["LOCAL","1"]`):
+    /// PROJ then takes it for the CRS of its name, but its datum pivot takes only the first CRS of
+    /// the datum with transformations, in order of code (#1012 item 7).
+    pub foreign_id: bool,
 }
 
 /// A WKT 2 `BOUNDCRS` with a Helmert transformation, or a coded CRS with a `TOWGS84` of its own.
@@ -1235,6 +1239,12 @@ impl Def {
         // point, and runs it on the datum's own ellipsoid.
         let rebase = |op: &Arc<Op>| {
             let mut op = (**op).clone();
+            if op.geocentric && !op.ballpark {
+                // Reported as PROJ 9.9.0 reports it: framed by that ballpark, of unknown accuracy
+                // (#1012 item 56).
+                op.framed = true;
+                (op.accuracy, op.chain_accuracy) = (-1.0, -1.0);
+            }
             if !op.geocentric {
                 if let Some(datum::Step::Cart { ell, inv: false }) = op.steps.first_mut()
                     && same(ell, &registered)
@@ -2073,8 +2083,11 @@ impl Def {
         if let Some(r) = r
             && !r.resolved
         {
-            self.unresolved = Some(Unresolved { ballpark: r.ballpark, named: r.named, same_name: r.same_name });
+            self.unresolved = Some(Unresolved { ballpark: r.ballpark, named: r.named, same_name: r.same_name, foreign_id: false });
             self.area = r.area;
+        } else if let Some(r) = r.filter(|r| r.foreign_id) {
+            // Resolved, with the code's area, but pivoted as PROJ's datum pivot goes.
+            self.unresolved = Some(Unresolved { ballpark: false, named: true, same_name: false, foreign_id: r.foreign_id });
         }
     }
 }
@@ -2150,7 +2163,18 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
     // own transformations, as for a resolved CRS.
     // `named` and `same_name` are read for an unresolved CRS only.
     if has_id(root) {
-        return Some(Resolution { resolved: true, area: area(code), datum_renamed, ballpark: false, named: false, same_name: false });
+        // The authorities of PROJ's database.
+        let known = ["EPSG", "ESRI", "IGNF", "IAU_2015", "NKG", "OGC", "PROJ", "NRCAN", "IAU"];
+        let foreign_id = root.ids().all(|id| id.name().is_some_and(|a| !known.iter().any(|k| k.eq_ignore_ascii_case(a))));
+        return Some(Resolution {
+            resolved: true,
+            area: area(code),
+            datum_renamed,
+            ballpark: false,
+            named: false,
+            same_name: false,
+            foreign_id,
+        });
     }
     // ESRI's WKT reader maps a `PROJCS` name after a `GCS_` geographic CRS or a `D_` datum.
     let esri =
@@ -2219,6 +2243,7 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
         ballpark: datum_renamed && !pm_rotated,
         named: found.is_some(),
         same_name,
+        foreign_id: false,
     })
 }
 
@@ -2237,6 +2262,8 @@ struct Resolution {
     named: bool,
     /// See [`Unresolved::same_name`].
     same_name: bool,
+    /// See [`Unresolved::foreign_id`].
+    foreign_id: bool,
 }
 
 /// PROJ's rule for an ellipsoid of the Earth: a semi-major axis within 0.7% of its mean radius

@@ -106,6 +106,8 @@ pub(crate) struct Compound {
     pub horizontal: u32,
     pub vertical: u32,
     pub wkt: String,
+    /// Its area of use (west, south, east, north in degrees), when known.
+    pub area: Option<[f64; 4]>,
 }
 
 /// Transformations without and with grids.
@@ -154,6 +156,8 @@ struct Table {
     /// The transformations PROJ lists for a geographic 3D or geocentric CRS in another direction
     /// than into WGS 84 (3D), where they differ, by code and direction.
     directed: HashMap<(u32, Direction), Lazy<OpLists>>,
+    /// The names PROJ reports for registered concatenations, by `O` row id (`N` rows).
+    reported: HashMap<u32, (usize, usize)>,
 }
 
 /// A direction between a geographic 3D or geocentric CRS and WGS 84 other than into WGS 84 (3D),
@@ -216,6 +220,7 @@ fn load(data: &[u8]) -> Table {
     let (mut geodetic, mut registered) = (Vec::new(), Vec::new());
     let mut replacements = HashMap::new();
     let mut directed = HashMap::new();
+    let mut reported = HashMap::new();
     let mut pos = 0;
     for line in text.split_inclusive('\n') {
         let start = pos;
@@ -289,6 +294,11 @@ fn load(data: &[u8]) -> Table {
                     directed.insert((code, direction), Lazy::new(after_second(), end));
                 }
             }
+            "N" => {
+                if let Ok(id) = key.parse::<u32>() {
+                    reported.insert(id, (rest, end));
+                }
+            }
             "E" => geodetic.push((start + 2, end)),
             "R" => registered.push((start + 2, end)),
             _ => {}
@@ -309,6 +319,7 @@ fn load(data: &[u8]) -> Table {
         registered,
         replacements,
         directed,
+        reported,
     }
 }
 
@@ -346,6 +357,7 @@ impl Table {
                     keeps_height: flags.contains('z'),
                     keeps_wgs84_leg_height: false,
                     keeps_height_3d: flags.contains('k'),
+                    reported: self.reported.get(&id).map(|&(start, end)| Arc::from(&self.text[start..end])),
                     steps,
                     name,
                 }))
@@ -1011,8 +1023,14 @@ pub(crate) fn compound(code: u32) -> Option<&'static Compound> {
         .get(&code)?
         .get(&t.text, |line| {
             let f: Vec<&str> = line.split('\t').collect();
-            let [name, h, v, wkt] = f[..] else { return None };
-            Some(Compound { name: name.to_string(), horizontal: h.parse().ok()?, vertical: v.parse().ok()?, wkt: wkt.to_string() })
+            let (name, h, v, wkt, area) = match f[..] {
+                [name, h, v, wkt] => (name, h, v, wkt, ""),
+                [name, h, v, wkt, area] => (name, h, v, wkt, area),
+                _ => return None,
+            };
+            let area: Vec<f64> = area.split(',').filter_map(|x| x.parse().ok()).collect();
+            let area = <[f64; 4]>::try_from(area).ok();
+            Some(Compound { name: name.to_string(), horizontal: h.parse().ok()?, vertical: v.parse().ok()?, wkt: wkt.to_string(), area })
         })
         .as_ref()
 }

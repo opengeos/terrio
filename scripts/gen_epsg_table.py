@@ -42,6 +42,9 @@ Writes ``crates/terrio-crs/data/epsg.tsv.zst``, a zstd-compressed text table wit
   differ (only in their order, or others): ``f3`` from WGS 84 (3D), ``t2`` into WGS 84 (2D),
   ``f2`` from WGS 84 (2D), as ``O`` rows of the CRS's lists or of its geographic 2D CRS's in the
   direction into WGS 84.
+- ``N<TAB>id<TAB>name``: the name PROJ reports for an ``O`` row that is a concatenation its
+  database registers under a name of its own (``NTF (Paris) to WGS 84 (1)``, whose steps are
+  ``NTF (Paris) to NTF (1) + NTF to WGS 84 (1)``).
 - ``P<TAB>geog1<TAB>geog2<TAB>ops<TAB>grid ops``: the transformations GDAL lists between two
   geographic CRSs whose datums have direct transformations between them in the EPSG dataset,
   without and with grids, in the direction geog1 to geog2.
@@ -60,7 +63,9 @@ Writes ``crates/terrio-crs/data/epsg.tsv.zst``, a zstd-compressed text table wit
   have no direct transformation.
 - ``V<TAB>code<TAB>name<TAB>datum<TAB>unit<TAB>direction<TAB>WKT``: a vertical CRS, with its
   unit in metres and axis direction (``up`` or ``down``).
-- ``K<TAB>code<TAB>name<TAB>horizontal<TAB>vertical<TAB>WKT``: a compound CRS.
+- ``K<TAB>code<TAB>name<TAB>horizontal<TAB>vertical<TAB>WKT<TAB>area``: a compound CRS, with its area
+  of use (``west,south,east,north``), which PROJ intersects with the other CRS's for the operations
+  it lists between compound CRSs.
 - ``G<TAB>geog3d<TAB>vertical<TAB>ops<TAB>grid ops``: the transformations (geoid models) from a
   geographic 3D CRS to a vertical CRS.
 - ``D<TAB>datum<TAB>date``: the publication date of a datum (``2007-01-01``), by which PROJ
@@ -120,6 +125,9 @@ NEUTRAL_STEPS = {"push", "pop", "noop", "unitconvert", "axisswap", "set"}
 
 # The method of the conversions between geographic and geocentric CRSs.
 GEOCENTRIC = "Geographic/geocentric conversions"
+
+# The names PROJ reports for the concatenations its database registers, by their ``O`` row's key.
+REPORTED = {}
 
 # Operations PROJ prefers among those of equal accuracy (``isPriorityOp`` in PROJ's
 # coord_operation.cpp), by name.
@@ -429,6 +437,9 @@ def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, vertical
             steps_bounds = step_bounds(parts)
             steps_bounds = "" if steps_bounds in (None, bounds) else ",".join(repr(round(v, 6)) for v in steps_bounds)
         row = (steps, bounds, accuracy, flags, name, steps_accuracy, steps_bounds)
+        # A concatenation the database registers under its own name, which PROJ reports.
+        if "id" in doc and doc.get("type") == "ConcatenatedOperation" and doc.get("name") and doc["name"] != name and not ballparks:
+            REPORTED[row] = doc["name"].replace("\t", " ")
         if vertical:
             row += (interpolation_crs(doc),)
         out.append(row)
@@ -976,7 +987,9 @@ def vertical_rows():
         h, v = subs[0].to_epsg(min_confidence=100), subs[1].to_epsg(min_confidence=100)
         if h is None or v is None or not subs[1].is_vertical:
             continue
-        compounds.append(("K", code, crs.name.replace("\t", " "), h, v, wkt))
+        area = crs.area_of_use
+        bounds = ",".join(repr(round(x, 6)) for x in (area.west, area.south, area.east, area.north)) if area else ""
+        compounds.append(("K", code, crs.name.replace("\t", " "), h, v, wkt, bounds))
     return verticals, compounds
 
 
@@ -1168,6 +1181,8 @@ def rows():
             if key not in ops:
                 ops[key] = len(ops)
                 new.append(("O", ops[key], ",".join(repr(round(b, 6)) for b in bounds), repr(accuracy), flags, steps, name, steps_accuracy, steps_bounds))
+                if key in REPORTED:
+                    new.append(("N", ops[key], REPORTED[key]))
             if ops[key] not in ids:
                 ids.append(ops[key])
         return ids, new

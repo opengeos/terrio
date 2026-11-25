@@ -193,9 +193,9 @@ fn a_null_transformation_on_another_ellipsoid_is_applied_geocentrically() {
 /// PROJ 9.9.0 puts a ballpark before it. A datum name PROJ finds wins over the datum's ID:
 /// `Greenland_1996` with GR96's ID (EPSG:1421) is the former datum EPSG:6747, which no current CRS
 /// has, so the point is kept by a ballpark; `D_GR96`, and an unknown name with that ID, are GR96
-/// and its null transformation. Values as above. PROJ reports
-/// the NAD83(CSRS)v6 case as a ballpark (its first step), terrio by the registered operation
-/// alone: not compared (opengeos/terrio#1012 item 56).
+/// and its null transformation. Values as above. PROJ reports the NAD83(CSRS)v6 case as a
+/// ballpark (its first step) of unknown accuracy, and so does terrio (opengeos/terrio#1012 item
+/// 56).
 #[test]
 fn null_transformations_on_another_ellipsoid_stop_where_proj_stops() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
@@ -213,7 +213,7 @@ fn null_transformations_on_another_ellipsoid_stop_where_proj_stops() {
     };
     for (wkt, (x, y), (lon, lat), ballpark) in [
         (geogcs("GCS_ETRF_1989", "D_ETRF_1989"), (10.955, 58.995), (10.955, 58.995_002_339_885_04), Some(false)),
-        (geogcs("NAD83(CSRS)v6", "North_American_Datum_of_1983_(CSRS)_version_6"), (-90.87, 62.335), (-90.87, 62.335), None),
+        (geogcs("NAD83(CSRS)v6", "North_American_Datum_of_1983_(CSRS)_version_6"), (-90.87, 62.335), (-90.87, 62.335), Some(true)),
         (geogcs("GCS_Greenland_1996", "D_Greenland_1996"), (-33.505, 71.7), (-33.505, 71.7), Some(true)),
         (with_id("Greenland_1996"), (-33.505, 71.7), (-33.505, 71.7), Some(true)),
         (geogcs("GCS_GR96", "D_GR96"), (-33.505, 71.7), (-33.505, 71.700_001_578_126_53), Some(false)),
@@ -223,7 +223,10 @@ fn null_transformations_on_another_ellipsoid_stop_where_proj_stops() {
         let (a, b) = t.transform(x, y).unwrap();
         assert!((a - lon).abs() < 1e-9 && (b - lat).abs() < 1e-9, "{wkt}: ({a}, {b}), PROJ ({lon}, {lat})");
         if let Some(ballpark) = ballpark {
-            assert_eq!(t.operation_at(x, y, 0.0).unwrap().unwrap().ballpark, ballpark, "{wkt}");
+            let op = t.operation_at(x, y, 0.0).unwrap().unwrap();
+            assert_eq!(op.ballpark, ballpark, "{wkt}");
+            // A ballpark's accuracy is unknown, as PROJ gives it.
+            assert!(!ballpark || op.accuracy.is_none(), "{wkt}: {op:?}");
         }
     }
 }

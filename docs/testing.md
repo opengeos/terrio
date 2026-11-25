@@ -2078,7 +2078,8 @@ Monte Mario (Rome); NAD83(2011) on a renamed datum, which terrio reads as no cod
 Transverse Mercator CRSs without code on NAD83, ED50, DHDN, OSGB36 and Monte Mario (Rome) given as
 WKT 1 `GEOGCS` and WKT 2 `BASEGEOGCRS`, DHDN / 3-degree Gauss-Kruger zone 3 with another false
 easting, and renamed ESRI WKTs with an ID of an authority PROJ does not know (`LOCAL`), which PROJ
-places by the code's own transformations. So do the WKTs it resolves (WKT 2 without IDs, WKT 2 with
+places by the first CRS of the datum with transformations (the code's own, but ONGD14's geocentric
+CRS's). So do the WKTs it resolves (WKT 2 without IDs, WKT 2 with
 the datum's ID). WKT 1 with the datum's `AUTHORITY` alone falls under one or the other, by its name.
 The WKTs are variants of the 16 geographic CRSs whose ESRI or renamed WKT PROJ places through an
 intermediate datum (Monte Mario (Rome), Tokyo 1892, DHDN, ...), of every 25th EPSG geographic 2D

@@ -17,10 +17,10 @@
 //! and in 2D; and between compound CRSs of one horizontal CRS. Each case is a point and where
 //! `Transformer.from_crs(src, dst, always_xy=True).transform` places it. Tolerance: 1 mm.
 //!
-//! [`PENDING`] cases are placed by a rule terrio does not follow yet: PROJ runs the only
-//! transformation between two vertical CRSs outside its area too, as `proj_trans` checks no area
-//! when there is one operation. Belfast height to Malin Head height (1) (a 0.037 m offset, for
-//! Northern Ireland) is run at the centre of Ireland; terrio keeps the height there.
+//! PROJ runs the only transformation between two vertical CRSs outside its area too, where it holds
+//! the compound CRSs' area of interest and so is listed alone, as `proj_trans` checks no area
+//! when there is one operation: Belfast height to Malin Head height (1) (a 0.037 m offset, for
+//! Northern Ireland) at the centre of Ireland (#1012 item 69).
 use terrio_crs::{SpatialRef, TransformOptions, Transformer};
 
 fn offline() {
@@ -37,9 +37,6 @@ fn transformer(src: &str, dst: &str, opts: &TransformOptions) -> Result<Transfor
 fn metres(a: (f64, f64), b: (f64, f64), geographic: bool) -> f64 {
     if geographic { ((a.0 - b.0) * b.1.to_radians().cos()).hypot(a.1 - b.1) * 111_195.0 } else { (a.0 - b.0).hypot(a.1 - b.1) }
 }
-
-/// What terrio does not follow yet (see the module's doc comment).
-const PENDING: [(&str, &str); 2] = [("EPSG:12229", "EPSG:12230"), ("EPSG:12230", "EPSG:12229")];
 
 #[test]
 fn compound_crss_are_placed_as_proj_places_them() {
@@ -63,10 +60,7 @@ fn compound_crss_are_placed_as_proj_places_them() {
         let d = metres(got, (ex, ey), geographic);
         let dz = height.zip(ez).map_or(0.0, |(a, b)| (a - b).abs());
         assert!(d.is_finite() && dz.is_finite(), "{src} -> {dst} returned non-finite coordinates: {got:?}, {height:?}");
-        let off = d > 1e-3 || dz > 1e-3;
-        if PENDING.contains(&(src, dst)) {
-            assert!(off, "{src} -> {dst} is now placed as PROJ places it: remove it from PENDING");
-        } else if off {
+        if d > 1e-3 || dz > 1e-3 {
             wrong.push(format!("{src} -> {dst} ({x}, {y}, {z:?}): {d:.4} m, height {dz:.4} m"));
         }
         checked += 1;

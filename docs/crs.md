@@ -722,9 +722,10 @@ the CRS's own registered transformations keep their accuracy. A renamed Monte Ma
 goes through Monte Mario, 72 m from EPSG:4806's own transformation, and a renamed Georgia Geodetic
 Datum (EPSG:10831) through Pulkovo 1942, 7 m away. A prime meridian in grads (Carthage (Paris),
 EPSG:4816) is not PROJ's registered one to the last digit, so PROJ rotates the longitudes instead,
-without the ballpark, and the accuracies are kept. One step is not followed yet: from a WKT with an
-ID of an authority PROJ does not know (`AUTHORITY["LOCAL","1"]`), PROJ's pivot takes only the first
-of the datum's CRSs with transformations; terrio places it by the code.
+without the ballpark, and the accuracies are kept. From a WKT with an ID of an authority PROJ does
+not know (`AUTHORITY["LOCAL","1"]`), PROJ's pivot takes only the first of the datum's CRSs with
+transformations, in order of code, and so does terrio: ONGD14 renamed goes by its geocentric CRS's
+"ONGD14 to WGS 84 (1)", 1.2 m from the code's placement (#1012 item 7).
 terrio also does not follow PROJ for an ESRI ATF (Paris) (EPSG:4901) WKT without a code. PROJ takes
 IGNF's ATIG geocentric chain, which applies the Paris prime meridian twice and lands 178 km from
 PROJ's own placement of EPSG:4901. terrio, which has no IGNF transformations, identifies the WKT as
@@ -733,7 +734,11 @@ EPSG:4901 and places it as PROJ places EPSG:4901 (opengeos/terrio#1012).
 `Transformer::operation_at(x, y, z)` returns the transformations `transform_3d` runs for a point,
 as PROJ's `proj_trans_get_last_used_operation`: their names, summed accuracy, grids and whether one
 is a ballpark, or `None` between CRSs of one datum. EPSG's null transformations (`SWEREF99 to WGS
-84 (1)`, 1 m) and their concatenations are named, as by PROJ, not reported as a ballpark.
+84 (1)`, 1 m) and their concatenations are named, as by PROJ, not reported as a ballpark. A
+concatenation PROJ's database registers under a name of its own is named so (`NTF (Paris) to WGS
+84 (1)`, not its steps `NTF (Paris) to NTF (1) + NTF to WGS 84 (1)`, #1012 item 54). A
+transformation between geocentric CRSs on another ellipsoid than its datum's (below) is reported
+as the ballpark PROJ frames it with, of unknown accuracy (item 56).
 Conversions (projections, units) are not named, and geoid models are named without PROJ's EPSG index (`WGS 84 to EGM96 height`).
 
 ```rust
@@ -917,7 +922,11 @@ or chained through an intermediate vertical CRS (DHHN92 to SNN76 through EVRF200
 axis directions (depths included) and units. For each point, the most accurate transformation
 whose area holds it is used, PROJ's way: one interpolating in another datum's geographic CRS
 counts the accuracy of the horizontal transformation to it (both ways), and is evaluated there.
-Where none applies, heights are kept. Vertical CRSs of one datum (NAVD88 height in metres and in
+Where none applies, heights are kept, but for the only transformation PROJ lists between two
+EPSG compound CRSs (one whose area holds the CRSs' common area and needs no grid, so PROJ drops its
+ballpark), which `proj_trans` runs everywhere: Belfast height to Malin Head height (1) between
+ETRS89-IRE + Malin Head height and + Belfast height (EPSG:12229, 12230), at the centre of Ireland
+too (#1012 item 69). Vertical CRSs of one datum (NAVD88 height in metres and in
 US survey feet) only convert units.
 
 ```sh

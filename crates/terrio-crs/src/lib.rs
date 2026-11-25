@@ -2292,6 +2292,9 @@ pub struct Transformer {
     /// each with the horizontal route from the source to the geographic CRS it interpolates in,
     /// when that is on another datum.
     vertical_ops: Vec<(std::sync::Arc<datum::Op>, Option<route::Route>)>,
+    /// The intersection of two EPSG compound CRSs' areas, PROJ's area of interest for the
+    /// operations it lists between them.
+    compound_area: Option<[f64; 4]>,
     /// The source's and target's vertical CRSs when `vertical_ops` are listed between them, and
     /// the transformations PROJ lists between them when every grid can be found (for
     /// [`Transformer::best_operation_grids_at`]), built on first use.
@@ -2675,6 +2678,10 @@ impl Transformer {
             heights,
             motion,
             vertical_ops,
+            compound_area: {
+                let area = |c: &SpatialRef| c.epsg.and_then(epsg::compound).and_then(|k| k.area);
+                area(src).zip(area(dst)).and_then(|(a, b)| route::intersection(&a, &b))
+            },
             same_vertical_datum,
             ballpark_heights,
             vertical_codes,
@@ -3411,7 +3418,14 @@ impl Transformer {
         let mut candidates: Vec<(usize, f64)> = ops
             .iter()
             .enumerate()
-            .filter(|(_, (op, _))| op.contains(dlon, dlat))
+            // The only one also outside its area where it holds the CRSs' area of interest and
+            // needs no grid: PROJ then lists it alone, without the ballpark, and `proj_trans`
+            // checks no area for a single operation (Belfast height to Malin Head height (1),
+            // #1012 item 69).
+            .filter(|(_, (op, _))| {
+                op.contains(dlon, dlat)
+                    || (ops.len() == 1 && !op.needs_grids() && self.compound_area.is_some_and(|a| route::contains(&op.bounds, &a)))
+            })
             .map(|(i, (op, route))| {
                 let accuracy = match route {
                     None => op.accuracy,

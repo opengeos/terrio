@@ -20,9 +20,10 @@ always_xy=True).transform``: to WGS 84, from WGS 84 (the point in WGS 84), and, 
 ETRS89, NAD83 and ETRS89 / UTM zone 32N. ``by_code`` is the same with the EPSG code in place of the
 WKT.
 
-``pending`` cases are those PROJ places by a step terrio does not follow yet: ONGD14 renamed with
-an ID of an authority PROJ does not know (``AUTHORITY["LOCAL","1"]``), from which PROJ's datum
-pivot takes only the geocentric CRS's transformation. EPSG:4901 (ATF (Paris)) is left out: PROJ's
+``pending`` cases are those PROJ places by a step terrio does not follow yet (none since
+opengeos/terrio#1012, item 7: ONGD14 renamed with an ID of an authority PROJ does not know,
+``AUTHORITY["LOCAL","1"]``, from which PROJ's datum pivot takes only the geocentric CRS's
+transformation, is placed so). EPSG:4901 (ATF (Paris)) is left out: PROJ's
 placement of its ESRI WKT applies the Paris prime meridian twice, which terrio does not copy
 (``tests/grads_and_prime_meridians.rs`` checks it is placed as PROJ places EPSG:4901).
 
@@ -97,7 +98,7 @@ CUSTOM_BASES = [4269, 4230, 4314, 4277, 4806]
 CHANGED = 31467
 DEG = 'ANGLEUNIT["degree",0.0174532925199433]'
 # What terrio does not follow yet (see the module's doc comment).
-PENDING = {"7373 esri gcs renamed, local id"}
+PENDING = set()
 
 
 # A vertical CRS PROJ has no transformation for, which leaves the horizontal one alone.

@@ -86,7 +86,11 @@ pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
                         OpKind::Vertical => crate::is_geoid_model(op),
                     } =>
             {
-                let names = step_names(op, reverse);
+                // The name of a concatenation the database registers, else its steps'.
+                let names = match &op.reported {
+                    Some(r) => vec![if reverse { inverse_name(r) } else { r.to_string() }],
+                    None => step_names(op, reverse),
+                };
                 let name = if names.is_empty() {
                     let unnamed = match kind {
                         OpKind::Datum => "transformation to WGS 84",
@@ -239,7 +243,7 @@ fn intersects(a: &[f64; 4], b: &[f64; 4]) -> bool {
 }
 
 /// Whether area `a` holds area `b`, as PROJ's `GeographicBoundingBox::contains`.
-fn contains(a: &[f64; 4], b: &[f64; 4]) -> bool {
+pub(crate) fn contains(a: &[f64; 4], b: &[f64; 4]) -> bool {
     let [w, s, e, n] = *a;
     let [ow, os, oe, on] = *b;
     if !(s <= os && n >= on) {
@@ -259,7 +263,7 @@ fn contains(a: &[f64; 4], b: &[f64; 4]) -> bool {
 
 /// The intersection of two areas, as PROJ's `GeographicBoundingBox::intersection`: `None` when
 /// they do not overlap; the larger part when it has two across the antimeridian.
-fn intersection(a: &[f64; 4], b: &[f64; 4]) -> Option<[f64; 4]> {
+pub(crate) fn intersection(a: &[f64; 4], b: &[f64; 4]) -> Option<[f64; 4]> {
     let [w, s, e, n] = *a;
     let [ow, os, oe, on] = *b;
     if n < os || s > on {
@@ -449,7 +453,9 @@ impl Route {
             )
         };
         // A CRS PROJ does not resolve to its EPSG CRS: its search beyond the CRSs' own.
-        let searching = src.unresolved().is_some() || dst.unresolved().is_some();
+        // Not into a WKT with an ID of an authority PROJ does not know, which it takes for the
+        // CRS of its name.
+        let searching = src.unresolved().is_some() || dst.unresolved().is_some_and(|u| !u.foreign_id);
         let searched = |kind: Kind| match (kind, src.geog(), dst.geog()) {
             (Kind::List(l), Some(a), Some(b)) if searching => unresolved_search(l, a, b, ctx),
             (kind, ..) => kind,
@@ -993,7 +999,7 @@ fn crs_extents(src: &Def, dst: &Def) -> Vec<[f64; 4]> {
 /// (PROJ leaves a ballpark alone out of the chain). A WKT with an ID of an authority PROJ does
 /// not know (`AUTHORITY["LOCAL","1"]`) is taken for resolved, as PROJ's search through
 /// intermediate datums finds nothing for it; from it, PROJ's datum pivot also takes only the
-/// first CRS with transformations, which terrio does not follow yet (opengeos/terrio#1012).
+/// first CRS with transformations.
 fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, ctx: &OperationContext) -> Kind {
     let (src, dst, aoi, all) = (ctx.src, ctx.dst, ctx.aoi(), ctx.all);
     let reg = epsg::registry();
@@ -1043,6 +1049,35 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, ctx: &OperationContext) -> 
         }
         found
     };
+    // From a WKT with an ID of an authority PROJ does not know, taken for the CRS of its name:
+    // PROJ's datum pivot takes the first CRS of the datum with transformations, in order of code,
+    // whose alone (ONGD14's geocentric CRS, 7371, before 7373: "ONGD14 to WGS 84 (1)"), or the
+    // CRS's own when it comes first (#1012 item 7).
+    if src.unresolved().is_some_and(|u| u.foreign_id) {
+        let mut pivoted = false;
+        for code in reg.by_datum.get(&ga.datum).into_iter().flatten().copied() {
+            if code == a {
+                if list.iter().any(|l| !l.op.ballpark) {
+                    break;
+                }
+                continue;
+            }
+            let found = from(code, gb.datum, true);
+            if !found.is_empty() {
+                list.retain(|l| l.op.ballpark);
+                list.extend(found.into_iter().map(|(i, reverse)| Leg { op: reg.ops[i].op.clone(), reverse }));
+                pivoted = true;
+                break;
+            }
+        }
+        let mut kind = Kind::List(list);
+        if pivoted {
+            sort_legs(&mut kind, aoi);
+        } else {
+            resort(&mut kind, a, b, aoi);
+        }
+        return kind;
+    }
     // The datum pivot from one side: through the other CRSs of its datum, in order of code. One
     // named as the WKT's code is tried first, alone: PROJ's datum pivot takes those named as the
     // WKT first and stops at the first with transformations, its own CRS's too (so ESRI's
@@ -1226,6 +1261,7 @@ fn ranked(reg: &epsg::Registry, found: Vec<Found>, ctx: &OperationContext) -> Ve
             keeps_height: o1.keeps_height && o2.keeps_height,
             keeps_wgs84_leg_height: false,
             keeps_height_3d: false,
+            reported: None,
             steps: o1.steps.iter().chain(&o2.steps).cloned().collect(),
             name,
         };
