@@ -531,12 +531,12 @@ fn tool_list() -> Vec<Value> {
             let mut description = c.render_long_help().to_string().trim_end().to_string();
             // A group of subcommands (`vsi list`, `vsi sozip create`...): each one's help too.
             push_subcommand_help(&mut description, &name, &mut c);
+            if name == "zonal-stats" {
+                description.push_str("\n\nOver MCP, `--inputs` tables are refused: pass each raster as a `--raster` argument.");
+            }
             // The help offers `@FILE` input lists, which tool calls refuse (`expand_file_lists`).
             if offers_file_lists(&mut c) {
                 description.push_str("\n\nOver MCP, `@FILE` lists are refused: pass each input as an item of `args`.");
-            }
-            if name == "zonal-stats" {
-                description.push_str("\n\nOver MCP, `--inputs` tables are refused: pass each raster as a `--raster` argument.");
             }
             json!({
                 "name": name,
