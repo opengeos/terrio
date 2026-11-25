@@ -99,8 +99,8 @@ fn tab_seamless_rejects_parent_traversal_absolute_paths_and_cycles() {
 
 #[test]
 fn deeply_nested_xml_wkt_and_mif_return_errors_without_stack_overflow() {
-    // Deeply nested KML (>256 levels) fails cleanly.
-    let deep_kml = format!("<kml>{}{}</kml>", "<a>".repeat(500), "</a>".repeat(500));
+    // Deeply nested KML (>1024 levels) fails cleanly.
+    let deep_kml = format!("<kml>{}{}</kml>", "<a>".repeat(1500), "</a>".repeat(1500));
     assert!(open_vector_bytes(deep_kml.into_bytes(), "deep.kml", &Default::default()).is_err());
 
     // Deeply nested WKT GEOMETRYCOLLECTION (>64 levels) fails cleanly.
