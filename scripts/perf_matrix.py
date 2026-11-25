@@ -21,10 +21,10 @@ time ratios by axis, so a round of optimization starts from the slow areas, not 
 `--base DIR` times a second terrio build (`pip install --target DIR` of its wheel) in the same
 run, interleaved with this one and GDAL: the report then gives this build's time against the base.
 
-Formats: geotiff, zarr, geoparquet. Needs terrio's Python module (a release build: `maturin develop
---release` in python/), GDAL's Python bindings, pyogrio (GeoParquet) and zarr-python 3 (Zarr
-fixtures) in one environment. Fixtures and results stay in --dir, out of the repository.
-docs/benchmarks.md describes the method.
+Formats: geotiff, zarr, geoparquet, geopackage. Needs terrio's Python module (a release build:
+`maturin develop --release` in python/), GDAL's Python bindings, pyogrio (GeoParquet, GeoPackage)
+and zarr-python 3 (Zarr fixtures) in one environment. Fixtures and results stay in --dir, out of
+the repository. docs/benchmarks.md describes the method.
 """
 
 from __future__ import annotations
@@ -593,11 +593,17 @@ class GeoParquet:
         }
 
     @staticmethod
-    def make(out: Path) -> None:
-        """Writes the format's fixtures that are not there yet, and its warm-up file.
+    def sources(out: Path) -> dict[str, Path]:
+        """Writes the FlatGeobuf files the vector fixtures are translated from, if not there yet.
+
+        Clustered features (fields or buildings around 200 towns) with `id`, `value`, `class` and
+        `year`, in `id` order, as many of each geometry as GeoParquet's largest fixture of it has.
 
         Args:
             out: The directory of the format's fixtures.
+
+        Returns:
+            The file of each geometry: `polygon`, `point` and `line`.
         """
         import numpy as np
         from osgeo import gdal, ogr, osr
@@ -652,6 +658,19 @@ class GeoParquet:
                 finally:
                     lyr = None
                     ds = None
+        return sources
+
+    @staticmethod
+    def make(out: Path) -> None:
+        """Writes the format's fixtures that are not there yet, and its warm-up file.
+
+        Args:
+            out: The directory of the format's fixtures.
+        """
+        from osgeo import gdal
+
+        gdal.UseExceptions()
+        sources = GeoParquet.sources(out)
         for name, (geom, rows, rg, comp, enc, cover, sort) in GeoParquet.FIXTURES.items():
             path = out / f"{name}.parquet"
             if path.exists():
@@ -775,7 +794,257 @@ class GeoParquet:
         return open_, items, summary, warm
 
 
-FORMATS = {"geotiff": GeoTiff, "zarr": Zarr, "geoparquet": GeoParquet}
+# =============================================================================================
+# GeoPackage (vector)
+
+
+def _varint(b: bytes, i: int) -> int:
+    """An SQLite variable-length integer.
+
+    Args:
+        b: The bytes.
+        i: Where the integer starts.
+
+    Returns:
+        Its value.
+    """
+    v = 0
+    for k in range(8):
+        v = (v << 7) | (b[i + k] & 0x7F)
+        if b[i + k] < 0x80:
+            return v
+    return (v << 8) | b[i + 8]
+
+
+class GeoPackage:
+    """GeoPackage feature tables (by geometry, R-tree and spatial order of the rows) and their reads.
+
+    terrio reads a local file a page at a time (`terrio.open_stream`) and downloads a URL whole
+    first, where GDAL reads pages by range requests. Its `where` is `terrio.sql`, which reads the
+    whole file through `terrio.open_vector`.
+    """
+
+    # name: (geometry, rows, R-tree, rows sorted along a Hilbert curve)
+    FIXTURES = {
+        "poly_rtree_sorted": ("polygon", 400_000, True, True),
+        "poly_rtree_unsorted": ("polygon", 400_000, True, False),
+        "poly_nortree_sorted": ("polygon", 400_000, False, True),
+        "line_rtree_sorted": ("line", 400_000, True, True),
+        "point_rtree_sorted": ("point", 2_000_000, True, True),
+        "point_rtree_unsorted": ("point", 2_000_000, True, False),
+    }
+    # GeoParquet's: every column; the geometry and two attributes; a bbox of 1% of the extent; 16
+    # bboxes; 4 threads reading 4 of the 16 each; the attribute filter `id < 4000`.
+    ACCESS = ["full", "columns", "bbox", "bbox16", "threads4", "where"]
+    EXT = ".gpkg"
+    LAYER = "data"
+
+    @staticmethod
+    def axes(name: str) -> dict:
+        """The values of the matrix's axes for a fixture.
+
+        Args:
+            name: The fixture's name.
+
+        Returns:
+            Its `codec`, `dtype` and `layout`.
+        """
+        geom, rows, rtree, sort = GeoPackage.FIXTURES[name]
+        return {
+            "codec": "rtree" if rtree else "no rtree",
+            "dtype": geom,
+            "layout": f"{rows // 1000}k rows/{'sorted' if sort else 'unsorted'}",
+        }
+
+    @staticmethod
+    def make(out: Path) -> None:
+        """Writes the format's fixtures that are not there yet, and its warm-up file.
+
+        Args:
+            out: The directory of the format's fixtures.
+        """
+        from osgeo import gdal
+
+        gdal.UseExceptions()
+        sources = GeoParquet.sources(out)  # rows in `id` order: unsorted in space
+        for name, (geom, rows, rtree, sort) in GeoPackage.FIXTURES.items():
+            path = out / f"{name}.gpkg"
+            if path.exists():
+                continue
+
+            def write(tmp, src=str(sources[geom]), rows=rows, rtree=rtree, sort=sort, name=name):
+                lco = [f"SPATIAL_INDEX={'YES' if rtree else 'NO'}"]
+                if not sort:
+                    gdal.VectorTranslate(str(tmp), src, format="GPKG", layerName=GeoPackage.LAYER, layerCreationOptions=lco, limit=rows)
+                    return
+                # FlatGeobuf's spatial index orders the features along a Hilbert curve.
+                hilbert = f"/vsimem/{name}.fgb"
+                try:
+                    gdal.VectorTranslate(hilbert, src, format="FlatGeobuf", layerCreationOptions=["SPATIAL_INDEX=YES"], limit=rows)
+                    gdal.VectorTranslate(str(tmp), hilbert, format="GPKG", layerName=GeoPackage.LAYER, layerCreationOptions=lco)
+                finally:
+                    gdal.Unlink(hilbert)
+
+            publish(path, write)
+            print(f"{path.name}: {path.stat().st_size >> 20} MB", flush=True)
+        publish(out / "_warmup.gpkg", lambda tmp: gdal.VectorTranslate(str(tmp), str(sources["point"]), format="GPKG", layerName=GeoPackage.LAYER, limit=100))
+
+    @staticmethod
+    def leaves(f, page_size: int, root: int) -> list[tuple[float, int, tuple[int, ...]]]:
+        """The leaf pages of a table b-tree, in rowid order, from its interior pages.
+
+        Args:
+            f: The database file, opened in binary.
+            page_size: Its page size.
+            root: The table's root page.
+
+        Returns:
+            `(largest rowid it can hold, page, interior pages above it)` of each leaf.
+        """
+        out = []
+
+        def walk(page: int, hi: float, up: tuple[int, ...]) -> None:
+            f.seek((page - 1) * page_size)
+            p = f.read(page_size)
+            h = 100 if page == 1 else 0  # page 1 starts with the file header
+            if p[h] == 0x0D:
+                out.append((hi, page, up))
+                return
+            if p[h] != 0x05:
+                raise ValueError(f"page {page} is not a table b-tree page")
+            n, right = struct.unpack_from(">H", p, h + 3)[0], struct.unpack_from(">I", p, h + 8)[0]
+            for i in range(n):
+                cell = struct.unpack_from(">H", p, h + 12 + 2 * i)[0]
+                # (left child, key): the child holds the rowids up to the key
+                walk(struct.unpack_from(">I", p, cell)[0], _varint(p, cell + 4), (*up, page))
+            walk(right, hi, (*up, page))
+
+        walk(root, math.inf, ())
+        return out
+
+    @staticmethod
+    def rtree(con, name: str, boxes) -> tuple[set[int], int]:
+        """The rowids an R-tree gives for boxes, and the bytes of the nodes it visits for them.
+
+        Args:
+            con: The database's sqlite3 connection.
+            name: The R-tree (`rtree_<table>_<column>`), read from its `_node` table.
+            boxes: `(min_x, min_y, max_x, max_y)` of each box.
+
+        Returns:
+            The rowids whose boxes intersect any of them, and the visited nodes' bytes.
+        """
+        node = lambda n: con.execute(f'SELECT data FROM "{name}_node" WHERE nodeno = ?', (n,)).fetchone()[0]  # noqa: E731
+        root = node(1)
+        ids, need, stack = set(), 0, [(root, struct.unpack_from(">H", root)[0])]  # (node, height)
+        while stack:
+            data, height = stack.pop()
+            need += len(data)
+            for i in range(struct.unpack_from(">H", data, 2)[0]):
+                # (rowid or child node, min x, max x, min y, max y), big-endian float32 bounds
+                key, x0, x1, y0, y1 = struct.unpack_from(">q4f", data, 4 + 24 * i)
+                if any(x0 <= bx1 and x1 >= bx0 and y0 <= by1 and y1 >= by0 for bx0, by0, bx1, by1 in boxes):
+                    if height:
+                        stack.append((node(key), height - 1))
+                    else:
+                        ids.add(key)
+        return ids, need
+
+    @staticmethod
+    def meta(path: Path, access: str) -> dict | None:
+        """What a read of a fixture needs, from the fixture's own b-tree and R-tree pages.
+
+        The schema's pages, then: a bbox read through an R-tree, the nodes it visits and the leaf
+        pages (and the interior pages above them) of the rows it gives; any other read, the whole
+        table, as the fixtures have no attribute index and a row's columns share its page.
+
+        Args:
+            path: The fixture.
+            access: The access pattern.
+
+        Returns:
+            `need_bytes`, or `None` when the access does not apply.
+        """
+        import bisect
+        import sqlite3
+
+        con = sqlite3.connect(f"file:{path}?immutable=1", uri=True)  # read only: never writes the fixture
+        try:
+            page_size = con.execute("PRAGMA page_size").fetchone()[0]
+            roots = dict(con.execute("SELECT name, rootpage FROM sqlite_master WHERE type = 'table'"))
+            gcol = con.execute("SELECT column_name FROM gpkg_geometry_columns WHERE table_name = ?", (GeoPackage.LAYER,)).fetchone()[0]
+            with open(path, "rb") as f:
+                leaves = GeoPackage.leaves(f, page_size, roots[GeoPackage.LAYER])
+            boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
+            rtree = f"rtree_{GeoPackage.LAYER}_{gcol}"
+            # page 1 (sqlite_master), gpkg_contents, gpkg_geometry_columns, gpkg_spatial_ref_sys
+            need = 4 * page_size
+            if boxes and f"{rtree}_node" in roots:
+                ids, nodes = GeoPackage.rtree(con, rtree, boxes)
+                keys = [hi for hi, _, _ in leaves]
+                hit = {bisect.bisect_left(keys, i) for i in ids}
+                pages = {leaves[k][1] for k in hit} | {p for k in hit for p in leaves[k][2]}
+                need += nodes + page_size * len(pages)
+            else:
+                need += page_size * len({p for _, leaf, up in leaves for p in (leaf, *up)})
+        finally:
+            con.close()
+        return {"need_bytes": need}
+
+    @staticmethod
+    def reader(tool: str, access: str, meta: dict):
+        """How a tool reads a fixture in an access pattern.
+
+        Args:
+            tool: `terrio` or `gdal`.
+            access: The access pattern.
+            meta: What `meta` returned for the fixture.
+
+        Returns:
+            `(open, items, check, warm)`: `open(path)` opens the source, each item reads one part of
+            it, `check` turns an item's result into `(sum, count)` after the timed read, and `warm` is the
+            open and read of the warm-up file.
+        """
+        import pyarrow as pa
+
+        if tool == "terrio":
+            import terrio
+
+            def open_(p):
+                return p  # each read opens the file: nothing is held between reads
+
+            def read(p, **kw):
+                return pa.table(terrio.open_stream(p, **kw))
+        else:
+            import pyogrio as po
+
+            def open_(p):
+                return p if p.startswith("/") else "/vsicurl/" + p
+
+            def read(p, **kw):
+                return po.read_arrow(p, **kw)[1]
+
+        def summary(table) -> tuple[float, int]:
+            """(sum of `id`, or of `value` when `id` is not read, row count)."""
+            col = "id" if "id" in table.column_names else "value"
+            return float(table.column(col).to_numpy().sum(dtype="float64")), table.num_rows
+
+        boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
+        if boxes:
+            items = [lambda p, b=b: read(p, bbox=b) for b in boxes]
+        elif access == "columns":
+            items = [lambda p: read(p, columns=GeoParquet.COLUMNS)]
+        elif access == "where" and tool == "terrio":  # terrio's stream has no `where`: terrio's SQL
+            items = [lambda p: pa.table(terrio.sql(p, f"SELECT * FROM {GeoPackage.LAYER} WHERE {GeoParquet.WHERE}"))]
+        elif access == "where":
+            items = [lambda p: read(p, where=GeoParquet.WHERE)]
+        else:
+            items = [read]
+        warm = (open_, read)
+        return open_, items, summary, warm
+
+
+FORMATS = {"geotiff": GeoTiff, "zarr": Zarr, "geoparquet": GeoParquet, "geopackage": GeoPackage}
 
 # The source files each format's reads go through, as fnmatch patterns from the repository root
 # (`*` crosses directories): a pull request that changes one is worth that format's matrix. The
@@ -821,6 +1090,17 @@ PATHS = {
         "python/src/stream.rs",
         "python/src/arrow.rs",
         "python/python/terrio/pyogrio/*",
+    ],
+    "geopackage": [
+        "crates/terrio/src/drivers/vector/gpkg_read.rs",
+        "crates/terrio/src/drivers/vector/wkb.rs",
+        "crates/terrio/src/drivers/sqlite.rs",
+        "crates/terrio/src/drivers/sqlite_repack.rs",
+        "crates/terrio/src/stream/*",
+        "crates/terrio/src/arrow.rs",
+        "crates/terrio/src/ops/sql.rs",
+        "python/src/stream.rs",
+        "python/src/arrow.rs",
     ],
 }
 
@@ -918,10 +1198,13 @@ class _Handler(SimpleHTTPRequestHandler):
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
             self.end_headers()
             if not head:
+                # In 1 MiB pieces: a worker inherits the runner's peak RSS (`ru_maxrss` survives
+                # exec), so whole-file answers held in memory here would inflate every worker's.
                 with open(path, "rb") as f:
                     f.seek(start)
-                    self.wfile.write(f.read(end - start + 1))
-                    sent = end - start + 1
+                    while sent < end - start + 1 and (piece := f.read(min(1 << 20, end - start + 1 - sent))):
+                        self.wfile.write(piece)
+                        sent += len(piece)
         finally:
             with _lock:
                 _log.append((t0, time.perf_counter(), sent, self.path))
@@ -1130,7 +1413,7 @@ def run(args: argparse.Namespace) -> None:
         rows = []
         for case_index, (name, access, source) in enumerate(itertools.product(names, args.access or fmt.ACCESS, sources)):
             path = data / f"{name}{fmt.EXT}"
-            label = "where/sql-vs-filter" if args.format == "geoparquet" and access == "where" else access
+            label = "where/sql-vs-filter" if args.format in ("geoparquet", "geopackage") and access == "where" else access
             try:
                 meta = fmt.meta(path, access)
             except Exception as exc:
