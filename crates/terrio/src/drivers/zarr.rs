@@ -768,8 +768,9 @@ thread_local! {
     static BLOSC_SCRATCH: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
 }
 
-/// Decompresses the `nblocks` blocks of a Blosc chunk `src` into `out`, unshuffling them
-/// (`shuffles`: byte, bit) through the scratch `block`, at least a block long when used.
+/// Decompresses the `nblocks` blocks of a Blosc chunk `src` into `out`, unshuffling them (the
+/// flags `byte_shuffle`, `bit_shuffle`) through the scratch `block`, at least a block long when
+/// used.
 #[allow(clippy::too_many_arguments)]
 fn blosc_blocks(
     src: &[u8],
@@ -3394,6 +3395,33 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A Blosc block split into one stream per byte of its elements is refused when its size is
+    /// not a multiple of its stream count, before any stream is read, and a short stream is
+    /// reported with the bytes decoded up to its end.
+    #[test]
+    fn blosc_split_blocks_refuse_uneven_sizes_and_short_streams() {
+        // Version 2, LZ4 (compressor 1), split (no 0x10 flag), unshuffled; one block.
+        let chunk = |typesize: u8, size: u32, streams: &[&[u8]]| {
+            let mut src = vec![2, 1, 1 << 5, typesize];
+            for v in [size, size, 0, 20] {
+                src.extend(v.to_le_bytes());
+            }
+            for s in streams {
+                src.extend((s.len() as u32).to_le_bytes());
+                src.extend(*s);
+            }
+            src
+        };
+        // 400 bytes of 3-byte elements: 133 per stream, one byte left over.
+        let e = blosc_decompress(&chunk(3, 400, &[]), 1 << 20).unwrap_err().to_string();
+        assert!(e.contains("a block of 400 bytes in 3 streams"), "{e}");
+        // 256 bytes of 2-byte elements: the first stream stored whole (128 bytes), the second an
+        // LZ4 stream of 10 bytes.
+        let short = lz4_flex::block::compress(&[7u8; 10]);
+        let e = blosc_decompress(&chunk(2, 256, &[&[1u8; 128], &short]), 1 << 20).unwrap_err().to_string();
+        assert!(e.contains("a block decompressing to 138 bytes, 256 expected"), "{e}");
     }
 
     /// Blosc's byte shuffle undone in [`blosc_decompress`]: byte `k` of element `e` is byte
