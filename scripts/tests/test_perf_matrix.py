@@ -105,7 +105,6 @@ def test_geoparquet_without_statistics_counts_all_row_groups(tmp_path):
     assert perf_matrix.GeoParquet.meta(path, "bbox")["need_bytes"] == expected
 
 
-
 def test_geopackage_pages_come_from_the_table_b_tree_and_the_r_tree(tmp_path):
     """Find every table page from the interior pages, and an R-tree's rows as SQLite does.
 
@@ -170,6 +169,7 @@ def test_http_ranges_larger_than_a_piece_are_served_whole_and_counted(tmp_path, 
     finally:
         server.shutdown()
         server.server_close()
+
 
 def test_metadata_errors_are_recorded_for_each_case(tmp_path, monkeypatch):
     """Keep a metadata failure from aborting the remaining benchmark cases.

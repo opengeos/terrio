@@ -934,7 +934,10 @@ class GeoPackage:
         Returns:
             The rowids whose boxes intersect any of them, and the visited nodes' bytes.
         """
-        node = lambda n: con.execute(f'SELECT data FROM "{name}_node" WHERE nodeno = ?', (n,)).fetchone()[0]  # noqa: E731
+
+        def node(n):
+            return con.execute(f'SELECT data FROM "{name}_node" WHERE nodeno = ?', (n,)).fetchone()[0]
+
         root = node(1)
         ids, need, stack = set(), 0, [(root, struct.unpack_from(">H", root)[0])]  # (node, height)
         while stack:
@@ -975,10 +978,15 @@ class GeoPackage:
             gcol = con.execute("SELECT column_name FROM gpkg_geometry_columns WHERE table_name = ?", (GeoPackage.LAYER,)).fetchone()[0]
             with open(path, "rb") as f:
                 leaves = GeoPackage.leaves(f, page_size, roots[GeoPackage.LAYER])
+                # The schema a read looks up: the GeoPackage tables present, every page of each.
+                schema = sum(
+                    len({p for _, leaf, up in GeoPackage.leaves(f, page_size, roots[t]) for p in (leaf, *up)})
+                    for t in ("gpkg_contents", "gpkg_geometry_columns", "gpkg_spatial_ref_sys", "gpkg_extensions", "gpkg_ogr_contents")
+                    if t in roots
+                )
             boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
             rtree = f"rtree_{GeoPackage.LAYER}_{gcol}"
-            # page 1 (sqlite_master), gpkg_contents, gpkg_geometry_columns, gpkg_spatial_ref_sys
-            need = 4 * page_size
+            need = (1 + schema) * page_size  # page 1 (sqlite_master) and the schema tables' pages
             if boxes and f"{rtree}_node" in roots:
                 ids, nodes = GeoPackage.rtree(con, rtree, boxes)
                 keys = [hi for hi, _, _ in leaves]
