@@ -67,24 +67,26 @@ struct Anchors {
 fn anchors(s: &SpatialRef) -> Anchors {
     let none = Anchors { geodetic: false, vertical: false };
     let Some(w) = s.wkt.as_deref().filter(|_| s.proj4.is_none()) else { return none };
-    if !crate::parsed::tree(w).is_some_and(|root| crate::model::dialect(w, &root) == crate::model::Dialect::Wkt2) {
+    let Some(root) = crate::parsed::tree(w).filter(|root| crate::model::dialect(w, root) == crate::model::Dialect::Wkt2) else {
         return none;
-    }
-    let upper = w.to_ascii_uppercase();
+    };
     let mut out = none;
-    // Each epoch belongs to the datum node opened last before it.
-    for (i, _) in upper.match_indices("ANCHOREPOCH[") {
-        let before = &upper[..i];
-        let last = |keys: &[&str]| keys.iter().filter_map(|k| before.rfind(k)).max();
-        let vertical = last(&["VDATUM[", "VERTICALDATUM[", "VRF["]);
-        let geodetic = last(&[",DATUM[", "[DATUM[", "GEODETICDATUM[", "TRF["]);
-        match (geodetic, vertical) {
-            (Some(g), Some(v)) if v > g => out.vertical = true,
-            (_, Some(_)) if geodetic.is_none() => out.vertical = true,
-            (Some(_), _) => out.geodetic = true,
-            _ => {}
+    // Each epoch belongs to the datum node it is a child of.
+    fn walk(node: &Node, out: &mut Anchors) {
+        if node.child("ANCHOREPOCH").is_some() {
+            if node.is(&["VDATUM", "VERTICALDATUM", "VRF"]) {
+                out.vertical = true;
+            } else if node.is(&["DATUM", "GEODETICDATUM", "TRF"]) {
+                out.geodetic = true;
+            }
+        }
+        for a in &node.args {
+            if let crate::wkt1::Arg::Node(n) = a {
+                walk(n, out);
+            }
         }
     }
+    walk(&root, &mut out);
     out
 }
 

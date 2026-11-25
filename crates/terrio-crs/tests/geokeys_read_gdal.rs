@@ -137,3 +137,23 @@ fn a_code_in_another_unit_keeps_its_vertical_crs() {
     let (x, _) = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).unwrap().transform(15.0, 50.0).unwrap();
     assert!((x - 1_640_419.947_506_561_4).abs() < 1e-3, "{x}");
 }
+
+/// Mercator 1SP off the equator (ProjNatOriginLatGeoKey 10°) is `+lat_ts` only at a scale of 1, as
+/// GDAL 3.12 reads it. At another ProjScaleAtNatOriginGeoKey, GDAL's CRS is one PROJ 9 cannot run
+/// ("Unsupported value for Latitude of natural origin"), so terrio places no point either rather
+/// than drop the scale.
+#[test]
+fn an_off_equator_mercator_1sp_at_another_scale_is_not_placed() {
+    let place = |scale: f64| {
+        let directory = [
+            1u16, 1, 0, 10, 1024, 0, 1, 1, 1025, 0, 1, 1, 2048, 0, 1, 4326, 3072, 0, 1, 32767, 3074, 0, 1, 32767, 3075, 0, 1, 7, 3076, 0,
+            1, 9001, 3080, 34736, 1, 0, 3081, 34736, 1, 1, 3092, 34736, 1, 2,
+        ];
+        SpatialRef::from_geokeys(&directory, &[10.0, 10.0, scale], b"")
+            .and_then(|crs| Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs)?.transform(12.0, 40.0))
+    };
+    // GDAL 3.12.1 with PROJ 9.7.1: (219278.728, 4765445.147).
+    let (x, y) = place(1.0).unwrap();
+    assert!((x - 219_278.728_136_306_08).abs() < 1e-3 && (y - 4_765_445.146_802_85).abs() < 1e-3, "({x}, {y})");
+    assert!(place(0.9).is_err());
+}

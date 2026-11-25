@@ -3106,7 +3106,7 @@ PROJ_CASES = {
     "compound_heights": {
         "compound_crss_are_placed_as_proj_places_them": (
             "EPSG compound CRSs to and from WGS 84 (3D, geocentric, 2D) and between compound CRSs of one horizontal CRS, without grids (1,766 cases)",
-            IDENTICAL, "PROJ 9.9.0 (pyproj, no grids): within 1 mm, heights too, Belfast height to Malin Head height (1) outside its area, which PROJ runs as the only operation",
+            TOLERANCE, "PROJ 9.9.0 (pyproj, no grids): within 1 mm, heights too, Belfast height to Malin Head height (1) outside its area, which PROJ runs as the only operation",
         ),
         "heights_through_the_ballpark_make_every_transformation_of_unknown_accuracy": (
             "EPSG:7405 from WGS 84 (3D) and (2D): the point, in 2D too, and the operation's accuracy and ballpark flag", IDENTICAL,

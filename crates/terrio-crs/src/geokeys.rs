@@ -797,7 +797,15 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
         // latitude of origin, which PROJ writes as `+lat_ts`.
         7 => match lat1 {
             Some(ts) => format!("merc +lon_0={lon0} +lat_ts={ts} {false_xy}"),
-            None if lat0 != 0.0 => format!("merc +lon_0={lon0} +lat_ts={lat0} {false_xy}"),
+            None if lat0 != 0.0 => {
+                // Off the equator only at a scale of 1: GDAL 3.12 reads other scales as a
+                // Mercator (variant A) PROJ 9 cannot run ("Unsupported value for Latitude of
+                // natural origin"), so the scale is not dropped into `+lat_ts`.
+                if k.double(SCALE_AT_NAT_ORIGIN).is_some_and(|s| s != 1.0) {
+                    return None;
+                }
+                format!("merc +lon_0={lon0} +lat_ts={lat0} {false_xy}")
+            }
             None => format!("merc +lon_0={lon0} +k={} {false_xy}", k.double(SCALE_AT_NAT_ORIGIN).unwrap_or(1.0)),
         },
         8 => format!("lcc +lat_1={} +lat_2={} +lat_0={lat0} +lon_0={lon0} {false_xy}", lat1?, lat2.or(lat1)?),
