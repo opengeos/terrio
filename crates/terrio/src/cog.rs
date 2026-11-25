@@ -3291,8 +3291,13 @@ impl TiffRaster {
             // fetched again for decoders the read does without.
             Source::Sparse(s) => Some(Reopened::Sparse(s.get_ref().file.quiet())),
             // Clones share the prefetched blocks and the connections, each with its own position.
+            // A prefetch larger than the block cache is fetched in batches as reads reach them:
+            // reads from several threads at once would evict each other's blocks before they are
+            // read, so its chunks are decoded on this thread, in file order.
             #[cfg(remote)]
-            Source::Http(r) => Some(Reopened::Http(r.clone())),
+            Source::Http(r) if r.prefetched_whole() => Some(Reopened::Http(r.clone())),
+            #[cfg(remote)]
+            Source::Http(_) => None,
         };
         let reopen = source.map(|source| {
             move || -> Result<Decoder<PatchedReader<Source>>> {
@@ -4604,6 +4609,50 @@ mod tests {
         }
         if crate::par::threads() > 1 {
             assert!(workers >= 1, "no read opened decoders for its workers over HTTP");
+        }
+    }
+
+    /// A read over HTTP of more tiles than the reader's block cache holds, under options set for
+    /// the reading thread only: its prefetch's batches are fetched as its reads reach them, each
+    /// byte once (no block is evicted before it is read), and the values are the file's.
+    #[cfg(remote)]
+    #[test]
+    fn http_reads_larger_than_the_block_cache_fetch_each_byte_once() {
+        let _serial = crate::block_cache::tests::cache_test_guard(0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiled.tif");
+        let (cols, rows) = (320, 288);
+        write_tiled_tiff(&path, (cols, rows, 3), sequence(DataType::U8, cols * rows * 3, 9), &[]);
+        let bytes = std::fs::read(&path).unwrap();
+        let (url, seen) = crate::http::test_server(bytes.clone());
+        let w = Window::full(cols, rows);
+        let want = read_f64(&mut LazyRaster::open(path.to_str().unwrap()).unwrap(), w, &[1, 2, 3], None);
+        // Blocks of 1 KiB, 16 of them cached: the tiles take several batches.
+        let options = [("TERRIO_HTTP_BLOCK_SIZE", "1024"), ("TERRIO_HTTP_CACHE_SIZE", "16384")];
+        assert!(bytes.len() > 4 * 16384, "the file must span several batches");
+        let got = crate::config::with_options(&options, || {
+            let mut r = LazyRaster::open(&format!("{url}/tiled.tif?over-cache")).unwrap();
+            read_f64(&mut r, w, &[1, 2, 3], None)
+        });
+        assert_eq!(got, want);
+        // A window within the cache, of a file new to the process-wide cache, decoded by workers.
+        let small = Window::new(150, 40, 40, 30);
+        let got = crate::config::with_options(&options, || {
+            let mut r = LazyRaster::open(&format!("{url}/tiled.tif?within-cache")).unwrap();
+            read_f64(&mut r, small, &[1, 2, 3], None)
+        });
+        assert_eq!(got, read_f64(&mut LazyRaster::open(path.to_str().unwrap()).unwrap(), small, &[1, 2, 3], None));
+        let seen = seen.lock().unwrap();
+        for part in seen.split(|r| r.as_deref() == Some("bytes=0-1023")).filter(|p| !p.is_empty()) {
+            let mut ranges: Vec<(usize, usize)> = part
+                .iter()
+                .map(|r| {
+                    let (a, b) = r.as_deref().unwrap().strip_prefix("bytes=").unwrap().split_once('-').unwrap();
+                    (a.parse().unwrap(), b.parse().unwrap())
+                })
+                .collect();
+            ranges.sort_unstable();
+            assert!(ranges.windows(2).all(|p| p[0].1 < p[1].0), "a byte was fetched twice: {ranges:?}");
         }
     }
 

@@ -2467,6 +2467,12 @@ impl RangeReader {
         s.fetch_planned(0, budget)
     }
 
+    /// Whether the last prefetch fetched all it planned in one batch, none left for reads to
+    /// reach: reads of its ranges, from any clone, then send no request while its blocks stay.
+    pub(crate) fn prefetched_whole(&self) -> bool {
+        self.lock().is_ok_and(|s| s.plan.is_empty())
+    }
+
     fn lock(&self) -> io::Result<std::sync::MutexGuard<'_, Shared>> {
         self.shared.lock().map_err(|_| io::Error::other("the HTTP block cache is poisoned"))
     }
