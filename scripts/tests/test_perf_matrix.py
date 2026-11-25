@@ -9,7 +9,6 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import benchmark_validation
 import perf_matrix
 from perf_matrix import WIN, Zarr, report, rounds, summarize, windows
 
@@ -56,6 +55,8 @@ def test_summarize_ranks_only_complete_matching_samples():
 def test_equal_sums_with_different_bytes_are_not_exact():
     """Rank a case as `exact` only when every sample's bytes hash as GDAL's."""
     exact = summarize(_row(terrio=[{**_sample(2), "digest": "a"}], gdal=[{**_sample(1), "digest": "a"}]))
+    nan = summarize(_row(terrio=[{**_sample(2, s=float("nan")), "digest": "a"}], gdal=[{**_sample(1, s=float("nan")), "digest": "a"}]))
+    assert nan["values"] == "exact"  # equal bytes holding a NaN sum to NaN, which no sum check accepts
     assert exact["values"] == "exact" and "digest" not in exact["terrio"]
     # Two compensating errors keep the sum and count: the bytes still differ.
     swapped = summarize(_row(terrio=[{**_sample(2), "digest": "b"}], gdal=[{**_sample(1), "digest": "a"}]))
@@ -803,6 +804,8 @@ def test_compared_outputs_label_a_case_by_its_worst_sample():
     assert meta["values"] == "DIFFER: CRS differs"
     based = summarize(_row(terrio=[_compared()], gdal=gdal, base=[{**_compared(mismatch="CRS differs"), "sum": 0}]))
     assert based["values"] == "exact"  # a base build's output does not label terrio's
+    assert "base_ratio" not in based  # nor is a base whose output differs ranked against
+    assert "base_ratio" in summarize(_row(terrio=[_compared()], gdal=gdal, base=[{**_compared(), "sum": 0}]))
     text = report([exact, {**within, "fixture": "f32_none"}, {**beyond, "fixture": "u8_rgb_jpeg"}])
     worst = text.split("## Worst cases")[1].split("## Geometric")[0]
     assert "u8_none" in worst and "f32_none" in worst and "within_tol" in worst and "u8_rgb_jpeg" not in worst
@@ -922,15 +925,15 @@ def test_geoparquet_write_comparison_checks_features_and_file_layout(tmp_path, m
     table = pq.read_table(tmp_path / "same.parquet")
     pq.write_table(table.replace_schema_metadata({}), tmp_path / "plain.parquet")
     # Even when the features compare equal, a file without GeoParquet metadata is labelled.
-    monkeypatch.setattr(benchmark_validation, "compare_vectors", lambda a, b: [])
+    monkeypatch.setattr(pytest.importorskip("benchmark_validation"), "compare_vectors", lambda a, b: [])
     plain = perf_matrix.GeoParquetWrite.compare(tmp_path / "plain.parquet", ref)
     # A runner without GEOS or sort fails the check rather than labelling the output.
     no_geos = ["vector validation requires GDAL built with GEOS for geometry normalization"]
-    monkeypatch.setattr(benchmark_validation, "compare_vectors", lambda a, b: no_geos)
+    monkeypatch.setattr(pytest.importorskip("benchmark_validation"), "compare_vectors", lambda a, b: no_geos)
     with pytest.raises(RuntimeError, match="requires GDAL built with GEOS"):
         perf_matrix.GeoParquetWrite.compare(tmp_path / "same.parquet", ref)
     sort_failed = ["vector validation sort failed (requires -S/-T support): sort: invalid option"]
-    monkeypatch.setattr(benchmark_validation, "compare_vectors", lambda a, b: sort_failed)
+    monkeypatch.setattr(pytest.importorskip("benchmark_validation"), "compare_vectors", lambda a, b: sort_failed)
     with pytest.raises(RuntimeError, match="sort failed"):
         perf_matrix.GeoParquetWrite.compare(tmp_path / "same.parquet", ref)
     assert plain["mismatch"] == "geometry encoding None vs GDAL's WKB"
@@ -1014,7 +1017,7 @@ def test_threaded_reads_open_a_handle_per_thread_and_keep_the_parts_in_order(mon
     monkeypatch.setitem(perf_matrix.FORMATS, "fake", SimpleNamespace(EXT=".tif", reader=reader))
     result = perf_matrix.worker({"format": "fake", "tool": "gdal", "src": "http://localhost/f.tif",
                                  "access": f"threads{n}", "meta": {}})
-    assert given == ["threads4"] and len(opened) == n
+    assert given == ["threads4"] and len(set(opened)) == n  # n handles, on n distinct threads
     assert result["digest"] == perf_matrix.digest([[i] for i in range(16)])
 
 
@@ -1109,6 +1112,7 @@ def test_flatgeobuf_gdal_read_names_the_geometry_as_terrio(tmp_path):
     """Name GDAL's FlatGeobuf geometry column `geometry`, as terrio does, so the digests compare."""
     ogr = pytest.importorskip("osgeo.ogr")
     pytest.importorskip("pyogrio")
+    pytest.importorskip("pyarrow")
     if ogr.GetDriverByName("FlatGeobuf") is None:
         pytest.skip("FlatGeobuf driver is required")
     ogr.UseExceptions()
@@ -1125,3 +1129,22 @@ def test_flatgeobuf_gdal_read_names_the_geometry_as_terrio(tmp_path):
     table = items[0](open_(str(path)))
     assert table.column_names == ["id", "geometry"]
     assert check(table) == (1.0, 1)
+
+
+def test_geopackage_gdal_read_names_the_geometry_as_terrio(tmp_path):
+    """Name GDAL's GeoPackage geometry column (`geom`) `geometry`, as terrio does, so the digests compare."""
+    ogr = pytest.importorskip("osgeo.ogr")
+    pytest.importorskip("pyogrio")
+    pytest.importorskip("pyarrow")
+    ogr.UseExceptions()
+    path = tmp_path / "tiny.gpkg"
+    ds = ogr.GetDriverByName("GPKG").CreateDataSource(str(path))
+    lyr = ds.CreateLayer(perf_matrix.GeoPackage.LAYER, None, ogr.wkbPoint)
+    lyr.CreateField(ogr.FieldDefn("id", ogr.OFTInteger64))
+    f = ogr.Feature(lyr.GetLayerDefn())
+    f["id"] = 1
+    f.SetGeometry(ogr.CreateGeometryFromWkt("POINT (1 2)"))
+    lyr.CreateFeature(f)
+    lyr = ds = None
+    open_, items, _, _ = perf_matrix.GeoPackage.reader("gdal", "full", {})
+    assert items[0](open_(str(path))).column_names == ["id", "geometry"]
