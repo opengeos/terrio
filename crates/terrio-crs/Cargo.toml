@@ -1,6 +1,6 @@
 [package]
 name = "terrio-crs"
-version = "0.2.4"
+version = "0.3.0"
 description = "Coordinate reference systems and transformations in Rust, with EPSG/ESRI/IAU tables and datum grids"
 readme = "README.md"
 edition.workspace = true
