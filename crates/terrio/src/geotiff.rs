@@ -2526,13 +2526,13 @@ mod tests {
 
     #[test]
     fn warns_of_a_projection_method_it_cannot_read() {
-        // A WGS 84 CRS projected with method 4 (oblique Mercator, Laborde), which terrio does
-        // not map.
-        let keys = [1, 1, 0, 4, 1024, 0, 1, 1, 2048, 0, 1, 4326, 3072, 0, 1, 32767, 3075, 0, 1, 4];
+        // A WGS 84 CRS projected with method 5 (oblique Mercator, Rosenmund), which terrio does
+        // not map (nor GDAL).
+        let keys = [1, 1, 0, 4, 1024, 0, 1, 1, 2048, 0, 1, 4326, 3072, 0, 1, 32767, 3075, 0, 1, 5];
         let _ = crate::warnings::take();
         assert!(crs_from_geokeys(&keys, None, None).wkt.is_none());
         let w = crate::warnings::take();
-        assert!(w.len() == 1 && w[0].contains("projection method 4"), "{w:?}");
+        assert!(w.len() == 1 && w[0].contains("projection method 5"), "{w:?}");
     }
 
     /// A chunk's buffer is allocated fallibly: a size no allocator gives, past what a `Vec` holds

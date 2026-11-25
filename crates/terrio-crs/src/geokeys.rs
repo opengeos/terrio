@@ -206,8 +206,15 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
             });
             let datum = if cites_wgs84 && k.short(2050) == Some(USER_DEFINED) { Some(6326) } else { k.short(2050) };
             let citation = k.text(1026).or_else(|| k.text(3073));
-            user_defined_projected(k.short(3074), k.short(2048), datum, citation)
-                .filter(|code| SpatialRef::from_epsg(*code).is_ok_and(|s| (s.metres_per_unit() / size - 1.0).abs() < 1e-9))
+            // And of the keys' own conversion, when they give one: a citation naming EPSG:2048
+            // over keys with another false easting is not EPSG:2048 (#1012 item 49).
+            let own = user_defined_proj4(&k).and_then(|p| crate::def::Def::from_proj(&p).ok());
+            user_defined_projected(k.short(3074), k.short(2048), datum, citation).filter(|code| {
+                SpatialRef::from_epsg(*code).is_ok_and(|s| {
+                    (s.metres_per_unit() / size - 1.0).abs() < 1e-9
+                        && own.as_ref().is_none_or(|own| crate::def::Def::new(&s).is_ok_and(|d| d.same_conversion(own)))
+                })
+            })
         }
         _ => None,
     };
@@ -1253,7 +1260,8 @@ fn keys_for_crs(crs: &wbprojection::Crs, name: &str) -> Option<GeoKeyValues> {
         }
         K::LambertAzimuthalEqualArea => (10, vec![(3089, lat0), (3088, lon0), (3082, fe), (3083, fn_)]),
         K::AzimuthalEquidistant => (12, vec![(3089, lat0), (3088, lon0), (3082, fe), (3083, fn_)]),
-        K::Stereographic => (14, vec![(3089, lat0), (3088, lon0), (3093, k), (3082, fe), (3083, fn_)]),
+        // The scale in ProjScaleAtNatOriginGeoKey, which GDAL writes and libgeotiff reads for it.
+        K::Stereographic => (14, vec![(3089, lat0), (3088, lon0), (3092, k), (3082, fe), (3083, fn_)]),
         K::ObliqueStereographic => (16, vec![(3081, lat0), (3080, lon0), (3092, k), (3082, fe), (3083, fn_)]),
         K::PolarStereographic { north, lat_ts } => {
             let pole = if *north { 90.0 } else { -90.0 };

@@ -83,3 +83,21 @@ fn an_unread_standard_parallel_that_is_not_finite_is_ignored() {
     let (gx, gy) = (case["gdal"][0].as_f64().unwrap(), case["gdal"][1].as_f64().unwrap());
     assert!((x - gx).abs() < 1e-3 && (y - gy).abs() < 1e-3, "({x}, {y}), GDAL ({gx}, {gy})");
 }
+
+/// With wbprojection, a citation's CRS name gives its EPSG code only when the keys' own conversion
+/// is that code's, as GDAL takes a citation's CRS (#1012 item 49): EPSG:2048 with a false easting
+/// of 1000 written to GeoKeys reads back without the code, 1000 m from EPSG:2048; with its own false
+/// easting, as EPSG:2048.
+#[cfg(feature = "wbprojection-fallback")]
+#[test]
+fn a_citation_names_its_crs_only_for_the_same_conversion() {
+    let wkt = SpatialRef::from_epsg(2048).unwrap().to_wkt().unwrap();
+    let start = wkt.find("\"false_easting\",").unwrap() + "\"false_easting\",".len();
+    let end = start + wkt[start..].find(']').unwrap();
+    for (false_easting, code) in [("1000", None), ("0", Some(2048))] {
+        let crs = SpatialRef::from_wkt(&format!("{}{false_easting}{}", &wkt[..start], &wkt[end..]));
+        let tags = crs.to_geokeys().unwrap().encode().unwrap();
+        let back = terrio_crs::geokeys::read(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).crs.unwrap();
+        assert_eq!(back.epsg, code, "false easting {false_easting}");
+    }
+}

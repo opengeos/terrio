@@ -1395,7 +1395,8 @@ equivalent registered CRS of the citation's exact name (or an ESRI CRS, as terri
 also names a UTM zone by its ProjectionGeoKey or a `UTM zone 33N` citation, on WGS 84, NAD83 or
 NAD27, in the GeoKeys' unit, and, with the `wbprojection-fallback` feature (which `terrio` enables),
 the projected CRS a citation names (an `EPSG:` reference or a CRS name), on the GeoKeys' datum when
-they give its code. The code's definition then replaces the keys': where the keys give a datum of
+they give its code, of the keys' own conversion when they give one (EPSG:2048 with another false
+easting is not EPSG:2048). The code's definition then replaces the keys': where the keys give a datum of
 their own or none, a citation naming a CRS on another ellipsoid (`EPSG:32633` on keys of Clarke
 1866, `NAD27 / UTM zone 15N` on keys without a datum, which GDAL reads on WGS 84) gives other
 coordinates than GDAL. The GeoKeys of a CRS terrio reads only through wbprojection need that feature
