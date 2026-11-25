@@ -576,3 +576,67 @@ fn an_ovr_msk_beside_a_base_msk_is_not_read_or_listed() {
     assert_eq!(r.read_level_mask(Window::full(w, h), Some(0)).unwrap(), Some(vec![0; w * h]));
     assert_eq!(file_names(&path), ["masked.tif", "masked.tif.ovr", "masked.tif.ovr.msk"]);
 }
+
+/// Issue #1260, against `tests/data/ovr_rebuilds` (`scripts/make_ovr_rebuild_fixtures.py`, GDAL
+/// 3.13.3, `gdaladdo -ro` once per step): every level of the `.ovr` has GDAL's data and mask,
+/// exactly. Compressed levels of several factors of a raster with an internal or `.msk` mask
+/// cascade, each weighing the previous level's pixels as masked, all valid; and a step that
+/// requests levels the `.ovr` has recomputes them band by band after the new ones (band by band,
+/// the new ones' pass recomputes every level of the `.ovr`, a nearest one as an average). GDAL
+/// appends new levels to the `.ovr`, where terrio orders them largest first, so the levels are
+/// compared by size.
+#[test]
+fn external_average_rebuilds_are_gdal_levels() {
+    use terrio::ops::Resampling;
+    use terrio::ops::overview::{OverviewOptions, add_overviews};
+    let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/ovr_rebuilds");
+    let text = std::fs::read_to_string(fixtures.join("expected.json")).unwrap();
+    let expected: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let digits = |rows: &serde_json::Value, f: &dyn Fn(&str) -> Vec<f64>| -> Vec<f64> {
+        rows.as_array().unwrap().iter().flat_map(|row| f(row.as_str().unwrap())).collect()
+    };
+    for (i, case) in expected["cases"].as_array().unwrap().iter().enumerate() {
+        let source = case["source"].as_str().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("case.tif").to_string_lossy().into_owned();
+        std::fs::copy(fixtures.join(format!("{source}.tif")), &path).unwrap();
+        if source == "sidecar" {
+            std::fs::copy(fixtures.join("sidecar.tif.msk"), format!("{path}.msk")).unwrap();
+        }
+        let mut steps = Vec::new();
+        for step in case["steps"].as_array().unwrap() {
+            let compression = step["compression"].as_str().unwrap().to_string();
+            let method = step["method"].as_str().unwrap();
+            let levels: Vec<usize> = step["levels"].as_array().unwrap().iter().map(|l| l.as_u64().unwrap() as usize).collect();
+            steps.push(format!("{method} {compression} {levels:?}"));
+            let o = OverviewOptions {
+                external: true,
+                levels,
+                resampling: if method == "nearest" { Resampling::Nearest } else { Resampling::Average },
+                compression: Some(compression),
+                ..Default::default()
+            };
+            add_overviews(&path, &o).unwrap();
+        }
+        let label = format!("case {i}: {source}, {}", steps.join(" then "));
+        let mut r = terrio::LazyRaster::open(&path).unwrap();
+        let mut sizes = r.overviews();
+        let levels = case["levels"].as_array().unwrap();
+        let mut gdal_sizes: Vec<(usize, usize)> =
+            levels.iter().map(|l| (l["size"][0].as_u64().unwrap() as usize, l["size"][1].as_u64().unwrap() as usize)).collect();
+        sizes.sort_unstable();
+        gdal_sizes.sort_unstable();
+        assert_eq!(sizes, gdal_sizes, "{label}");
+        for level in levels {
+            let size = (level["size"][0].as_u64().unwrap() as usize, level["size"][1].as_u64().unwrap() as usize);
+            let index = r.overviews().iter().position(|s| *s == size).unwrap();
+            let window = Window::full(size.0, size.1);
+            let data = r.read_window(window, &WindowOptions { bands: vec![1], overview: Some(index) }).unwrap();
+            let want = digits(&level["data"], &|row| row.split_whitespace().map(|v| v.parse().unwrap()).collect());
+            assert_eq!(data.raster.data.to_f64_vec(), want, "{label}: {}x{} data", size.0, size.1);
+            let mask = r.read_mask(window, Some(index)).unwrap().unwrap_or_else(|| vec![255; size.0 * size.1]);
+            let want = digits(&level["mask"], &|row| row.bytes().map(|b| f64::from(b - b'0') * 255.0).collect());
+            assert_eq!(mask.iter().map(|v| f64::from(*v)).collect::<Vec<_>>(), want, "{label}: {}x{} mask", size.0, size.1);
+        }
+    }
+}

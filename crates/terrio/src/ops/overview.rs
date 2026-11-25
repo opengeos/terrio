@@ -695,6 +695,11 @@ struct Sources<'a> {
     /// About how many values per band the strips of whole-window levels are computed from
     /// ([`STRIP_VALUES`]).
     strip_values: usize,
+    /// The levels are an `.ovr` sidecar's, without masks of their own. GDAL decides from the
+    /// full-resolution band whether a level is computed with a mask
+    /// (`GDALRegenerateOverviewsMultiBand`): when the raster has one, it averages a previous
+    /// `.ovr` level's pixels as masked ones, all valid.
+    ovr_levels: bool,
 }
 
 impl Sources<'_> {
@@ -1378,7 +1383,9 @@ fn run_jobs(
             continue;
         }
         let src_mask = held.mask(&rows, w).filter(|_| use_mask(l));
-        // The mask's or the alpha band's validity, shared by the bands; else each band's nodata.
+        // The mask's or the alpha band's validity, shared by the bands; else each band's nodata;
+        // else, for a previous `.ovr` level of a raster with a mask, all valid
+        // ([`Sources::ovr_levels`]).
         let shared: Option<Vec<bool>> = match src_mask {
             _ if !masked => None,
             Some(m) => Some(m.iter().map(|v| *v != 0).collect()),
@@ -1389,6 +1396,7 @@ fn run_jobs(
             let values = held.band(b, &rows, w);
             let own: Option<Vec<bool>> = match (&shared, nodata) {
                 (None, Some(nd)) if masked => Some(values.iter().map(|v| !(*v == nd || (v.is_nan() && nd.is_nan()))).collect()),
+                (None, None) if masked && prev.is_some() && has_mask && srcs.ovr_levels => Some(vec![true; values.len()]),
                 _ => None,
             };
             let out = band(&values, shared.as_deref().or(own.as_deref()), &t);
@@ -1468,8 +1476,18 @@ fn warn_integer_precision(data_type: DataType) {
     }
 }
 
-/// Computes whole new levels of `sizes` (in cascade, largest first) as images like `like`
-/// (without mask images: for an `.ovr` sidecar), reporting the progress to `report`.
+/// Computes the levels of `sizes` an `.ovr` sidecar takes, as images like `like` (without mask
+/// images), each like the sidecar's existing image of its size when it has one (`existing`):
+/// the images to write, which replace the sidecar's images of their sizes. Reports the progress
+/// to `report`.
+///
+/// GDAL 3.13.3 (`GDALDefaultOverviews::BuildOverviews`) first builds the levels the sidecar does
+/// not have (`GTIFFBuildOverviews`): together, block by block, when they are compressed and
+/// pixel-interleaved, or with an alpha band; else band by band, which recomputes every level of the
+/// sidecar with them, the ones it had too, which keep their metadata. It then refreshes the
+/// requested levels the sidecar had, band by band (`GDALRegenerateOverviewsEx`): from full
+/// resolution, or each from the previous one for averages of a raster without a mask or alpha
+/// band.
 #[allow(clippy::too_many_arguments)]
 fn build_new_levels(
     src: &mut LazyRaster,
@@ -1483,45 +1501,82 @@ fn build_new_levels(
 ) -> Result<Vec<gw::Image>> {
     warn_integer_precision(src.data_type());
     complex_method(src, method)?;
-    let sizes = sorted_sizes(sizes.to_vec());
     let (layout, new_compression, ..) = layout_like(like, Some(compression), true, src.data_type())?;
-    let blocks: Vec<(usize, usize)> = sizes
-        .iter()
-        .map(|size| match existing.and_then(|dirs| dirs.iter().find(|d| !d.is_mask() && d.size() == *size)) {
-            Some(dir) => layout_like(dir, None, false, src.data_type()).map(|(l, ..)| chunk_size(&l, size.0)),
-            None => Ok(chunk_size(&layout, size.0)),
-        })
-        .collect::<Result<_>>()?;
+    let old = |size: (usize, usize)| existing.and_then(|dirs| dirs.iter().find(|d| !d.is_mask() && d.size() == size));
     let alpha = alpha_band(src);
     // New levels are band-separate as GDAL writes them, which decides how it computes them.
     let planar = ovr_planar(gdal_band_count(src), new_compression);
     let multiband = gdal_multiband(!planar, true, new_compression != Compression::None, alpha.is_some());
-    let base_block = base_block(src);
-    let (data, _) = schedules(
-        (src.width(), src.height()),
-        base_block,
-        &sizes,
-        &blocks,
-        method,
-        src.data_type(),
-        src.is_complex(),
-        multiband,
-        src.has_mask(),
-    );
-    let levels: Vec<WholeLevel> = sizes.iter().zip(data).map(|(&size, data)| WholeLevel { size, method, data, mask: None }).collect();
-    let mut srcs = Sources { src, base: None, alpha, read_bytes: READ_BYTES, strip_values: STRIP_VALUES };
-    let mut out = Vec::new();
-    whole_levels(&mut srcs, &levels, report, |srcs, _, c| {
-        let old = existing.and_then(|dirs| dirs.iter().find(|d| !d.is_mask() && d.size() == c.size));
-        let compression = if old.is_some() && !override_compression { None } else { Some(compression) };
-        let (like, planar) = match old {
-            Some(old) => (old, compression.map(|_| planar)),
-            None => (like, Some(planar)),
-        };
-        out.push(new_level_image(c, like, compression, method, srcs.src.data_type(), srcs.src.band_count(), planar)?.0);
-        Ok(())
-    })?;
-    Ok(out)
+    let had: Vec<(usize, usize)> =
+        existing.map_or_else(Vec::new, |dirs| dirs.iter().filter(|d| !d.is_mask()).map(Directory::size).collect());
+    // Largest first; factors may round to the same size.
+    let sizes = sorted_sizes(sizes.to_vec());
+    let new: Vec<(usize, usize)> = sizes.iter().filter(|s| !had.contains(s)).copied().collect();
+    let refreshed: Vec<(usize, usize)> = sizes.iter().filter(|s| had.contains(s)).copied().collect();
+    let first = if multiband || new.is_empty() { new } else { [had, new].concat() };
+    let pixels = |set: &[(usize, usize)]| set.iter().map(|s| s.0 as f64 * s.1 as f64).sum::<f64>();
+    let total = (pixels(&first) + pixels(&refreshed)).max(1.0);
+    let (full, base_block) = ((src.width(), src.height()), base_block(src));
+    let (data_type, complex) = (src.data_type(), src.is_complex());
+    // Band by band, the band's mask is the per-dataset mask or the alpha band: it does not cascade.
+    let masked = src.has_mask() || alpha.is_some();
+    let mut srcs = Sources { src, base: None, alpha, read_bytes: READ_BYTES, strip_values: STRIP_VALUES, ovr_levels: true };
+    let mut images: Vec<((usize, usize), gw::Image)> = Vec::new();
+    let mut done = 0.0;
+    // The first pass's requested existing levels are recomputed by the second: they are only
+    // sources there, not encoded.
+    for (set, multiband, skip) in [(first, multiband, refreshed.clone()), (refreshed, false, Vec::new())] {
+        if set.is_empty() {
+            continue;
+        }
+        let sorted = sorted_sizes(set.clone());
+        let blocks: Vec<(usize, usize)> = sorted
+            .iter()
+            .map(|&size| match old(size) {
+                Some(dir) => layout_like(dir, None, false, data_type).map(|(l, ..)| chunk_size(&l, size.0)),
+                None => Ok(chunk_size(&layout, size.0)),
+            })
+            .collect::<Result<_>>()?;
+        let (data, _) = schedules(full, base_block, &sorted, &blocks, method, data_type, complex, multiband, masked);
+        // `GDALRegenerateOverviewsMultiBand` (whole windows) takes the levels in the order it is
+        // given them: the sidecar's, then the new ones. It computes each from the previous one
+        // when that one is wider, else from full resolution.
+        let order = if data.iter().all(|s| s.chunk_rows.is_none()) { set } else { sorted.clone() };
+        let levels: Vec<WholeLevel> = order
+            .iter()
+            .filter_map(|&size| Some(WholeLevel { size, method, data: data[sorted.iter().position(|s| *s == size)?], mask: None }))
+            .collect();
+        let (at, share) = (done, pixels(&order) / total);
+        whole_levels(&mut srcs, &levels, &mut |f| report(at + f * share), |srcs, _, c| {
+            if skip.contains(&c.size) {
+                return Ok(());
+            }
+            let old = old(c.size);
+            // A level the sidecar had keeps its compression, unless requested with another one.
+            let compression = match old {
+                Some(_) if !(override_compression && sizes.contains(&c.size)) => None,
+                _ => Some(compression),
+            };
+            let (like, planar) = match old {
+                Some(old) => (old, compression.map(|_| planar)),
+                None => (like, Some(planar)),
+            };
+            let mut img = new_level_image(c, like, compression, method, srcs.src.data_type(), srcs.src.band_count(), planar)?.0;
+            if let Some(old) = old.filter(|_| !sizes.contains(&c.size)) {
+                // GDAL recomputes a level it was not asked for, but keeps its metadata (its
+                // RESAMPLING item).
+                img.tags.retain(|(tag, _)| *tag != 42112);
+                img.tags.extend(old.get(42112).and_then(|e| e.ascii()).map(|xml| (42112, Value::Ascii(xml))));
+            }
+            match images.iter().position(|(s, _)| *s == c.size) {
+                Some(i) => images[i].1 = img,
+                None => images.push((c.size, img)),
+            }
+            Ok(())
+        })?;
+        done += share;
+    }
+    Ok(images.into_iter().map(|(_, img)| img).collect())
 }
 
 /// The block size of the full-resolution image (strips: the whole width).
@@ -1681,7 +1736,7 @@ impl MaskSidecar {
         let levels: Vec<WholeLevel> = sizes.iter().zip(data).map(|(&size, data)| WholeLevel { size, method, data, mask: None }).collect();
         let metadata = mask_metadata(like, method);
         // The band's nonzero pixels are its valid ones, as an alpha band's.
-        let mut srcs = Sources { src, base: None, alpha: Some(0), read_bytes: READ_BYTES, strip_values: STRIP_VALUES };
+        let mut srcs = Sources { src, base: None, alpha: Some(0), read_bytes: READ_BYTES, strip_values: STRIP_VALUES, ovr_levels: false };
         let mut out = Vec::new();
         whole_levels(&mut srcs, &levels, report, |_, _, c| {
             let old = old(c.size);
@@ -1796,7 +1851,7 @@ fn add_internal<F: Read + Write + Seek>(
     }
     let plan: Vec<WholeLevel> =
         sizes.iter().zip(data).zip(masks).map(|((&size, data), mask)| WholeLevel { size, method, data, mask }).collect();
-    let mut srcs = Sources { src, base: None, alpha, read_bytes: READ_BYTES, strip_values: STRIP_VALUES };
+    let mut srcs = Sources { src, base: None, alpha, read_bytes: READ_BYTES, strip_values: STRIP_VALUES, ovr_levels: false };
     let mut a = Appender::new(file, tiff.big)?;
     // Every overview of the result: (size, directory, mask directory).
     let mut levels: Vec<((usize, usize), Directory, Option<Directory>)> = Vec::new();
@@ -2049,7 +2104,7 @@ pub(crate) fn refresh<F: Read + Write + Seek>(file: &mut F, src: &mut LazyRaster
     }
     let mut a = Appender::new(file, tiff.big)?;
     let mut dirs = tiff.dirs.clone();
-    let mut srcs = Sources { src, base: None, alpha, read_bytes: READ_BYTES, strip_values: STRIP_VALUES };
+    let mut srcs = Sources { src, base: None, alpha, read_bytes: READ_BYTES, strip_values: STRIP_VALUES, ovr_levels: false };
     // Each target's schedules, for its own method.
     let plan: Vec<WholeLevel> = targets
         .iter()
@@ -2164,6 +2219,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ovr_levels_recomputed_unrequested_keep_their_resampling_item() {
+        // GDAL 3.13.3, band by band: adding a level recomputes the sidecar's others with its
+        // method, and only a requested level takes that method's RESAMPLING item.
+        let raster = wbraster::Raster::from_data(
+            wbraster::RasterConfig { cols: 67, rows: 45, bands: 1, data_type: DataType::U8, ..Default::default() },
+            (0..67 * 45).map(|i| (i * 3 % 251) as f64).collect(),
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("img.tif");
+        std::fs::write(&path, gw::encode(&raster, &gw::TiffOptions::default()).unwrap()).unwrap();
+        let path = path.to_string_lossy().into_owned();
+        let methods = |path: &str| -> Vec<((usize, usize), OverviewResampling)> {
+            let ovr = parse_file(&ovr_path(std::path::Path::new(path))).unwrap();
+            ovr.dirs.iter().map(|d| (d.size(), stored_method(d).unwrap().unwrap())).collect()
+        };
+        let add = |levels: Vec<usize>, resampling: Resampling| {
+            let o = OverviewOptions { levels, resampling, external: true, compression: Some("NONE".into()), ..Default::default() };
+            add_overviews(&path, &o).unwrap();
+        };
+        add(vec![2], Resampling::Nearest);
+        add(vec![4], Resampling::Average);
+        assert_eq!(methods(&path), [((34, 23), OverviewResampling::Nearest), ((17, 12), OverviewResampling::Average)]);
+        add(vec![2, 8], Resampling::Average);
+        assert_eq!(
+            methods(&path),
+            [((34, 23), OverviewResampling::Average), ((17, 12), OverviewResampling::Average), ((9, 6), OverviewResampling::Average)]
+        );
+    }
+
+    #[test]
     fn complex_refresh_replaces_the_stored_predictor_with_the_encoded_layout() {
         // GDAL 3.13.2 permits Predictor=2 on CInt16 (32 bits per complex sample).
         // Replacement does not decode the old chunks and must replace their predictor tag.
@@ -2247,7 +2333,8 @@ mod tests {
         let config = wbraster::RasterConfig { cols: 2, rows: 2, bands: 1, data_type: DataType::U8, ..Default::default() };
         let raster = wbraster::Raster::from_data(config, vec![1., 2., 3., 4.]).unwrap();
         let mut src = LazyRaster::from(crate::RasterDataset::new(raster, false));
-        let mut sources = Sources { src: &mut src, base: None, alpha: None, read_bytes: READ_BYTES, strip_values: STRIP_VALUES };
+        let mut sources =
+            Sources { src: &mut src, base: None, alpha: None, read_bytes: READ_BYTES, strip_values: STRIP_VALUES, ovr_levels: false };
         let (a, _) = sources.rows(None, (2, 2), 0..2, None, false).unwrap();
         let (b, _) = sources.rows(None, (2, 2), 0..2, None, false).unwrap();
         assert!(std::sync::Arc::ptr_eq(&a, &b));
@@ -2285,7 +2372,14 @@ mod tests {
                 for multiband in [false, true] {
                     let (data, masks) = schedules((w, h), (64, 64), &sizes, &blocks, method, data_type, false, multiband, false);
                     let mut whole = LazyRaster::from_tiff_bytes(tiff.clone()).unwrap().unwrap();
-                    let mut srcs = Sources { src: &mut whole, base: None, alpha: None, read_bytes: READ_BYTES, strip_values: STRIP_VALUES };
+                    let mut srcs = Sources {
+                        src: &mut whole,
+                        base: None,
+                        alpha: None,
+                        read_bytes: READ_BYTES,
+                        strip_values: STRIP_VALUES,
+                        ovr_levels: false,
+                    };
                     let mut expected: Vec<Computed> = Vec::new();
                     for (k, &size) in sizes.iter().enumerate() {
                         let c = compute(&mut srcs, size, 0..size.1, expected.last(), method, data[k], masks[k], 0).unwrap();
@@ -2295,7 +2389,8 @@ mod tests {
                     let plan: Vec<WholeLevel> =
                         sizes.iter().enumerate().map(|(k, &size)| WholeLevel { size, method, data: data[k], mask: masks[k] }).collect();
                     // Reads of 64 rows, and strips of 64 source rows (with their margins).
-                    let mut srcs = Sources { src: &mut src, base: None, alpha: None, read_bytes: 1, strip_values: 20 * w };
+                    let mut srcs =
+                        Sources { src: &mut src, base: None, alpha: None, read_bytes: 1, strip_values: 20 * w, ovr_levels: false };
                     whole_levels(&mut srcs, &plan, &mut |_| Ok(()), |_, k, c| {
                         assert_eq!(c.data.data_type(), data_type);
                         assert_eq!(c.data.to_f64_vec(), expected[k].data.to_f64_vec(), "{data_type:?} {method:?} {multiband} level {k}");
@@ -2371,7 +2466,14 @@ mod tests {
                     let (data, masks) = schedules((w, h), (256, 256), &sizes, &blocks, method, DataType::F64, false, multiband, has_mask);
                     // The levels as computed from the whole image.
                     let mut whole = LazyRaster::from_tiff_bytes(tiff.clone()).unwrap().unwrap();
-                    let mut srcs = Sources { src: &mut whole, base: None, alpha, read_bytes: READ_BYTES, strip_values: STRIP_VALUES };
+                    let mut srcs = Sources {
+                        src: &mut whole,
+                        base: None,
+                        alpha,
+                        read_bytes: READ_BYTES,
+                        strip_values: STRIP_VALUES,
+                        ovr_levels: false,
+                    };
                     let mut expected: Vec<Computed> = Vec::new();
                     for (k, &size) in sizes.iter().enumerate() {
                         let c = compute(&mut srcs, size, 0..size.1, expected.last(), method, data[k], masks[k], 0).unwrap();
@@ -2388,7 +2490,14 @@ mod tests {
                     let mut seen = 0;
                     let mut reported = Vec::new();
                     whole_levels(
-                        &mut Sources { src: &mut src, base: None, alpha, read_bytes: 1 << 20, strip_values: STRIP_VALUES },
+                        &mut Sources {
+                            src: &mut src,
+                            base: None,
+                            alpha,
+                            read_bytes: 1 << 20,
+                            strip_values: STRIP_VALUES,
+                            ovr_levels: false,
+                        },
                         &plan,
                         &mut |f| {
                             reported.push(f);
