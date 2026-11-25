@@ -3397,6 +3397,36 @@ mod tests {
         }
     }
 
+    /// A chunk of blocks larger than the scratch kept (zeroed by the allocator, not kept)
+    /// unshuffles each block as a chunk of small blocks does: bit and byte shuffle, stored streams.
+    #[test]
+    fn blosc_blocks_larger_than_the_scratch_kept_unshuffle_as_small_ones() {
+        let (typesize, bsize) = (4usize, 3 << 19);
+        let data: Vec<u8> = (0..2 * bsize).map(|i| (i * 31 % 251) as u8).collect();
+        for shuffle in [0x04u8, 0x01] {
+            // Version 2, unsplit (0x10), stored streams (each its block's size).
+            let mut src = vec![2, 1, 0x10 | shuffle, typesize as u8];
+            for v in [2 * bsize, bsize, 0, 24, 24 + 4 + bsize] {
+                src.extend((v as u32).to_le_bytes());
+            }
+            for block in data.chunks(bsize) {
+                src.extend((bsize as u32).to_le_bytes());
+                src.extend(block);
+            }
+            let out = blosc_decompress(&src, 4 * bsize).unwrap();
+            for (k, block) in data.chunks(bsize).enumerate() {
+                let want = if shuffle == 0x04 {
+                    bit_unshuffled(block, typesize, 2)
+                } else {
+                    let mut want = vec![0; bsize];
+                    interleave(block, &mut want, typesize, bsize / typesize);
+                    want
+                };
+                assert!(out[k * bsize..(k + 1) * bsize] == want[..], "shuffle {shuffle:#x}, block {k}");
+            }
+        }
+    }
+
     /// A Blosc block split into one stream per byte of its elements is refused when its size is
     /// not a multiple of its stream count, before any stream is read, and a short stream is
     /// reported with the bytes decoded up to its end.
