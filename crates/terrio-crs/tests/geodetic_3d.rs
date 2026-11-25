@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //! Points between EPSG geocentric and geographic 3D CRSs and WGS 84 (2D) and (3D), without
-//! grids, are placed as PROJ 9.9.0 places them (#1012 item 8).
+//! grids, are placed as PROJ 9.9.0 places them (#1012 items 8 and 70).
 //!
 //! From or into WGS 84 (2D), which has no heights, PROJ keeps the height through the datum shift
 //! (`push v_3` before it, `pop v_3` after) and converts it to or from geocentric coordinates on the
@@ -14,9 +14,11 @@
 //! of use that PROJ places, from
 //! WGS 84 (2D) and (3D) at the centre of its area at 100 m, and back into both. Tolerance: 1 mm.
 //!
-//! [`PENDING`] cases differ for other reasons, on main too: PROJ places GDA94 (geocentric) and
-//! ONGD14 (geographic 3D) by other transformations, PZ-90.11 from and into WGS 84 (3D) is 1 m off,
-//! and for LUREF terrio uses LUREF to WGS 84 (3) where PROJ uses (4), of the same accuracy (2 mm).
+//! PROJ lists a geocentric CRS's transformations otherwise than its geographic 3D CRS's (GDA94
+//! (geocentric) through WGS 84 (G1762)), and a CRS's in some directions otherwise than into WGS 84
+//! (3D) (ONGD14 to WGS 84 (2) from WGS 84, where (1) into it; LUREF to WGS 84 (4) before (3)
+//! beside WGS 84 (2D)); between 3D CRSs it keeps the height across a leg registered between 2D
+//! CRSs (PZ-90 to WGS 84 (1) in PZ-90.11's chain, 1 m) (#1012 item 70).
 use terrio_crs::{SpatialRef, Transformer};
 
 /// PROJ 9.7.1, offline: a custom 2D shift and the inverse PZ-90 shift keep height across the chain.
@@ -76,22 +78,6 @@ fn transformer(src: u32, dst: u32) -> Transformer {
     Transformer::new(&SpatialRef::from_epsg(src).unwrap(), &SpatialRef::from_epsg(dst).unwrap()).unwrap()
 }
 
-/// What terrio does not follow yet (see the module's doc comment).
-const PENDING: [(&str, &str); 12] = [
-    ("EPSG:4979", "EPSG:4938"),
-    ("EPSG:4938", "EPSG:4979"),
-    ("EPSG:4979", "EPSG:7372"),
-    ("EPSG:4326", "EPSG:7372"),
-    ("EPSG:4979", "EPSG:7679"),
-    ("EPSG:7679", "EPSG:4979"),
-    ("EPSG:4979", "EPSG:7680"),
-    ("EPSG:7680", "EPSG:4979"),
-    ("EPSG:4326", "EPSG:9892"),
-    ("EPSG:9892", "EPSG:4326"),
-    ("EPSG:4326", "EPSG:9893"),
-    ("EPSG:9893", "EPSG:4326"),
-];
-
 #[test]
 fn geodetic_3d_crss_are_placed_as_proj_places_them() {
     offline();
@@ -109,10 +95,7 @@ fn geodetic_3d_crss_are_placed_as_proj_places_them() {
             (x - n[3]).hypot(y - n[4])
         };
         let dz = (z - n[5]).abs();
-        let off = !(d <= 1e-3 && dz <= 1e-3);
-        if PENDING.contains(&(f[0], f[1])) {
-            assert!(off, "{} -> {} is now placed as PROJ places it: remove it from PENDING", f[0], f[1]);
-        } else if off {
+        if !(d <= 1e-3 && dz <= 1e-3) {
             wrong.push(format!("{} -> {} ({}, {}, {}): {d:.4} m, Z or height {dz:.4} m", f[0], f[1], n[0], n[1], n[2]));
         }
         checked += 1;

@@ -2112,21 +2112,22 @@ them, without grids: every EPSG geocentric and geographic 3D CRS that is not dep
 WGS 84 (2D) and (3D) at the centre of its area of use at 100 m and back into both (2,068 cases),
 within 1 mm. Beside WGS 84 (2D), PROJ keeps the height through the datum shift (`push v_3` and
 `pop v_3`) and runs only the transformations between geocentric CRSs on geocentric coordinates;
-before opengeos/terrio#1012, item 8, 108 cases were off, by up to 48 m. 12 are pinned, off on main
-too: GDA94 (geocentric) and ONGD14 (geographic 3D), placed by other transformations; PZ-90.11 from
-and into WGS 84 (3D), 1 m off; and LUREF, by LUREF to WGS 84 (3) where PROJ uses (4) of the same
-accuracy, 2 mm (`cargo test -p terrio-crs --test geodetic_3d`; regenerate with
+before opengeos/terrio#1012, item 8, 108 cases were off, by up to 48 m. Since item 70, a
+geocentric CRS goes by the transformations PROJ lists for it, and each CRS by those PROJ lists in
+each direction (GDA94 (geocentric), ONGD14 and LUREF were placed by other transformations, 2 mm to
+1.7 m), and between 3D CRSs the height is kept across a leg PROJ keeps it across (PZ-90.11, 1 m)
+(`cargo test -p terrio-crs --test geodetic_3d`; regenerate with
 `scripts/gen_geodetic_3d.py`, PROJ 9.9.0).
 
 Deprecated EPSG codes keep their own definition, as PROJ 9.9.0 gives it (`CRS.from_epsg`), not their
 replacement's, which GDAL substitutes by default: every deprecated EPSG geographic, geocentric and
 projected CRS with an area of use (509, of 524: 15 have none) places the centre of its area of use
 from WGS 84 where PROJ does without grids, within 1 mm (1e-8 degrees for geographic longitudes and
-latitudes), 497 of them; PROJ cannot transform 8: terrio refuses the 6 PROJ cannot write as PROJ
+latitudes), all 501 of them; PROJ cannot transform 8: terrio refuses the 6 PROJ cannot write as PROJ
 strings (EPSG:3752's Mercator (variant A) with a latitude of origin among them) and transforms the
-RRAF 1991 geocentric CRSs (EPSG:4384, 4972) by their datum's ballpark. The 2 RGNC 1991
-geocentric CRSs are pinned, as still differing (PROJ places them by another transformation);
-NAD83(CSRS) 3D and geocentric are placed as PROJ places them since opengeos/terrio#1012, item 8. Their replacements are those PROJ lists
+RRAF 1991 geocentric CRSs (EPSG:4384, 4972) by their datum's ballpark. NAD83(CSRS) 3D and
+geocentric are placed as PROJ places them since opengeos/terrio#1012, item 8, and the RGNC 1991
+geocentric CRSs, by the transformations PROJ lists for a geocentric CRS, since item 70. Their replacements are those PROJ lists
 (`CRS.get_non_deprecated()`), and `SpatialRef::from_epsg_non_deprecated` gives a single replacement,
 as GDAL does, also of a code terrio does not carry (EPSG:3752 gives 3994) (`cargo test -p terrio-crs
 --test epsg_deprecated`; regenerate with `scripts/gen_epsg_deprecated.py`, pyproj 3.8.0). Where GDAL

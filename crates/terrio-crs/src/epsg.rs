@@ -151,6 +151,22 @@ struct Table {
     registered: Vec<(usize, usize)>,
     /// The deprecated CRSs, with the codes of those that replace them.
     replacements: HashMap<u32, Vec<u32>>,
+    /// The transformations PROJ lists for a geographic 3D or geocentric CRS in another direction
+    /// than into WGS 84 (3D), where they differ, by code and direction.
+    directed: HashMap<(u32, Direction), Lazy<OpLists>>,
+}
+
+/// A direction between a geographic 3D or geocentric CRS and WGS 84 other than into WGS 84 (3D),
+/// in which PROJ may list other transformations, or the same in another order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Direction {
+    /// From WGS 84 (3D): ONGD14 to WGS 84 (2), where PROJ runs (1) into it.
+    From3d,
+    /// Into WGS 84 (2D): LUREF to WGS 84 (4) before (3), which PROJ ranks the other way between
+    /// 3D CRSs.
+    Into2d,
+    /// From WGS 84 (2D).
+    From2d,
 }
 
 /// A line of the table (its fields after the code) and what it parses to.
@@ -199,6 +215,7 @@ fn load(data: &[u8]) -> Table {
     let mut dates = HashMap::new();
     let (mut geodetic, mut registered) = (Vec::new(), Vec::new());
     let mut replacements = HashMap::new();
+    let mut directed = HashMap::new();
     let mut pos = 0;
     for line in text.split_inclusive('\n') {
         let start = pos;
@@ -261,12 +278,38 @@ fn load(data: &[u8]) -> Table {
                     replacements.insert(code, line[rest - start..].split(',').filter_map(|c| c.parse().ok()).collect());
                 }
             }
+            "L" => {
+                let direction = match line[rest - start..].split('\t').next() {
+                    Some("f3") => Some(Direction::From3d),
+                    Some("t2") => Some(Direction::Into2d),
+                    Some("f2") => Some(Direction::From2d),
+                    _ => None,
+                };
+                if let (Ok(code), Some(direction)) = (key.parse::<u32>(), direction) {
+                    directed.insert((code, direction), Lazy::new(after_second(), end));
+                }
+            }
             "E" => geodetic.push((start + 2, end)),
             "R" => registered.push((start + 2, end)),
             _ => {}
         }
     }
-    Table { text, crs, ops, pairs, verticals, compounds, geoids, vertical_ops, alternatives, dates, geodetic, registered, replacements }
+    Table {
+        text,
+        crs,
+        ops,
+        pairs,
+        verticals,
+        compounds,
+        geoids,
+        vertical_ops,
+        alternatives,
+        dates,
+        geodetic,
+        registered,
+        replacements,
+        directed,
+    }
 }
 
 impl Table {
@@ -302,6 +345,7 @@ impl Table {
                     priority: flags.contains('p'),
                     keeps_height: flags.contains('z'),
                     keeps_wgs84_leg_height: false,
+                    keeps_height_3d: flags.contains('k'),
                     steps,
                     name,
                 }))
@@ -368,6 +412,14 @@ impl Table {
             PairLists { lists: (next(), next()) }
         }))
     }
+}
+
+/// The transformations PROJ lists for an EPSG geographic 3D or geocentric CRS in a direction
+/// other than into WGS 84 (3D), without and with grids (as [`Entry::ops`] and
+/// [`Entry::grid_ops`]), when they differ from those.
+pub(crate) fn directed(code: u32, direction: Direction) -> Option<&'static OpLists> {
+    let t = table();
+    Some(t.directed.get(&(code, direction))?.get(&t.text, |ids| t.lists(ids)))
 }
 
 /// The operations GDAL uses given the grids that can be found: those listed with grids, without

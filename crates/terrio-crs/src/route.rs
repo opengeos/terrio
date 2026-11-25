@@ -136,7 +136,7 @@ fn run_chain<'a>(legs: impl Clone + Iterator<Item = (&'a Op, bool)>, p: Point, t
     fn run<'a>(mut legs: impl Iterator<Item = (&'a Op, bool)>, p: Point) -> Option<Point> {
         legs.try_fold(p, |q, (op, reverse)| datum::run(&op.steps, q, reverse, true))
     }
-    let Some((i, (marked, reverse))) = legs.clone().enumerate().find(|(_, (op, _))| !three_d && op.keeps_wgs84_leg_height) else {
+    let Some((i, (marked, reverse))) = legs.clone().enumerate().find(|(_, (op, _))| datum::keeps_wgs84_leg_height(op, three_d)) else {
         return run(legs, p);
     };
     let (rest, wgs84) = marked.steps.split_at(datum::wgs84_leg_boundary(marked));
@@ -1206,6 +1206,7 @@ fn ranked(reg: &epsg::Registry, found: Vec<Found>, ctx: &OperationContext) -> Ve
             priority: o1.priority || o2.priority || datum::is_priority(&name),
             keeps_height: o1.keeps_height && o2.keeps_height,
             keeps_wgs84_leg_height: false,
+            keeps_height_3d: false,
             steps: o1.steps.iter().chain(&o2.steps).cloned().collect(),
             name,
         };

@@ -72,6 +72,8 @@ pub(crate) struct Def {
     /// The EPSG geographic CRS that a CRS on a datum no CRS is on is identified as by its name
     /// ([`Def::registered_datum`]). Its transformations are not those of that CRS.
     named_geog: Option<u32>,
+    /// The EPSG code whose registered transformations `ops` are, for [`Def::facing`].
+    code: Option<u32>,
     /// All the operations of a datum found by its name ([`Def::datum_by_name`]), those whose
     /// grids are missing included, as `geog`'s registry entry gives them otherwise.
     all_ops: Option<Vec<Arc<Op>>>,
@@ -574,6 +576,7 @@ impl Def {
         if let Some(e) = entry {
             let mut d = Self::from_proj(&e.proj)?;
             d.ops = epsg::usable(&e.ops, &e.grid_ops);
+            d.code = s.epsg;
             d.datum = (e.datum != 0).then_some(e.datum);
             d.geog = (e.geog != 0).then_some(e.geog);
             d.three_d = e.three_d;
@@ -1013,6 +1016,7 @@ impl Def {
             datum: None,
             geog: None,
             named_geog: None,
+            code: None,
             all_ops: None,
             three_d: false,
             dynamic: false,
@@ -1482,6 +1486,7 @@ impl Def {
                 datum: None,
                 geog: None,
                 named_geog: None,
+                code: None,
                 all_ops: None,
                 three_d: false,
                 dynamic: false,
@@ -1809,6 +1814,29 @@ impl Def {
             out.ops = e.grid_ops.clone();
         }
         out
+    }
+
+    /// The transformations PROJ lists for this side of a transformation from or into WGS 84,
+    /// for an EPSG geographic 3D or geocentric CRS whose own are those into WGS 84 (3D): from
+    /// WGS 84 (`target`), or beside a CRS without heights (`beside_heights` false), when they
+    /// differ (ONGD14 from WGS 84; LUREF beside WGS 84 (2D)). Before [`Def::beside_2d`], which
+    /// sets how they keep heights.
+    pub fn facing(&mut self, target: bool, beside_heights: bool) {
+        let direction = match (target, beside_heights) {
+            (false, true) => return,
+            (true, true) => epsg::Direction::From3d,
+            (false, false) => epsg::Direction::Into2d,
+            (true, false) => epsg::Direction::From2d,
+        };
+        let Some(code) = self.code else { return };
+        let (Some(e), Some((ops, grid_ops))) = (epsg::get(code), epsg::directed(code, direction)) else { return };
+        // Only in place of the registered ones (not of a definition's own `TOWGS84`).
+        let registered = epsg::usable(&e.ops, &e.grid_ops);
+        if self.ops.len() != registered.len() || !self.ops.iter().zip(&registered).all(|(a, b)| Arc::ptr_eq(a, b)) {
+            return;
+        }
+        self.ops = epsg::usable(ops, grid_ops);
+        self.all_ops = Some(if grid_ops.is_empty() { ops } else { grid_ops }.clone());
     }
 
     /// The explicit all-grid list, or the registered list `with_all_operations` would select.
