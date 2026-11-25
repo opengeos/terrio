@@ -61,7 +61,7 @@ def test_equal_sums_with_different_bytes_are_not_exact():
     swapped = summarize(_row(terrio=[{**_sample(2), "digest": "b"}], gdal=[{**_sample(1), "digest": "a"}]))
     assert swapped["values"] == "checksum_match"
     text = report([exact, swapped])
-    assert "values not byte-identical to GDAL's (sum within 1e-6 and count equal; ranked): 1\n  u8_none" in text
+    assert "values equal to GDAL's but not exact (checksum_match: count and sum within 1e-6; within_tol: every pixel within the case's tolerance; ranked): 1\n  u8_none" in text
     # A later sample whose bytes differ is caught too.
     later = _row(terrio=[{**_sample(2), "digest": "a"}, {**_sample(2), "digest": "b"}], gdal=[{**_sample(1), "digest": "a"}])
     assert summarize(later)["values"] == "checksum_match"
