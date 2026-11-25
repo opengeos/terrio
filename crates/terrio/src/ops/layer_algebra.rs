@@ -121,7 +121,7 @@ pub fn layer_algebra(a: &Layer, b: &Layer, operation: LayerAlgebraOperation, opt
                     && set.area.0.len() > 1
                     && polygon_components_overlap(&set.area)
                 {
-                    set.area = super::vector_clip::union_regions(std::slice::from_ref(&set.area))?;
+                    set.set_area(super::vector_clip::union_regions(std::slice::from_ref(&set.area))?);
                     set.collection = false;
                 }
                 Ok(set)
@@ -318,6 +318,10 @@ impl Set {
             .chain(self.lines.iter().flat_map(|l| l.windows(2).map(|p| Line::new(p[0], p[1]))))
             .collect()
     }
+    fn set_area(&mut self, area: geo::MultiPolygon<f64>) {
+        self.area = area;
+        self.area_mask.take();
+    }
     fn area_mask(&self) -> &Mask {
         self.area_mask.get_or_init(|| Arc::new(Mask::new(self.area.clone()))).as_ref()
     }
@@ -462,7 +466,8 @@ pub(super) fn dissolve_features(layer: &Layer) -> Result<Layer> {
         }
         let mut set = Set::from_geometry(&geometry);
         if !set.area.0.is_empty() {
-            set.area = super::vector_clip::union_regions(&[set.area])?;
+            let unioned = super::vector_clip::union_regions(&[std::mem::replace(&mut set.area, geo::MultiPolygon(vec![]))])?;
+            set.set_area(unioned);
         }
         let area = Set { area: set.area.clone(), ..Default::default() };
         set.lines =
