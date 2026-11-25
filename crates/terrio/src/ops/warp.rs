@@ -148,11 +148,18 @@ impl Cutline {
 fn collect_polygons(g: &wbvector::Geometry, out: &mut Polygons) {
     use wbvector::Geometry as G;
     let ring = |r: &wbvector::geometry::Ring| r.0.iter().map(|c| (c.x, c.y)).collect::<Vec<_>>();
+    let mut push_poly = |exterior: &wbvector::geometry::Ring, interiors: &[wbvector::geometry::Ring]| {
+        if exterior.0.is_empty() {
+            return;
+        }
+        let rings = std::iter::once(exterior).chain(interiors).filter(|r| !r.0.is_empty()).map(ring).collect();
+        out.push(rings);
+    };
     match g {
-        G::Polygon { exterior, interiors } => out.push(std::iter::once(exterior).chain(interiors).map(ring).collect()),
+        G::Polygon { exterior, interiors } => push_poly(exterior, interiors),
         G::MultiPolygon(ps) => {
             for (e, i) in ps {
-                out.push(std::iter::once(e).chain(i).map(ring).collect());
+                push_poly(e, i);
             }
         }
         G::GeometryCollection(gs) => gs.iter().for_each(|g| collect_polygons(g, out)),
@@ -2592,6 +2599,9 @@ fn cutline_extent(c: &Cutline, s: &Source, dst_srs: &SpatialRef, has_res: bool) 
     let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     for poly in &c.polygons {
         for ring in poly {
+            if ring.is_empty() {
+                continue;
+            }
             for w in ring.windows(2).chain(std::iter::once(&ring[ring.len().saturating_sub(1)..])) {
                 // Densify each edge in the source CRS before reprojecting it.
                 let a = w[0];

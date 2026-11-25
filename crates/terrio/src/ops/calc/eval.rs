@@ -711,9 +711,13 @@ fn python_binary(op: BinOp, a: &Val, b: &Val) -> Result<Val> {
             BinOp::Div if y == 0 => return Err(zero()),
             BinOp::Div => Val::Float(x as f64 / y as f64),
             BinOp::FloorDiv | BinOp::Mod if y == 0 => return Err(zero()),
-            BinOp::FloorDiv => Val::Int(x.div_euclid(y) - if y < 0 && x.rem_euclid(y) != 0 { 1 } else { 0 }),
+            BinOp::FloorDiv => {
+                let q = x.checked_div_euclid(y).ok_or_else(overflow)?;
+                let r = x.checked_rem_euclid(y).ok_or_else(overflow)?;
+                Val::Int(q - if y < 0 && r != 0 { 1 } else { 0 })
+            }
             BinOp::Mod => {
-                let r = x % y;
+                let r = x.checked_rem(y).ok_or_else(overflow)?;
                 Val::Int(if r != 0 && ((r < 0) != (y < 0)) { r + y } else { r })
             }
             BinOp::Pow if y < 0 => Val::Float((x as f64).powf(y as f64)),
@@ -854,7 +858,7 @@ impl From<Arr> for Val {
 fn unary_op(op: UnaryOp, v: &Val) -> Result<Val> {
     Ok(match (op, v) {
         (UnaryOp::Pos, v) => v.clone(),
-        (UnaryOp::Neg, Val::Int(i)) => Val::Int(-i),
+        (UnaryOp::Neg, Val::Int(i)) => Val::Int(i.checked_neg().ok_or_else(|| Error::InvalidArgument("integer overflow".into()))?),
         (UnaryOp::Neg, Val::Float(f)) => Val::Float(-f),
         (UnaryOp::Invert, Val::Int(i)) => Val::Int(!i),
         (UnaryOp::Invert, Val::Float(_)) => return Err(Error::InvalidArgument("~ needs an integer".into())),
@@ -1043,8 +1047,21 @@ impl Evaluator<'_> {
                     }
                     _ if decimals >= 0 => a,
                     _ => {
-                        let p = 10i128.pow(decimals.unsigned_abs() as u32);
-                        let v = a.ints().iter().map(|x| wrap((x.div_euclid(p) + i128::from(x.rem_euclid(p) * 2 > p)) * p, a.dt)).collect();
+                        let exp = decimals.unsigned_abs();
+                        let v = if let Ok(exp_u32) = u32::try_from(exp)
+                            && let Some(p) = 10i128.checked_pow(exp_u32)
+                        {
+                            a.ints()
+                                .iter()
+                                .map(|&x| {
+                                    let q = x.div_euclid(p);
+                                    let r = x.rem_euclid(p);
+                                    wrap((q + i128::from(r > p - r)).wrapping_mul(p), a.dt)
+                                })
+                                .collect()
+                        } else {
+                            vec![0; a.ints().len()]
+                        };
                         Arr { dt: a.dt, data: Data::I(v) }
                     }
                 }))

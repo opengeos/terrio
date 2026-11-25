@@ -84,6 +84,8 @@ mod multidim;
 mod oapif_service;
 #[path = "../operation_band_nodata.rs"]
 mod operation_band_nodata;
+#[path = "../ops_correctness.rs"]
+mod ops_correctness;
 #[path = "../ops_real_data.rs"]
 mod ops_real_data;
 #[path = "../parquet_zstd.rs"]

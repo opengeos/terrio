@@ -558,6 +558,68 @@ fn compare(a: &Value, b: &Value) -> Option<Ordering> {
     }
 }
 
+/// Strict total ordering for `ORDER BY` sorting (including `NaN`, mixed numeric types, and `-0.0`).
+fn compare_order(a: &Value, b: &Value) -> Ordering {
+    fn rank(v: &Value) -> u8 {
+        match v {
+            Value::Null => 0,
+            Value::Float(f) if f.is_nan() => 1,
+            Value::Int(_) | Value::Float(_) => 2,
+            Value::Text(_) => 3,
+            Value::Blob(_) => 4,
+            Value::Geometry(_) => 5,
+        }
+    }
+    fn cmp_i64_f64(i: i64, f: f64) -> Ordering {
+        if f.is_infinite() {
+            return if f.is_sign_positive() { Ordering::Less } else { Ordering::Greater };
+        }
+        const MIN_I64: f64 = -9_223_372_036_854_775_808.0; // -2^63
+        const MAX_I64_PLUS_1: f64 = 9_223_372_036_854_775_808.0; // 2^63
+        if f < MIN_I64 {
+            return Ordering::Greater;
+        }
+        if f >= MAX_I64_PLUS_1 {
+            return Ordering::Less;
+        }
+        let trunc = f.trunc() as i64;
+        match i.cmp(&trunc) {
+            Ordering::Equal => {
+                let frac = f - f.trunc();
+                if frac > 0.0 {
+                    Ordering::Less
+                } else if frac < 0.0 {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            }
+            ord => ord,
+        }
+    }
+    match rank(a).cmp(&rank(b)) {
+        Ordering::Equal => match (a, b) {
+            (Value::Null, Value::Null) => Ordering::Equal,
+            (Value::Int(x), Value::Int(y)) => x.cmp(y),
+            (Value::Float(x), Value::Float(y)) => {
+                if x.is_nan() && y.is_nan() {
+                    Ordering::Equal
+                } else {
+                    let x = if *x == 0.0 { 0.0 } else { *x };
+                    let y = if *y == 0.0 { 0.0 } else { *y };
+                    x.total_cmp(&y)
+                }
+            }
+            (Value::Int(x), Value::Float(y)) => cmp_i64_f64(*x, *y),
+            (Value::Float(x), Value::Int(y)) => cmp_i64_f64(*y, *x).reverse(),
+            (Value::Text(x), Value::Text(y)) => x.cmp(y),
+            (Value::Blob(x), Value::Blob(y)) => x.cmp(y),
+            _ => Ordering::Equal,
+        },
+        ord => ord,
+    }
+}
+
 // Current OGRSQL applies case-insensitive string comparisons to predicates, while
 // ORDER BY and MIN/MAX use the case-sensitive ordering in `compare` above.
 fn compare_predicate(a: &Value, b: &Value) -> Option<Ordering> {
@@ -572,11 +634,14 @@ fn truth(e: &Expr, f: &Feature) -> Truth {
     match e {
         Expr::Binary(BinOp::And, a, b) => {
             let (x, y) = (truth(a, f), truth(b, f));
-            Truth { value: x.value && y.value, null: x.null && y.null }
+            let value = x.value && y.value;
+            let definite_false = (!x.value && !x.null) || (!y.value && !y.null);
+            Truth { value, null: !value && !definite_false }
         }
         Expr::Binary(BinOp::Or, a, b) => {
             let (x, y) = (truth(a, f), truth(b, f));
-            Truth { value: x.value || y.value, null: x.null || y.null }
+            let value = x.value || y.value;
+            Truth { value, null: !value && (x.null || y.null) }
         }
         Expr::Not(a) => {
             let x = truth(a, f);
