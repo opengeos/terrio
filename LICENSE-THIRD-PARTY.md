@@ -261,17 +261,17 @@ Used by:
 
 Used by:
 
-- [arrow-array 58.4.1](https://github.com/apache/arrow-rs)
-- [arrow-buffer 58.4.1](https://github.com/apache/arrow-rs)
-- [arrow-data 58.4.1](https://github.com/apache/arrow-rs)
-- [arrow-ipc 58.4.1](https://github.com/apache/arrow-rs)
-- [arrow-schema 58.4.1](https://github.com/apache/arrow-rs)
-- [arrow-select 58.4.1](https://github.com/apache/arrow-rs)
+- [arrow-array 58.4.2](https://github.com/apache/arrow-rs)
+- [arrow-buffer 58.4.2](https://github.com/apache/arrow-rs)
+- [arrow-data 58.4.2](https://github.com/apache/arrow-rs)
+- [arrow-ipc 58.4.2](https://github.com/apache/arrow-rs)
+- [arrow-schema 58.4.2](https://github.com/apache/arrow-rs)
+- [arrow-select 58.4.2](https://github.com/apache/arrow-rs)
 - [cmov 0.5.4](https://github.com/RustCrypto/utils)
 - [ctutils 0.4.8](https://github.com/RustCrypto/utils)
 - [encoding_rs 0.8.44](https://github.com/hsivonen/encoding_rs)
 - [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op)
-- [parquet 58.4.1](https://github.com/apache/arrow-rs)
+- [parquet 58.4.2](https://github.com/apache/arrow-rs)
 - [siphasher 1.0.4](https://github.com/jedisct1/rust-siphash)
 - [spade 2.15.1](https://github.com/Stoeoef/spade)
 - [static_assertions 1.1.0](https://github.com/nvzqz/static-assertions-rs)
@@ -2830,9 +2830,9 @@ Used by:
 
 Used by:
 
-- [clap 4.6.7](https://github.com/clap-rs/clap)
+- [clap 4.6.9](https://github.com/clap-rs/clap)
 - [clap_builder 4.6.7](https://github.com/clap-rs/clap)
-- [clap_derive 4.6.7](https://github.com/clap-rs/clap)
+- [clap_derive 4.6.9](https://github.com/clap-rs/clap)
 - [clap_lex 1.1.1](https://github.com/clap-rs/clap)
 
 ```text
@@ -6649,7 +6649,7 @@ Used by:
 - [sif-itree 0.4.1](https://codeberg.org/adamreichold/sif-itree)
 - [simdutf8 0.1.5](https://github.com/rusticstuff/simdutf8)
 - [syn 2.0.119](https://github.com/dtolnay/syn)
-- [syn 3.0.9](https://github.com/dtolnay/syn)
+- [syn 3.0.10](https://github.com/dtolnay/syn)
 - [thiserror-impl 1.0.69](https://github.com/dtolnay/thiserror)
 - [thiserror-impl 2.0.21](https://github.com/dtolnay/thiserror)
 - [thiserror 1.0.69](https://github.com/dtolnay/thiserror)
@@ -8796,7 +8796,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- [bytes 1.12.1](https://github.com/tokio-rs/bytes)
+- [bytes 1.12.2](https://github.com/tokio-rs/bytes)
 
 ```text
 Copyright (c) 2018 Carl Lerche
@@ -9242,7 +9242,7 @@ SOFTWARE.
 
 Used by:
 
-- [arrow-array 58.4.1](https://github.com/apache/arrow-rs)
+- [arrow-array 58.4.2](https://github.com/apache/arrow-rs)
 
 ```text
 MIT License
@@ -9783,7 +9783,7 @@ Used by:
 
 - [tracing-core 0.1.36](https://github.com/tokio-rs/tracing)
 - [zip 8.6.0](https://github.com/zip-rs/zip2)
-- [zip 9.7.0](https://github.com/zip-rs/zip2)
+- [zip 9.8.2](https://github.com/zip-rs/zip2)
 
 ```text
 The MIT License (MIT)
