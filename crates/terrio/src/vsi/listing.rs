@@ -24,6 +24,8 @@ type EntryIndex = HashMap<(String, bool), usize>;
 /// `/`, `?` or `#` ends the authority; percent-encode those characters in passwords. An `@`
 /// in a path is not userinfo.
 pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
+    #[cfg(remote)]
+    let url = url.strip_prefix(crate::http::azure_bearer_prefix()).unwrap_or(url);
     let mut redacted = String::new();
     let mut copied = 0;
     // Diagnostics can contain several URLs (for example, a redirect's source and target).

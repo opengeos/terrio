@@ -72,6 +72,8 @@ mod hecras_results;
 mod hecras_synthetic;
 #[path = "../identify_features.rs"]
 mod identify_features;
+#[path = "../io_hardening.rs"]
+mod io_hardening;
 #[path = "../jts_behavior.rs"]
 mod jts_behavior;
 #[path = "../layer_selection.rs"]

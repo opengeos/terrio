@@ -426,9 +426,16 @@ fn write_request_with(
 ) -> Result<Reply> {
     let options = HttpOptions::from_env();
     let agent = agent(&options);
+    let (raw_url, azure_bearer) = match remote {
+        Remote::Url(u) => match u.strip_prefix(super::azure_bearer_prefix()) {
+            Some(blob) => (Some(blob), true),
+            None => (None, false),
+        },
+        Remote::S3(_) => (None, false),
+    };
     let base_url = |region: Option<&str>| match remote {
         Remote::S3(o) => format!("{}{query}", o.url(region)),
-        Remote::Url(u) => append_query(u, query),
+        Remote::Url(u) => append_query(raw_url.unwrap_or(u.as_str()), query),
     };
     // A signed request's file whose hash is not known is read into memory when small. A larger one
     // is sent unsigned over HTTPS, and over plain HTTP read once to hash it and again to send it,
@@ -468,6 +475,19 @@ fn write_request_with(
         let mut builder = ureq::http::Request::builder().method(method).uri(&url);
         for (k, v) in headers {
             builder = builder.header(k.as_str(), v.as_str());
+        }
+        if azure_bearer
+            && crate::vfs::azure_token_endpoint(&|k| crate::config::get(k))
+                .is_some_and(|ep| crate::vfs::url_origin(&url).is_some() && crate::vfs::url_origin(&url) == crate::vfs::url_origin(&ep))
+            && let Some(token) =
+                crate::config::get("TERRIO_AZURE_ACCESS_TOKEN").or_else(|| crate::config::get("AZURE_STORAGE_ACCESS_TOKEN"))
+        {
+            if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("x-ms-version")) {
+                builder = builder.header("x-ms-version", super::AZURE_X_MS_VERSION);
+            }
+            if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("authorization")) {
+                builder = builder.header("Authorization", format!("Bearer {}", token.trim()));
+            }
         }
         if !matches!(payload, Payload::Empty) || method == "PUT" || method == "POST" {
             builder = builder.header("content-length", length.to_string());
@@ -618,7 +638,9 @@ fn host_of(url: &str) -> &str {
 }
 
 fn is_azure(url: &str) -> bool {
+    let url = url.strip_prefix(super::azure_bearer_prefix()).unwrap_or(url);
     host_of(url).to_ascii_lowercase().ends_with(".blob.core.windows.net")
+        || crate::vfs::custom_azure_endpoint().is_some_and(|ep| crate::vfs::url_origin(url) == crate::vfs::url_origin(&ep))
 }
 
 /// Uploads a local file (or bytes) to an object.

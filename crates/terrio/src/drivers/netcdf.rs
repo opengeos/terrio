@@ -492,14 +492,15 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     // `bands` dimension (whose values are then pixel-interleaved).
     let interleaved = trailing_bands(var);
     let (y_dim, x_dim) = if interleaved { (0, 1) } else { (nd.saturating_sub(2), nd - 1) };
-    let cols = dims[x_dim].size as usize;
-    let rows = if nd >= 2 { dims[y_dim].size as usize } else { 1 };
+    let dim_usize = |size: u64| usize::try_from(size).map_err(|_| err(path, "variable dimensions overflow"));
+    let cols = dim_usize(dims[x_dim].size)?;
+    let rows = if nd >= 2 { dim_usize(dims[y_dim].size)? } else { 1 };
     let bands: usize = if interleaved {
-        dims[2].size as usize
+        dim_usize(dims[2].size)?
     } else if nd > 2 {
         dims[..nd - 2]
             .iter()
-            .try_fold(1usize, |acc, d| acc.checked_mul(d.size as usize))
+            .try_fold(1usize, |acc, d| acc.checked_mul(usize::try_from(d.size).ok()?))
             .ok_or_else(|| err(path, "variable dimensions overflow"))?
     } else {
         1
@@ -575,13 +576,15 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     let ignore_axis_checks = (attr(var, "res").is_some() && attr(var, "transform").is_some())
         || f.global_attributes().is_ok_and(|a| a.iter().any(|a| a.name == "GMT_version"));
     // The axis values, and whether they are stored as floats (spacing is checked more loosely).
-    let coord = |d: &str| -> Option<(Vec<f64>, bool, bool)> {
+    let coord = |d: &str, expected: usize| -> Option<(Vec<f64>, bool, bool)> {
         let (p, v) = var_ref.lookup(d)?;
         let spatial = ignore_axis_checks || is_spatial_axis(v);
-        let values = (v.ndim() == 1 && spatial).then(|| f.read_variable_as_f64(&p).ok().map(|a| a.iter().copied().collect())).flatten()?;
-        Some((values, matches!(v.dtype(), NcType::Float), is_longitude(v)))
+        let matches_len = v.ndim() == 1 && v.dimensions().first().is_some_and(|dim| dim.size == expected as u64);
+        let values: Vec<f64> =
+            (matches_len && spatial).then(|| f.read_variable_as_f64(&p).ok().map(|a| a.iter().copied().collect())).flatten()?;
+        (values.len() == expected).then_some((values, matches!(v.dtype(), NcType::Float), is_longitude(v)))
     };
-    let (xs, ys) = if nd >= 2 { (coord(&dims[x_dim].name), coord(&dims[y_dim].name)) } else { (None, None) };
+    let (xs, ys) = if nd >= 2 { (coord(&dims[x_dim].name, cols), coord(&dims[y_dim].name, rows)) } else { (None, None) };
     let grid_mapping =
         attr_str(var, "grid_mapping").and_then(|g| var_ref.lookup(g.split_whitespace().next().unwrap_or_default())).map(|(_, v)| v);
     let projected = grid_mapping.and_then(|g| attr_str(g, "grid_mapping_name")).is_some_and(|n| n != "latitude_longitude");
@@ -697,8 +700,7 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     let no_fill = || {
         attr_str(var, "_NoFill").is_some_and(|v| v.eq_ignore_ascii_case("true"))
             || (!matches!(f.format(), NcFormat::Classic | NcFormat::Offset64 | NcFormat::Cdf5)
-                && super::hdf5::open_file(path)
-                    .ok()
+                && hdf5()
                     .and_then(|h| h.dataset(&format!("/{}", var_ref.read_path())).ok())
                     .is_some_and(|d| d.fill_value().is_none_or(|fv| !fv.defined)))
     };

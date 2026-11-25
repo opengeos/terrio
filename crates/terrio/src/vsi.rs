@@ -304,6 +304,15 @@ impl Node {
         if input.starts_with("/vsi") && !["/vsicurl/", "/vsis3/", "/vsigs/", "/vsiaz/"].iter().any(|p| input.starts_with(p)) {
             return Err(Error::Unsupported(format!("'{shown}': this virtual file system is not supported")));
         }
+        if let Some(rest) = input.strip_prefix("s3://").or_else(|| input.strip_prefix("/vsis3/")) {
+            let (bucket, _) = rest.split_once('/').unwrap_or((rest, ""));
+            if bucket.is_empty() {
+                return Err(Error::InvalidArgument(format!("'{shown}': no bucket")));
+            }
+            if !crate::vfs::valid_s3_bucket(bucket) {
+                return Err(Error::InvalidArgument(format!("'{shown}': invalid S3 bucket name")));
+            }
+        }
         Ok(match crate::vfs::Location::parse_unarchived(input) {
             // Trimming only classifies the input; a local path keeps its exact bytes.
             crate::vfs::Location::Local(_) => Node::Local(Path::new(original).components().collect()),
@@ -956,11 +965,64 @@ fn tar_entry<R: Read>(entry: &tar::Entry<'_, R>) -> Option<Entry> {
     })
 }
 
+/// Wraps a gzip decoder with the configured `TERRIO_ZIP_MAX_SIZE` cap so a `.tar.gz`
+/// stream cannot decompress unboundedly while listing, statting, skipping, or copying entries.
+#[cfg(not(target_family = "wasm"))]
+struct LimitedGz<R: Read> {
+    inner: flate2::read::MultiGzDecoder<R>,
+    read: u64,
+    limit: u64,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl<R: Read> LimitedGz<R> {
+    fn new(reader: R) -> Self {
+        Self { inner: flate2::read::MultiGzDecoder::new(reader), read: 0, limit: crate::vfs::ZipLimits::from_config().max_size }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[derive(Debug)]
+struct GzLimitExceeded(String);
+
+#[cfg(not(target_family = "wasm"))]
+impl std::fmt::Display for GzLimitExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl std::error::Error for GzLimitExceeded {}
+
+#[cfg(not(target_family = "wasm"))]
+impl<R: Read> Read for LimitedGz<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.read = self.read.saturating_add(n as u64);
+        if self.read > self.limit {
+            return Err(std::io::Error::other(GzLimitExceeded(format!(
+                "tar.gz: decompressed stream exceeds the {} byte limit (TERRIO_ZIP_MAX_SIZE)",
+                self.limit
+            ))));
+        }
+        Ok(n)
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn map_gz_limit<T>(res: Result<T>) -> Result<T> {
+    res.map_err(|e| match e {
+        Error::Io(ref io) if io.get_ref().is_some_and(|inner| inner.is::<GzLimitExceeded>()) => Error::ResourceLimit(io.to_string()),
+        other => other,
+    })
+}
+
 #[cfg(not(target_family = "wasm"))]
 fn tar_entries(archive: &Node, kind: ArchiveKind) -> Result<Vec<Entry>> {
     if kind == ArchiveKind::TarGz {
-        return with_archive_stream(archive, |reader| {
-            let mut tar = tar::Archive::new(flate2::read::MultiGzDecoder::new(reader));
+        return map_gz_limit(with_archive_stream(archive, |reader| {
+            let mut tar = tar::Archive::new(LimitedGz::new(reader));
             let mut out = Vec::new();
             let mut limits = TarLimits::new();
             for entry in tar.entries()? {
@@ -970,7 +1032,7 @@ fn tar_entries(archive: &Node, kind: ArchiveKind) -> Result<Vec<Entry>> {
                 }
             }
             Ok(out)
-        });
+        }));
     }
     with_archive_reader(archive, true, |reader| {
         let mut out = Vec::new();
@@ -1027,10 +1089,10 @@ impl TarLimits {
 #[cfg(not(target_family = "wasm"))]
 fn tar_stat(archive: &Node, kind: ArchiveKind, inner: &str) -> Result<Option<Stat>> {
     if kind == ArchiveKind::TarGz {
-        return with_archive_stream(archive, |reader| {
-            let mut tar = tar::Archive::new(flate2::read::MultiGzDecoder::new(reader));
+        return map_gz_limit(with_archive_stream(archive, |reader| {
+            let mut tar = tar::Archive::new(LimitedGz::new(reader));
             tar_stat_entries(tar.entries()?, inner)
-        });
+        }));
     }
     with_archive_reader(archive, true, |reader| {
         let mut tar = tar::Archive::new(SeekRead(reader));
@@ -1076,7 +1138,7 @@ impl std::io::Seek for SeekRead<'_> {
 fn read_member(archive: &Node, kind: ArchiveKind, inner: &str, out: &mut dyn Sink) -> Result<u64> {
     #[cfg(not(target_family = "wasm"))]
     if kind == ArchiveKind::TarGz {
-        return with_archive_stream(archive, |reader| read_tar_member(&mut flate2::read::MultiGzDecoder::new(reader), inner, out));
+        return map_gz_limit(with_archive_stream(archive, |reader| read_tar_member(&mut LimitedGz::new(reader), inner, out)));
     }
     with_archive_reader(archive, false, |reader| match kind {
         ArchiveKind::Zip => {
@@ -2037,9 +2099,9 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<&SyncOption
     {
         let member = if inner.is_empty() { archive.file_name() } else { inner.clone() };
         if *kind == ArchiveKind::TarGz {
-            return with_archive_stream(archive, |reader| {
-                copy_tar_reader(&mut flate2::read::MultiGzDecoder::new(reader), inner, &member, dst, skip_errors, sync, report)
-            });
+            return map_gz_limit(with_archive_stream(archive, |reader| {
+                copy_tar_reader(&mut LimitedGz::new(reader), inner, &member, dst, skip_errors, sync, report)
+            }));
         }
         return with_archive_reader(archive, false, |reader| copy_tar_reader(reader, inner, &member, dst, skip_errors, sync, report));
     }

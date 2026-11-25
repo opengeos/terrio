@@ -825,12 +825,39 @@ pub(crate) fn resolve_href(base: &str, href: &str) -> String {
     if href.contains("://") || href.starts_with("/vsi") {
         return href.to_string();
     }
-    if is_url(base) {
+    if base.contains("://") {
+        let base_no_q = base.split(['?', '#']).next().unwrap_or(base);
+        let (scheme, rest) = base_no_q.split_once("://").unwrap_or(("https", base_no_q));
+        let (authority, base_path) = match rest.find('/') {
+            Some(i) => (&rest[..i], &rest[i + 1..]),
+            None => (rest, ""),
+        };
         if href.starts_with('/') {
-            let (scheme, rest) = base.split_once("://").unwrap_or(("https", base));
-            let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
-            return format!("{scheme}://{host}{href}");
+            return format!("{scheme}://{authority}{href}");
         }
+        let (href_path, href_tail) = match href.find(['?', '#']) {
+            Some(i) => (&href[..i], &href[i..]),
+            None => (href, ""),
+        };
+        let dir = match base_path.rfind('/') {
+            Some(i) => &base_path[..i],
+            None => "",
+        };
+        let mut parts: Vec<&str> = dir.split('/').filter(|s| !s.is_empty()).collect();
+        for seg in href_path.split('/') {
+            match seg {
+                "." | "" => {}
+                ".." => {
+                    parts.pop();
+                }
+                s => parts.push(s),
+            }
+        }
+        return if parts.is_empty() {
+            format!("{scheme}://{authority}{href_tail}")
+        } else {
+            format!("{scheme}://{authority}/{}{href_tail}", parts.join("/"))
+        };
     } else if href.starts_with('/') || std::path::Path::new(href).is_absolute() {
         return href.to_string();
     }
@@ -4240,5 +4267,15 @@ mod tests {
         assert_eq!(nul.to_proj4(), plain.to_proj4());
         // Read through the WKT 1 built from it, not as PROJJSON text.
         assert!(nul.wkt.as_deref().is_some_and(|w| w.starts_with("PROJCS[\"WGS\",")), "{:?}", nul.wkt);
+    }
+
+    #[test]
+    fn resolve_href_keeps_url_origin_and_s3_bucket_on_parent_segments() {
+        assert_eq!(
+            resolve_href("https://trusted.example/a/item.json", "../../attacker.example/evil.tif"),
+            "https://trusted.example/attacker.example/evil.tif"
+        );
+        assert_eq!(resolve_href("s3://my-bucket/a/item.json", "../../other-bucket/secret.tif"), "s3://my-bucket/other-bucket/secret.tif");
+        assert_eq!(resolve_href("https://trusted.example/a/b/item.json", "../c.tif?x=1"), "https://trusted.example/a/c.tif?x=1");
     }
 }
