@@ -316,6 +316,71 @@ pub(crate) fn cell_pointer(page: &[u8], p: usize) -> Result<usize> {
     Ok(u16::from_be_bytes([b[0], b[1]]) as usize)
 }
 
+/// A validated cell on a table b-tree leaf page (`0x0d`).
+pub(crate) struct TableLeafCell {
+    pub(crate) rowid: i64,
+    pub(crate) payload_start: usize,
+    pub(crate) payload_size: usize,
+}
+
+/// How many bytes of a payload of `size` bytes a cell keeps on its page, when the usable page
+/// size is `usable` and the most a cell keeps is `x` (`usable - 35` in table leaves, less in
+/// indexes).
+pub(crate) fn local_payload_size(usable: usize, size: usize, x: usize) -> usize {
+    if size <= x {
+        return size;
+    }
+    let m = ((usable - 12) * 32 / 255) - 23;
+    let k = m + (size - m) % (usable - 4);
+    if k <= x { k } else { m }
+}
+
+/// Parses and validates all cells on a table b-tree leaf page (`0x0d`), returning them in cell
+/// pointer order. Rejects cell pointers that fall inside the page header or cell pointer array,
+/// run past `usable`, or alias/overlap another cell on the page.
+pub(crate) fn table_leaf_cells(page: &[u8], page_num: u32, usable: usize) -> Result<Vec<TableLeafCell>> {
+    let h = if page_num == 1 { 100 } else { 0 };
+    if usable < 480 || usable > page.len() {
+        return Err(bad("page"));
+    }
+    if page[h] != 0x0d {
+        return Err(bad("unsupported page type"));
+    }
+    let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
+    let header_end = h + 8 + 2 * cells;
+    if header_end > usable {
+        return Err(bad("cell pointer"));
+    }
+    let x = usable - 35;
+    let mut out = Vec::with_capacity(cells);
+    let mut spans = Vec::with_capacity(cells);
+    for c in 0..cells {
+        let off = cell_pointer(page, h + 8 + 2 * c)?;
+        if off < header_end {
+            return Err(bad("cell overlaps page header"));
+        }
+        let (size, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
+        let (rowid, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
+        let size = usize::try_from(size).map_err(|_| bad("cell"))?;
+        let payload_start = off + n1 + n2;
+        let local = local_payload_size(usable, size, x);
+        let overflow_ptr = if size > x { 4 } else { 0 };
+        let cell_end = payload_start.checked_add(local).and_then(|end| end.checked_add(overflow_ptr)).ok_or_else(|| bad("cell"))?;
+        if cell_end > usable {
+            return Err(bad("cell runs past page"));
+        }
+        spans.push((off, cell_end));
+        out.push(TableLeafCell { rowid, payload_start, payload_size: size });
+    }
+    spans.sort_unstable_by_key(|&(start, _)| start);
+    for pair in spans.windows(2) {
+        if pair[0].1 > pair[1].0 {
+            return Err(bad("overlapping leaf cells"));
+        }
+    }
+    Ok(out)
+}
+
 impl Db {
     /// Opens a database from its bytes.
     pub(crate) fn new(data: Vec<u8>) -> Result<Self> {
@@ -442,21 +507,20 @@ impl Db {
                 self.walk_table(right, scan, depth + 1)
             }
             0x0d => {
-                let skipped = scan.skip.min(cells);
+                let cells = table_leaf_cells(page, root, self.usable)?;
+                let skipped = scan.skip.min(cells.len());
                 scan.skip -= skipped;
                 scan.ordinal += skipped;
-                for c in skipped..cells {
-                    let off = cell_pointer(page, h + 8 + 2 * c)?;
-                    let (size, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
-                    let (rowid, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
-                    let size = usize::try_from(size).map_err(|_| bad("cell"))?;
-                    let payload = self.payload(page, off + n1 + n2, size)?;
+                let x = self.usable - 35;
+                for cell in &cells[skipped..] {
+                    let payload =
+                        self.payload_within_checked(page, cell.payload_start, cell.payload_size, x, |p| scan.visited.insert(p))?;
                     let ordinal = scan.ordinal;
                     scan.ordinal += 1;
                     if let Some(left) = &mut scan.remaining {
                         *left -= 1;
                     }
-                    if !(scan.visit)(ordinal, rowid, &payload)? || scan.remaining == Some(0) {
+                    if !(scan.visit)(ordinal, cell.rowid, &payload)? || scan.remaining == Some(0) {
                         return Ok(false);
                     }
                 }
@@ -493,41 +557,54 @@ impl Db {
     /// The rows of a leaf page, as `(rowid, payload)`.
     fn leaf_rows(&self, n: u32) -> Result<Vec<(i64, Vec<u8>)>> {
         let page = self.page(n)?;
-        let h = if n == 1 { 100 } else { 0 };
-        if page[h] != 0x0d {
-            return Err(bad("unsupported page type"));
-        }
-        let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
-        let mut out = Vec::with_capacity(cells);
-        for c in 0..cells {
-            let off = cell_pointer(page, h + 8 + 2 * c)?;
-            let (size, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
-            let (rowid, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
-            let size = usize::try_from(size).map_err(|_| bad("cell"))?;
-            out.push((rowid, self.payload(page, off + n1 + n2, size)?));
+        let cells = table_leaf_cells(page, n, self.usable)?;
+        let mut out = Vec::with_capacity(cells.len());
+        let mut seen_overflow = std::collections::HashSet::new();
+        let x = self.usable - 35;
+        for cell in cells {
+            let payload = self.payload_within_checked(page, cell.payload_start, cell.payload_size, x, |p| {
+                if p == n || !seen_overflow.insert(p) {
+                    return Err(bad("overflow page reached twice"));
+                }
+                Ok(())
+            })?;
+            out.push((cell.rowid, payload));
         }
         Ok(out)
     }
 
     /// A table cell's payload, following overflow pages.
-    fn payload(&self, page: &[u8], start: usize, size: usize) -> Result<Vec<u8>> {
-        self.payload_within(page, start, size, self.usable - 35)
+    fn payload(&self, page_num: u32, page: &[u8], start: usize, size: usize) -> Result<Vec<u8>> {
+        self.payload_within(page_num, page, start, size, self.usable - 35)
     }
 
     /// How many bytes of a payload of `size` bytes a cell keeps on its page, when the most a cell
     /// keeps is `x` (`usable - 35` in table leaves, less in indexes).
     fn local_size(&self, size: usize, x: usize) -> usize {
-        let u = self.usable;
-        if size <= x {
-            return size;
-        }
-        let m = ((u - 12) * 32 / 255) - 23;
-        let k = m + (size - m) % (u - 4);
-        if k <= x { k } else { m }
+        local_payload_size(self.usable, size, x)
     }
 
     /// A cell's payload, following overflow pages, when the most a cell keeps on its page is `x`.
-    fn payload_within(&self, page: &[u8], start: usize, size: usize, x: usize) -> Result<Vec<u8>> {
+    fn payload_within(&self, page_num: u32, page: &[u8], start: usize, size: usize, x: usize) -> Result<Vec<u8>> {
+        let mut seen = std::collections::HashSet::new();
+        self.payload_within_checked(page, start, size, x, |p| {
+            if p == page_num || !seen.insert(p) {
+                return Err(bad("overflow page reached twice"));
+            }
+            Ok(())
+        })
+    }
+
+    /// A cell's payload, following overflow pages and notifying `visit_overflow` for each overflow
+    /// page before reading it so cycles and shared overflow pages are rejected.
+    fn payload_within_checked(
+        &self,
+        page: &[u8],
+        start: usize,
+        size: usize,
+        x: usize,
+        mut visit_overflow: impl FnMut(u32) -> Result<()>,
+    ) -> Result<Vec<u8>> {
         let u = self.usable;
         if size <= x {
             return start.checked_add(size).and_then(|end| page.get(start..end)).map(<[u8]>::to_vec).ok_or_else(|| bad("payload"));
@@ -542,6 +619,7 @@ impl Db {
         let mut next =
             u32::from_be_bytes(page.get(start + local..start + local + 4).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("overflow"))?);
         while out.len() < size && next != 0 {
+            visit_overflow(next)?;
             let p = self.page(next)?;
             next = u32::from_be_bytes([p[0], p[1], p[2], p[3]]);
             let take = (size - out.len()).min(u - 4);
@@ -702,7 +780,7 @@ impl Db {
                                 let (size, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
                                 let (_, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
                                 let size = usize::try_from(size).map_err(|_| bad("cell"))?;
-                                return self.payload(page, off + n1 + n2, size).map(Some);
+                                return self.payload(n, page, off + n1 + n2, size).map(Some);
                             }
                         }
                     }
@@ -740,12 +818,12 @@ impl Db {
     }
 
     /// The decoded record of the index cell at `off`.
-    fn index_cell(&self, page: &[u8], off: usize, interior: bool) -> Result<Vec<Value>> {
+    fn index_cell(&self, page_num: u32, page: &[u8], off: usize, interior: bool) -> Result<Vec<Value>> {
         let start = if interior { off + 4 } else { off };
         let (size, n) = varint(page, start).ok_or_else(|| bad("cell"))?;
         let size = usize::try_from(size).map_err(|_| bad("cell"))?;
         let x = (self.usable - 12) * 64 / 255 - 23;
-        self.decode_record(&self.payload_within(page, start + n, size, x)?)
+        self.decode_record(&self.payload_within(page_num, page, start + n, size, x)?)
     }
 
     /// [`Db::index_prefix`] from page `n`: `false` once the walk is over (past the prefix, or
@@ -780,7 +858,7 @@ impl Db {
         let (mut lo, mut hi) = (0, cells);
         while lo < hi {
             let mid = (lo + hi) / 2;
-            if compare_prefix(&self.index_cell(page, offset(mid)?, interior)?, prefix, encoding) == Ordering::Less {
+            if compare_prefix(&self.index_cell(n, page, offset(mid)?, interior)?, prefix, encoding) == Ordering::Less {
                 lo = mid + 1;
             } else {
                 hi = mid;
@@ -794,7 +872,7 @@ impl Db {
                     return Ok(false);
                 }
             }
-            let record = self.index_cell(page, off, interior)?;
+            let record = self.index_cell(n, page, off, interior)?;
             if compare_prefix(&record, prefix, encoding) != Ordering::Equal || !visit(record) {
                 return Ok(false);
             }
@@ -812,30 +890,25 @@ impl Db {
     /// large blobs are read without the blobs.
     pub(crate) fn scan_columns(&self, root: u32, columns: &[usize], f: &mut dyn FnMut(i64, Vec<Value>)) -> Result<()> {
         let mut leaves = Vec::new();
-        self.leaves(root, &mut leaves, &mut PageSet::new(self.pages() as u64), 0)?;
+        let mut visited = PageSet::new(self.pages() as u64);
+        self.leaves(root, &mut leaves, &mut visited, 0)?;
         let utf8 = self.text_encoding() == 1;
+        let x = self.usable - 35;
         for n in leaves {
             let page = self.page(n)?;
-            let h = if n == 1 { 100 } else { 0 };
-            if page[h] != 0x0d {
-                return Err(bad("unsupported page type"));
-            }
-            let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
-            for c in 0..cells {
-                let off = cell_pointer(page, h + 8 + 2 * c)?;
-                let (size, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
-                let (rowid, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
-                let size = usize::try_from(size).map_err(|_| bad("cell"))?;
-                let start = off + n1 + n2;
-                let local = start.checked_add(self.local_size(size, self.usable - 35)).and_then(|end| page.get(start..end));
+            let cells = table_leaf_cells(page, n, self.usable)?;
+            for cell in cells {
+                let start = cell.payload_start;
+                let local = start.checked_add(self.local_size(cell.payload_size, x)).and_then(|end| page.get(start..end));
                 let values = match local.and_then(|l| local_columns(l, columns, utf8)) {
                     Some(values) => values,
                     None => {
-                        let all = self.decode_record(&self.payload(page, start, size)?)?;
+                        let payload = self.payload_within_checked(page, start, cell.payload_size, x, |p| visited.insert(p))?;
+                        let all = self.decode_record(&payload)?;
                         columns.iter().map(|&c| all.get(c).cloned().unwrap_or(Value::Null)).collect()
                     }
                 };
-                f(rowid, values);
+                f(cell.rowid, values);
             }
         }
         Ok(())
@@ -1379,6 +1452,86 @@ pub(crate) mod fixtures {
         b[levels * 512] = 0x0d;
         b
     }
+
+    /// Writes a table leaf cell at `off` on `page_num` (1-based) with `rowid` and payload `size`,
+    /// returning the byte offset in `b` where the cell's local payload starts.
+    pub(crate) fn write_leaf_cell(b: &mut [u8], page_num: usize, off: usize, rowid: u64, size: usize) -> usize {
+        let page = (page_num - 1) * 512;
+        let mut head = Vec::new();
+        crate::drivers::vector::sqlite::varint(&mut head, size as u64);
+        crate::drivers::vector::sqlite::varint(&mut head, rowid);
+        b[page + off..page + off + head.len()].copy_from_slice(&head);
+        page + off + head.len()
+    }
+
+    /// A 3-page database whose page-1 leaf cell declares 2 overflow pages within the file's
+    /// length, with overflow page 2 pointing back to itself (`2 -> 2`).
+    pub(crate) fn cyclic_overflow_self() -> Vec<u8> {
+        let mut b = database(3);
+        b[100] = 0x0d;
+        b[103..105].copy_from_slice(&1u16.to_be_bytes());
+        b[108..110].copy_from_slice(&200u16.to_be_bytes());
+        let start = write_leaf_cell(&mut b, 1, 200, 1, 92 + 2 * 508);
+        b[start + 92..start + 96].copy_from_slice(&2u32.to_be_bytes());
+        b[512..516].copy_from_slice(&2u32.to_be_bytes());
+        b
+    }
+
+    /// A 4-page database whose page-1 leaf cell declares 3 overflow pages within the file's
+    /// length, with overflow pages forming a 2-page cycle (`2 -> 3 -> 2`).
+    pub(crate) fn cyclic_overflow_pair() -> Vec<u8> {
+        let mut b = database(4);
+        b[100] = 0x0d;
+        b[103..105].copy_from_slice(&1u16.to_be_bytes());
+        b[108..110].copy_from_slice(&200u16.to_be_bytes());
+        let start = write_leaf_cell(&mut b, 1, 200, 1, 92 + 3 * 508);
+        b[start + 92..start + 96].copy_from_slice(&2u32.to_be_bytes());
+        b[512..516].copy_from_slice(&3u32.to_be_bytes());
+        b[1024..1028].copy_from_slice(&2u32.to_be_bytes());
+        b
+    }
+
+    /// A 3-page database whose page-1 leaf has two cell pointers both naming the same valid
+    /// overflow cell at offset 200 (with overflow chain `2 -> 3`).
+    pub(crate) fn aliased_leaf_cells() -> Vec<u8> {
+        let mut b = database(3);
+        b[100] = 0x0d;
+        b[103..105].copy_from_slice(&2u16.to_be_bytes());
+        b[108..110].copy_from_slice(&200u16.to_be_bytes());
+        b[110..112].copy_from_slice(&200u16.to_be_bytes());
+        let start = write_leaf_cell(&mut b, 1, 200, 1, 92 + 2 * 508);
+        b[start + 92..start + 96].copy_from_slice(&2u32.to_be_bytes());
+        b[512..516].copy_from_slice(&3u32.to_be_bytes());
+        b
+    }
+
+    /// A 2-page database whose page-1 leaf has two cells whose on-page byte ranges overlap
+    /// (`[200, 222)` and `[210, 232)`).
+    pub(crate) fn overlapping_leaf_cells() -> Vec<u8> {
+        let mut b = database(2);
+        b[100] = 0x0d;
+        b[103..105].copy_from_slice(&2u16.to_be_bytes());
+        b[108..110].copy_from_slice(&200u16.to_be_bytes());
+        b[110..112].copy_from_slice(&210u16.to_be_bytes());
+        write_leaf_cell(&mut b, 1, 200, 1, 20);
+        write_leaf_cell(&mut b, 1, 210, 2, 20);
+        b
+    }
+
+    /// A 3-page database whose page-1 leaf has two disjoint cells that both point to the same
+    /// overflow page 2.
+    pub(crate) fn shared_overflow_cells() -> Vec<u8> {
+        let mut b = database(3);
+        b[100] = 0x0d;
+        b[103..105].copy_from_slice(&2u16.to_be_bytes());
+        b[108..110].copy_from_slice(&150u16.to_be_bytes());
+        b[110..112].copy_from_slice(&300u16.to_be_bytes());
+        let start1 = write_leaf_cell(&mut b, 1, 150, 1, 92 + 508);
+        b[start1 + 92..start1 + 96].copy_from_slice(&2u32.to_be_bytes());
+        let start2 = write_leaf_cell(&mut b, 1, 300, 2, 92 + 508);
+        b[start2 + 92..start2 + 96].copy_from_slice(&2u32.to_be_bytes());
+        b
+    }
 }
 
 #[cfg(test)]
@@ -1505,8 +1658,8 @@ mod tests {
     /// An overflow chain cannot be longer than the file: a payload size implying more overflow
     /// pages than it has is an error before anything is allocated for it (a 64 GiB payload over
     /// a self-referencing page would allocate until out of memory), and a chain that ends short
-    /// of its payload is an error. A chain within the file's length that loops ends after the
-    /// payload's page count, so it is bounded without a page set.
+    /// of its payload is an error. Cyclic overflow chains within the file's length are also
+    /// rejected (see `cyclic_overflow_chains_are_errors`).
     #[test]
     fn overflow_chains_longer_than_the_file_are_errors() {
         // Ten pages of overflow over a page that names itself as the next one, rejected by the
@@ -1540,6 +1693,78 @@ mod tests {
         b[start + 92..start + 96].copy_from_slice(&2u32.to_be_bytes());
         b[512..516].copy_from_slice(&3u32.to_be_bytes());
         assert_eq!(Db::new(b).unwrap().leaf_rows(1).unwrap()[0].1.len(), 92 + 2 * 508);
+    }
+
+    /// Cyclic overflow chains (a page referencing itself, a multi-page loop, or an overflow page
+    /// referencing the leaf page itself) and cells sharing an overflow page are rejected even when
+    /// the declared payload size fits within the file's page count.
+    #[test]
+    fn cyclic_overflow_chains_are_errors() {
+        for bytes in [fixtures::cyclic_overflow_self(), fixtures::cyclic_overflow_pair()] {
+            let db = Db::new(bytes).unwrap();
+            assert!(db.leaf_rows(1).is_err());
+            assert!(db.lookup(1, 1).is_err());
+            let mut visit = |_, _, _: &[u8]| Ok(true);
+            let mut scan = TableScan { skip: 0, remaining: None, ordinal: 0, visited: PageSet::new(db.pages() as u64), visit: &mut visit };
+            assert!(db.walk_table(1, &mut scan, 0).is_err());
+            assert!(db.scan_columns(1, &[0], &mut |_, _| {}).is_err());
+        }
+
+        // Leaf page 2 pointing to itself as its own overflow page.
+        let mut b = database(2);
+        b[512] = 0x0d;
+        b[512 + 3..512 + 5].copy_from_slice(&1u16.to_be_bytes());
+        b[512 + 8..512 + 10].copy_from_slice(&200u16.to_be_bytes());
+        let start = fixtures::write_leaf_cell(&mut b, 2, 200, 1, 92 + 508);
+        b[start + 92..start + 96].copy_from_slice(&2u32.to_be_bytes());
+        let db = Db::new(b).unwrap();
+        assert!(db.leaf_rows(2).is_err());
+        assert!(db.lookup(2, 1).is_err());
+
+        // Two disjoint cells on the same leaf pointing to the same overflow page.
+        let db = Db::new(fixtures::shared_overflow_cells()).unwrap();
+        assert!(db.leaf_rows(1).is_err());
+        let mut visit = |_, _, _: &[u8]| Ok(true);
+        let mut scan = TableScan { skip: 0, remaining: None, ordinal: 0, visited: PageSet::new(db.pages() as u64), visit: &mut visit };
+        assert!(db.walk_table(1, &mut scan, 0).is_err());
+    }
+
+    /// Leaf cell pointers that alias, overlap another cell's on-page bytes, or overlap the page
+    /// header / cell pointer array are errors; disjoint adjacent cells in arbitrary physical order
+    /// still decode in cell-pointer order.
+    #[test]
+    fn aliased_and_overlapping_leaf_cells_are_errors() {
+        for bytes in [fixtures::aliased_leaf_cells(), fixtures::overlapping_leaf_cells()] {
+            let db = Db::new(bytes).unwrap();
+            assert!(db.leaf_rows(1).is_err());
+            let mut visit = |_, _, _: &[u8]| Ok(true);
+            let mut scan = TableScan { skip: 0, remaining: None, ordinal: 0, visited: PageSet::new(db.pages() as u64), visit: &mut visit };
+            assert!(db.walk_table(1, &mut scan, 0).is_err());
+            assert!(db.scan_columns(1, &[0], &mut |_, _| {}).is_err());
+        }
+
+        // Cell pointer falling inside the page header / cell pointer array (`104 < 110`).
+        let mut b = database(2);
+        b[100] = 0x0d;
+        b[103..105].copy_from_slice(&1u16.to_be_bytes());
+        b[108..110].copy_from_slice(&104u16.to_be_bytes());
+        assert!(Db::new(b).unwrap().leaf_rows(1).is_err());
+
+        // Two adjacent non-overlapping cells stored in reverse physical offset order still read in
+        // cell-pointer order.
+        let mut b = database(2);
+        b[100] = 0x0d;
+        b[103..105].copy_from_slice(&2u16.to_be_bytes());
+        b[108..110].copy_from_slice(&300u16.to_be_bytes());
+        b[110..112].copy_from_slice(&278u16.to_be_bytes());
+        let s1 = fixtures::write_leaf_cell(&mut b, 1, 300, 10, 20);
+        b[s1..s1 + 20].fill(0xaa);
+        let s2 = fixtures::write_leaf_cell(&mut b, 1, 278, 20, 20);
+        b[s2..s2 + 20].fill(0xbb);
+        let rows = Db::new(b).unwrap().leaf_rows(1).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], (10, vec![0xaa; 20]));
+        assert_eq!(rows[1], (20, vec![0xbb; 20]));
     }
 
     /// Interior pages that share children (each page's cell and right-most pointer naming the
