@@ -814,8 +814,9 @@ fn le_u32_at(src: &[u8], i: usize) -> Option<usize> {
 }
 
 /// Decompresses the `nsplits` streams of a Blosc block, from offset `pos` of `src`, into `dst`,
-/// each into its equal share of it: a stream decompressing to fewer bytes than its share (a block
-/// short of its size, which would be unshuffled out of its bounds) or to more is an error.
+/// each into its equal share of it: a stream decompressing to fewer bytes than its share (which
+/// would leave the rest of its share as zeros, or as an earlier chunk's bytes in the scratch) or
+/// to more is an error.
 fn blosc_block(src: &[u8], mut pos: usize, nsplits: usize, compressor: u8, dst: &mut [u8]) -> Result<()> {
     let bsize = dst.len();
     let neblock = bsize / nsplits;
