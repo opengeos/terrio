@@ -4181,15 +4181,17 @@ class MemoryFile:
         data = None if file_or_bytes is None else bytes(file_or_bytes)
         if ext is None:
             ext = ".tif" if data is None else _extension_from_signature(data)
+        filename_str = os.fsdecode(filename) if filename is not None else None
         name = (
-            filename or f"{uuid.uuid4().hex}{ext if ext.startswith('.') or not ext else '.' + ext}"
+            filename_str
+            or f"{uuid.uuid4().hex}{ext if ext.startswith('.') or not ext else '.' + ext}"
         )
-        if filename is not None:
-            normalized = filename.replace("\\", "/")
+        if filename_str is not None:
+            normalized = filename_str.replace("\\", "/")
             if (
-                os.path.isabs(filename)
+                os.path.isabs(filename_str)
                 or os.path.isabs(normalized)
-                or os.path.splitdrive(filename)[0]
+                or os.path.splitdrive(filename_str)[0]
                 or ".." in normalized.split("/")
             ):
                 raise ValueError(

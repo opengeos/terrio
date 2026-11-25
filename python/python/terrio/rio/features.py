@@ -410,7 +410,8 @@ def shapes(
     """The polygons of connected pixels of equal value.
 
     Args:
-        source: A 2-D array (int16, int32, uint8, uint16 or float32), or a masked array.
+        source: A 2-D array (int16, int32, uint8, uint16 or float32), a masked array,
+            or a rasterio band object (`ds`/`bidx`).
         mask: Pixels to include (True or non-zero); by default all (or the masked array's
             unmasked pixels).
         connectivity: 4 or 8.
@@ -501,7 +502,7 @@ def sieve(
     """Removes connected regions smaller than a size, merging them into their largest neighbour.
 
     Args:
-        source: A 2-D array.
+        source: A 2-D array or a rasterio band object (`ds`/`bidx`).
         size: The minimum region size in pixels.
         out: An array to write into.
         mask: Pixels to consider (True or non-zero).
