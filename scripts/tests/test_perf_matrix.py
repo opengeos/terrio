@@ -55,6 +55,8 @@ def test_summarize_ranks_only_complete_matching_samples():
 def test_equal_sums_with_different_bytes_are_not_exact():
     """Rank a case as `exact` only when every sample's bytes hash as GDAL's."""
     exact = summarize(_row(terrio=[{**_sample(2), "digest": "a"}], gdal=[{**_sample(1), "digest": "a"}]))
+    nan = summarize(_row(terrio=[{**_sample(2, s=float("nan")), "digest": "a"}], gdal=[{**_sample(1, s=float("nan")), "digest": "a"}]))
+    assert nan["values"] == "exact"  # equal bytes holding a NaN sum to NaN, which no sum check accepts
     assert exact["values"] == "exact" and "digest" not in exact["terrio"]
     # Two compensating errors keep the sum and count: the bytes still differ.
     swapped = summarize(_row(terrio=[{**_sample(2), "digest": "b"}], gdal=[{**_sample(1), "digest": "a"}]))
@@ -838,7 +840,7 @@ def test_threaded_reads_open_a_handle_per_thread_and_keep_the_parts_in_order(mon
     monkeypatch.setitem(perf_matrix.FORMATS, "fake", SimpleNamespace(EXT=".tif", reader=reader))
     result = perf_matrix.worker({"format": "fake", "tool": "gdal", "src": "http://localhost/f.tif",
                                  "access": f"threads{n}", "meta": {}})
-    assert given == ["threads4"] and len(opened) == n
+    assert given == ["threads4"] and len(set(opened)) == n  # n handles, on n distinct threads
     assert result["digest"] == perf_matrix.digest([[i] for i in range(16)])
 
 
@@ -933,6 +935,7 @@ def test_flatgeobuf_gdal_read_names_the_geometry_as_terrio(tmp_path):
     """Name GDAL's FlatGeobuf geometry column `geometry`, as terrio does, so the digests compare."""
     ogr = pytest.importorskip("osgeo.ogr")
     pytest.importorskip("pyogrio")
+    pytest.importorskip("pyarrow")
     if ogr.GetDriverByName("FlatGeobuf") is None:
         pytest.skip("FlatGeobuf driver is required")
     ogr.UseExceptions()
@@ -949,3 +952,22 @@ def test_flatgeobuf_gdal_read_names_the_geometry_as_terrio(tmp_path):
     table = items[0](open_(str(path)))
     assert table.column_names == ["id", "geometry"]
     assert check(table) == (1.0, 1)
+
+
+def test_geopackage_gdal_read_names_the_geometry_as_terrio(tmp_path):
+    """Name GDAL's GeoPackage geometry column (`geom`) `geometry`, as terrio does, so the digests compare."""
+    ogr = pytest.importorskip("osgeo.ogr")
+    pytest.importorskip("pyogrio")
+    pytest.importorskip("pyarrow")
+    ogr.UseExceptions()
+    path = tmp_path / "tiny.gpkg"
+    ds = ogr.GetDriverByName("GPKG").CreateDataSource(str(path))
+    lyr = ds.CreateLayer(perf_matrix.GeoPackage.LAYER, None, ogr.wkbPoint)
+    lyr.CreateField(ogr.FieldDefn("id", ogr.OFTInteger64))
+    f = ogr.Feature(lyr.GetLayerDefn())
+    f["id"] = 1
+    f.SetGeometry(ogr.CreateGeometryFromWkt("POINT (1 2)"))
+    lyr.CreateFeature(f)
+    lyr = ds = None
+    open_, items, _, _ = perf_matrix.GeoPackage.reader("gdal", "full", {})
+    assert items[0](open_(str(path))).column_names == ["id", "geometry"]
