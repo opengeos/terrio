@@ -387,8 +387,9 @@ On a pull request, a maintainer's comment `/perf-matrix` runs the matrix on a Gi
 (`.github/workflows/perf-matrix.yml`): the pull request's terrio, its base branch's and GDAL
 3.13.3, with the base branch's harness, and posts the report. With no arguments it runs every
 format but `geoparquet-write` with one sample per tool; `/perf-matrix geoparquet --only geoarrow`
-runs one format with the options of `run`. Runner timings vary more than a quiet desktop's, but each comparison is
-made within one run on one runner. The Actions tab runs the same workflow for a pull request
+runs one format with the options of `run`; options alone (`/perf-matrix --samples 5`) run the
+read formats. Runner timings vary more than a quiet desktop's, but each comparison is made within
+one run on one runner. The Actions tab runs the same workflow for a pull request
 number. Each format runs in its own job, in parallel.
 
 Run this workflow only on code you would build yourself. Pull request build scripts share the
