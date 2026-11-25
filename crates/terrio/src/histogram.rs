@@ -114,7 +114,7 @@ fn are_real_equal(a: f64, b: f64) -> bool {
 }
 
 /// The minimum and maximum of the valid values. `None` when there are none.
-fn min_max(values: impl Iterator<Item = f64>, nodata: Option<f64>, t: DataType) -> Option<(f64, f64)> {
+pub(crate) fn min_max(values: impl Iterator<Item = f64>, nodata: Option<f64>, t: DataType) -> Option<(f64, f64)> {
     let (mut lo, mut hi, mut n) = (f64::INFINITY, f64::NEG_INFINITY, 0usize);
     for v in values {
         if is_valid(v, nodata, t) {
@@ -124,6 +124,27 @@ fn min_max(values: impl Iterator<Item = f64>, nodata: Option<f64>, t: DataType) 
         }
     }
     (n > 0).then_some((lo, hi))
+}
+
+/// The blocks GDAL's approximate statistics sample (`ComputeStatistics(bApproxOK=TRUE)`): one
+/// block in every `nSampleRate`, as `(x, y, width, height)` windows.
+pub(crate) fn sampled_blocks(cols: usize, rows: usize, block: (usize, usize)) -> Vec<(usize, usize, usize, usize)> {
+    let (bw, bh) = (block.0.max(1), block.1.max(1));
+    let per_row = cols.div_ceil(bw);
+    let per_col = rows.div_ceil(bh);
+    let mut rate = ((per_row as f64 * per_col as f64).sqrt() as usize).max(1);
+    // GDAL avoids probing only the first column of blocks of a square raster.
+    if rate == per_row && per_row > 1 {
+        rate += 1;
+    }
+    (0..per_row * per_col)
+        .step_by(rate)
+        .map(|i| {
+            let (bx, by) = (i % per_row, i / per_row);
+            let (x0, y0) = (bx * bw, by * bh);
+            (x0, y0, (cols - x0).min(bw), (rows - y0).min(bh))
+        })
+        .collect()
 }
 
 /// GDAL's approximate minimum and maximum of a band without overviews: the pixels of one block in
@@ -136,21 +157,9 @@ fn sampled_min_max(
     nodata: Option<f64>,
     t: DataType,
 ) -> Option<(f64, f64)> {
-    let (bw, bh) = (block.0.max(1), block.1.max(1));
-    let per_row = cols.div_ceil(bw);
-    let per_col = rows.div_ceil(bh);
-    let mut rate = ((per_row as f64 * per_col as f64).sqrt() as usize).max(1);
-    // GDAL avoids probing only the first column of blocks of a square raster.
-    if rate == per_row && per_row > 1 {
-        rate += 1;
-    }
-    let blocks = (0..per_row * per_col).step_by(rate);
-    let pixels = blocks.flat_map(|i| {
-        let (bx, by) = (i % per_row, i / per_row);
-        let (x0, y0) = (bx * bw, by * bh);
-        let (w, h) = ((cols - x0).min(bw), (rows - y0).min(bh));
-        (y0..y0 + h).flat_map(move |y| values[y * cols + x0..y * cols + x0 + w].iter().copied())
-    });
+    let pixels = sampled_blocks(cols, rows, block)
+        .into_iter()
+        .flat_map(|(x0, y0, w, h)| (y0..y0 + h).flat_map(move |y| values[y * cols + x0..y * cols + x0 + w].iter().copied()));
     min_max(pixels, nodata, t)
 }
 
@@ -242,13 +251,13 @@ pub(crate) fn pam_histogram(path: &str, band: usize) -> Option<Histogram> {
 /// `STATISTICS_MINIMUM`/`MAXIMUM` metadata (the `.aux.xml` sidecar, then a GeoTIFF's
 /// `GDAL_METADATA`), then what the format records itself (an EHdr `.stx` file, an Idrisi `.rdc`
 /// header, a Surfer grid's Z range).
-pub(crate) fn stored_range(ds: &RasterDataset, path: &str, band: usize) -> Option<(f64, f64)> {
+pub(crate) fn stored_range(driver: crate::formats::RasterDriver, path: &str, band: usize) -> Option<(f64, f64)> {
     use crate::formats::RasterDriver as D;
     if let Some(r) = crate::ops::dem::pam_statistics(path, band) {
         return Some(r);
     }
     let p = std::path::Path::new(path);
-    match ds.driver {
+    match driver {
         D::GTiff | D::Cog => {
             let tags = crate::geotiff::read_geo_tags(p)?;
             let get = |k: &str| -> Option<f64> {
