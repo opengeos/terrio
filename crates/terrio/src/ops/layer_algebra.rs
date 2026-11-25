@@ -121,7 +121,7 @@ pub fn layer_algebra(a: &Layer, b: &Layer, operation: LayerAlgebraOperation, opt
                     && set.area.0.len() > 1
                     && polygon_components_overlap(&set.area)
                 {
-                    set.area = super::vector_clip::union_regions(std::slice::from_ref(&set.area))?;
+                    set.set_area(super::vector_clip::union_regions(std::slice::from_ref(&set.area))?);
                     set.collection = false;
                 }
                 Ok(set)
@@ -318,6 +318,10 @@ impl Set {
             .chain(self.lines.iter().flat_map(|l| l.windows(2).map(|p| Line::new(p[0], p[1]))))
             .collect()
     }
+    fn set_area(&mut self, area: geo::MultiPolygon<f64>) {
+        self.area = area;
+        self.area_mask.take();
+    }
     fn area_mask(&self) -> &Mask {
         self.area_mask.get_or_init(|| Arc::new(Mask::new(self.area.clone()))).as_ref()
     }
@@ -329,7 +333,7 @@ impl Set {
     fn intersection(&self, other: &Self) -> Result<Self> {
         let mut out = Self::default();
         if !other.area.0.is_empty() {
-            let mask = Mask::new(other.area.clone());
+            let mask = other.area_mask();
             for part in self.parts() {
                 let mut parts = vec![];
                 mask.intersection(&part, true, &mut parts)?;
@@ -339,7 +343,7 @@ impl Set {
             }
         }
         if !self.area.0.is_empty() {
-            let mask = Mask::new(self.area.clone());
+            let mask = self.area_mask();
             for l in &other.lines {
                 let mut parts = vec![];
                 mask.intersection(&Geometry::LineString(l.iter().copied().map(coord).collect()), true, &mut parts)?;
@@ -380,12 +384,14 @@ impl Set {
                 area = area.difference(&mask);
             }
         }
-        let mask = other.normalized()?;
         let mut out = Self { area, ..Self::default() };
-        for l in &self.lines {
-            out.lines.extend(cut_line(l, &mask, false).0);
+        if !self.lines.is_empty() || !self.points.is_empty() {
+            let mask = other.normalized()?;
+            for l in &self.lines {
+                out.lines.extend(cut_line(l, &mask, false).0);
+            }
+            out.points.extend(self.points.iter().copied().filter(|p| !mask.covers(*p)));
         }
-        out.points.extend(self.points.iter().copied().filter(|p| !mask.covers(*p)));
         out.multi = self.multi && other.dimension() < 0;
         out.collection = self.collection
             && (other.dimension() < 0
@@ -460,7 +466,8 @@ pub(super) fn dissolve_features(layer: &Layer) -> Result<Layer> {
         }
         let mut set = Set::from_geometry(&geometry);
         if !set.area.0.is_empty() {
-            set.area = super::vector_clip::union_regions(&[set.area])?;
+            let unioned = super::vector_clip::union_regions(std::slice::from_ref(&set.area))?;
+            set.set_area(unioned);
         }
         let area = Set { area: set.area.clone(), ..Default::default() };
         set.lines =
