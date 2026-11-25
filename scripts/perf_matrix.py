@@ -21,11 +21,12 @@ time ratios by axis, so a round of optimization starts from the slow areas, not 
 `--base DIR` times a second terrio build (`pip install --target DIR` of its wheel) in the same
 run, interleaved with this one and GDAL: the report then gives this build's time against the base.
 
-Formats: geotiff, zarr, geoparquet, geopackage; geotiff-write and geoparquet-write: writes of the
-GeoTIFF and GeoParquet fixtures, each compared with GDAL's output. Needs terrio's Python module (a
-release build: `maturin develop --release` in python/), GDAL's Python bindings, pyogrio
-(GeoParquet, GeoPackage) and zarr-python 3 (Zarr fixtures) in one environment. Fixtures and results
-stay in --dir, out of the repository. docs/benchmarks.md describes the method.
+Formats: geotiff, zarr, geoparquet, flatgeobuf, geopackage; geotiff-write and geoparquet-write:
+writes of the GeoTIFF and GeoParquet fixtures, each compared with GDAL's output. Needs terrio's
+Python module (a release build: `maturin develop --release` in python/), GDAL's Python bindings,
+pyogrio and PyArrow (GeoParquet, FlatGeobuf, GeoPackage) and zarr-python 3 (Zarr fixtures) in one
+environment. Fixtures and results stay in --dir, out of the repository. docs/benchmarks.md
+describes the method.
 """
 
 from __future__ import annotations
@@ -185,6 +186,20 @@ def digest(results) -> str:
             h.update(repr((a.dtype.str, shape)).encode())
             h.update(memoryview(a).cast("B"))
     return h.hexdigest()
+
+
+def table_checksum(res) -> tuple[float, int]:
+    """The sum and row count of a vector read: of `id`, or of `value` when `id` is not read.
+
+    Args:
+        res: A PyArrow table, or pyogrio's `(meta, table)`.
+
+    Returns:
+        `(sum, count)`.
+    """
+    table = res[1] if isinstance(res, tuple) else res
+    col = "id" if "id" in table.column_names else "value"
+    return float(table.column(col).to_numpy().sum(dtype="float64")), table.num_rows
 
 
 @contextlib.contextmanager
@@ -838,12 +853,6 @@ class GeoParquet:
             def open_(p):
                 return p if p.startswith("/") else "/vsicurl/" + p
 
-        def summary(res) -> tuple[float, int]:
-            """(sum of `id`, or of `value` when `id` is not read, row count)."""
-            table = res[1] if isinstance(res, tuple) else res
-            col = "id" if "id" in table.column_names else "value"
-            return float(table.column(col).to_numpy().sum(dtype="float64")), table.num_rows
-
         def read(p, **kw):
             return po.read_arrow(p, **kw)
 
@@ -866,7 +875,212 @@ class GeoParquet:
         else:
             items = [lambda p: read(p)]
         warm = (open_, lambda p: read(p))
-        return open_, items, summary, warm
+        return open_, items, table_checksum, warm
+
+
+# =============================================================================================
+# FlatGeobuf
+
+
+class FlatGeobuf:
+    """FlatGeobuf fixtures (by geometry, with or without a spatial index) and their reads."""
+
+    # name: (geometry, rows, spatial index); the features of GeoParquet's sources
+    FIXTURES = {
+        "poly_index": ("polygon", 400_000, True),
+        "poly_noindex": ("polygon", 400_000, False),
+        "point_index": ("point", 2_000_000, True),
+        "point_noindex": ("point", 2_000_000, False),
+        "line_index": ("line", 400_000, True),
+        "line_noindex": ("line", 400_000, False),
+    }
+    # Every column; the geometry and two attributes (features are stored whole: the same bytes); a
+    # bbox of 1% of the extent; 16 such bboxes. The boxes and columns are GeoParquet's.
+    ACCESS = ["full", "columns", "bbox", "bbox16"]
+    EXT = ".fgb"
+    NODE_SIZE = 16  # of the packed R-tree GDAL writes (reference: GDAL 3.13.3)
+
+    @staticmethod
+    def axes(name: str) -> dict:
+        """The values of the matrix's axes for a fixture.
+
+        Args:
+            name: The fixture's name.
+
+        Returns:
+            Its `codec`, `dtype` and `layout`.
+        """
+        geom, rows, index = FlatGeobuf.FIXTURES[name]
+        return {"codec": "flatgeobuf", "dtype": geom, "layout": f"{'index' if index else 'no index'}/{rows}"}
+
+    @staticmethod
+    def make(out: Path) -> None:
+        """Writes the format's fixtures that are not there yet, and its warm-up file.
+
+        Args:
+            out: The directory of the format's fixtures.
+        """
+        from osgeo import gdal
+
+        gdal.UseExceptions()
+        sources = GeoParquet.sources(out)
+        for name, (geom, rows, index) in FlatGeobuf.FIXTURES.items():
+            path = out / f"{name}.fgb"
+            if path.exists():
+                continue
+            lco = [f"SPATIAL_INDEX={'YES' if index else 'NO'}"]
+            publish(path, lambda tmp: gdal.VectorTranslate(str(tmp), str(sources[geom]), format="FlatGeobuf", layerCreationOptions=lco, limit=rows))
+            print(f"{path.name}: {path.stat().st_size >> 20} MB", flush=True)
+        publish(out / "_warmup.fgb", lambda tmp: gdal.VectorTranslate(str(tmp), str(sources["point"]), format="FlatGeobuf", limit=100))
+
+    @staticmethod
+    def levels(count: int) -> list[tuple[int, int]]:
+        """The node ranges `[start, end)` of each level of a packed R-tree, the leaves first.
+
+        Args:
+            count: The number of features.
+
+        Returns:
+            The ranges; the root's is last, and first in the file.
+
+        Raises:
+            ValueError: If there are no features, or the header does not give their count (-1).
+        """
+        if count < 0:
+            raise ValueError("a spatial index of an unknown feature count")
+        if count == 0:
+            raise ValueError("a spatial index of no features")
+        counts, n = [count], count
+        while True:  # the root is a level of its own, even for a few features
+            n = -(-n // FlatGeobuf.NODE_SIZE)
+            counts.append(n)
+            if n == 1:
+                break
+        out, end = [], sum(counts)
+        for c in counts:
+            out.append((end - c, end))
+            end -= c
+        return out
+
+    @staticmethod
+    def meta(path: Path, access: str) -> dict | None:
+        """What a read of a fixture needs, from the fixture's own header, index and features.
+
+        The header and every feature, for a whole read or a bbox without an index; for a bbox
+        through the index, the header, the index nodes on the way and the features found. As in the
+        other formats, a node or feature that several of `bbox16`'s boxes touch counts once.
+
+        Args:
+            path: The fixture.
+            access: The access pattern.
+
+        Returns:
+            `need_bytes`.
+
+        Raises:
+            ValueError: If the index does not describe the file's features.
+        """
+        import numpy as np
+        from osgeo import ogr
+
+        _, _, index = FlatGeobuf.FIXTURES[path.stem]
+        size = path.stat().st_size
+        if not index:
+            return {"need_bytes": size}
+        ogr.UseExceptions()
+        ds = ogr.Open(str(path))
+        count = ds.GetLayer(0).GetFeatureCount()  # from the header
+        ds = None
+        levels = FlatGeobuf.levels(count)
+        item = np.dtype([("x0", "<f8"), ("y0", "<f8"), ("x1", "<f8"), ("y1", "<f8"), ("off", "<u8")])
+        # Only the bytes used are read: the runner's peak memory is the floor of each worker's.
+        with open(path, "rb") as f:
+            fd = f.fileno()
+            header = 12 + struct.unpack("<I", os.pread(fd, 4, 8))[0]  # magic bytes, header length, header
+            num_nodes = levels[0][1]  # the leaves end the index: every node precedes the data
+            data = header + num_nodes * 40
+
+            def nodes(a, b):
+                """The index nodes `[a, b)`."""
+                return np.frombuffer(os.pread(fd, (b - a) * 40, header + a * 40), item)
+
+            def feature(off):
+                """The size of the feature at `off` in the data section, its size prefix included."""
+                return 4 + struct.unpack("<I", os.pread(fd, 4, data + off))[0]
+
+            # The features follow the leaves: the first leaf's starts the data, the last's ends the file.
+            first, last = int(nodes(levels[0][0], levels[0][0] + 1)["off"][0]), int(nodes(num_nodes - 1, num_nodes)["off"][0])
+            if first != 0 or data + last + feature(last) != size:
+                raise ValueError(f"{path.name}: the spatial index does not describe the features")
+            boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16}.get(access, 0))
+            if not boxes:  # every feature, after the index
+                return {"need_bytes": size - (data - header)}
+            visited, hits = set(), set()
+            for bx0, by0, bx1, by1 in boxes:
+                current = [levels[-1]]
+                for level in range(len(levels) - 1, -1, -1):
+                    below = []
+                    for a, b in current:
+                        visited.add((a, b))
+                        n = nodes(a, b)
+                        found = n["off"][(n["x0"] <= bx1) & (n["y0"] <= by1) & (n["x1"] >= bx0) & (n["y1"] >= by0)]
+                        if level == 0:
+                            hits.update(found.tolist())
+                        else:  # the index of the child node's first item
+                            below += [(int(o), min(int(o) + FlatGeobuf.NODE_SIZE, levels[level - 1][1])) for o in found]
+                    current = below
+            return {"need_bytes": header + sum(b - a for a, b in visited) * 40 + sum(feature(o) for o in hits)}
+
+    @staticmethod
+    def reader(tool: str, access: str, meta: dict):
+        """How a tool reads a fixture in an access pattern.
+
+        terrio reads a bbox with `open_vector`, the reader that searches the spatial index, and
+        every feature or two columns with `open_stream`, the reader that selects columns. GDAL reads
+        all three with pyogrio's `read_arrow`.
+
+        Args:
+            tool: `terrio` or `gdal`.
+            access: The access pattern.
+            meta: What `meta` returned for the fixture.
+
+        Returns:
+            `(open, items, check, warm)`: `open(path)` opens the source, each item reads one part of
+            it, `check` turns an item's result into `(sum, count)` after the timed read, and `warm` is the
+            open and read of the warm-up file.
+        """
+        if tool == "terrio":
+            import pyarrow as pa
+            import terrio
+
+            def open_(p):
+                return p  # nothing is held between reads
+
+            def read(p, bbox=None, columns=None):
+                if bbox is not None:
+                    return pa.table(terrio.open_vector(p, bbox=bbox).layers[0])
+                return pa.table(terrio.open_stream(p, columns=columns))
+        else:
+            import pyogrio
+
+            def open_(p):
+                return p if p.startswith("/") else "/vsicurl/" + p
+
+            def read(p, **kw):
+                # GDAL names the geometry column `wkb_geometry`, terrio `geometry`: the digest
+                # compares columns by name, so GDAL's is renamed (no copy).
+                table = pyogrio.read_arrow(p, **kw)[1]
+                return table.rename_columns(["geometry" if c == "wkb_geometry" else c for c in table.column_names])
+
+        boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16}.get(access, 0))
+        if boxes:
+            items = [lambda p, b=b: read(p, bbox=b) for b in boxes]
+        elif access == "columns":
+            items = [lambda p: read(p, columns=GeoParquet.COLUMNS)]
+        else:
+            items = [lambda p: read(p)]
+        warm = (open_, lambda p: read(p))
+        return open_, items, table_checksum, warm
 
 
 # =============================================================================================
@@ -1108,11 +1322,6 @@ class GeoPackage:
             def read(p, **kw):
                 return po.read_arrow(p, **kw)[1]
 
-        def summary(table) -> tuple[float, int]:
-            """(sum of `id`, or of `value` when `id` is not read, row count)."""
-            col = "id" if "id" in table.column_names else "value"
-            return float(table.column(col).to_numpy().sum(dtype="float64")), table.num_rows
-
         boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
         if boxes:
             items = [lambda p, b=b: read(p, bbox=b) for b in boxes]
@@ -1125,10 +1334,10 @@ class GeoPackage:
         else:
             items = [read]
         warm = (open_, read)
-        return open_, items, summary, warm
+        return open_, items, table_checksum, warm
 
 
-FORMATS = {"geotiff": GeoTiff, "zarr": Zarr, "geoparquet": GeoParquet, "geopackage": GeoPackage}
+FORMATS = {"geotiff": GeoTiff, "zarr": Zarr, "geoparquet": GeoParquet, "flatgeobuf": FlatGeobuf, "geopackage": GeoPackage}
 
 # The source files each format's reads go through, as fnmatch patterns from the repository root
 # (`*` crosses directories): a pull request that changes one is worth that format's matrix. The
@@ -1174,6 +1383,15 @@ PATHS = {
         "python/src/stream.rs",
         "python/src/arrow.rs",
         "python/python/terrio/pyogrio/*",
+    ],
+    "flatgeobuf": [
+        "crates/terrio/src/drivers/vector/flatgeobuf.rs",
+        "crates/terrio/src/drivers/vector/mod.rs",
+        "crates/terrio/src/arrow.rs",
+        "crates/terrio/src/stream/*",
+        "python/src/stream.rs",
+        "python/src/vector.rs",
+        "python/src/arrow.rs",
     ],
     "geopackage": [
         "crates/terrio/src/drivers/vector/gpkg_read.rs",

@@ -399,12 +399,7 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
             .map(|f| (eval(e, f), f))
             .collect::<Vec<_>>();
         sorted.sort_by(|(a, _), (b, _)| {
-            let order = match (a, b) {
-                (Value::Null, Value::Null) => Ordering::Equal,
-                (Value::Null, _) => Ordering::Less,
-                (_, Value::Null) => Ordering::Greater,
-                _ => compare(a, b).unwrap_or(Ordering::Equal),
-            };
+            let order = super::compare_order(a, b);
             if *desc { order.reverse() } else { order }
         });
         Box::new(sorted.into_iter().map(|(_, f)| f))

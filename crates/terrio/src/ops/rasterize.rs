@@ -202,7 +202,15 @@ fn validate_values(layers: &[Layer], options: &RasterizeOptions) -> Result<()> {
 
 fn rasterize_new(layers: &[Layer], options: &RasterizeOptions) -> Result<RasterDataset> {
     let grid = match &options.grid {
-        Some(g) => g.clone(),
+        Some(g) => {
+            if g.cols == 0 || g.rows == 0 {
+                return Err(Error::InvalidArgument("the output grid must have positive width and height".into()));
+            }
+            if !g.geo_transform.iter().all(|v| v.is_finite()) {
+                return Err(Error::InvalidArgument("the output grid geotransform must be finite".into()));
+            }
+            g.clone()
+        }
         None => compute_grid(layers, options)?,
     };
     let bands = options.burn_values.len().max(1);
@@ -694,6 +702,7 @@ fn in_int_range(v: f64) -> bool {
 
 /// GDAL's `GDALdllImageLine`: Bresenham, not burning the end of a segment unless it is the last.
 fn image_line<T: Pixel>(b: &mut Burner<T>, nx: i32, ny: i32, p: &Parts) {
+    let (nx64, ny64) = (i64::from(nx), i64::from(ny));
     let mut n = 0;
     for &size in &p.sizes {
         for j in 1..size {
@@ -701,25 +710,46 @@ fn image_line<T: Pixel>(b: &mut Burner<T>, nx: i32, ny: i32, p: &Parts) {
             if off_target(x, y, x_end, y_end, nx, ny) || ![x, y, x_end, y_end].into_iter().all(in_int_range) {
                 continue;
             }
-            let mut ix = x.floor() as i32;
-            let mut iy = y.floor() as i32;
-            let ix1 = x_end.floor() as i32;
-            let iy1 = y_end.floor() as i32;
-            let mut dx = (ix1 - ix).abs();
-            let mut dy = (iy1 - iy).abs();
-            let x_step = if ix > ix1 { -1 } else { 1 };
-            let y_step = if iy > iy1 { -1 } else { 1 };
+            let mut ix = x.floor() as i64;
+            let mut iy = y.floor() as i64;
+            let ix1 = x_end.floor() as i64;
+            let iy1 = y_end.floor() as i64;
+            let dx = (ix1 - ix).abs();
+            let dy = (iy1 - iy).abs();
+            let x_step: i64 = if ix > ix1 { -1 } else { 1 };
+            let y_step: i64 = if iy > iy1 { -1 } else { 1 };
             if dx >= dy {
                 let x_error = dy << 1;
                 let y_error = x_error - (dx << 1);
                 let mut error = x_error - dx;
-                if j != size - 1 {
-                    dx -= 1;
+                let mut rem = if j != size - 1 { dx - 1 } else { dx };
+                if rem < 0 {
+                    continue;
                 }
-                while dx >= 0 {
-                    dx -= 1;
-                    if 0 <= ix && ix < nx && 0 <= iy && iy < ny {
-                        b.point(iy, ix);
+                let skip = if x_step > 0 && ix < 0 {
+                    (-ix).min(rem + 1)
+                } else if x_step < 0 && ix >= nx64 {
+                    (ix - (nx64 - 1)).min(rem + 1)
+                } else {
+                    0
+                };
+                if skip > rem {
+                    continue;
+                }
+                if skip > 0 {
+                    let (minor_steps, next_error) = advance_bresenham(skip, dy, dx);
+                    ix += skip * x_step;
+                    iy += minor_steps * y_step;
+                    error = next_error;
+                    rem -= skip;
+                }
+                while rem >= 0 {
+                    if (x_step > 0 && ix >= nx64) || (x_step < 0 && ix < 0) {
+                        break;
+                    }
+                    rem -= 1;
+                    if 0 <= ix && ix < nx64 && 0 <= iy && iy < ny64 {
+                        b.point(iy as i32, ix as i32);
                     }
                     ix += x_step;
                     if error > 0 {
@@ -733,13 +763,34 @@ fn image_line<T: Pixel>(b: &mut Burner<T>, nx: i32, ny: i32, p: &Parts) {
                 let x_error = dx << 1;
                 let y_error = x_error - (dy << 1);
                 let mut error = x_error - dy;
-                if j != size - 1 {
-                    dy -= 1;
+                let mut rem = if j != size - 1 { dy - 1 } else { dy };
+                if rem < 0 {
+                    continue;
                 }
-                while dy >= 0 {
-                    dy -= 1;
-                    if 0 <= ix && ix < nx && 0 <= iy && iy < ny {
-                        b.point(iy, ix);
+                let skip = if y_step > 0 && iy < 0 {
+                    (-iy).min(rem + 1)
+                } else if y_step < 0 && iy >= ny64 {
+                    (iy - (ny64 - 1)).min(rem + 1)
+                } else {
+                    0
+                };
+                if skip > rem {
+                    continue;
+                }
+                if skip > 0 {
+                    let (minor_steps, next_error) = advance_bresenham(skip, dx, dy);
+                    iy += skip * y_step;
+                    ix += minor_steps * x_step;
+                    error = next_error;
+                    rem -= skip;
+                }
+                while rem >= 0 {
+                    if (y_step > 0 && iy >= ny64) || (y_step < 0 && iy < 0) {
+                        break;
+                    }
+                    rem -= 1;
+                    if 0 <= ix && ix < nx64 && 0 <= iy && iy < ny64 {
+                        b.point(iy as i32, ix as i32);
                     }
                     iy += y_step;
                     if error > 0 {
@@ -753,6 +804,28 @@ fn image_line<T: Pixel>(b: &mut Burner<T>, nx: i32, ny: i32, p: &Parts) {
         }
         n += size;
     }
+}
+
+/// Fast-forwards Bresenham's error accumulator across `skip` major-axis steps, returning
+/// `(minor_steps, next_error)` identical to executing the stepwise loop `skip` times.
+///
+/// Starting from `error = 2 * minor_delta - major_delta`, each step adds `2 * minor_delta` and
+/// subtracts `2 * major_delta` whenever `error > 0`, incrementing the minor axis once per
+/// subtraction. After `skip` steps, the final pre-increment error is congruent to
+/// `s = skip * 2 * minor_delta - major_delta (mod 2 * major_delta)` and lies in
+/// `(-2 * major_delta, 0]`, giving the exact count `m` of minor steps taken.
+fn advance_bresenham(skip: i64, minor_delta: i64, major_delta: i64) -> (i64, i64) {
+    debug_assert!(skip > 0 && major_delta > 0 && minor_delta >= 0);
+    let minor_err = minor_delta << 1;
+    let s = i128::from(skip) * i128::from(minor_err) - i128::from(major_delta);
+    let denom = i128::from(major_delta) * 2;
+    let (m, u) = if s <= 0 {
+        (0i128, s)
+    } else {
+        let m = (s - 1) / denom + 1;
+        (m, s - m * denom)
+    };
+    (m as i64, (u as i64) + minor_err)
 }
 
 /// GDAL's `GDALdllImageLineAllTouched`: every pixel a segment passes through.
@@ -1210,5 +1283,30 @@ mod tests {
         assert_eq!(cast(2.5, DataType::U8), 3.0);
         assert_eq!(cast(-2.5, DataType::I16), -3.0);
         assert_eq!(cast(300.0, DataType::U8), 255.0);
+    }
+
+    #[test]
+    fn advance_bresenham_matches_stepwise_loop() {
+        for major in 1..=25i64 {
+            for minor in 0..=major {
+                let minor_err = minor << 1;
+                let major_err = minor_err - (major << 1);
+                let mut error = minor_err - major;
+                let mut minor_steps = 0i64;
+                for skip in 1..=major {
+                    if error > 0 {
+                        minor_steps += 1;
+                        error += major_err;
+                    } else {
+                        error += minor_err;
+                    }
+                    assert_eq!(
+                        advance_bresenham(skip, minor, major),
+                        (minor_steps, error),
+                        "mismatch for major={major}, minor={minor}, skip={skip}"
+                    );
+                }
+            }
+        }
     }
 }

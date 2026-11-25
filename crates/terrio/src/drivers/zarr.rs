@@ -385,7 +385,11 @@ fn parse_fill(v: &Value) -> Option<f64> {
 /// as that type.
 fn v2_dtype(s: &str) -> Result<(DataType, bool, Option<Stored>)> {
     let little = !s.starts_with('>');
-    let t = match &s[1.min(s.len())..] {
+    let rest = match s.as_bytes().first() {
+        Some(b'<' | b'>' | b'|' | b'=') => &s[1..],
+        _ => s,
+    };
+    let t = match rest {
         "u1" | "b1" => DataType::U8,
         "i1" => DataType::I8,
         "u2" => DataType::U16,
@@ -480,6 +484,10 @@ fn read_array_opt(node: &Node) -> Result<Option<Array>> {
         // Fortran order: the chunk's dimensions are stored last first.
         let fortran = m["order"].as_str() == Some("F");
         let order = fortran.then(|| (0..shape.len()).rev().collect());
+        let separator = m["dimension_separator"].as_str().unwrap_or(".");
+        if !matches!(separator, "." | "/") {
+            return Err(bad(format!("Zarr dimension_separator '{separator}' is not supported")));
+        }
         return Ok(Some(Array {
             node: node.clone(),
             shape,
@@ -488,7 +496,7 @@ fn read_array_opt(node: &Node) -> Result<Option<Array>> {
             pipeline: Pipeline { order, fortran, little_endian, codecs, shard: None, stored, steps: Vec::new() },
             fill: parse_fill(&m["fill_value"]),
             key_prefix: String::new(),
-            separator: m["dimension_separator"].as_str().unwrap_or(".").to_string(),
+            separator: separator.to_string(),
             dims,
             attrs,
             shard_indexes: ShardIndexes::default(),
@@ -520,10 +528,12 @@ fn read_array_opt(node: &Node) -> Result<Option<Array>> {
     let shape = usizes(&m["shape"]);
     let pipeline = v3_pipeline(&m["codecs"], shape.len(), stored)?;
     let encoding = &m["chunk_key_encoding"];
-    let separator = encoding["configuration"]["separator"]
-        .as_str()
-        .unwrap_or(if encoding["name"].as_str() == Some("v2") { "." } else { "/" })
-        .to_string();
+    let separator =
+        encoding["configuration"]["separator"].as_str().unwrap_or(if encoding["name"].as_str() == Some("v2") { "." } else { "/" });
+    if !matches!(separator, "." | "/") {
+        return Err(bad(format!("Zarr chunk separator '{separator}' is not supported")));
+    }
+    let separator = separator.to_string();
     let key_prefix = if encoding["name"].as_str() == Some("v2") { String::new() } else { format!("c{separator}") };
     let dims =
         m["dimension_names"].as_array().map(|a| a.iter().map(|d| d.as_str().unwrap_or_default().to_string()).collect()).unwrap_or_default();
