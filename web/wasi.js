@@ -774,6 +774,15 @@ export class Wasi {
         if (to.node instanceof MemDir && to.node.entries.size) return E.NOTEMPTY;
         from.parent.entries.delete(from.name);
         to.parent.entries.set(to.name, from.node);
+        // Keep open directory descriptors anchored to the directory's new path after a rename.
+        if (isDir(from.node)) {
+          const oldPrefix = `${from.path}/`;
+          for (const entry of self.fds.values()) {
+            if (entry.kind !== "dir" || !entry.path) continue;
+            if (entry.path === from.path) entry.path = to.path;
+            else if (entry.path.startsWith(oldPrefix)) entry.path = `${to.path}${entry.path.slice(from.path.length)}`;
+          }
+        }
         return E.SUCCESS;
       }),
       path_readlink: guard((fd, pathPtr, pathLen) => {

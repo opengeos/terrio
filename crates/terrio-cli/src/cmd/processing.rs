@@ -261,7 +261,9 @@ fn parse_footprint_attribute(value: &str) -> std::result::Result<(String, String
 
 // Preserve local filenames verbatim; remote source identifiers must not persist authentication.
 fn footprint_location(input: &str) -> String {
-    if let Some((prefix, query)) = input.split_once("/vsicurl?") {
+    if input.starts_with("/vsi")
+        && let Some((prefix, query)) = input.split_once("/vsicurl?")
+    {
         let sanitized_url = query.split('&').find_map(|pair| {
             let (k, v) = pair.split_once('=')?;
             (k.eq_ignore_ascii_case("url") && v.contains("://")).then(|| footprint_location(v))
@@ -864,5 +866,7 @@ mod inputs_tests {
         assert!(!vsiaz.contains("SECRET"), "must not retain SAS token: {vsiaz}");
         let vsicurl = footprint_location("/vsicurl?userpwd=alice:s3cr3t&url=https://example.org/a.tif");
         assert!(!vsicurl.contains("s3cr3t"), "must not retain VSI userpwd: {vsicurl}");
+        let url_with_vsicurl_path = footprint_location("https://alice:s3cr3t@example.org/vsicurl?url=https://example.net/a.tif");
+        assert_eq!(url_with_vsicurl_path, "https://example.org/vsicurl");
     }
 }

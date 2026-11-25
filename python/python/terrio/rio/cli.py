@@ -3442,6 +3442,25 @@ def cmd_calc(args: argparse.Namespace, env: Any) -> None:
             arr = evaluator.lookup(ix, subix)
             return arr.astype(dtype) if dtype else arr
 
+        current_window: Window = Window(0, 0, 16, 16)
+        sieve_cache: dict[tuple[int, Any, int, int], Any] = {}
+
+        def calc_sieve(
+            source: Any, size: int, out: Any = None, mask: Any = None, connectivity: int = 4
+        ) -> Any:
+            if hasattr(source, "ds") and hasattr(source, "bidx") and mask is None and out is None:
+                key = (id(source.ds), source.bidx, int(size), int(connectivity))
+                full = sieve_cache.get(key)
+                if full is None:
+                    full = sieve(source, size, connectivity=connectivity)
+                    sieve_cache[key] = full
+                r0 = int(current_window.row_off)
+                r1 = r0 + int(current_window.height)
+                c0 = int(current_window.col_off)
+                c1 = c0 + int(current_window.width)
+                return full[r0:r1, c0:c1]
+            return sieve(source, size, out=out, mask=mask, connectivity=connectivity)
+
         funcs: dict[str, Callable[..., Any]] = {
             "asarray": asarray,
             "take": lambda a, idx: numpy.take(a, idx - 1, axis=0),
@@ -3449,7 +3468,7 @@ def cmd_calc(args: argparse.Namespace, env: Any) -> None:
             "band": lambda d, i: get_bands(d, i),
             "bands": lambda d: get_bands(d),
             "fillnodata": fillnodata,
-            "sieve": sieve,
+            "sieve": calc_sieve,
         }
         first = sources[0]
         kwargs = first.profile
@@ -3461,6 +3480,7 @@ def cmd_calc(args: argparse.Namespace, env: Any) -> None:
             kwargs["driver"] = args.driver
         work_windows = [Window(0, 0, 16, 16)]
         for window in work_windows:
+            current_window = window
             ctxkwds: OrderedDict[str, Any] = OrderedDict()
             for i, ((name, _), src) in enumerate(zip(inputs, sources, strict=True)):
                 ctxkwds[name or f"_i{i + 1}"] = src.read(masked=args.masked, window=window)

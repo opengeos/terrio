@@ -235,6 +235,11 @@ impl Fetcher {
             let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
             return format!("{scheme}://{host}{path}");
         }
+        if let Some(rest) = base.strip_prefix("//") {
+            let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, _)| (a, &rest[a.len()..]));
+            let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+            return format!("//{host}{path}");
+        }
         base.to_string()
     }
 
@@ -634,16 +639,19 @@ impl Fetcher {
         let mut data = Vec::new();
         let opened = loop {
             match next_chunk(&reader).await {
-                Ok(Some(chunk)) => append(&mut data, &chunk),
+                Ok(Some(chunk)) => {
+                    if (data.len() as u64).saturating_add(chunk.length() as u64) > expected {
+                        self.bytes.set(self.bytes.get() + data.len() as u64);
+                        let _ = call(&reader, "cancel", &[]).map(settle);
+                        return Err(JsError::new("initial range response exceeded expected length"));
+                    }
+                    append(&mut data, &chunk);
+                }
                 Ok(None) => break None,
                 Err(e) => {
                     self.bytes.set(self.bytes.get() + data.len() as u64);
                     return Err(e);
                 }
-            }
-            if data.len() as u64 > expected {
-                let _ = call(&reader, "cancel", &[]).map(settle);
-                break None;
             }
             // The whole block: read to the body's end, where `finish_first` checks its length.
             if data.len() as u64 >= expected || data.len() > ARRIVING_OPEN_MAX {
@@ -674,10 +682,10 @@ impl Fetcher {
         let done = wasm_bindgen_futures::future_to_promise(async move {
             let result: Result<(), JsError> = async {
                 while let Some(chunk) = next_chunk(&reader).await? {
-                    append(&mut data, &chunk);
-                    if data.len() as u64 > expected {
+                    if (data.len() as u64).saturating_add(chunk.length() as u64) > expected {
                         return Err(JsError::new("range response exceeded expected length"));
                     }
+                    append(&mut data, &chunk);
                 }
                 finish_first(&rest, &data, expected, content_range.as_deref(), len)
             }
