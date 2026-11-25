@@ -252,7 +252,12 @@ impl EptReader {
             return Err(Error::InvalidData("EPT: span must be positive".into()));
         }
         let b = info.bounds;
-        if !b.iter().all(|v| v.is_finite()) || !(b[3] >= b[0] && b[4] >= b[1] && b[5] >= b[2]) {
+        if !b.iter().all(|v| v.is_finite())
+            || !(b[3] >= b[0] && b[4] >= b[1] && b[5] >= b[2])
+            || !(b[3] - b[0]).is_finite()
+            || !(b[4] - b[1]).is_finite()
+            || !(b[5] - b[2]).is_finite()
+        {
             return Err(Error::InvalidData("EPT: bounds must be finite and ordered".into()));
         }
         let srs = &json["srs"];

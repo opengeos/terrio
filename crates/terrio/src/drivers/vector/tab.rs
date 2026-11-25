@@ -39,14 +39,37 @@ fn sibling(path: &Path, ext: &str) -> Option<PathBuf> {
 /// Reads a `.tab` file and the `.dat`, `.map` and `.id` files next to it.
 pub fn read(path: &str) -> Result<Layer> {
     let mut visited = std::collections::HashSet::new();
-    read_inner(Path::new(path), &mut visited, 0)
+    let mut reads = 0usize;
+    read_inner(Path::new(path), None, &mut visited, 0, &mut reads)
 }
 
 const MAX_SEAMLESS_DEPTH: usize = 16;
+const MAX_SEAMLESS_READS: usize = 1024;
 
-fn read_inner(p: &Path, visited: &mut std::collections::HashSet<PathBuf>, depth: usize) -> Result<Layer> {
+fn read_contained_sibling(p: &Path, ext: &str, root_dir: Option<&Path>) -> Result<Option<Vec<u8>>> {
+    let Some(path) = sibling(p, ext) else { return Ok(None) };
+    if let Some(root) = root_dir {
+        let canonical = std::fs::canonicalize(&path)?;
+        if !canonical.starts_with(root) {
+            return Err(bad(format!("seamless table sidecar '{}' resolves outside the table directory", path.display())));
+        }
+    }
+    Ok(Some(std::fs::read(path)?))
+}
+
+fn read_inner(
+    p: &Path,
+    root_dir: Option<&Path>,
+    visited: &mut std::collections::HashSet<PathBuf>,
+    depth: usize,
+    reads: &mut usize,
+) -> Result<Layer> {
     if depth > MAX_SEAMLESS_DEPTH {
         return Err(bad("seamless table nesting exceeds maximum depth"));
+    }
+    *reads += 1;
+    if *reads > MAX_SEAMLESS_READS {
+        return Err(Error::ResourceLimit(format!("seamless table exceeds {MAX_SEAMLESS_READS} part reads")));
     }
     let canonical = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     if !visited.insert(canonical.clone()) {
@@ -55,11 +78,11 @@ fn read_inner(p: &Path, visited: &mut std::collections::HashSet<PathBuf>, depth:
     let res = (|| {
         let tab = std::fs::read(p)?;
         if String::from_utf8_lossy(&tab).to_ascii_lowercase().replace(' ', "").contains("\"\\isseamless\"=\"true\"") {
-            return read_seamless(p, &tab, visited, depth);
+            return read_seamless(p, &tab, root_dir, visited, depth, reads);
         }
-        let dat = sibling(p, "dat").map(std::fs::read).transpose()?.ok_or_else(|| bad("no .dat file"))?;
-        let map = sibling(p, "map").map(std::fs::read).transpose()?;
-        let id = sibling(p, "id").map(std::fs::read).transpose()?;
+        let dat = read_contained_sibling(p, "dat", root_dir)?.ok_or_else(|| bad("no .dat file"))?;
+        let map = read_contained_sibling(p, "map", root_dir)?;
+        let id = read_contained_sibling(p, "id", root_dir)?;
         let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
         parse(&tab, &dat, map.as_deref(), id.as_deref(), name)
     })();
@@ -69,12 +92,20 @@ fn read_inner(p: &Path, visited: &mut std::collections::HashSet<PathBuf>, depth:
 
 /// Reads a seamless table: the features of the tables its records name, with feature ids made of
 /// the table's number (from 1) in the high 32 bits, as GDAL numbers them.
-fn read_seamless(p: &Path, tab: &[u8], visited: &mut std::collections::HashSet<PathBuf>, depth: usize) -> Result<Layer> {
-    let dat = sibling(p, "dat").map(std::fs::read).transpose()?.ok_or_else(|| bad("no .dat file"))?;
-    let index = parse(tab, &dat, None, None, "index")?;
-    let column = index.schema.fields().iter().position(|f| f.name.eq_ignore_ascii_case("table")).ok_or_else(|| bad("no Table column"))?;
+fn read_seamless(
+    p: &Path,
+    tab: &[u8],
+    root_dir: Option<&Path>,
+    visited: &mut std::collections::HashSet<PathBuf>,
+    depth: usize,
+    reads: &mut usize,
+) -> Result<Layer> {
     let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let canonical_dir = std::fs::canonicalize(dir)?;
+    let confine = root_dir.unwrap_or(&canonical_dir);
+    let dat = read_contained_sibling(p, "dat", Some(confine))?.ok_or_else(|| bad("no .dat file"))?;
+    let index = parse(tab, &dat, None, None, "index")?;
+    let column = index.schema.fields().iter().position(|f| f.name.eq_ignore_ascii_case("table")).ok_or_else(|| bad("no Table column"))?;
     let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
     let mut out: Option<Layer> = None;
     for (i, f) in index.features.iter().enumerate() {
@@ -91,10 +122,10 @@ fn read_seamless(p: &Path, tab: &[u8], visited: &mut std::collections::HashSet<P
         let candidate = dir.join(rel);
         let part_path = if candidate.exists() { candidate } else { candidate.with_extension("tab") };
         let canonical_part = std::fs::canonicalize(&part_path)?;
-        if !canonical_part.starts_with(&canonical_dir) {
+        if !canonical_part.starts_with(confine) {
             return Err(bad(format!("seamless table part '{part}' resolves outside the table directory")));
         }
-        let mut layer = read_inner(&canonical_part, visited, depth + 1)?;
+        let mut layer = read_inner(&canonical_part, Some(confine), visited, depth + 1, reads)?;
         let target = out.get_or_insert_with(|| {
             let mut l = layer.clone();
             l.features.clear();

@@ -1247,6 +1247,12 @@ pub(crate) fn read_consistent(path: &Path) -> Result<Vec<u8>> {
         let orig_bytes = (original as usize)
             .checked_mul(page_size)
             .ok_or_else(|| Error::InvalidData("SQLite journal original size overflows".into()))?;
+        // Cap hot-journal image expansion so a small journal cannot claim gigabytes of zero-filled pages.
+        const MAX_JOURNAL_REPLAY_BYTES: usize = 512 << 20;
+        let max_replay = data.len().max(MAX_JOURNAL_REPLAY_BYTES);
+        if orig_bytes > max_replay {
+            return Err(Error::ResourceLimit(format!("SQLite journal declared size {orig_bytes} exceeds {max_replay} byte replay limit")));
+        }
         for (pgno, page) in pages.iter().rev() {
             let start = (*pgno as usize).checked_sub(1).and_then(|p| p.checked_mul(page_size));
             let end = start.and_then(|s| s.checked_add(page_size));

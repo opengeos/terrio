@@ -40,16 +40,20 @@ fn tab_seamless_rejects_parent_traversal_absolute_paths_and_cycles() {
     let sub = dir.path().join("sub");
     std::fs::create_dir_all(&sub).unwrap();
 
-    // Minimal 1-field Table seamless .tab + .dat helper.
+    // Minimal 1-field Table seamless .tab + .dat helper (sized dynamically for long TMPDIR paths).
     let make_seamless = |path: &std::path::Path, target: &str| {
-        let tab = "!table\n!version 300\n!charset Neutral\nDefinition Table\n  Type NATIVE Charset \"Neutral\"\n  Fields 1\n    Table Char (64) ;\nbegin_metadata\n\"\\IsSeamless\" = \"TRUE\"\nend_metadata\n";
-        let mut dat = vec![0u8; 32 + 32 + 1 + 65];
+        let field_len = target.len().clamp(64, 254);
+        let rec_len = 1 + field_len;
+        let tab = format!(
+            "!table\n!version 300\n!charset Neutral\nDefinition Table\n  Type NATIVE Charset \"Neutral\"\n  Fields 1\n    Table Char ({field_len}) ;\nbegin_metadata\n\"\\IsSeamless\" = \"TRUE\"\nend_metadata\n"
+        );
+        let mut dat = vec![0u8; 32 + 32 + 1 + rec_len];
         dat[4..8].copy_from_slice(&1u32.to_le_bytes()); // 1 record
         dat[8..10].copy_from_slice(&65u16.to_le_bytes()); // header_len = 32 + 32 + 1 (0x0d)
-        dat[10..12].copy_from_slice(&65u16.to_le_bytes()); // record_len = 1 + 64
+        dat[10..12].copy_from_slice(&(rec_len as u16).to_le_bytes()); // record_len = 1 + field_len
         dat[32..37].copy_from_slice(b"Table");
         dat[32 + 11] = b'C';
-        dat[32 + 16] = 64;
+        dat[32 + 16] = field_len as u8;
         dat[64] = 0x0d;
         dat[65] = b' ';
         let bytes = target.as_bytes();
@@ -95,6 +99,35 @@ fn tab_seamless_rejects_parent_traversal_absolute_paths_and_cycles() {
     make_seamless(&abs_tab, outside_tab.to_str().unwrap());
     let err = terrio::open_vector(abs_tab.to_str().unwrap(), &Default::default()).unwrap_err().to_string();
     assert!(err.contains("escapes"), "expected escape error, got: {err}");
+
+    // Exponentially branching DAG (11 levels x 2 parts = 2047 > 1024 reads) must hit ResourceLimit.
+    let dag_dir = dir.path().join("dag");
+    std::fs::create_dir_all(&dag_dir).unwrap();
+    let leaf = dag_dir.join("l11.tab");
+    std::fs::write(&leaf, std::fs::read(&outside_tab).unwrap()).unwrap();
+    std::fs::write(leaf.with_extension("dat"), std::fs::read(outside_tab.with_extension("dat")).unwrap()).unwrap();
+    for lvl in (0..11).rev() {
+        let p = dag_dir.join(format!("l{lvl}.tab"));
+        let next = format!("l{}.tab", lvl + 1);
+        let tab = "!table\n!version 300\n!charset Neutral\nDefinition Table\n  Type NATIVE Charset \"Neutral\"\n  Fields 1\n    Table Char (16) ;\nbegin_metadata\n\"\\IsSeamless\" = \"TRUE\"\nend_metadata\n";
+        let mut dat = vec![0u8; 32 + 32 + 1 + 2 * 17];
+        dat[4..8].copy_from_slice(&2u32.to_le_bytes());
+        dat[8..10].copy_from_slice(&65u16.to_le_bytes());
+        dat[10..12].copy_from_slice(&17u16.to_le_bytes());
+        dat[32..37].copy_from_slice(b"Table");
+        dat[32 + 11] = b'C';
+        dat[32 + 16] = 16;
+        dat[64] = 0x0d;
+        for row in 0..2 {
+            let off = 65 + row * 17;
+            dat[off] = b' ';
+            dat[off + 1..off + 1 + next.len()].copy_from_slice(next.as_bytes());
+        }
+        std::fs::write(&p, tab).unwrap();
+        std::fs::write(p.with_extension("dat"), &dat).unwrap();
+    }
+    let err = terrio::open_vector(dag_dir.join("l0.tab").to_str().unwrap(), &Default::default()).unwrap_err();
+    assert!(matches!(err, terrio::Error::ResourceLimit(_)), "expected ResourceLimit for DAG fan-out, got: {err:?}");
 }
 
 #[test]
