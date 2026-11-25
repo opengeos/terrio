@@ -4,13 +4,17 @@
 //! Operations use the selected band's nodata, as GDAL 3.13.3 does.
 use terrio::ops::{
     calc::{CalcInput, CalcNodata, CalcOptions, calc},
+    contour::{ContourOptions, contour},
     dem::{ColorMap, DemOptions, DemProduct, color_relief, dem},
+    fill_nodata::{FillNodataOptions, fill_nodata},
+    geolocation::GeolocationTransformer,
     polygonize::{PolygonizeOptions, polygonize},
+    proximity::{ProximityOptions, proximity},
     sample::{SampleInput, sample},
     sieve::{SieveOptions, sieve},
 };
 use terrio::raster::RasterData;
-use terrio::{DataType, Feature, FieldValue, Geometry, Layer, Raster, RasterConfig, RasterDataset};
+use terrio::{DataType, Feature, FieldValue, Geolocation, Geometry, Layer, Raster, RasterConfig, RasterDataset};
 
 fn source() -> RasterDataset {
     let config = RasterConfig { cols: 5, rows: 5, bands: 2, data_type: DataType::F64, nodata: -1.0, ..Default::default() };
@@ -73,4 +77,65 @@ fn terrain_and_color_percentages_use_selected_band_nodata() {
     }
     let output = dem(&ds, DemProduct::Roughness, &DemOptions { band: 2, ..Default::default() }).unwrap();
     assert_eq!(output.raster.data.get_f64(12), output.band_nodata(1).unwrap());
+}
+
+#[test]
+fn fill_nodata_contour_proximity_and_geolocation_use_selected_band_nodata() {
+    let ds = source();
+
+    // fill_nodata: pixel 0 in band 2 is -2.0 (band 2's nodata) and must be filled;
+    // pixel 1 is -1.0 (band 1's nodata, valid in band 2) and must stay -1.0.
+    let filled = fill_nodata(&ds, &FillNodataOptions { band: 2, ..Default::default() }).unwrap();
+    assert_eq!(filled.band_nodata(1), Some(-2.0));
+    assert_ne!(filled.raster.data.get_f64(0), -2.0);
+    assert_eq!(filled.raster.data.get_f64(1), -1.0);
+
+    // contour: band 2's valid range includes -1.0 (not nodata) and excludes -2.0 (nodata).
+    let contours = contour(&ds, &ContourOptions { band: 2, levels: vec![-1.5], ..Default::default() }).unwrap();
+    assert!(contours.features.is_empty(), "nodata -2.0 in band 2 must not generate a -1.5 contour");
+    let valid_contours = contour(&ds, &ContourOptions { band: 2, levels: vec![0.0], ..Default::default() }).unwrap();
+    assert!(!valid_contours.features.is_empty(), "valid -1.0 in band 2 must participate in the 0.0 contour");
+
+    // proximity: with use_input_nodata, band 2's -2.0 pixel is skipped while -1.0 receives distance.
+    let prox =
+        proximity(&ds, &ProximityOptions { band: 2, values: vec![20], use_input_nodata: true, nodata: Some(-99.0), ..Default::default() })
+            .unwrap();
+    assert_eq!(prox.raster.data.get_f64(0), -99.0);
+    assert!(prox.raster.data.get_f64(1) > 0.0);
+
+    // geolocation: band 2's -2.0 marks an invalid node, while -1.0 is a valid coordinate.
+    let mut lon = source();
+    let mut lat = source();
+    if let RasterData::F64(v) = &mut lon.raster.data {
+        for r in 0..5 {
+            for c in 0..5 {
+                v[25 + r * 5 + c] = c as f64 - 1.0; // pixel (0,0) = -1.0 (valid in band 2!)
+            }
+        }
+        v[25 + 24] = -2.0; // pixel (4,4) = -2.0 (band 2's nodata)
+    }
+    if let RasterData::F64(v) = &mut lat.raster.data {
+        for r in 0..5 {
+            for c in 0..5 {
+                v[25 + r * 5 + c] = 10.0 + r as f64;
+            }
+        }
+    }
+    let meta = Geolocation {
+        srs: "EPSG:4326".into(),
+        x_dataset: String::new(),
+        y_dataset: String::new(),
+        x_band: 2,
+        y_band: 2,
+        pixel_offset: 0.0,
+        line_offset: 0.0,
+        pixel_step: 1.0,
+        line_step: 1.0,
+        pixel_center: false,
+    };
+    let t = GeolocationTransformer::new(&meta, &lon, &lat, 5, 5).unwrap();
+    // (0.5, 0.5) is near (-1.0, 10.0), which is valid in band 2.
+    assert!(t.to_geo(0.5, 0.5).is_some(), "valid -1.0 in band 2 must not be masked by band 1 nodata");
+    // (4.5, 4.5) is at the -2.0 nodata cell in band 2.
+    assert!(t.to_geo(4.5, 4.5).is_none(), "band 2 nodata -2.0 must be masked");
 }

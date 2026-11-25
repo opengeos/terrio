@@ -54,10 +54,12 @@ pub fn query(layers: &[Layer], statement: &str) -> Result<Layer> {
     Ok(layer)
 }
 
-/// [`query`] on the layers of the vector dataset at `path`. A single-layer query on a local
-/// GeoParquet file passes its WHERE clause to the reader, which skips the row groups whose column
-/// statistics exclude it and decodes the other columns of matching rows only; feature IDs stay
-/// the file's. Other queries, remote files and other formats read their layers whole, as
+/// [`query`] on the layers of the vector dataset at `path`. A single-layer query on a GeoParquet
+/// file, local or remote (a URL or `s3://`), passes its WHERE clause to the reader, which skips
+/// the row groups whose column statistics exclude it and decodes the other columns of matching
+/// rows only; feature IDs stay the file's. Remotely (with the `remote` feature), the filter
+/// columns of the row groups kept are fetched together, then the other columns of the groups with
+/// matching rows. Other queries, archives and other formats read their layers whole, as
 /// [`crate::open_vector`] does.
 ///
 /// ```no_run
@@ -83,10 +85,15 @@ pub fn query_path(path: &str, statement: &str, options: &crate::VectorOpenOption
 fn filtered_parquet_layer(path: &str, statement: &str, options: &crate::VectorOpenOptions) -> Result<Option<Layer>> {
     let Ok(select) = Select::parse(statement) else { return Ok(None) };
     let Some(filter) = select.filter.as_ref().filter(|_| select.joins.is_empty()) else { return Ok(None) };
-    // ponytail: local only. Remotely, the predicate pass fetches each row group's filter columns
-    // in its own round trip (27 rounds against 8 for a whole read): batch them to extend it.
-    if crate::formats::VectorDriver::for_extension(path) != Some(crate::formats::VectorDriver::Parquet)
-        || !std::path::Path::new(path).is_file()
+    // Local files qualify, and remote ones: their predicate pass fetches the filter columns of
+    // the row groups together.
+    let location = crate::vfs::Location::parse(path);
+    #[cfg(remote)]
+    let remote = location.remote().is_some();
+    #[cfg(not(remote))]
+    let remote = false;
+    if crate::formats::VectorDriver::for_extension(&location.file_name()) != Some(crate::formats::VectorDriver::Parquet)
+        || !(remote || std::path::Path::new(path).is_file())
     {
         return Ok(None);
     }
@@ -558,6 +565,72 @@ fn compare(a: &Value, b: &Value) -> Option<Ordering> {
     }
 }
 
+/// Strict total ordering for `ORDER BY` sorting.
+///
+/// Values are ordered as `NULL < NaN < finite/infinite numbers < Text < Blob < Geometry`.
+/// Within numbers, `-0.0` compares equal to `0.0`, and `Int`/`Float` pairs are compared by
+/// exact mathematical value so `ORDER BY` never violates `Ord` transitivity or panics on `NaN`.
+fn compare_order(a: &Value, b: &Value) -> Ordering {
+    fn rank(v: &Value) -> u8 {
+        match v {
+            Value::Null => 0,
+            Value::Float(f) if f.is_nan() => 1,
+            Value::Int(_) | Value::Float(_) => 2,
+            Value::Text(_) => 3,
+            Value::Blob(_) => 4,
+            Value::Geometry(_) => 5,
+        }
+    }
+    fn cmp_i64_f64(i: i64, f: f64) -> Ordering {
+        if f.is_infinite() {
+            return if f.is_sign_positive() { Ordering::Less } else { Ordering::Greater };
+        }
+        const MIN_I64: f64 = -9_223_372_036_854_775_808.0; // -2^63
+        const MAX_I64_PLUS_1: f64 = 9_223_372_036_854_775_808.0; // 2^63
+        if f < MIN_I64 {
+            return Ordering::Greater;
+        }
+        if f >= MAX_I64_PLUS_1 {
+            return Ordering::Less;
+        }
+        let trunc = f.trunc() as i64;
+        match i.cmp(&trunc) {
+            Ordering::Equal => {
+                let frac = f - f.trunc();
+                if frac > 0.0 {
+                    Ordering::Less
+                } else if frac < 0.0 {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            }
+            ord => ord,
+        }
+    }
+    match rank(a).cmp(&rank(b)) {
+        Ordering::Equal => match (a, b) {
+            (Value::Null, Value::Null) => Ordering::Equal,
+            (Value::Int(x), Value::Int(y)) => x.cmp(y),
+            (Value::Float(x), Value::Float(y)) => {
+                if x.is_nan() && y.is_nan() {
+                    Ordering::Equal
+                } else {
+                    let x = if *x == 0.0 { 0.0 } else { *x };
+                    let y = if *y == 0.0 { 0.0 } else { *y };
+                    x.total_cmp(&y)
+                }
+            }
+            (Value::Int(x), Value::Float(y)) => cmp_i64_f64(*x, *y),
+            (Value::Float(x), Value::Int(y)) => cmp_i64_f64(*y, *x).reverse(),
+            (Value::Text(x), Value::Text(y)) => x.cmp(y),
+            (Value::Blob(x), Value::Blob(y)) => x.cmp(y),
+            _ => Ordering::Equal,
+        },
+        ord => ord,
+    }
+}
+
 // Current OGRSQL applies case-insensitive string comparisons to predicates, while
 // ORDER BY and MIN/MAX use the case-sensitive ordering in `compare` above.
 fn compare_predicate(a: &Value, b: &Value) -> Option<Ordering> {
@@ -572,11 +645,14 @@ fn truth(e: &Expr, f: &Feature) -> Truth {
     match e {
         Expr::Binary(BinOp::And, a, b) => {
             let (x, y) = (truth(a, f), truth(b, f));
-            Truth { value: x.value && y.value, null: x.null && y.null }
+            let value = x.value && y.value;
+            let definite_false = (!x.value && !x.null) || (!y.value && !y.null);
+            Truth { value, null: !value && !definite_false }
         }
         Expr::Binary(BinOp::Or, a, b) => {
             let (x, y) = (truth(a, f), truth(b, f));
-            Truth { value: x.value || y.value, null: x.null || y.null }
+            let value = x.value || y.value;
+            Truth { value, null: !value && (x.null || y.null) }
         }
         Expr::Not(a) => {
             let x = truth(a, f);

@@ -234,6 +234,9 @@ impl Location {
         }
         if let Some(rest) = input.strip_prefix("s3://") {
             let (bucket, key) = rest.split_once('/').unwrap_or((rest, ""));
+            if !valid_s3_bucket(bucket) {
+                return Location::Local(PathBuf::from(input));
+            }
             Location::S3 { bucket: bucket.to_string(), key: key.to_string() }
         } else if let Some(rest) = input.strip_prefix("gs://") {
             Location::Url(format!("https://storage.googleapis.com/{rest}"))
@@ -319,6 +322,17 @@ impl Location {
             None => name,
         }
     }
+}
+
+/// Bucket names are interpolated into S3 URL authorities or paths: reject empty names,
+/// dot-traversal, and URL delimiters (`?`, `#`, `@`, `:`, `/`, `\`, whitespace).
+pub(crate) fn valid_s3_bucket(bucket: &str) -> bool {
+    !bucket.is_empty()
+        && bucket.len() <= 255
+        && !bucket.starts_with('.')
+        && !bucket.ends_with('.')
+        && !bucket.contains("..")
+        && bucket.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
 /// The main dataset of a local zip archive, from its listing: the first member (by name) with

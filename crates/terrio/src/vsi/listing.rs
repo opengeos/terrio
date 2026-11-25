@@ -24,6 +24,12 @@ type EntryIndex = HashMap<(String, bool), usize>;
 /// `/`, `?` or `#` ends the authority; percent-encode those characters in passwords. An `@`
 /// in a path is not userinfo.
 pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
+    // The routing marker of Azure bearer-token URLs is removed wherever a URL appears in the text.
+    #[cfg(remote)]
+    if url.contains(crate::http::azure_bearer_prefix()) {
+        let unmarked = url.replace(crate::http::azure_bearer_prefix(), "");
+        return std::borrow::Cow::Owned(redact_url(&unmarked).into_owned());
+    }
     let mut redacted = String::new();
     let mut copied = 0;
     // Diagnostics can contain several URLs (for example, a redirect's source and target).
@@ -844,6 +850,15 @@ impl RemoteLister {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(remote)]
+    #[test]
+    fn azure_bearer_markers_are_removed_wherever_urls_appear() {
+        let marker = crate::http::azure_bearer_prefix();
+        let text = format!("redirect from {marker}https://a.blob.core.windows.net/c/b to {marker}https://b.example/x");
+        assert_eq!(super::redact_url(&text), "redirect from https://a.blob.core.windows.net/c/b to https://b.example/x");
+        assert_eq!(super::redact_url(&format!("{marker}https://u:p@host/x?sig=1")), "https://host/x?<redacted>");
+    }
+
     #[test]
     fn url_passwords_and_key_parameters_are_redacted() {
         let redacted = super::redact_url("https://user:secret@example.com/f.tif?key=AIza123");
