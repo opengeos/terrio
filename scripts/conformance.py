@@ -2866,6 +2866,10 @@ PROJ_CASES = {
             "operation_at names of registered concatenations (NTF (Paris), Greek, MGI (Ferro)...)", IDENTICAL,
             "PROJ 9.9.0 (pyproj 3.8.0, get_last_used_operation): the same names, both ways",
         ),
+        "ballparks_are_named_as_proj_names_them": (
+            "operation_at names of ballparks, between CRSs of one or of different prime meridians", IDENTICAL,
+            "PROJ 9.9.0 (pyproj 3.8.0, get_last_used_operation): the same names, both ways",
+        ),
     },
     "proj_edge_values": {
         "longitudes_beyond_ten_radians_are_refused_into_a_shift_or_projection": (
@@ -2977,6 +2981,10 @@ PROJ_CASES = {
         ),
     },
     "south_orientated_offsets": {
+        "a_transverse_mercator_at_a_scale_of_minus_one_is_south_orientated": (
+            "ESRI's Lo zones: Transverse Mercator at a scale of -1, ESRI and GDAL WKT 1", TOLERANCE,
+            "PROJ 9.9.0 (pyproj 3.8.0): within 1 mm; other negative scales refused as PROJ refuses them",
+        ),
         "south_orientated_transverse_mercator_subtracts_its_offsets": (
             "South-orientated Transverse Mercator with a false easting and northing", NOT_COMPARED,
             (
