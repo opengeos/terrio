@@ -236,6 +236,22 @@ def _alpha_mask(a: np.ndarray) -> np.ndarray:
     return np.where((v > 0) & (v < 257), 1, v * 255 // 65535).astype(np.uint8)
 
 
+def _mask_nodata(out: np.ndarray, values: np.ndarray, nodata: float) -> None:
+    """Sets a mask to 0 where a band's values are nodata.
+
+    By strips of about 4 MiB of values: the comparison's temporaries, a boolean per pixel or more
+    for floats, stay small however large the band.
+
+    Args:
+        out: The band's mask, `(rows, cols)` uint8, changed in place.
+        values: The band's values, `(rows, cols)`.
+        nodata: The nodata value.
+    """
+    step = max(1, (4 << 20) // max(1, values[:1].nbytes))
+    for y in range(0, values.shape[0], step):
+        out[y : y + step][is_nodata(values[y : y + step], nodata)] = 0
+
+
 def _check_buffer(count: int, height: int, width: int, itemsize: int) -> None:
     """Refuses a buffer sized from a file that the process cannot hold, before it is allocated.
 
@@ -1870,7 +1886,7 @@ class DatasetReader(DatasetBase):
                         out[k] = np.asarray(m)
                 elif f & MaskFlags.nodata.value:
                     vals = self._read_level([b], w, level)[0]
-                    out[k][is_nodata(vals, self.nodatavals[b - 1])] = 0  # type: ignore[arg-type]
+                    _mask_nodata(out[k], vals, self.nodatavals[b - 1])  # type: ignore[arg-type]
             return out
 
         return read
@@ -1905,7 +1921,7 @@ class DatasetReader(DatasetBase):
                 vals = data[k] if data is not None else self._io([b], window, buf, resampling)[0]
                 nd = self.nodatavals[b - 1]
                 assert nd is not None
-                out[k][is_nodata(vals, nd)] = 0
+                _mask_nodata(out[k], vals, nd)
             elif f & MaskFlags.alpha.value and alpha is not None:
                 out[k] = _alpha_mask(self._io([alpha], window, buf, resampling)[0])
             elif f & MaskFlags.per_dataset.value and self.structure.has_mask:
