@@ -925,6 +925,10 @@ def test_features_match_gdal_whatever_their_order_start_and_direction():
     assert shapes("POLYGON ((0 0, 1 0, 1 1, 0 0, 0 2, 1 2, 0 0))") == shapes("POLYGON ((0 0, 0 2, 1 2, 0 0, 1 0, 1 1, 0 0))")
     assert shapes("LINESTRING (0 0, 1 0, 2 1)") == shapes("LINESTRING (2 1, 1 0, 0 0)") != shapes("LINESTRING (0 0, 2 1, 1 0)")
     assert shapes("LINESTRING (-1 0, 5 5)") != shapes("LINESTRING (-2 0, 5 5)")  # hash(-1.0) == hash(-2.0) in CPython
+    # An open line and the closed line through the same vertices differ, and so do a closed line
+    # and a polygon of the same ring.
+    assert shapes("LINESTRING (0 0, 0 1, 1 1, 1 0)") != shapes("LINESTRING (0 0, 0 1, 1 1, 1 0, 0 0)")
+    assert shapes("LINESTRING (0 0, 0 4, 4 4, 4 0, 0 0)") != shapes("POLYGON ((0 0, 0 4, 4 4, 4 0, 0 0))")
 
 
 def _compare(differing=0, beyond=0, mismatch=""):

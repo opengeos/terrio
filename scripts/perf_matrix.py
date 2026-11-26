@@ -2316,8 +2316,8 @@ def _shapes(features) -> tuple:
         features: `(value, OGR geometry)` pairs: polygons or lines, not multi-geometries.
 
     Returns:
-        A `Counter` of `(value, 128-bit hash of the bytes of the shell's or line's vertex
-        sequence and the holes', in sorted order)`, and `{value: total area of its polygons or
+        A `Counter` of `(value, 128-bit hash of the geometry type and the bytes of the shell's or
+        line's vertex sequence and the holes', in sorted order, each marked closed or open)`, and `{value: total area of its polygons or
         length of its lines}`. The hash spares holding both outputs' vertices again as Python
         tuples (about 2 GB for polygonize's).
     """
@@ -2333,12 +2333,13 @@ def _shapes(features) -> tuple:
             if len(p) > 1 and p[0] == p[-1]:  # closed: any vertex starts it, either way round
                 p, r, n = p[:-1], p[-2::-1], len(p) - 1
                 first = min(p)  # maybe repeated: every one is a candidate start
-                parts.append(min(min(p[i:] + p[:i], r[n - 1 - i:] + r[:n - 1 - i]) for i, q in enumerate(p) if q == first))
+                parts.append((True, min(min(p[i:] + p[:i], r[n - 1 - i:] + r[:n - 1 - i]) for i, q in enumerate(p) if q == first)))
             else:
-                parts.append(min(p, p[::-1]))
-        h = hashlib.blake2b(digest_size=16)
-        for seq in [parts[0], *sorted(parts[1:])]:  # the shell or line, then the holes
-            h.update(struct.pack("<Q", len(seq)) + array("d", itertools.chain.from_iterable(seq)).tobytes())
+                parts.append((False, min(p, p[::-1])))
+        # The geometry type and whether each part is closed: a closed line is not a polygon, nor an open line.
+        h = hashlib.blake2b(g.GetGeometryName().encode(), digest_size=16)
+        for closed, seq in [parts[0], *sorted(parts[1:])]:  # the shell or line, then the holes
+            h.update(struct.pack("<?Q", closed, len(seq)) + array("d", itertools.chain.from_iterable(seq)).tobytes())
         shapes[value, h.digest()] += 1
         totals[value] += g.GetArea() if g.GetGeometryCount() else g.Length()
     return shapes, totals
