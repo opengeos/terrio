@@ -73,6 +73,10 @@ pub(crate) fn recording_forwarded<T>(f: impl FnOnce() -> T) -> (T, Vec<Used>) {
     (out, used)
 }
 
+/// The name of PROJ's geographic ballpark as recorded, before `operation_at` names it from the
+/// CRSs it links.
+pub(crate) const GEOGRAPHIC_BALLPARK: &str = "Ballpark geographic offset";
+
 /// Whether an operation changes the datum or heights, for its name when it has none.
 #[derive(Clone, Copy)]
 pub(crate) enum OpKind {
@@ -127,7 +131,7 @@ pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
             }
             _ => {
                 let name = match kind {
-                    OpKind::Datum => "Ballpark geographic offset",
+                    OpKind::Datum => GEOGRAPHIC_BALLPARK,
                     OpKind::Vertical => "Ballpark vertical transformation",
                 };
                 Used {

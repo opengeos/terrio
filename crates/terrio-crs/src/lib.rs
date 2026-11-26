@@ -3158,7 +3158,7 @@ impl Transformer {
     fn name_ballpark(&self, used: &mut [route::Used]) {
         let mut datum = used.iter_mut().filter(|u| u.datum);
         let (Some(op), None) = (datum.next(), datum.next()) else { return };
-        if op.name != "Ballpark geographic offset" {
+        if op.name != route::GEOGRAPHIC_BALLPARK {
             return;
         }
         let name = |s: &SpatialRef| s.geographic_wkt().and_then(|w| SpatialRef::from_wkt(&w).name());
