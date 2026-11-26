@@ -324,9 +324,10 @@ pub struct RpcOptions {
     pub height_scale: f64,
     /// A DEM giving the ground height (`RPC_DEM`): a raster path. GeoTIFF/COG, VRT, STAC and
     /// catalog sources are read lazily, by window — only the blocks the transform reads are
-    /// decoded; other formats are read whole, as before. One cell is read at open, so an
-    /// unreadable DEM fails there. A pixel read error at transform time counts as no value there
-    /// (see `dem_missing_value`) and records a warning.
+    /// decoded; other formats are read whole, as before. One cell is read at open, which catches a
+    /// DEM whose first block is unreadable. A block that fails later is a read error at transform
+    /// time: the point fails (no `dem_missing_value` applies — that is for a point with no DEM
+    /// value, not a failed read) and a warning is recorded.
     pub dem: Option<String>,
     /// How the DEM is sampled (`RPC_DEMINTERPOLATION`).
     pub dem_interpolation: DemInterpolation,
@@ -492,31 +493,26 @@ impl Dem {
     }
 
     /// The DEM cells of the inclusive range `[x0, x1] x [y0, y1]`, clamped to the raster as `value`
-    /// clamps, read in one window as `f64` band 1: `(cells, x0, y0, width)`. `None` on a read error.
-    fn cells(&self, x0: i64, y0: i64, x1: i64, y1: i64) -> Option<(Vec<f64>, i64, i64, usize)> {
+    /// clamps, read in one window as `f64` band 1: `(cells, x0, y0, width)`. `Err` on a read error
+    /// (which also records a warning), so callers can tell it apart from no value.
+    fn cells(&self, x0: i64, y0: i64, x1: i64, y1: i64) -> Result<(Vec<f64>, i64, i64, usize)> {
         let cx0 = x0.clamp(0, self.width as i64 - 1);
         let cx1 = x1.clamp(0, self.width as i64 - 1);
         let cy0 = y0.clamp(0, self.height as i64 - 1);
         let cy1 = y1.clamp(0, self.height as i64 - 1);
         let (w, h) = ((cx1 - cx0 + 1) as usize, (cy1 - cy0 + 1) as usize);
-        let mut raster = match self.raster.lock() {
-            Ok(raster) => raster,
-            Err(_) => {
-                crate::warnings::warn("the RPC DEM's raster lock is poisoned; the point is treated as having no DEM value".into());
-                return None;
-            }
-        };
+        let mut raster = self.raster.lock().map_err(|_| {
+            crate::warnings::warn("the RPC DEM's raster lock is poisoned; the point fails".into());
+            Error::InvalidData("the RPC DEM's raster lock is poisoned".into())
+        })?;
         let options = crate::WindowOptions { bands: vec![1], overview: None };
-        let read = match raster.read_window(crate::Window::new(cx0 as usize, cy0 as usize, w, h), &options) {
-            Ok(read) => read,
-            Err(e) => {
-                crate::warnings::warn(format!(
-                    "the RPC DEM could not be read at ({cx0}, {cy0}): {e}; the point is treated as having no DEM value"
-                ));
-                return None;
-            }
-        };
-        Some((super::band_f64(&read.raster, 0), cx0, cy0, w))
+        let read = raster.read_window(crate::Window::new(cx0 as usize, cy0 as usize, w, h), &options).inspect_err(|e| {
+            crate::warnings::warn(format!(
+                "the RPC DEM could not be read at ({cx0}, {cy0}): {}; the point fails",
+                crate::vsi::redact_diagnostic_location(&e.to_string())
+            ));
+        })?;
+        Ok((super::band_f64(&read.raster, 0), cx0, cy0, w))
     }
 
     /// The transformation from WGS 84 to the DEM's CRS, as `GDALRPCOpenDEM` sets it up: none when
@@ -552,9 +548,9 @@ impl Dem {
         self.nodata.is_some_and(|n| real_eq(n, v))
     }
 
-    /// The DEM's value at a DEM pixel/line position (`GDALInterpolateAtPoint`), or `None` outside
-    /// the DEM, on nodata or on a read error.
-    fn sample(&self, mut x: f64, mut y: f64) -> Option<f64> {
+    /// The DEM's value at a DEM pixel/line position (`GDALInterpolateAtPoint`): `Ok(None)` outside
+    /// the DEM or on nodata, `Err` on a read error — a failed read is not a nodata result.
+    fn sample(&self, mut x: f64, mut y: f64) -> Result<Option<f64>> {
         let (w, h) = (self.width as f64, self.height as f64);
         let mut method = self.interpolation;
         if method == DemInterpolation::Near {
@@ -566,7 +562,7 @@ impl Dem {
             }
         }
         if !(0.0..=w).contains(&x) || !(0.0..=h).contains(&y) {
-            return None;
+            return Ok(None);
         }
         if (self.width < 4 || self.height < 4) && method == DemInterpolation::Cubic {
             method = DemInterpolation::Bilinear;
@@ -589,7 +585,7 @@ impl Dem {
             let y = (y.clamp(0, self.height as i64 - 1) - cy0) as usize;
             cells[y * cw + x]
         };
-        match method {
+        Ok(match method {
             DemInterpolation::Cubic => {
                 let (dx, dy) = (fx - ix as f64, fy - iy as f64);
                 let (mut sum, mut weight) = (0.0, 0.0);
@@ -610,7 +606,7 @@ impl Dem {
                 let (dx, dy) = (fx - ix as f64, fy - iy as f64);
                 let v = [value(ix, iy), value(ix + 1, iy), value(ix, iy + 1), value(ix + 1, iy + 1)];
                 if v.iter().any(|&e| self.is_nodata(e)) {
-                    return None;
+                    return Ok(None);
                 }
                 let (dx1, dy1) = (1.0 - dx, 1.0 - dy);
                 let z1 = v[0] * dx1 + v[1] * dx;
@@ -621,7 +617,7 @@ impl Dem {
                 let v = value(x as i64, y as i64);
                 (!self.is_nodata(v)).then_some(v)
             }
-        }
+        })
     }
 }
 
@@ -780,9 +776,15 @@ impl RpcTransformer {
             let mut retried = false;
             loop {
                 at = super::apply_gt(&d.inv, x, y);
-                if let Some(v) = d.sample(at.0, at.1) {
-                    dem_h = v;
-                    break;
+                match d.sample(at.0, at.1) {
+                    Ok(Some(v)) => {
+                        dem_h = v;
+                        break;
+                    }
+                    // A read error fails the point; it is not a nodata result, so
+                    // `dem_missing_value` does not apply.
+                    Err(_) => return (None, at),
+                    Ok(None) => {}
                 }
                 // A DEM spanning [-180, 180] with the longitude beyond it.
                 if !retried && d.ct.is_none() && (lon >= 180.0 || lon <= -180.0) {
@@ -884,7 +886,7 @@ impl RpcTransformer {
             return false;
         }
         // The rows the points need, in one window read (bounds checked above).
-        let Some((cells, _, _, cw)) = d.cells(left, top, left + width - 1, top + rows - 1) else {
+        let Ok((cells, _, _, cw)) = d.cells(left, top, left + width - 1, top + rows - 1) else {
             return false;
         };
         let buf = |r: i64, c: i64| cells[r as usize * cw + (c - left) as usize];
@@ -1012,8 +1014,10 @@ impl RpcTransformer {
                         } else if dp < 0.0 {
                             dp = 0.5;
                         }
-                        if let Some(v) = d.sample(dp, dl) {
-                            h = v;
+                        match d.sample(dp, dl) {
+                            Ok(Some(v)) => h = v,
+                            Ok(None) => {}
+                            Err(_) => return None,
                         }
                     }
                     h
@@ -1339,15 +1343,15 @@ pub(crate) mod tests {
             (300.0 + ((i % 300) as f64 * 0.37).sin() * 200.0 + (i / 300) as f64) as f32 as f64
         };
         let d = t.dem.as_ref().unwrap();
-        let v = d.sample(100.5, 120.5).unwrap();
+        let v = d.sample(100.5, 120.5).unwrap().unwrap();
         assert!((v - cell(100, 120)).abs() < 1e-9, "{v} vs {}", cell(100, 120));
         let (dx, dy) = (0.8f64, 0.2f64);
         let z1 = cell(99, 120) * (1.0 - dx) + cell(100, 120) * dx;
         let z2 = cell(99, 121) * (1.0 - dx) + cell(100, 121) * dx;
         let expect = z1 * (1.0 - dy) + z2 * dy;
-        let v = d.sample(100.3, 120.7).unwrap();
+        let v = d.sample(100.3, 120.7).unwrap().unwrap();
         assert!((v - expect).abs() < 1e-9, "{v} vs {expect}");
-        assert!(d.sample(-1.0, 10.0).is_none(), "outside the DEM");
+        assert!(d.sample(-1.0, 10.0).unwrap().is_none(), "outside the DEM");
     }
 
     /// The lazy file DEM honors nodata cells exactly as the whole-read one, in all three
@@ -1407,6 +1411,37 @@ pub(crate) mod tests {
         };
         let t = RpcTransformer::new(&r, &o).unwrap();
         assert!(t.to_pixel(lon, lat, 0.0).is_some(), "a nodata cell takes the missing value");
+    }
+
+    /// A DEM read error fails the point; it does not take `dem_missing_value` (that is for a
+    /// point with no DEM value, not a failed read), and records a warning.
+    #[test]
+    fn lazy_dem_read_error_fails_the_point_without_the_missing_value() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Flaky(Arc<AtomicUsize>);
+        impl crate::cog::WindowSource for Flaky {
+            fn overviews(&self) -> Vec<(usize, usize)> {
+                Vec::new()
+            }
+            fn read(&mut self, _level: usize, window: crate::Window, bands: &[usize]) -> Result<wbraster::raster::RasterData> {
+                if self.0.fetch_add(1, Ordering::Relaxed) == 0 {
+                    // The one-cell read at open succeeds.
+                    return Ok(wbraster::raster::RasterData::F32(vec![100.0; window.width * window.height * bands.len()]));
+                }
+                Err(Error::InvalidData("simulated read failure".into()))
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let header = crate::open_raster_lazy(dem(dir.path()).to_str().unwrap()).unwrap().header();
+        let r = rpc();
+        let o = RpcOptions { dem_missing_value: Some(0.0), ..Default::default() };
+        let count = Arc::new(AtomicUsize::new(0));
+        let dem = Dem::from_lazy(crate::LazyRaster::from_source(header, Box::new(Flaky(count))), &o, &r).unwrap();
+        let t = RpcTransformer::with_dem(&r, &o, Some(dem)).unwrap();
+        crate::warnings::take();
+        assert!(t.to_pixel(10.0, 45.0, 0.0).is_none(), "a read error fails the point, not the missing value");
+        assert!(crate::warnings::take().iter().any(|w| w.contains("could not be read")), "a warning is recorded");
     }
 
     /// The ±180° wrap retry still works with a lazy DEM: a DEM spanning [-180, 180] answers a
