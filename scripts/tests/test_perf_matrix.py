@@ -691,16 +691,16 @@ def test_changed_files_choose_the_formats_to_measure():
     """A format's own file picks it; a shared one picks every format; others pick none."""
     # GeoPackage's `where` read goes through `terrio.sql` and the eager vector read.
     assert all("geopackage" in perf_matrix.touched([f]) for f in ("python/src/ops.rs", "crates/terrio/src/drivers/vector/mod.rs"))
-    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet"]
+    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet", "geoparquet-real"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
     assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "flatgeobuf", "geopackage", "geotiff-write",
-                                                   "geoparquet-write", "warp", "terrain"]
-    assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
-    assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
+                                                   "geoparquet-write", "warp", "terrain", "geotiff-real", "geoparquet-real"]
+    assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "flatgeobuf", "geopackage", "geoparquet-real"]
+    assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf", "geopackage", "geoparquet-real"]
     assert perf_matrix.touched(["crates/terrio/src/ops/sql/select.rs"]) == ["geopackage"]
-    assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr", "geotiff-write"]
+    assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr", "geotiff-write", "geotiff-real"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/gtiff_write.rs"]) == ["geotiff-write"]
-    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet.rs"]) == ["geoparquet", "geoparquet-write"]
+    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet.rs"]) == ["geoparquet", "geoparquet-write", "geoparquet-real"]
     assert perf_matrix.touched(["python/src/vector.rs"]) == ["flatgeobuf", "geoparquet-write"]
     assert perf_matrix.touched(["crates/terrio/src/ops/warp/window.rs"]) == ["warp"]
     assert perf_matrix.touched(["crates/terrio/src/ops/dem.rs", "crates/terrio/src/ops/calc/eval.rs"]) == ["terrain"]
@@ -1284,3 +1284,139 @@ def test_geopackage_gdal_read_names_the_geometry_as_terrio(tmp_path):
     lyr = ds = None
     open_, items, _, _ = perf_matrix.GeoPackage.reader("gdal", "full", {})
     assert items[0](open_(str(path))).column_names == ["id", "geometry"]
+
+
+def test_a_download_is_kept_only_when_it_is_the_pinned_file(tmp_path):
+    """Publish a download whose size and SHA-256 are the pinned ones; refuse any other; reuse a kept one."""
+    import hashlib
+
+    src = tmp_path / "source.bin"
+    src.write_bytes(b"real data" * 1000)
+    size, sha = src.stat().st_size, hashlib.sha256(src.read_bytes()).hexdigest()
+    out = tmp_path / "out"
+    out.mkdir()
+    with pytest.raises(ValueError, match="not the pinned"):
+        perf_matrix.fetch(out / "a.tif", src.as_uri(), size, "0" * 64)
+    with pytest.raises(ValueError, match="not the pinned"):
+        perf_matrix.fetch(out / "a.tif", src.as_uri(), size + 1, sha)
+    big = tmp_path / "big.bin"
+    big.write_bytes(bytes(3 << 20))
+    with pytest.raises(ValueError, match="more than the pinned 1 bytes"):  # stopped at the first piece past the pinned size
+        perf_matrix.fetch(out / "a.tif", big.as_uri(), 1, sha)
+    assert list(out.iterdir()) == []  # neither the file nor its staging directory is left
+    perf_matrix.fetch(out / "a.tif", src.as_uri(), size, sha)
+    assert (out / "a.tif").read_bytes() == src.read_bytes()
+    perf_matrix.fetch(out / "a.tif", (tmp_path / "gone.bin").as_uri(), size, sha)  # kept: not downloaded again
+    (out / "a.tif").write_bytes(b"edited")
+    with pytest.raises(ValueError, match="not the pinned"):  # a kept file is checked too
+        perf_matrix.fetch(out / "a.tif", (tmp_path / "gone.bin").as_uri(), size, sha)
+
+
+def test_real_data_formats_are_registered_and_pinned():
+    """Each real-data fixture is a pinned download or made from one, and its format is measured like its parent's."""
+    for name, parent in (("geotiff-real", "geotiff"), ("geoparquet-real", "geoparquet")):
+        fmt = perf_matrix.FORMATS[name]
+        assert perf_matrix.PATHS[name] == perf_matrix.PATHS[parent]
+        made = {**fmt.DOWNLOADS, **getattr(fmt, "DERIVED", {})}
+        assert set(fmt.FIXTURES) == set(made)
+        for fixture in fmt.FIXTURES:
+            assert set(fmt.axes(fixture)) == {"codec", "dtype", "layout"}
+            assert fixture.isidentifier()  # the `where` read names the layer after the file
+        for url, size, sha in fmt.DOWNLOADS.values():
+            assert url.startswith("https://") and size > 0 and len(sha) == 64 and set(sha) <= set("0123456789abcdef")
+        assert all(src in fmt.DOWNLOADS for src, _ in getattr(fmt, "DERIVED", {}).values())
+    assert perf_matrix.accesses(perf_matrix.GeoTiffReal)[-1] == "masks"
+    assert "masks" not in perf_matrix.accesses(perf_matrix.GeoTiff)
+
+
+def test_geoparquet_real_reads_its_own_extent_columns_and_filter(tmp_path):
+    """Boxes lie in the file's extent, and the filter's own column prunes row groups by their statistics."""
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    real = perf_matrix.GeoParquetReal
+    x0, y0, x1, y1 = real.EXTENT
+    assert all(x0 <= a < c <= x1 and y0 <= b < d <= y1 for a, b, c, d in real.bboxes(16))
+    assert perf_matrix.GeoParquet.bboxes(1) != real.bboxes(1)
+    table = pa.table({"area_in_meters": [1.0, 2.0, 50.0, 60.0], "bf_source": ["a"] * 4, "geometry": [b"x"] * 4})
+    geo = {"primary_column": "geometry", "columns": {"geometry": {}}}
+    path = tmp_path / "buildings.parquet"
+    pq.write_table(table.replace_schema_metadata({b"geo": json.dumps(geo).encode()}), path, row_group_size=2)
+    md = pq.ParquetFile(path).metadata
+    first = sum(md.row_group(0).column(c).total_compressed_size for c in range(md.num_columns))
+    assert real.meta(path, "where")["need_bytes"] == md.serialized_size + 8 + first
+    check = real.reader("gdal", "columns", {})[2]
+    assert check(table) == (113.0, 4)
+
+
+def test_geotiff_reads_of_a_raster_that_is_not_square_cover_it_whole(tmp_path):
+    """The whole and decimated reads cover both sides; the windows stay inside; an all-valid mask needs no block."""
+    np = pytest.importorskip("numpy")
+    gdal = pytest.importorskip("osgeo.gdal")
+    gdal.UseExceptions()
+    path = tmp_path / "tall.tif"
+    gdal.Translate(str(path), _mem(np, gdal, np.arange(600 * 1100, dtype="float32").reshape(1100, 600)), format="GTiff",
+                   creationOptions=["TILED=YES", "BLOCKXSIZE=256", "BLOCKYSIZE=256", "COMPRESS=DEFLATE"])
+    ds = gdal.Open(str(path))
+    band = ds.GetRasterBand(1)
+    every = sum(int(band.GetMetadataItem(f"BLOCK_SIZE_{x}_{y}", "TIFF")) for y in range(5) for x in range(3))
+    ds = band = None
+    meta = perf_matrix.GeoTiff.meta(path, "full")
+    assert (meta["size"], meta["xsize"], meta["ysize"], meta["need_bytes"]) == (600, 600, 1100, every)
+    assert perf_matrix.GeoTiffReal.meta(path, "masks")["need_bytes"] == 0  # all valid: no pixel is read
+    assert all(x + w <= 600 and y + h <= 600 for x, y, w, h in windows(meta["size"], 16))
+    open_, items, _, _ = perf_matrix.GeoTiff.reader("gdal", "overview", meta)
+    assert items[0](open_(str(path))).shape == (1100 // 8, 600 // 8)
+
+
+@pytest.mark.parametrize("mask_band", [False, True])
+def test_masks_are_read_by_both_tools_and_need_their_own_blocks(tmp_path, mask_band):
+    """terrio's `read_masks` and GDAL's mask bands hash the same: 0 where nodata or masked, 255 elsewhere.
+
+    A mask from nodata needs the pixel blocks; a mask band needs its own blocks only.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        mask_band: Whether the file has an internal mask band in place of nodata.
+    """
+    np = pytest.importorskip("numpy")
+    gdal = pytest.importorskip("osgeo.gdal")
+    pytest.importorskip("terrio.rio")
+    gdal.UseExceptions()
+    a = np.ones((64, 64), "uint8")
+    a[:20] = 0
+    path = tmp_path / "masked.tif"
+    opts = {"maskBand": "mask,1", "noData": "none"} if mask_band else {}
+    gdal.Translate(str(path), _mem(np, gdal, a, nodata=0), format="GTiff", creationOptions=["TILED=YES", "BLOCKXSIZE=32", "BLOCKYSIZE=32"], **opts)
+    gdal.Translate(str(tmp_path / "_warmup.tif"), _mem(np, gdal, a), format="GTiff")
+    meta = perf_matrix.GeoTiffReal.meta(path, "masks")
+    ds = gdal.Open(str(path))
+    band = ds.GetRasterBand(1).GetMaskBand() if mask_band else ds.GetRasterBand(1)
+    assert meta["need_bytes"] == sum(int(band.GetMetadataItem(f"BLOCK_SIZE_{x}_{y}", "TIFF")) for y in range(2) for x in range(2))
+    ds = band = None
+    samples = {tool: perf_matrix.worker({"format": "geotiff-real", "tool": tool, "src": str(path),
+                                         "access": "masks", "meta": meta}) for tool in ("gdal", "terrio")}
+    assert samples["gdal"]["sum"] == 255 * 44 * 64 and samples["gdal"]["n"] == 64 * 64
+    assert samples["terrio"]["digest"] == samples["gdal"]["digest"]
+
+
+@pytest.mark.parametrize("fmt", ["geoparquet", "geoparquet-real", "geopackage"])
+def test_sql_filter_reads_are_labelled_against_gdals_attribute_filter(tmp_path, monkeypatch, fmt):
+    """terrio's `where` is `terrio.sql` and GDAL's `read_arrow(where=...)`: the row says so for each vector format.
+
+    Args:
+        tmp_path: Isolated results directory.
+        monkeypatch: Scoped dependency replacements.
+        fmt: A format whose `where` read is terrio's SQL.
+    """
+    fake = SimpleNamespace(FIXTURES={"a": None}, ACCESS=["where"], EXT=".parquet", meta=lambda *_: {"need_bytes": 1},
+                           axes=lambda _: {"codec": "none", "dtype": "polygon", "layout": "x"})
+    monkeypatch.setitem(perf_matrix.FORMATS, fmt, fake)
+    monkeypatch.setattr(perf_matrix, "machine", lambda: {"machine": {"on_ac": True}})
+    monkeypatch.setattr(perf_matrix, "report", lambda _: "recorded")
+    monkeypatch.setattr(perf_matrix, "_settled_log", lambda: [])
+    monkeypatch.setattr(perf_matrix.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0, stdout=json.dumps(_sample(1)), stderr=""))
+    args = SimpleNamespace(format=fmt, dir=tmp_path, latency_ms=0, threads=1, only=None, quick=True, samples=1, base=None,
+                           out=tmp_path / "results.jsonl", source=["local"], allow_battery=False, access=None, timeout=1)
+    perf_matrix.run(args)
+    rows = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()[1:]]
+    assert [r["access"] for r in rows] == ["where/sql-vs-filter"]
