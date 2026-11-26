@@ -3299,8 +3299,9 @@ impl TiffRaster {
         // A chunk can fill several output bands (a band asked for twice in a planar image).
         let mut targets: std::collections::HashMap<u32, Vec<ChunkTarget>> = std::collections::HashMap::new();
         targets.try_reserve(chunks.len()).map_err(|_| crate::dataset::fallible::out_of_memory(None, what))?;
-        // GDAL's count of a read's blocks: those of the window, in each plane read.
-        let blocks = chunks.len();
+        // GDAL's count of a read's blocks: those of the window, in each plane read; a chunk listed
+        // twice (a band asked twice) counts once.
+        let blocks_beyond_one = chunks.first().is_some_and(|f| chunks.iter().any(|c| c.0 != f.0));
         for (idx, x0, y0, map) in chunks {
             if tables.counts.get(idx).copied().unwrap_or(0) == 0 {
                 continue;
@@ -3319,7 +3320,7 @@ impl TiffRaster {
         // multi-threaded read of a whole image skips its block cache (`GDAL_NUM_THREADS` above 1,
         // `GTiffDataset::IRasterIO` and `MultiThreadedRead`; terrio does so whatever its thread
         // count and codec): the output holds them, and the cache would double the read's memory.
-        let whole = whole_uncached && blocks > 1 && w == Window::full(lw, lh) && (planar || bands.iter().copied().eq(1..=spp));
+        let whole = whole_uncached && blocks_beyond_one && w == Window::full(lw, lh) && (planar || bands.iter().copied().eq(1..=spp));
         let keep = caching && !whole;
         let mut misses: Vec<u32> = Vec::new();
         crate::dataset::fallible::reserve(&mut misses, wanted.len(), what)?;
@@ -4518,6 +4519,13 @@ mod tests {
         read_f64(&mut r, Window::full(16, 16), &[1], None);
         read_f64(&mut r, Window::full(16, 16), &[1], None);
         assert_eq!(crate::block_cache::tests::take_lookups(), (1, 1));
+        // One tile per plane, a band asked twice: still one chunk, kept.
+        let planar_small = dir.path().join("planar_small.tif");
+        write_tiled_tiff(&planar_small, (16, 16, 2), sequence(DataType::U16, 2 * 16 * 16, 1), &[("INTERLEAVE", "BAND")]);
+        let mut r = LazyRaster::open(planar_small.to_str().unwrap()).unwrap();
+        read_f64(&mut r, Window::full(16, 16), &[1, 1], None);
+        read_f64(&mut r, Window::full(16, 16), &[1, 1], None);
+        assert_eq!(crate::block_cache::tests::take_lookups(), (1, 1), "a one-chunk read of a band asked twice is cached");
     }
 
     /// `approx_min_max` returns the range stored in a PAM sidecar without decoding a chunk.
