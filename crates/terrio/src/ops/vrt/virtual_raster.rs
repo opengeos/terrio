@@ -3203,6 +3203,168 @@ mod tests {
             assert!(VirtualRaster::from_xml(&xml).is_err(), "{function}");
         }
     }
+
+    /// Tile reads from a pool of the caller's own, as a tile server makes them (#1302). Through
+    /// rayon, a thread of that pool waiting on terrio's would run the pool's next read meanwhile,
+    /// nested in the read waiting, and so on: through `par::install`, until the reads past 64
+    /// are refused.
+    /// It waits on a thread of its own instead, whether its read waits on terrio's work through
+    /// a parallel loop or `par::install` (as a JPEG XL decoder does), or on the pool's start: no
+    /// read runs nested in another.
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn reads_from_a_callers_pool_are_not_nested_while_they_wait_on_terrios() {
+        // In a process of its own, so that terrio's pool starts during the first round.
+        crate::par::alone(120, || {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            thread_local! { static IN_PROGRESS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+            // A source whose reads wait on terrio's pool.
+            struct Waiting {
+                installs: bool,
+            }
+            impl WindowSource for Waiting {
+                fn overviews(&self) -> Vec<(usize, usize)> {
+                    Vec::new()
+                }
+                fn read(&mut self, _: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
+                    let wait = || std::thread::sleep(std::time::Duration::from_millis(5));
+                    if self.installs {
+                        crate::par::install(wait);
+                    } else {
+                        crate::par::map_range(2, |_| wait());
+                    }
+                    Ok(RasterData::F64(vec![1.; window.width * window.height * bands.len()]))
+                }
+            }
+            // A pool of the caller's, as a tile server has: it is not terrio's (see `par`).
+            #[allow(clippy::disallowed_methods)]
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(1).stack_size(256 << 20).build().unwrap();
+            // The first round starts terrio's pool from the caller's worker (building the source
+            // raster asks the pool's size); the others find it started.
+            [false, true, false].into_iter().all(|installs| {
+                let deepest = AtomicUsize::new(0);
+                // A read, counted from before its source is built: reads in progress on a thread
+                // over 1 are nested in one another.
+                let read = || {
+                    let nested = IN_PROGRESS.with(|n| {
+                        n.set(n.get() + 1);
+                        n.get()
+                    });
+                    deepest.fetch_max(nested, Ordering::Relaxed);
+                    let waiting = LazyRaster::from_source(raster(), Box::new(Waiting { installs }));
+                    let vrt = document(&format!("<VRTRasterBand dataType=\"Float64\">{}</VRTRasterBand>", source("SimpleSource", "")));
+                    let sources = HashMap::from([("source.tif".into(), waiting)]);
+                    let read = VirtualRaster::from_xml(&vrt)
+                        .and_then(|v| v.into_lazy(Path::new(""), sources))
+                        .and_then(|mut v| v.read_window(Window::new(0, 0, 2, 2), &Default::default()));
+                    IN_PROGRESS.with(|n| n.set(n.get() - 1));
+                    read
+                };
+                let failures = std::sync::Mutex::new(Vec::new());
+                // Runs the reads on the caller's pool, as its own jobs (see above).
+                #[allow(clippy::disallowed_methods)]
+                pool.install(|| {
+                    rayon::scope(|s| {
+                        for _ in 0..100 {
+                            s.spawn(|_| {
+                                if let Err(e) = read() {
+                                    failures.lock().unwrap().push(e.to_string());
+                                }
+                            });
+                        }
+                    })
+                });
+                let failures = failures.into_inner().unwrap();
+                let deepest = deepest.load(Ordering::Relaxed);
+                eprintln!("installs {installs}: {} failures, reads nested {deepest} deep", failures.len());
+                failures.is_empty() && deepest == 1
+            })
+        });
+    }
+
+    /// Runs `f` on a thread with a 256 MiB stack: 64 VRT reads nested in one another, warped ones
+    /// especially, need more than the stack of a test thread in a debug build.
+    fn on_a_large_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+        std::thread::scope(|s| std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(s, f).unwrap().join().unwrap())
+    }
+
+    /// A warped VRT whose source is itself, or a warped VRT naming it back, is refused when a
+    /// window of it is read, as a chain of more than 64 is; a chain of 64 is read. The warp reads
+    /// its source on the reading thread, not on the pool.
+    #[test]
+    fn cyclic_warped_vrts_are_refused_when_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let georeferenced = crate::ops::build_raster(
+            Grid { width: 5, height: 5, geo_transform: [0., 1., 0., 5., 0., -1.] },
+            vec![(0..25).map(f64::from).collect()],
+            DataType::F64,
+            None,
+            &crate::crs::SpatialRef::from_epsg(4326).unwrap(),
+            crate::ops::convert_value,
+        )
+        .unwrap();
+        let tif = dir.path().join("source.tif");
+        crate::write_raster_dataset(&georeferenced, tif.to_str().unwrap(), &Default::default()).unwrap();
+        let options = WarpOptions { dst_srs: Some(crate::crs::SpatialRef::from_epsg(3857).unwrap()), ..Default::default() };
+        let xml = VirtualRaster::warped(tif.to_str().unwrap(), &options).unwrap().to_xml();
+        let (start, end) = (xml.find("<SourceDataset").unwrap(), xml.find("</SourceDataset>").unwrap() + "</SourceDataset>".len());
+        let write = |name: &str, source: &str| {
+            let text = format!("{}<SourceDataset relativeToVRT=\"1\">{source}</SourceDataset>{}", &xml[..start], &xml[end..]);
+            std::fs::write(dir.path().join(name), text).unwrap();
+            dir.path().join(name).to_str().unwrap().to_string()
+        };
+        let read = |path: &str| {
+            on_a_large_stack(|| open_virtual_raster(path).and_then(|mut r| r.read_window(Window::new(0, 0, 2, 2), &Default::default())))
+        };
+        write("b.vrt", "a.vrt");
+        for path in [write("self.vrt", "self.vrt"), write("a.vrt", "b.vrt")] {
+            let error = read(&path).unwrap_err();
+            assert!(error.to_string().contains("cyclic or excessively nested"), "{error}");
+        }
+        // A chain of `n` warped VRTs ending on the GeoTIFF: 0.vrt warps 1.vrt, and so on.
+        let chain = |n: usize| {
+            let mut first = String::new();
+            for i in (0..n).rev() {
+                first = write(&format!("{i}.vrt"), &if i + 1 == n { "source.tif".into() } else { format!("{}.vrt", i + 1) });
+            }
+            first
+        };
+        read(&chain(64)).unwrap();
+        assert!(read(&chain(65)).unwrap_err().to_string().contains("cyclic or excessively nested"));
+    }
+
+    /// A file VRT naming itself, or another naming it back, is refused when read, as a chain of
+    /// more than 64 is; a chain of 64 is read.
+    #[test]
+    fn file_vrt_cycles_and_chains_over_64_are_refused_when_read() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::write_raster_dataset(&raster(), dir.path().join("source.tif").to_str().unwrap(), &Default::default()).unwrap();
+        let write = |name: &str, source: &str| {
+            let band = format!(
+                "<VRTRasterBand dataType=\"Float64\"><SimpleSource><SourceFilename relativeToVRT=\"1\">{source}</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand>"
+            );
+            std::fs::write(dir.path().join(name), document(&band)).unwrap();
+            dir.path().join(name).to_str().unwrap().to_string()
+        };
+        let read = |path: &str| on_a_large_stack(|| open_virtual_raster(path).and_then(|mut r| r.read()));
+        for path in [write("self.vrt", "self.vrt"), {
+            write("b.vrt", "a.vrt");
+            write("a.vrt", "b.vrt")
+        }] {
+            let error = read(&path).unwrap_err().to_string();
+            assert!(error.contains("cyclic or excessively nested"), "{error}");
+        }
+        // A chain of `n` VRTs ending on the GeoTIFF: 0.vrt names 1.vrt, and so on.
+        let chain = |n: usize| {
+            let mut first = String::new();
+            for i in (0..n).rev() {
+                first = write(&format!("{i}.vrt"), &if i + 1 == n { "source.tif".into() } else { format!("{}.vrt", i + 1) });
+            }
+            first
+        };
+        assert_eq!(read(&chain(64)).unwrap().raster.data.to_f64_vec(), raster().raster.data.to_f64_vec());
+        assert!(read(&chain(65)).unwrap_err().to_string().contains("cyclic or excessively nested"));
+    }
 }
 
 #[cfg(test)]

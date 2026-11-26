@@ -39,6 +39,11 @@
 //! Thread-local configuration and warnings stay on their originating thread. Contention can
 //! select serial execution on that thread instead of a worker, so closures that consult thread
 //! locals can observe different state; placement does not promise to propagate those locals.
+//!
+//! In native builds, a worker of another rayon pool (a pool of the caller's own) that waits on this
+//! one does so from a thread of its own: waiting through rayon, it would run its own pool's other
+//! jobs on its stack meanwhile, nested in its call (see `without_stealing`). A fork waits for that
+//! thread, as for `map_waiting`'s, until the call it waits for has ended.
 
 // The one place rayon is called directly: the methods clippy.toml disallows elsewhere.
 #![allow(clippy::disallowed_methods)]
@@ -136,6 +141,12 @@ mod native {
         next: *mut HeldBack,
     }
 
+    /// The pool of this process, if started, without starting it.
+    pub(super) fn started() -> Option<&'static rayon::ThreadPool> {
+        // SAFETY: a published pool is never freed.
+        unsafe { POOL.load(Ordering::Acquire).as_ref() }.filter(|s| s.forks == FORKS.load(Ordering::Acquire)).map(|s| &s.pool)
+    }
+
     /// The pool of this process, started on first use.
     pub(super) fn pool() -> &'static rayon::ThreadPool {
         let p = POOL.load(Ordering::Acquire);
@@ -179,8 +190,10 @@ mod native {
         // queue of broadcasts, which it does once started, and which uses the collector.
         let warmed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let w = warmed.clone();
-        pool.broadcast(move |_| {
-            w.fetch_add(1, Ordering::AcqRel);
+        super::without_stealing(|| {
+            pool.broadcast(move |_| {
+                w.fetch_add(1, Ordering::AcqRel);
+            })
         });
         let new = Box::into_raw(Box::new(Started { forks, pool, warmed }));
         loop {
@@ -279,7 +292,8 @@ mod native {
     }
 
     /// A background job running, counted in [`GATE`] while it lives (also the threads of a
-    /// [`super::map_waiting`]).
+    /// [`super::map_waiting`], and the thread a worker of another pool waits from in
+    /// [`super::without_stealing`]).
     pub(super) struct Running;
 
     impl Running {
@@ -483,7 +497,7 @@ impl Drop for OutsideGuard {
 #[cfg(threads)]
 impl Pool {
     fn install<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
-        self.0.install(f)
+        without_stealing(|| self.0.install(f))
     }
 
     /// Applies placement; a call on the pool keeps its outside guard until it returns or unwinds.
@@ -578,12 +592,49 @@ pub(crate) fn threads() -> usize {
 pub(crate) fn install<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     #[cfg(not(target_family = "wasm"))]
     {
-        native::pool().install(f)
+        without_stealing(|| native::pool().install(f))
     }
     #[cfg(target_family = "wasm")]
     {
         f()
     }
+}
+
+/// Runs `wait`, which waits on terrio's pool, so that the calling thread runs nothing else in the
+/// meantime. A worker of another rayon pool (a pool of the caller's own) waiting on this one through
+/// rayon runs jobs of its own pool while it waits, nested on its stack: as many as that pool has
+/// queued, such as reads of the VRT the waiting read is reading. Such a worker waits on a thread of
+/// its own instead, which runs nothing else, counted as background work for the fork protocol from
+/// before it starts until it has ended (see [`map_waiting`]). When a fork is in progress, or the OS
+/// refuses the thread, the worker waits itself.
+#[cfg(not(target_family = "wasm"))]
+fn without_stealing<R: Send>(wait: impl FnOnce() -> R + Send) -> R {
+    if rayon::current_thread_index().is_none() || native::started().is_some_and(|p| p.current_thread_index().is_some()) {
+        return wait();
+    }
+    #[cfg(unix)]
+    native::register();
+    let Some(running) = native::Running::enter() else {
+        return wait();
+    };
+    let wait = std::sync::Mutex::new(Some(wait));
+    let take = || wait.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().expect("the wait runs once");
+    let waited = std::thread::scope(|s| {
+        std::thread::Builder::new().name("terrio-wait".into()).spawn_scoped(s, || take()()).ok().map(|waiter| waiter.join())
+    });
+    drop(running);
+    match waited {
+        Some(waited) => waited.unwrap_or_else(|p| std::panic::resume_unwind(p)),
+        // Without its waiting thread, this worker waits itself and may run its pool's other jobs:
+        // this wait no longer counts for a fork.
+        None => take()(),
+    }
+}
+
+/// Runs `wait`: WebAssembly has no thread of its own to wait from.
+#[cfg(all(threads, target_family = "wasm"))]
+fn without_stealing<R: Send>(wait: impl FnOnce() -> R + Send) -> R {
+    wait()
 }
 
 /// Runs `f` in the background on terrio's thread pool (native builds). A fork waits for the
@@ -868,9 +919,9 @@ pub(crate) fn in_child(secs: u64, child: impl FnOnce() -> bool) -> Option<i32> {
     }
 }
 
-/// Runs a fork test's `scenario` in a process of its own, where it must return true: this test
-/// binary started again for this one test (`--exact`), killed when still running after `secs`
-/// seconds. A fork copies every thread's state, and the test binary runs other tests on other
+/// Runs a fork test's `scenario`, or one that needs terrio's pool not started yet, in a process of
+/// its own, where it must return true: this test binary started again for this one test
+/// (`--exact`), killed when still running after `secs` seconds. A fork copies every thread's state, and the test binary runs other tests on other
 /// threads, which hold locks of their own when the fork comes (the standard library's, for one,
 /// while a thread starts or ends): a child forked from the test process may wait for them
 /// forever. In a process of its own, a scenario's forks copy only the scenario's threads.
