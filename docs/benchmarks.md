@@ -265,6 +265,7 @@ one file at a time. Each format lists the ways its files vary and the ways they 
 | GeoParquet | geometry type, WKB or GeoArrow, compression, row group size, covering bbox column, spatial sort | all columns, two columns, a bbox of 1% of the extent, 16 bboxes, 1, 2, 4 and 8 threads sharing 16 bboxes, an attribute filter |
 | FlatGeobuf | geometry type, with or without a spatial index | all columns, two columns, a bbox of 1% of the extent, 16 bboxes |
 | GeoPackage (vector) | geometry type, R-tree or none, rows in Hilbert order or not, 400,000 or 2,000,000 rows | as GeoParquet's |
+| Shapefile | geometry type, `.qix` spatial index or none, UTF-8 or LATIN1 `.cpg` | all columns, two columns, a bbox of 1% of the extent, 16 bboxes, 1, 2, 4 and 8 threads sharing 16 bboxes |
 | GeoTIFF writes (`geotiff-write`) | codec and predictor (none, DEFLATE, LZW and ZSTD with predictor 2 or 3, RGB and YCbCr JPEG), data type, tile size, band or pixel interleave, 1–12 bands | a COG with average overviews, a COG without overviews, a tiled GeoTIFF, the COG with one thread |
 | GeoParquet writes (`geoparquet-write`) | geometry type (400,000 polygons or lines, 2,000,000 points) | WKB, a covering bbox column, Snappy, row groups of 65,536 rows |
 | GeoTIFF, real data (`geotiff-real`) | public files: a Sentinel-2 band with nodata, a sparse COG and a COG with a mask band made from it, a big-endian DEM in strips | as GeoTIFF's, and every band's mask |
@@ -370,6 +371,20 @@ downloads a GeoPackage URL whole before reading it, while GDAL reads its pages b
 GDAL's HTTP bbox reads of the larger GeoPackage fixtures take from about 110 s to over 300 s at
 the 20 ms round-trip time, so the default `--timeout` of 120 s reports several of them as
 timeouts; three samples with `--timeout 300` take about 95 minutes.
+
+Shapefile fixtures are GDAL translations of the vector sources, written with
+`SPATIAL_INDEX=YES` (a `.qix` quadtree) or `NO` and `ENCODING=UTF-8` or `LATIN1` (a `.cpg`);
+the LATIN1 fixture's `class` values with an `e` take an `é`, so their decoding is compared. Each
+fixture is a directory holding one shapefile, since a shapefile is several files: a case's bytes
+and HTTP requests include its `.shx`, `.dbf`, `.prj`, `.cpg` and `.qix`, and GDAL's probes for
+sidecars that are not there. terrio reads a bbox with `terrio.open_vector(bbox=...)`, as
+`terrio.open_stream` does not filter a local shapefile by bbox, and whole and column reads with
+`terrio.open_stream`; GDAL reads all of them with `pyogrio.read_arrow`. A whole or column read
+needs the `.shp`, `.dbf`, `.prj` and `.cpg` (a `.dbf` row stores its fields together). A bbox
+read needs the `.prj`, the `.cpg`, the `.dbf` header and the rows of the features GDAL's spatial
+filter finds, and either the whole `.shp` or, through a `.qix`, the quadtree nodes shapelib's
+search reads and the `.shx` entries and `.shp` records of the shapes it gives. GDAL cannot
+write `.sbn` indexes, so they are not measured.
 
 The worker environment sets `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` to avoid directory scans,
 `GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES` to enable GDAL range merging, and `GDAL_CACHEMAX=512`
