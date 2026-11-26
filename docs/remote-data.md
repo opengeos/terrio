@@ -549,3 +549,19 @@ the store’s own endpoint. See [vsi](cli.md#vsi).
 terrio vsi list -lR s3://bucket/prefix
 terrio vsi sync -r --strategy ETag local_dir/ s3://bucket/prefix
 ```
+
+## Remote VRT definitions
+
+Direct remote VRT opens retain at most 64 MiB of XML, including decompressed
+archive members. Direct HTTP document redirects set the base for relative sources;
+the policy retains the caller-selected origin and cloud provider context. A remote
+VRT cannot name local files. Sources that
+use ambient cloud credentials require `TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES`,
+the same opt-in as remote STAC assets. Public HTTP sources and ordinary same-origin
+HTTP authentication remain supported. Crossing origins during a redirect chain
+revokes the same-origin authentication exemption, even if the chain returns to its
+starting origin. The source policy stays attached to the
+lazy raster through later window, overview and mask reads. Local VRTs retain their
+filesystem source resolution. Remote VRT errors are terminal, including unsupported
+VRT features: the optional GDAL backend does not retry them with an opaque source
+parser.

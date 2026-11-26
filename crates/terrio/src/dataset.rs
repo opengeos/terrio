@@ -546,6 +546,10 @@ pub(crate) fn open_native(path: &str) -> Result<Dataset> {
 }
 
 fn open_native_unchecked(path: &str) -> Result<Dataset> {
+    // Keep the original VRT location so remote source policy survives eager opens.
+    if RasterDriver::for_extension(path) == Some(RasterDriver::VRT) {
+        return crate::ops::vrt::read_vrt(path).map(Dataset::Raster);
+    }
     if let Some(result) = crate::catalog::open_lazy(path) {
         return read_lazy_whole(result?).map(Dataset::Raster);
     }
@@ -626,6 +630,9 @@ pub(crate) fn read_lazy_whole(mut r: crate::LazyRaster) -> Result<RasterDataset>
 }
 
 fn read_raster_native(path: &str) -> Result<RasterDataset> {
+    if RasterDriver::for_extension(path) == Some(RasterDriver::VRT) {
+        return crate::ops::vrt::read_vrt(path);
+    }
     if let Some(result) = crate::catalog::open_lazy(path) {
         return read_lazy_whole(result?);
     }
@@ -1210,6 +1217,10 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     // A second pointer parser could bypass native STAC asset-consent and local-file policies.
     // Individual raster assets can still use GDAL through their own ordinary opens.
     if path.split_once(':').is_some_and(|(prefix, _)| ["STAC", "STACIT", "STACTA"].iter().any(|name| prefix.eq_ignore_ascii_case(name))) {
+        return Err(e);
+    }
+    // An opaque VRT parser could follow sources that the remote document policy forbids.
+    if RasterDriver::for_extension(path) == Some(RasterDriver::VRT) && crate::stac::AssetReadPolicy::for_document(path)?.is_some() {
         return Err(e);
     }
     let retry = match &e {

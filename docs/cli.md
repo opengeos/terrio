@@ -4052,6 +4052,14 @@ input paths to absolute paths; imported relative paths resolve against the
 saved definition unless `relative_paths_relative_to_this_file` is false.
 Nested saved pipelines are limited to 16 levels. Definitions execute supported
 Terrio operations directly and never invoke a shell or external program.
+Loading discards embedded `write` destinations and converts named `materialize`
+checkpoints to in-memory snapshots. Choose a destination with `--output`.
+For a definition you explicitly trust, `--allow-saved-outputs` retains its saved
+destinations, including overwrite and append options. In that mode `--output`
+replaces the terminal destination while retaining trusted checkpoints. Rust callers
+select `SavedOutputPolicy::Allow` with `Pipeline::from_gdalg_with_output_policy`
+or `Pipeline::open_with_output_policy`; ordinary `from_gdalg` and `open` discard
+saved destinations. Explicit command strings retain their requested outputs.
 
 This is a linear pipeline implementation. It does not expose every option of
 GDAL's individual steps. Raster bounding-box clips must fit inside a north-up

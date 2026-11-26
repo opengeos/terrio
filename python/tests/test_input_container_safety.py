@@ -6,6 +6,7 @@ import json
 import threading
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 
 import numpy as np
 import pytest
@@ -122,6 +123,148 @@ def test_vrt_source_map_refuses_unmapped_host_paths(tmp_path):
     vrt = tmp_path / "trusted.vrt"
     vrt.write_text(xml)
     np.testing.assert_array_equal(terrio.open_raster(str(vrt)).read(1), np.full((2, 2), 7))
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_direct_remote_vrt_provenance_and_redirect_base(tmp_path, lazy):
+    """Keep deferred remote sources confined and resolve redirected relative sources.
+
+    Args:
+        tmp_path: Temporary directory containing the controlled local source.
+        lazy: Whether to defer raster reads.
+    """
+    from terrio import rio
+
+    path = tmp_path / "host.tif"
+    values = np.full((2, 2), 7, dtype="uint8")
+    terrio.Raster.from_array(values, (0, 1, 0, 2, 0, -1)).write(str(path))
+    pixels = path.read_bytes()
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        """Serve a redirected public VRT and a document naming a local file."""
+
+        def log_message(self, *_):
+            """Suppress test server logs.
+
+            Args:
+                _: Ignored HTTP log format and arguments.
+            """
+
+        def do_GET(self):
+            """Serve controlled document and raster responses."""
+            requests.append(self.path)
+            if self.path in ("/entry.vrt", "/chain.vrt", "/archive-chain.zip"):
+                self.send_response(302)
+                target = "/nested/remote.vrt"
+                if self.path != "/entry.vrt":
+                    suffix = "archive-back" if self.path == "/archive-chain.zip" else "back"
+                    target = f"{bounce}/{suffix}"
+                self.send_header("Location", target)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if self.path == "/nested/source.tif":
+                body = pixels
+            elif self.path == "/returned.zip":
+                body = archive
+            elif self.path in ("/blocked.vrt", "/nested/remote.vrt", "/returned.vrt"):
+                blocked = self.path == "/blocked.vrt"
+                source = (
+                    str(path)
+                    if blocked
+                    else "nested/source.tif"
+                    if self.path == "/returned.vrt"
+                    else "source.tif"
+                )
+                body = (
+                    '<VRTDataset rasterXSize="2" rasterYSize="2">'
+                    '<VRTRasterBand dataType="Byte"><SimpleSource>'
+                    f'<SourceFilename relativeToVRT="{0 if blocked else 1}">'
+                    f"{source}</SourceFilename><SourceBand>1</SourceBand>"
+                    "</SimpleSource></VRTRasterBand></VRTDataset>"
+                ).encode()
+            else:
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+
+        do_HEAD = do_GET
+
+    class BounceHandler(BaseHTTPRequestHandler):
+        """Redirect back to the caller-selected origin."""
+
+        log_message = Handler.log_message
+
+        def do_GET(self):
+            """Return a cross-origin redirect to the root server."""
+            self.send_response(302)
+            target = "returned.zip" if self.path == "/archive-back" else "returned.vrt"
+            self.send_header("Location", f"{base}/{target}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    with (
+        ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server,
+        rio.Env(GDAL_HTTP_HEADERS="", TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS="NO"),
+    ):
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_port}"
+            with pytest.raises(Exception, match="local files"):
+                terrio.open_raster(f"{base}/blocked.vrt", lazy=lazy).read(1)
+            with pytest.raises(Exception, match="local files"):
+                terrio.open(f"{base}/blocked.vrt")
+            np.testing.assert_array_equal(terrio.open_raster(str(path)).read(1), values)
+            opened = terrio.open_raster(f"{base}/entry.vrt", lazy=lazy)
+            if lazy:
+                assert "/nested/source.tif" not in requests
+            np.testing.assert_array_equal(opened.read(1), values)
+            assert "/nested/source.tif" in requests
+            assert "/source.tif" not in requests
+            with ThreadingHTTPServer(("127.0.0.1", 0), BounceHandler) as other:
+                bounce = f"http://127.0.0.1:{other.server_port}"
+                other_thread = threading.Thread(target=other.serve_forever, daemon=True)
+                other_thread.start()
+                try:
+                    with rio.Env(GDAL_HTTP_HEADERS="Authorization: synthetic-test"):
+                        before = requests.count("/nested/source.tif")
+                        with pytest.raises(
+                            Exception, match="TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS"
+                        ):
+                            terrio.open_raster(f"{base}/chain.vrt", lazy=lazy).read(1)
+                        assert requests.count("/nested/source.tif") == before
+                        buffer = BytesIO()
+                        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zipped:
+                            zipped.writestr(
+                                "document.vrt",
+                                '<VRTDataset rasterXSize="2" rasterYSize="2">'
+                                '<VRTRasterBand dataType="Byte"><SimpleSource>'
+                                f'<SourceFilename relativeToVRT="0">{base}/nested/source.tif'
+                                "</SourceFilename><SourceBand>1</SourceBand>"
+                                "</SimpleSource></VRTRasterBand></VRTDataset>",
+                            )
+                        archive = buffer.getvalue()
+                        member = f"/vsizip/{{{base}/archive-chain.zip}}/document.vrt"
+                        assert terrio.vsi_read(member).startswith(b"<VRTDataset")
+                        with pytest.raises(
+                            Exception, match="TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS"
+                        ):
+                            terrio.open_raster(member, lazy=lazy).read(1)
+                        assert requests.count("/nested/source.tif") == before
+                finally:
+                    other.shutdown()
+                    other_thread.join()
+        finally:
+            server.shutdown()
+            thread.join()
 
 
 def test_vrt_supplied_as_bytes_resolves_only_within_the_map(tmp_path):

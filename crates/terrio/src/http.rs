@@ -497,6 +497,11 @@ struct Client {
     /// The final response location, kept separately so redirect auth stays tied to `url`.
     response_url: String,
     asset_policy: Option<crate::stac::AssetReadPolicy>,
+    /// Redirect history for a caller-selected document. This observes its transport only;
+    /// nested asset consent remains governed by `asset_policy`.
+    document_observer: Option<crate::stac::AssetReadPolicy>,
+    /// Shared by parallel requests and retained with cached bytes, including A -> B -> A chains.
+    crossed_origin: Arc<AtomicBool>,
     /// A query added to an S3 object's URL (`?list-type=2&...` for a listing), or empty.
     query: String,
     s3: Option<S3Auth>,
@@ -630,6 +635,8 @@ impl Client {
             remote: remote.clone(),
             response_url: url.clone(),
             asset_policy: crate::stac::AssetReadPolicy::current(),
+            document_observer: crate::stac::AssetReadPolicy::document_observer(),
+            crossed_origin: Default::default(),
             url,
             query: String::new(),
             s3,
@@ -673,8 +680,23 @@ impl Client {
     }
 
     fn observe_response(&self, response: &str) {
+        if crate::vfs::url_origin(&self.url) != crate::vfs::url_origin(response) {
+            self.crossed_origin.store(true, Ordering::Relaxed);
+        }
         if let Some(policy) = &self.asset_policy {
             policy.observe_response(&self.url, response);
+        }
+        if let Some(policy) = &self.document_observer {
+            policy.observe_response(&self.url, response);
+        }
+    }
+
+    fn restore_redirect_history(&self, crossed_origin: bool) {
+        if crossed_origin {
+            self.crossed_origin.store(true, Ordering::Relaxed);
+            for policy in self.asset_policy.iter().chain(self.document_observer.iter()) {
+                policy.observe_cross_origin();
+            }
         }
     }
 
@@ -1659,7 +1681,7 @@ pub(crate) fn download(remote: &Remote, path: &std::path::Path) -> Result<()> {
 /// file. A server that ignores ranges is refused at the first request for a file more than ten
 /// times its range, as GDAL refuses it ("Range downloading not supported by this server!"), and a
 /// smaller file is taken from that request's body.
-pub(crate) fn download_checked(remote: &Remote, path: &std::path::Path, check: &dyn Fn(&[u8], u64) -> Result<()>) -> Result<()> {
+pub(crate) fn download_checked(remote: &Remote, path: &std::path::Path, check: &FileHeaderCheck<'_>) -> Result<()> {
     let reader = RangeReader::open(remote)?;
     let mut s = reader.lock()?;
     let head = s.head(FIRST_READ)?;
@@ -1793,11 +1815,27 @@ pub(crate) fn get_file(remote: &Remote, redirects: Redirects) -> Result<Vec<u8>>
 }
 
 pub(crate) fn get_file_response(remote: &Remote, redirects: Redirects) -> Result<JsonResponse> {
+    get_file_response_checked(remote, json_max_size(), redirects, None)
+}
+
+/// A bounded file read whose first bytes are checked before fetching the remaining body.
+type FileHeaderCheck<'a> = dyn Fn(&[u8], u64) -> Result<()> + 'a;
+
+/// A bounded file read with an optional check before fetching the remaining body.
+pub(crate) fn get_file_response_checked(
+    remote: &Remote,
+    cap: u64,
+    redirects: Redirects,
+    check: Option<&FileHeaderCheck<'_>>,
+) -> Result<JsonResponse> {
     let reader = RangeReader::open_following(remote, HttpOptions::from_env(), redirects)?;
     let mut s = reader.lock()?;
-    let cap = json_max_size();
     if s.len > cap {
         return Err(over_cap(&s.client.url, cap));
+    }
+    if let Some(check) = check {
+        let head = s.head(FIRST_READ)?;
+        check(&head, s.len)?;
     }
     let refuse_mixed = |mixed| {
         if mixed { Err(Error::InvalidArgument("remote document bytes came from different response origins".into())) } else { Ok(()) }
@@ -2110,6 +2148,8 @@ struct CachedFile {
     len: u64,
     /// Cached metadata keeps the origin that supplied its bytes, not just the requested URL.
     response_url: String,
+    /// Any retained part crossed origins, even when the final URL returned to the requested one.
+    crossed_origin: bool,
     /// The whole file, from a server that ignored a range.
     whole: Option<Arc<[u8]>>,
     /// The file's first bytes, from a first request shorter than a block.
@@ -2149,8 +2189,8 @@ impl FileCache {
 
     /// Stores bytes with their cache key and effective response URL, then drops parts beyond
     /// `budget` bytes. A part larger than the budget is not kept.
-    fn store(&mut self, source: (&str, &str), len: u64, slot: Slot, data: Arc<[u8]>, budget: u64) {
-        let (key, response_url) = source;
+    fn store(&mut self, source: (&str, &str, bool), len: u64, slot: Slot, data: Arc<[u8]>, budget: u64) {
+        let (key, response_url, crossed_origin) = source;
         if data.len() as u64 > budget {
             return;
         }
@@ -2160,6 +2200,7 @@ impl FileCache {
         let file = self.files.entry(key.to_string()).or_default();
         file.len = len;
         file.response_url = response_url.to_string();
+        file.crossed_origin |= crossed_origin;
         let old = match slot {
             Slot::Whole => file.whole.replace(data.clone()),
             Slot::Prefix => file.prefix.replace(data.clone()),
@@ -2413,6 +2454,9 @@ impl RangeReader {
                 _ => shared.len = first.total_len.unwrap_or(0),
             }
         }
+        if shared.client.crossed_origin.load(Ordering::Relaxed) {
+            shared.client.check_asset_request(&shared.client.url.clone())?;
+        }
         Ok(Self { len: shared.len, shared: Arc::new(Mutex::new(shared)), pos: 0 })
     }
 
@@ -2535,6 +2579,7 @@ impl Shared {
         if self.whole.is_some() || self.prefix.is_some() {
             self.client.response_url = file.response_url.clone();
             self.response_origin = Some(origin(&file.response_url).to_string());
+            self.client.restore_redirect_history(file.crossed_origin);
             self.client.observe_response(&file.response_url);
         }
         if self.whole.is_some() || end <= prefix {
@@ -2554,6 +2599,7 @@ impl Shared {
         if !self.blocks.is_empty() {
             self.client.response_url = file.response_url.clone();
             self.response_origin = Some(origin(&file.response_url).to_string());
+            self.client.restore_redirect_history(file.crossed_origin);
             self.client.observe_response(&file.response_url);
         }
         Some(missing)
@@ -2574,9 +2620,14 @@ impl Shared {
             .files
             .get(&self.key)
             .filter(|file| self.response_origin.as_deref().is_none_or(|expected| same_response_origin(expected, &file.response_url)))
-            .and_then(|f| f.blocks.get(&(self.block_size, b)).cloned());
+            .and_then(|f| f.blocks.get(&(self.block_size, b)).map(|data| (data.clone(), f.crossed_origin)));
         match data {
-            Some(d) => {
+            Some((d, crossed_origin)) => {
+                self.client.restore_redirect_history(crossed_origin);
+                if crossed_origin && self.client.check_asset_request(&self.client.url.clone()).is_err() {
+                    // The fetch path reports the same refusal before sending a request.
+                    return false;
+                }
                 if self.blocks.insert(b, d).is_none() {
                     self.order.push_back(b);
                 }
@@ -2588,14 +2639,26 @@ impl Shared {
 
     fn store_whole(&mut self, data: Arc<[u8]>) {
         if !self.mixed_origins {
-            file_cache().store((&self.key, &self.client.response_url), self.len, Slot::Whole, data.clone(), self.shared_budget);
+            file_cache().store(
+                (&self.key, &self.client.response_url, self.client.crossed_origin.load(Ordering::Relaxed)),
+                self.len,
+                Slot::Whole,
+                data.clone(),
+                self.shared_budget,
+            );
         }
         self.whole = Some(data);
     }
 
     fn store_prefix(&mut self, data: Arc<[u8]>) {
         if !self.mixed_origins {
-            file_cache().store((&self.key, &self.client.response_url), self.len, Slot::Prefix, data.clone(), self.shared_budget);
+            file_cache().store(
+                (&self.key, &self.client.response_url, self.client.crossed_origin.load(Ordering::Relaxed)),
+                self.len,
+                Slot::Prefix,
+                data.clone(),
+                self.shared_budget,
+            );
         }
         self.prefix = Some(data);
     }
@@ -2729,7 +2792,7 @@ impl Shared {
             let chunk: Arc<[u8]> = chunk.into();
             if !self.mixed_origins {
                 cache.store(
-                    (&self.key, &self.client.response_url),
+                    (&self.key, &self.client.response_url, self.client.crossed_origin.load(Ordering::Relaxed)),
                     self.len,
                     Slot::Block(self.block_size, b),
                     chunk.clone(),
@@ -3276,13 +3339,14 @@ mod tests {
     #[test]
     fn response_origin_changes_invalidate_all_cached_parts() {
         let mut cache = FileCache::new();
-        cache.store(("source", "https://b.example/item.json"), 128, Slot::Block(64, 0), Arc::from(&b"bbbb"[..]), 1024);
-        cache.store(("source", "https://a.example/item.json"), 128, Slot::Block(32, 0), Arc::from(&b"aaaa"[..]), 1024);
+        cache.store(("source", "https://b.example/item.json", false), 128, Slot::Block(64, 0), Arc::from(&b"bbbb"[..]), 1024);
+        cache.store(("source", "https://a.example/item.json", true), 128, Slot::Block(32, 0), Arc::from(&b"aaaa"[..]), 1024);
         let file = cache.files.get("source").unwrap();
         assert!(!file.blocks.contains_key(&(64, 0)));
         assert_eq!(file.blocks[&(32, 0)].as_ref(), b"aaaa");
         assert_eq!(cache.bytes, 4);
-        cache.store(("source", "https://A.example:443/other.json"), 128, Slot::Block(64, 1), Arc::from(&b"same"[..]), 1024);
+        cache.store(("source", "https://A.example:443/other.json", false), 128, Slot::Block(64, 1), Arc::from(&b"same"[..]), 1024);
+        assert!(cache.files["source"].crossed_origin, "later parts cannot erase redirect history");
         assert!(cache.files["source"].blocks.contains_key(&(32, 0)), "equivalent normalized origins keep their parts");
         assert_eq!(cache.bytes, 8);
     }
@@ -3294,7 +3358,7 @@ mod tests {
         let remote = Remote::Url(format!("{base}/item.json"));
         let key = Client::new(&remote, HttpOptions::from_env()).cache_key();
         file_cache().store(
-            (&key, "https://other.example/item.json"),
+            (&key, "https://other.example/item.json", true),
             64 * 1024,
             Slot::Prefix,
             Arc::from(vec![b'b'; FIRST_READ as usize]),
@@ -3304,6 +3368,54 @@ mod tests {
         assert!(matches!(error, Error::InvalidArgument(ref message) if message.contains("different response origins")), "{error}");
         let fresh = get_file_response(&remote, Redirects::Any).unwrap();
         assert!(fresh.body.iter().all(|byte| *byte == b'a'), "mixed cached parts were discarded");
+    }
+
+    #[test]
+    fn cached_document_transport_keeps_cross_origin_history() {
+        let _serial = cache_test_guard();
+        crate::config::with_options(
+            &[("GDAL_HTTP_HEADERS", "Authorization: synthetic-test"), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")],
+            || {
+                let data = vec![7; 32 * 1024];
+                let (base, seen) = test_server(data.clone());
+                let url = format!("{base}/archive.zip");
+                let remote = Remote::Url(url.clone());
+                let reader = RangeReader::open(&remote).unwrap();
+                {
+                    let mut shared = reader.lock().unwrap();
+                    // The transport returned to its original origin before its bytes were cached.
+                    shared.client.observe_response("https://other.example/archive.zip");
+                    shared.client.observe_response(&url);
+                    shared.store_whole(data.clone().into());
+                }
+                drop(reader);
+                let requests = seen.lock().unwrap().len();
+                let policy = crate::stac::AssetReadPolicy::for_document(&url).unwrap().unwrap();
+                {
+                    let _observer = policy.observe_transport();
+                    let mut cached = RangeReader::open(&remote).unwrap();
+                    let mut bytes = Vec::new();
+                    cached.read_to_end(&mut bytes).unwrap();
+                    assert_eq!(bytes, data);
+                }
+                assert_eq!(seen.lock().unwrap().len(), requests, "the second transport must use cached bytes");
+                let _scope = policy.enter().unwrap();
+                let source = crate::stac::AssetReadPolicy::nested(&format!("{base}/source.tif"));
+                assert!(matches!(source, Err(Error::InvalidArgument(ref text)) if text.contains("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS")));
+            },
+        );
+    }
+
+    #[test]
+    fn file_document_with_small_blocks_does_not_prefetch_extra_header() {
+        let _serial = cache_test_guard();
+        let data = vec![7; 64 * 1024];
+        let (base, seen) = serve_recording(data.clone(), None);
+        crate::config::with_options(&[("TERRIO_HTTP_BLOCK_SIZE", "4096")], || {
+            let response = get_file_response(&Remote::Url(format!("{base}/document.json")), Redirects::Any).unwrap();
+            assert_eq!(response.body, data);
+            assert_eq!(header_values(&seen, "range"), ["bytes=0-4095", "bytes=4096-65535"]);
+        });
     }
 
     #[test]
@@ -5638,10 +5750,10 @@ mod tests {
     fn the_cache_test_guard_holds_the_caches_eviction() {
         let _serial = cache_test_guard();
         let mut cache = file_cache();
-        cache.store(("guard-test://first", "guard-test://first"), 5, Slot::Whole, Arc::from(&b"first"[..]), 1 << 20);
+        cache.store(("guard-test://first", "guard-test://first", false), 5, Slot::Whole, Arc::from(&b"first"[..]), 1 << 20);
         // A budget the cache is already over: without the guard, this store evicts the oldest
         // entries, the one above among them.
-        cache.store(("guard-test://second", "guard-test://second"), 6, Slot::Whole, Arc::from(&b"second"[..]), 6);
+        cache.store(("guard-test://second", "guard-test://second", false), 6, Slot::Whole, Arc::from(&b"second"[..]), 6);
         assert!(cache.files.get("guard-test://first").is_some_and(|f| f.whole.is_some()), "evicted while the guard was held");
     }
 

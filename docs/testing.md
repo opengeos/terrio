@@ -113,6 +113,17 @@ geometry-intersection filter.
 
 ## Input isolation and diagnostic privacy
 
+`cargo test -p terrio --lib loaded_input_isolation` checks that loaded GDALG
+definitions discard embedded write/checkpoint destinations and that direct remote
+VRTs reject local and ambiently credentialed sources. Public sources remain lazy;
+consent can be granted and revoked, including for cached source reads. Remote XML
+and decompressed archive members are refused above 64 MiB. These are Terrio host
+policies, rather than GDAL numerical conformance claims. CLI pipeline tests and
+`python/tests/test_pipeline.py` cover saved-output consent and overwrite behavior;
+the Node pipeline tests check the same default and explicit byte-export opt-in.
+The GDAL pipeline comparison explicitly allows saved outputs for its trusted
+named-checkpoint cases, corresponding to GDAL's write-in-stream opt-in.
+
 `python/tests/test_pyogrio_buffer_routing.py` checks unsupported single-file and
 multi-file ZIPs through paths, bytes, named buffers and open files. Reads and
 layer inspection must name the archive (or `buffer`) rather than extracted or

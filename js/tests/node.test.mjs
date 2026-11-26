@@ -4797,6 +4797,19 @@ test("pipeline saved definitions round-trip aliases without evaluating on save",
   assert.throws(()=>terrio.pipeline("read image",{image:source},{typo:true}),/unknown field/);
 });
 
+test("pipeline loaded definitions discard saved outputs unless explicitly trusted", () => {
+  const source = terrio.fromGeoJSON({type:"FeatureCollection",features:[{type:"Feature",properties:{id:1},geometry:{type:"Point",coordinates:[1,2]}}]});
+  const definition = JSON.stringify({type:"gdal_streamed_alg",command_line:"read source ! materialize --output checkpoint.geojson --overwrite ! write embedded.geojson --overwrite"});
+  const result = terrio.pipeline(definition,{source});
+  assert.deepEqual(result.outputNames,[]);
+  assert.equal(result.dataset.toGeoJSON().features.length,1);
+  assert.deepEqual(Object.keys(result.outputBytes()),[]);
+  const trusted = terrio.pipeline(definition,{source},{allowSavedOutputs:true});
+  assert.deepEqual(trusted.outputNames,["checkpoint.geojson","embedded.geojson"]);
+  assert.deepEqual(Object.keys(trusted.outputBytes()),trusted.outputNames);
+  assert.throws(()=>terrio.pipeline("read source",{source},{allowSavedOutputs:true}),/requires GDALG JSON/);
+});
+
 test("pipeline crop views read the matching source overview", () => {
   const values = Uint16Array.from({length:64*64},(_,i)=>i);
   const original = terrio.rasterFromArray(values,64,64,[0,1,0,64,0,-1],"EPSG:3857");

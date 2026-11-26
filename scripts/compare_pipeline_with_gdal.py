@@ -500,6 +500,7 @@ def main():
                                 "pipeline",
                                 "--load",
                                 definition,
+                                *(["--allow-saved-outputs"] if checkpoint_mode == "named" else []),
                                 "--output",
                                 actual,
                             ]

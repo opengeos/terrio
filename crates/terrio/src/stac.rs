@@ -105,7 +105,7 @@ fn fetch_as(loc: &str, link: bool) -> Result<(Vec<u8>, String)> {
 /// Preserve provider authentication for relative Azure targets, only while the wire origin
 /// remains the configured store. Rebase same-origin path redirects within that endpoint.
 #[cfg(remote)]
-fn azure_document_location(location: &str, remote: &crate::http::Remote, response: &str) -> Option<String> {
+pub(crate) fn azure_document_location(location: &str, remote: &crate::http::Remote, response: &str) -> Option<String> {
     let rest = location.strip_prefix("az://").or_else(|| location.strip_prefix("/vsiaz/"))?;
     let crate::http::Remote::Url(asked) = remote else { return None };
     let asked = asked.strip_prefix(crate::http::azure_bearer_prefix()).unwrap_or(asked);
@@ -385,6 +385,19 @@ pub(crate) struct AssetReadPolicy {
 // on another thread must carry the policy explicitly; copying config alone is insufficient.
 thread_local! {
     static ASSET_READ_POLICY: std::cell::RefCell<Option<AssetReadPolicy>> = const { std::cell::RefCell::new(None) };
+    static DOCUMENT_READ_OBSERVER: std::cell::RefCell<Option<AssetReadPolicy>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Observe redirects of caller-selected document transport without granting its contents access.
+pub(crate) struct DocumentReadScope {
+    previous: Option<AssetReadPolicy>,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl Drop for DocumentReadScope {
+    fn drop(&mut self) {
+        DOCUMENT_READ_OBSERVER.with(|p| *p.borrow_mut() = self.previous.take());
+    }
 }
 
 pub(crate) struct AssetReadScope {
@@ -402,6 +415,37 @@ impl Drop for AssetReadScope {
 impl AssetReadPolicy {
     pub(crate) fn current() -> Option<Self> {
         ASSET_READ_POLICY.with(|p| p.borrow().clone())
+    }
+
+    #[cfg(remote)]
+    pub(crate) fn document_observer() -> Option<Self> {
+        DOCUMENT_READ_OBSERVER.with(|p| p.borrow().clone())
+    }
+
+    /// The caller chose this transport, but every redirect crossing constrains later sources.
+    pub(crate) fn observe_transport(&self) -> DocumentReadScope {
+        let previous = DOCUMENT_READ_OBSERVER.with(|p| p.replace(Some(self.clone())));
+        DocumentReadScope { previous, _thread: std::marker::PhantomData }
+    }
+
+    /// The provenance of a directly selected remote document. Its own transport is chosen by
+    /// the caller; datasets named by its contents must obey the remote asset policy.
+    /// An inherited document keeps its original origin and credential requirements.
+    pub(crate) fn for_document(document: &str) -> Result<Option<Self>> {
+        if Self::current().is_some() {
+            return Self::nested(document);
+        }
+        if local_backed(&crate::vfs::Location::parse(document)) {
+            return Ok(None);
+        }
+        let cloud = cloud_aliases(document);
+        Ok(Some(Self {
+            document: document.to_string(),
+            same_origin_allowed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(!(cloud.0 || cloud.1 || cloud.2))),
+            #[cfg(remote)]
+            source: document.to_string(),
+            credentialed: Default::default(),
+        }))
     }
 
     /// A policy for the asset document `document`, credentials already seen as `credentialed`.
@@ -496,8 +540,13 @@ impl AssetReadPolicy {
     #[cfg(remote)]
     pub(crate) fn observe_response(&self, requested: &str, response: &str) {
         if crate::vfs::url_origin(requested) != crate::vfs::url_origin(response) {
-            self.same_origin_allowed.store(false, std::sync::atomic::Ordering::Relaxed);
+            self.observe_cross_origin();
         }
+    }
+
+    #[cfg(remote)]
+    pub(crate) fn observe_cross_origin(&self) {
+        self.same_origin_allowed.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub(crate) fn enter_nested(path: &str) -> Result<Option<AssetReadScope>> {

@@ -2639,6 +2639,7 @@ def pipeline(
     write: bool = False,
     base_file: str | None = None,
     input_kind: Literal["auto", "raster", "vector"] | None = None,
+    allow_saved_outputs: bool = False,
 ) -> PipelineResult: ...
 @overload
 def clean_coverage(

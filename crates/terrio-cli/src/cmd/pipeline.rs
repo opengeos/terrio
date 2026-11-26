@@ -1,13 +1,16 @@
 //! Shared pipeline parsing and execution. This module contains no algorithms.
-use terrio::ops::pipeline::{InputKind, Pipeline, PipelineData};
+use terrio::ops::pipeline::{InputKind, Pipeline, PipelineData, SavedOutputPolicy};
 use terrio::{Error, Result};
 
 #[derive(clap::Args)]
 pub struct Args {
     /// Load a .gdalg.json definition instead of supplying steps.
-    /// Executes the definition's write and overwrite options, including named checkpoints.
+    /// Saved write and checkpoint destinations are discarded unless explicitly allowed.
     #[arg(long, conflicts_with = "arguments")]
     load: Option<String>,
+    /// Trust a loaded definition's write and overwrite options, including named checkpoints.
+    #[arg(long)]
+    allow_saved_outputs: bool,
     /// Save a GDAL-readable pipeline definition without evaluating the input.
     #[arg(long, conflicts_with = "output")]
     save: Option<String>,
@@ -27,11 +30,15 @@ pub struct Args {
     arguments: Vec<String>,
 }
 pub fn run(args: Args) -> Result<()> {
+    let outputs = if args.allow_saved_outputs { SavedOutputPolicy::Allow } else { SavedOutputPolicy::Discard };
     let mut plan = if let Some(path) = args.load {
-        Pipeline::open(&path)?
+        Pipeline::open_with_output_policy(&path, outputs)?
     } else if args.arguments.len() == 1 && args.arguments[0].to_ascii_lowercase().ends_with(".gdalg.json") {
-        Pipeline::open(&args.arguments[0])?
+        Pipeline::open_with_output_policy(&args.arguments[0], outputs)?
     } else {
+        if args.allow_saved_outputs {
+            return Err(Error::InvalidArgument("--allow-saved-outputs requires a loaded GDALG definition".into()));
+        }
         Pipeline::from_tokens(&args.arguments)?
     };
     if let Some(kind) = args.input_kind {

@@ -844,6 +844,12 @@ supported transformers, built-in functions, kernels and masks.
 [commands](cli.md); see `help(terrio.contour)` for each one's arguments. `list_layers(path)` and
 `write_raster(raster, path, ...)` are the plain I/O helpers.
 
+`pipeline` treats loaded GDALG JSON as data: saved write destinations are discarded
+and named materialization becomes an in-memory snapshot. Set
+`allow_saved_outputs=True` only for a definition whose destinations and overwrite
+options you trust. `write=True` remains the separate choice to write those outputs;
+explicit command strings retain their requested outputs.
+
 `zonal_stats` reads rasters lazily (paths, URLs, STAC assets or `Raster` objects) and accepts
 labelled inputs: dicts, or a pandas DataFrame, with `raster`, `time`, `label` and `band`:
 
