@@ -773,7 +773,7 @@ fn release_freed_memory() {
 /// use terrio::ops::zonal::{Statistic, ZonalOptions, ZonalReducer};
 /// use terrio::{crs::SpatialRef, raster::RasterData};
 ///
-/// let zones = terrio::open_vector("fields.gpkg", &Default::default())?;
+/// let zones = terrio::open_vector("zones.gpkg", &Default::default())?;
 /// let grid = Grid {
 ///     cols: 10980,
 ///     rows: 10980,

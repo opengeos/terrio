@@ -113,16 +113,16 @@ impl ZonalCube {
 ///
 /// ```no_run
 /// use terrio::ops::zonal::{Statistic, ZonalBand, ZonalOptions, ZonalRaster, ZonalSource};
-/// let fields = terrio::open_vector("fields.gpkg", &Default::default())?.layers.remove(0);
+/// let zones = terrio::open_vector("zones.gpkg", &Default::default())?.layers.remove(0);
 /// let dated = |path: &str, time: &str, label: &str| ZonalSource {
 ///     raster: ZonalRaster::Path(path.into()),
 ///     bands: vec![ZonalBand { band: 1, prefix: format!("{time}_{label}"), time: Some(time.into()), label: Some(label.into()) }],
 /// };
 /// let mut sources = vec![dated("s2/20240701_B04.tif", "2024-07-01", "B04"), dated("s2/20240711_B04.tif", "2024-07-11", "B04")];
 /// let options = ZonalOptions { stats: vec![Statistic::Mean, Statistic::Median], ..Default::default() };
-/// terrio::ops::zonal_cube::check_zones(&fields)?; // before reading any raster
-/// let cube = terrio::ops::zonal_cube::zonal_cube(&fields, &mut sources, &options, "red")?;
-/// assert_eq!(cube.shape(0), Some(vec![fields.features.len(), 2, 1, 2])); // geometry, time, band, statistic
+/// terrio::ops::zonal_cube::check_zones(&zones)?; // before reading any raster
+/// let cube = terrio::ops::zonal_cube::zonal_cube(&zones, &mut sources, &options, "red")?;
+/// assert_eq!(cube.shape(0), Some(vec![zones.features.len(), 2, 1, 2])); // geometry, time, band, statistic
 /// cube.write_zarr("red.zarr")?;
 /// # Ok::<(), terrio::Error>(())
 /// ```
@@ -235,8 +235,8 @@ fn input_name(source: &ZonalSource, band: &ZonalBand) -> String {
 /// empty one, or with one that is not a polygon.
 ///
 /// ```no_run
-/// let fields = terrio::open_vector("fields.gpkg", &Default::default())?.layers.remove(0);
-/// terrio::ops::zonal_cube::check_zones(&fields)?;
+/// let zones = terrio::open_vector("zones.gpkg", &Default::default())?.layers.remove(0);
+/// terrio::ops::zonal_cube::check_zones(&zones)?;
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn check_zones(zones: &Layer) -> Result<()> {

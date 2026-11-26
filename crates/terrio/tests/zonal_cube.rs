@@ -149,7 +149,7 @@ mod zarr {
     /// A clockwise square with an anticlockwise hole, and a two-part multipolygon, in EPSG:32631,
     /// with a text and an integer attribute (one null).
     fn zones() -> Layer {
-        let mut zones = Layer::new("fields");
+        let mut zones = Layer::new("zones");
         zones.schema.add_field(FieldDef::new("name", FieldType::Text));
         zones.schema.add_field(FieldDef::new("code", FieldType::Integer));
         let square = ring(&[(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0), (0.0, 0.0)]); // clockwise
@@ -296,7 +296,7 @@ mod zarr {
         let (x0, y0) = (500_000.0, 5_000_000.0);
         let exterior = ring(&[(x0, y0 + 10.0), (x0, y0), (x0 + 10.0, y0), (x0 + 10.0, y0 + 10.0)]); // anticlockwise, open
         let hole = ring(&[(x0 + 2.0, y0 + 2.0), (x0 + 4.0, y0 + 2.0), (x0 + 4.0, y0 + 4.0), (x0 + 2.0, y0 + 4.0)]); // anticlockwise, open
-        let mut zones = Layer::new("fields");
+        let mut zones = Layer::new("zones");
         zones.features.push(Feature { fid: 0, geometry: Some(Geometry::polygon(exterior, vec![hole])), attributes: vec![] });
         SpatialRef::parse("EPSG:32631").unwrap().apply_to_layer(&mut zones);
         let mut cube = cube(zones);

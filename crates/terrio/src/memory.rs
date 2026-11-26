@@ -48,7 +48,7 @@ pub use crate::drivers::vector::shapefile::to_zip_bytes as write_shapefile_zip_b
 /// ymax` is swapped. Each is reported as a warning.
 ///
 /// ```no_run
-/// let fields = terrio::memory::parse_geometries(r#"{"type": "Point", "coordinates": [2.35, 48.85]}"#, "fields")?; // WGS 84
+/// let points = terrio::memory::parse_geometries(r#"{"type": "Point", "coordinates": [2.35, 48.85]}"#, "points")?; // WGS 84
 /// let mut zone = terrio::memory::parse_geometries("POLYGON ((0 0, 10 0, 10 10, 0 0))", "zone")?;
 /// terrio::crs::SpatialRef::parse("EPSG:32631")?.apply_to_layer(&mut zone); // WKT: the caller's CRS
 /// # Ok::<(), terrio::Error>(())
@@ -153,7 +153,7 @@ pub fn parse_geometry_text(text: &str, name: &str) -> Result<Layer> {
 ///
 /// ```no_run
 /// let options = terrio::VectorOpenOptions::default();
-/// let file = terrio::memory::open_vector_or_geometries("fields.gpkg", &options)?; // a path
+/// let file = terrio::memory::open_vector_or_geometries("zones.gpkg", &options)?; // a path
 /// let text = terrio::memory::parse_geometries("POINT (1 2)", "geometries")?; // the same as text
 /// let parsed = terrio::memory::open_vector_or_geometries("POINT (1 2)", &options)?;
 /// assert_eq!(parsed.layers[0].features.len(), text.features.len());
@@ -1176,7 +1176,7 @@ mod tests {
         assert_eq!(wkt.features[0].geometry, one.features[0].geometry);
         assert!(is_geometry_text(" POINT (1 2)") && is_geometry_text("[0, 0, 1, 1]") && is_geometry_text("{}"));
         assert!(is_geometry_text("polygon z ((0 0 0, 1 0 0, 0 0 0") && is_geometry_text("POINT EMPTY"), "WKT's shape, valid or not");
-        assert!(!is_geometry_text("fields.gpkg") && !is_geometry_text("point.gpkg") && !is_geometry_text("s3://b/k.fgb"));
+        assert!(!is_geometry_text("zones.gpkg") && !is_geometry_text("point.gpkg") && !is_geometry_text("s3://b/k.fgb"));
         // Text meant as geometries that does not parse names both readings.
         let error = parse_geometry_text("POLYGON ((0 0, 1 0", "zones").unwrap_err().to_string();
         assert!(error.contains("neither an existing file nor valid geometries"), "{error}");

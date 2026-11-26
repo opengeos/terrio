@@ -496,7 +496,7 @@ The `rasterize` and `zonal` formats time the two directions between features and
 |---|---|---|---|---|
 | `rasterize` | `burn`, `burn_all_touched`, `burn_t1`: 1s into a Byte raster | `terrio.rasterize` | `gdal.Rasterize` | 0 |
 | `rasterize` | `attribute`, `attribute_all_touched`: the `value` field into a Float32 raster | | | 0 |
-| `zonal` | `fields`, `fields_all_touched`, `fields_t1`, `blocks`: count, sum, mean, min and max of `f32_none` per zone | `terrio.zonal_stats` | `gdal raster zonal-stats` (`gdal.Run`) | 1e-9, relative |
+| `zonal` | `polygons`, `polygons_all_touched`, `polygons_t1`, `blocks`: count, sum, mean, min and max of `f32_none` per zone | `terrio.zonal_stats` | `gdal raster zonal-stats` (`gdal.Run`) | 1e-9, relative |
 
 `rasterize` burns each FlatGeobuf fixture with a spatial index, `poly_index` (400,000 polygons)
 and `line_index` (400,000 lines), on 25 m pixels over the fixtures' 100 km extent (4000 × 4000).
@@ -504,7 +504,7 @@ Both tools start from 0 without nodata, and its pixels are compared as the other
 `fixtures --format rasterize` makes the FlatGeobuf fixtures.
 
 `zonal` summarizes `f32_none` over polygons that `fixtures --format zonal` writes beside the
-GeoTIFF fixtures. `fields` has 20,000 irregular polygons with vertices 12 to 200 m from their
+GeoTIFF fixtures. `polygons` has 20,000 irregular polygons with vertices 12 to 200 m from their
 centre, clustered, some overlapping or crossing the raster's edge, with vertices rounded to the
 centimetre as the vector fixtures' (a few fall on pixel edges). `blocks` has 16 squares of
 1024 × 1024 pixels that tile the raster. GDAL's route is its zonal statistics command (GDAL 3.13.3) with
@@ -515,7 +515,7 @@ max as null). Otherwise it differs by `|terrio - GDAL| / max(1, |GDAL|)`, infini
 has no value; the tolerance allows sums in another order. The results file records the largest
 difference's zone, statistic and values (`worst`). The warm-up runs on its own small raster and
 zone in the DEM's CRS, because terrio refuses zones with a CRS over a raster without one. GDAL's
-rasterize and zonal statistics compute in one thread. The `fields` cases differ from GDAL in
+rasterize and zonal statistics compute in one thread. The `polygons` cases differ from GDAL in
 known ways: terrio gives the sum of a zone holding no pixel as null and GDAL as 0, and with all
 touched a few zones with a vertex on a pixel edge count one pixel more than GDAL's. Those cases
 are therefore labeled `DIFFER`, with the count of values beyond the tolerance, and are not

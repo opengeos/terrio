@@ -399,17 +399,19 @@ def test_zonal_stats_of_a_cube_selects_the_layer_of_any_zones_input(files, cube,
     """`layer=` picks a layer of a VectorDataset as of a path, and names the layer a `Layer`
     must be."""
     pytest.importorskip("shapely")
-    zones = terrio.Layer.from_geojson(files["zones"].to_geojson(), name="fields", crs="EPSG:32611")
+    zones = terrio.Layer.from_geojson(
+        files["zones"].to_geojson(), name="polygons", crs="EPSG:32611"
+    )
     expected = cube.terrio.zonal_stats(zones, stats=["mean"])
     path = str(tmp_path / "zones.gpkg")
     terrio.write_vector(zones, path)
     for src in (zones, path, terrio.open_vector(path)):
-        out = cube.terrio.zonal_stats(src, stats=["mean"], layer="fields")
+        out = cube.terrio.zonal_stats(src, stats=["mean"], layer="polygons")
         np.testing.assert_array_equal(out.values, expected.values)
     with pytest.raises(ValueError, match="no layer named 'roads'"):
         cube.terrio.zonal_stats(zones, stats=["mean"], layer="roads")
     with pytest.raises(ValueError, match="layer= applies to"):
-        cube.terrio.zonal_stats(zones.to_geojson(), stats=["mean"], layer="fields")
+        cube.terrio.zonal_stats(zones.to_geojson(), stats=["mean"], layer="polygons")
 
 
 def test_zonal_stats_of_a_cube_refuses_2d_only_options_by_name(files, cube):
@@ -718,7 +720,7 @@ def test_zonal_stats_uses_the_active_geodataframe_geometry(files, cube):
     gpd = pytest.importorskip("geopandas")
     pytest.importorskip("pyarrow")
     shapely = pytest.importorskip("shapely")
-    frame = files["zones"].to_geopandas().rename_geometry("fields")
+    frame = files["zones"].to_geopandas().rename_geometry("outline")
     frame.insert(
         0, "secondary", gpd.GeoSeries([shapely.box(0, 0, 1, 1)] * len(frame), crs=frame.crs)
     )

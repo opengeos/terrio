@@ -111,9 +111,9 @@ function gives on the array written to a file: a DataArray on the same grid, or 
 
 ```python
 slope = dem.terrio.dem("slope")  # hillshade, aspect, TRI, TPI, roughness...
-fields = dem.terrio.zonal_stats("fields.gpkg", stats=["mean", "max"])  # a terrio.Layer
-fields.to_geopandas()
-classes = txr.rasterize("fields.gpkg", like=dem, attribute="crop_id")
+stats = dem.terrio.zonal_stats("zones.gpkg", stats=["mean", "max"])  # a terrio.Layer
+stats.to_geopandas()
+classes = txr.rasterize("zones.gpkg", like=dem, attribute="class_id")
 ```
 
 | | Methods |
@@ -134,8 +134,8 @@ On an array with other dimensions than its spatial ones (`time`, `band`...), `zo
 reduces every 2-D slice and returns a cube indexed by the zones' geometries:
 
 ```python
-ndvi = cube.terrio.zonal_stats(fields, stats=["mean", "median"])  # (geometry, time, statistic)
-ndvi.sel(statistic="mean")  # one time series per field
+ndvi = cube.terrio.zonal_stats("zones.gpkg", stats=["mean", "median"])  # (geometry, time, statistic)
+ndvi.sel(statistic="mean")  # one time series per zone
 ndvi.terrio.crs  # the zones' CRS
 ```
 
