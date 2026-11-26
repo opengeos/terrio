@@ -1311,6 +1311,11 @@ def test_gdals_second_configuration_gets_its_own_ratio_and_its_failure_drops_onl
     assert "f32_none" in section and "gdal ALL_CPUS timeout: over 120 s" in section
     assert "f64_deflate_p3" in section and "gdal ALL_CPUS values differ from the first configuration" in section
     assert "ALL_CPUS" not in report([{"machine": _MACHINE}, summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)]))])
+    # A second-configuration failure is listed when terrio's own values differ from GDAL's too.
+    unranked = summarize(_row(terrio=[_sample(2, s=11.0)], gdal=[_sample(1)], gdal_allcpus=[], gdal_allcpus_error="timeout: over 120 s"))
+    text = report([{"machine": {**_MACHINE, "gdal_allcpus": True}}, both, {**unranked, "fixture": "u16_zstd"}])
+    section = text.split("this configuration only (no second ratio): ")[1].split("\n\n")[0]
+    assert section.startswith("1\n") and "u16_zstd" in section and "gdal ALL_CPUS timeout: over 120 s" in section
 
 
 def test_gdals_second_configuration_runs_with_its_default_cache_and_every_cpu(tmp_path, monkeypatch):

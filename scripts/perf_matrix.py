@@ -2813,11 +2813,13 @@ def fmt_row(r: dict) -> str:
     return s
 
 
-def _gdal_allcpus_section(ok: list[dict]) -> list[str]:
+def _gdal_allcpus_section(ok: list[dict], computed: list[dict]) -> list[str]:
     """The report's section on GDAL's second configuration: both ratios side by side.
 
     Args:
-        ok: The ranked cases.
+        ok: The ranked cases, for the ratios.
+        computed: Every case with a time ratio, ranked or not, for the second configuration's
+            failures: a case whose terrio values differ from GDAL's lists its failure here too.
 
     Returns:
         The section's lines.
@@ -2837,7 +2839,7 @@ def _gdal_allcpus_section(ok: list[dict]) -> list[str]:
     flips = sorted((r for r in both if (r["time_ratio"] < 1) != (r["gdal_allcpus_ratio"] < 1)), key=lambda r: -r["gdal_allcpus_ratio"])
     lines.append(f"terrio faster than GDAL in one configuration only: {len(flips)}")
     lines += ["  " + fmt_row(r) for r in flips[:20]]
-    failed = [r for r in ok if "gdal_allcpus_error" in r or r.get("gdal_allcpus_values_match") is False]
+    failed = [r for r in computed if "gdal_allcpus_error" in r or r.get("gdal_allcpus_values_match") is False]
     lines.append(f"GDAL failed or read other values in this configuration only (no second ratio): {len(failed)}")
     lines += ["  " + fmt_row(r) for r in failed]
     return lines
@@ -2891,7 +2893,7 @@ def report(rows: list[dict]) -> str:
         lines.append(f"this build fails, the base succeeded: {len(broken)}")
         lines += ["  " + fmt_row(r) for r in broken]
     if any(h.get("gdal_allcpus") for h in heads) or any("gdal_allcpus_error" in r for r in rows):
-        lines += _gdal_allcpus_section(ok)
+        lines += _gdal_allcpus_section(ok, computed)
     lines.append("\n## Worst cases (terrio time / GDAL time)\n")
     lines += [fmt_row(r) for r in sorted(ok, key=lambda r: -r["time_ratio"])[:20]]
     lines.append("\n## Geometric mean of the time ratios by axis (>1: terrio slower; cases in brackets)\n")

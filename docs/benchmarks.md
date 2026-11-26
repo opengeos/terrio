@@ -475,10 +475,11 @@ the base's wheel with `pip install --no-deps --target DIR terrio-*.whl`.
 above stay. Each case then also gives terrio's time over GDAL's in that configuration, and the
 report gives the geometric means of both ratios by source and access pattern, and the cases where
 terrio is faster than GDAL in one configuration only. A failure in that configuration, or read
-values that differ from GDAL's first configuration, drops only its ratio; GDAL's outputs of
-operations and writes are not compared between configurations. The operations and writes that run
-with one thread (`_t1`, `cog_threads1`) set `GDAL_NUM_THREADS=1` in both configurations, so only the
-cache size differs there; the `threads1` reads keep `ALL_CPUS`.
+values that differ from GDAL's first configuration (for operations and writes, a different pixel
+count), drops only its ratio; GDAL's outputs of operations and writes are otherwise not compared
+between configurations. The operations and writes that run with one thread (`_t1`, `cog_threads1`)
+set `GDAL_NUM_THREADS=1` in both configurations, so only the cache size differs there; the
+`threads1` reads keep `ALL_CPUS`.
 
 On a pull request, a maintainer's comment `/perf-matrix` runs the matrix on a GitHub runner
 (`.github/workflows/perf-matrix.yml`): the pull request's terrio, its base branch's and GDAL
