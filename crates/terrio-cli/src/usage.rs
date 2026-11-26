@@ -423,9 +423,11 @@ mod tests {
         assert_eq!(srcwin, [0, 0, 2, 2]);
     }
 
-    /// Every option that takes several values per occurrence is a single-occurrence Set, so
-    /// repeating it fails instead of appending (#1314). Options that take one value per
-    /// occurrence (`--co`, `--band`, comma lists) stay repeatable Append options.
+    /// Every option whose `num_args` allows more than one value per occurrence is a
+    /// single-occurrence Set, so repeating it fails instead of appending (#1314). Options that
+    /// take one value per occurrence (`--co`, `--band`) stay repeatable Append options.
+    /// Delimiter-only lists (`value_delimiter` without `num_args`, such as `xyz --srcnodata`)
+    /// are out of scope: they are open-ended lists where repeating the flag extends the list.
     #[test]
     fn multi_value_options_take_one_occurrence() {
         /// Collects the options of `command` and its subcommands that take several values per
