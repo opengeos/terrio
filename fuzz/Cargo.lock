@@ -1699,7 +1699,6 @@ dependencies = [
  "zlib-rs",
  "zrip",
  "zune-core",
- "zune-jpegxl",
 ]
 
 [[package]]
