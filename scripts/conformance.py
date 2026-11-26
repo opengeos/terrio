@@ -2870,6 +2870,12 @@ PROJ_CASES = {
             "operation_at names of ballparks, between CRSs of one or of different prime meridians", IDENTICAL,
             "PROJ 9.9.0 (pyproj 3.8.0, get_last_used_operation): the same names, both ways",
         ),
+        "vertical_ballparks_are_named_as_proj_names_them": (
+            "operation_at names of ballpark vertical transformations, between vertical CRSs or to"
+            " and from geographic 3D CRSs, and their order",
+            IDENTICAL,
+            "PROJ 9.9.0 (pyproj 3.8.0, get_last_used_operation): the same names, in the same order",
+        ),
     },
     "proj_edge_values": {
         "longitudes_beyond_ten_radians_are_refused_into_a_shift_or_projection": (

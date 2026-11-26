@@ -1854,6 +1854,43 @@ fn geodetic_crs_name(s: &SpatialRef) -> Option<String> {
     node.name().map(str::to_string)
 }
 
+/// The name of a CRS's vertical CRS: the registry's for a code, else that of its WKT's vertical
+/// CRS (the root, or a compound CRS's).
+fn vertical_crs_name(def: &Def, s: &SpatialRef) -> Option<String> {
+    let vertical = def.vertical()?;
+    if let Some(v) = vertical.code.and_then(epsg::vertical) {
+        return Some(v.name.clone());
+    }
+    let root = crate::parsed::tree(s.wkt.as_deref()?)?;
+    let node = if root.is(keywords::VERTICAL_CRS) { &root } else { root.first_in(keywords::VERTICAL_CRS)? };
+    node.name().map(str::to_string)
+}
+
+/// PROJ's name of its ballpark between geographic CRSs `s` and `t`, of prime meridians `from` and
+/// `to` (radians).
+fn geographic_ballpark(s: &str, t: &str, from: f64, to: f64) -> String {
+    if (from - to).abs() < 1e-12 {
+        format!("Ballpark geographic offset from {s} to {t}")
+    } else if from != 0.0 {
+        let altered = format!("{s} altered to use prime meridian of {t}");
+        format!("Transformation from {s} to {altered} + Ballpark geographic offset from {altered} to {t}")
+    } else {
+        let altered = format!("{t} altered to use prime meridian of {s}");
+        format!("Ballpark geographic offset from {s} to {altered} + Transformation from {s} to {altered}")
+    }
+}
+
+/// The name of the inverse of a chain of operations, as PROJ gives it: its steps the other way.
+fn inverse(chain: &str) -> String {
+    let mut steps: Vec<&str> = chain.split(" + ").collect();
+    steps.reverse();
+    let steps: Vec<String> = steps
+        .into_iter()
+        .map(|step| step.strip_prefix("Inverse of ").map_or_else(|| format!("Inverse of {step}"), str::to_string))
+        .collect();
+    steps.join(" + ")
+}
+
 /// Whether a registry CRS has a definition's conversion on its ellipsoid.
 fn same_registered(own: &Def, code: u32) -> bool {
     let registered = SpatialRef { epsg: Some(code), ..Default::default() };
@@ -2547,13 +2584,21 @@ fn run_model(ops: &[std::sync::Arc<datum::Op>], p: datum::Point, reverse: bool) 
 pub struct CoordinateOperation {
     /// The names of the transformations, in the order they run, joined by ` + ` as PROJ joins
     /// them (`Inverse of OSGB36 to WGS 84 (6)`). Conversions (projections, units, axes) are not
-    /// named. PROJ's ballpark transformations are `Ballpark vertical transformation` and, as PROJ
-    /// 9.9.0 names it, `Ballpark geographic offset from Beijing 1954 to WGS 84`, between the
-    /// geographic CRSs, with a transformation of the prime meridian between CRSs of different
-    /// ones (`Transformation from Monte Mario (Rome) to Monte Mario (Rome) altered to use prime
-    /// meridian of WGS 84 + Ballpark geographic offset from Monte Mario (Rome) altered to use
-    /// prime meridian of WGS 84 to WGS 84`), also beside a vertical transformation;
-    /// `Ballpark geographic offset` in a chain of other datum transformations.
+    /// named. PROJ's ballpark transformations are named as PROJ 9.9.0 names them:
+    /// - `Ballpark geographic offset from Beijing 1954 to WGS 84`, between the geographic CRSs,
+    ///   with a transformation of the prime meridian between CRSs of different ones
+    ///   (`Transformation from Monte Mario (Rome) to Monte Mario (Rome) altered to use prime
+    ///   meridian of WGS 84 + Ballpark geographic offset from Monte Mario (Rome) altered to use
+    ///   prime meridian of WGS 84 to WGS 84`); `Ballpark geographic offset` in a chain of other
+    ///   datum transformations;
+    /// - `Transformation from EGM96 height to NAVD88 height (ballpark vertical transformation)`,
+    ///   between the vertical CRSs; to a CRS without one, after the horizontal transformation:
+    ///   `Ballpark geographic offset from Beijing 1954 to WGS 84 + Transformation from EGM96
+    ///   height to WGS 84 (ballpark vertical transformation, without ellipsoid height to vertical
+    ///   height correction)`. Into a CRS with a vertical CRS from one without, PROJ names the
+    ///   operation the other way, inverted (`Inverse of Transformation from EGM96 height to WGS
+    ///   84 (...) + Inverse of Ballpark geographic offset from Beijing 1954 to WGS 84`).
+    ///   `Ballpark vertical transformation` when a vertical CRS has no name (`+geoidgrids`).
     pub name: String,
     /// The accuracy in metres: the sum of the transformations' accuracies, as PROJ adds them;
     /// `None` when one of them has none (a ballpark, a `+towgs84` definition).
@@ -3166,33 +3211,58 @@ impl Transformer {
     pub fn operation_at(&self, x: f64, y: f64, z: f64) -> Result<Option<CoordinateOperation>> {
         let (result, mut used) = route::recording(|| self.transform_at(x, y, z, self.time));
         result?;
-        self.name_ballpark(&mut used);
+        self.name_ballparks(&mut used);
         Ok(CoordinateOperation::from_used(used))
     }
 
-    /// Names a ballpark that is the only datum operation of a point's transformation as PROJ
-    /// 9.9.0 names it, from the geographic CRSs' names (#1012 item 54): `Ballpark geographic
-    /// offset from Beijing 1954 to WGS 84`. Between CRSs of different prime meridians, PROJ
-    /// alters the source to the target's prime meridian, or the target to the source's when the
-    /// source's is Greenwich.
-    fn name_ballpark(&self, used: &mut [route::Used]) {
+    /// Names PROJ's ballparks in a point's transformation as PROJ 9.9.0 names them (#1012 item
+    /// 54), from the CRSs' names:
+    /// - a geographic ballpark that is the only datum operation, from the geographic CRSs: `Ballpark
+    ///   geographic offset from Beijing 1954 to WGS 84`. Between CRSs of different prime meridians,
+    ///   PROJ alters the source to the target's prime meridian, or the target to the source's when
+    ///   the source's is Greenwich;
+    /// - a vertical ballpark, from the vertical CRSs: `Transformation from EGM96 height to NAVD88
+    ///   height (ballpark vertical transformation)`; from a vertical CRS to a CRS without one (a
+    ///   geographic 3D CRS), to its geographic CRS: `Transformation from EGM96 height to WGS 84
+    ///   (ballpark vertical transformation, without ellipsoid height to vertical height
+    ///   correction)`, after the horizontal operations, as PROJ runs it.
+    ///
+    /// Into a CRS with a vertical CRS from one without, PROJ names the operation the other way,
+    /// inverted: `Inverse of Transformation from EGM96 height to WGS 84 (...) + Inverse of
+    /// Ballpark geographic offset from Beijing 1954 to WGS 84`.
+    fn name_ballparks(&self, used: &mut Vec<route::Used>) {
+        let geographic = |s: &SpatialRef| s.geographic_wkt().and_then(|w| SpatialRef::from_wkt(&w).name()).or_else(|| geodetic_crs_name(s));
+        let (src, dst) = (geographic(&self.src_ref), geographic(&self.dst_ref));
+        let (src_vertical, dst_vertical) = (vertical_crs_name(&self.src, &self.src_ref), vertical_crs_name(&self.dst, &self.dst_ref));
+        let inverted = self.src.vertical().is_none() && self.dst.vertical().is_some();
         let mut datum = used.iter_mut().filter(|u| u.datum);
-        let (Some(op), None) = (datum.next(), datum.next()) else { return };
-        if op.name != route::GEOGRAPHIC_BALLPARK {
-            return;
+        if let (Some(op), None) = (datum.next(), datum.next())
+            && op.name == route::GEOGRAPHIC_BALLPARK
+            && let (Some(s), Some(t)) = (&src, &dst)
+        {
+            op.name = if inverted {
+                inverse(&geographic_ballpark(t, s, self.dst.pm(), self.src.pm()))
+            } else {
+                geographic_ballpark(s, t, self.src.pm(), self.dst.pm())
+            };
         }
-        let name = |s: &SpatialRef| s.geographic_wkt().and_then(|w| SpatialRef::from_wkt(&w).name()).or_else(|| geodetic_crs_name(s));
-        let (Some(s), Some(t)) = (name(&self.src_ref), name(&self.dst_ref)) else { return };
-        let (from, to) = (self.src.pm(), self.dst.pm());
-        op.name = if (from - to).abs() < 1e-12 {
-            format!("Ballpark geographic offset from {s} to {t}")
-        } else if from != 0.0 {
-            let altered = format!("{s} altered to use prime meridian of {t}");
-            format!("Transformation from {s} to {altered} + Ballpark geographic offset from {altered} to {t}")
-        } else {
-            let altered = format!("{t} altered to use prime meridian of {s}");
-            format!("Ballpark geographic offset from {s} to {altered} + Transformation from {s} to {altered}")
+        const WITHOUT: &str = "ballpark vertical transformation, without ellipsoid height to vertical height correction";
+        let name = match (self.src.vertical().and(src_vertical), self.dst.vertical().and(dst_vertical)) {
+            (Some(a), Some(b)) => Some(format!("Transformation from {a} to {b} (ballpark vertical transformation)")),
+            (Some(a), None) if self.dst.vertical().is_none() => dst.map(|g| format!("Transformation from {a} to {g} ({WITHOUT})")),
+            (None, Some(b)) if inverted => src.map(|g| format!("Inverse of Transformation from {b} to {g} ({WITHOUT})")),
+            _ => None,
         };
+        let Some(name) = name else { return };
+        for u in used.iter_mut().filter(|u| !u.datum && u.name == route::VERTICAL_BALLPARK) {
+            u.name.clone_from(&name);
+        }
+        // From a vertical CRS to a CRS without one, after the horizontal operations.
+        if self.src.vertical().is_some() && self.dst.vertical().is_none() {
+            let (vertical, rest): (Vec<_>, Vec<_>) = used.drain(..).partition(|u| u.name == name);
+            used.extend(rest);
+            used.extend(vertical);
+        }
     }
 
     /// The grids the transformation of a point needs, with where to get them, missing ones
