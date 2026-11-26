@@ -418,6 +418,7 @@ mod tests {
         for args in cases {
             let err = parse(args).unwrap_err();
             assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict, "{args:?}");
+            assert!(err.to_string().contains("cannot be used multiple times"), "{args:?}: {err}");
         }
         let single = parse(&["terrio", "convert", "a.tif", "b.tif", "--srcwin", "0", "0", "2", "2"]).unwrap();
         let srcwin: Vec<_> = single.subcommand_matches("convert").unwrap().get_many::<usize>("srcwin").unwrap().copied().collect();
