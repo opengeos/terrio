@@ -72,7 +72,25 @@ impl FileDb {
     }
 
     /// A cell's payload, following overflow pages.
-    fn payload(&self, page: &[u8], start: usize, size: usize) -> Result<Vec<u8>> {
+    fn payload(&self, page_num: u32, page: &[u8], start: usize, size: usize) -> Result<Vec<u8>> {
+        let mut seen = std::collections::HashSet::new();
+        self.payload_checked(page, start, size, |p| {
+            if p == page_num || !seen.insert(p) {
+                return Err(bad("overflow page reached twice"));
+            }
+            Ok(())
+        })
+    }
+
+    /// A cell's payload, following overflow pages and notifying `visit_overflow` for each overflow
+    /// page before reading it so cycles and shared overflow pages are rejected.
+    fn payload_checked(
+        &self,
+        page: &[u8],
+        start: usize,
+        size: usize,
+        mut visit_overflow: impl FnMut(u32) -> Result<()>,
+    ) -> Result<Vec<u8>> {
         let u = self.usable;
         let x = u - 35;
         if size <= x {
@@ -82,19 +100,18 @@ impl FileDb {
         if (size / (u - 4)) as u64 > self.pages {
             return Err(bad("payload"));
         }
-        let m = ((u - 12) * 32 / 255) - 23;
-        let k = m + (size - m) % (u - 4);
-        let local = if k <= x { k } else { m };
+        let local = sqlite::local_payload_size(u, size, x);
         let mut out = page.get(start..start + local).ok_or_else(|| bad("payload"))?.to_vec();
         let mut next =
             u32::from_be_bytes(page.get(start + local..start + local + 4).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("overflow"))?);
         while out.len() < size && next != 0 {
+            visit_overflow(next)?;
             let p = self.page(next)?;
             next = u32::from_be_bytes([p[0], p[1], p[2], p[3]]);
             let take = (size - out.len()).min(u - 4);
             out.extend_from_slice(&p[4..4 + take]);
         }
-        if out.len() < size {
+        if out.len() < size || next != 0 {
             return Err(bad("payload"));
         }
         Ok(out)
@@ -169,13 +186,11 @@ impl Cursor {
                     self.stack.push(children.into_iter());
                 }
                 0x0d => {
-                    let mut out = Vec::with_capacity(cells);
-                    for c in 0..cells {
-                        let off = cell_pointer(&page, h + 8 + 2 * c)?;
-                        let (size, n1) = varint(&page, off).ok_or_else(|| bad("cell"))?;
-                        let (rowid, n2) = varint(&page, off + n1).ok_or_else(|| bad("cell"))?;
-                        let size = usize::try_from(size).map_err(|_| bad("cell"))?;
-                        out.push((rowid, db.payload(&page, off + n1 + n2, size)?));
+                    let cells = sqlite::table_leaf_cells(&page, n, db.usable)?;
+                    let mut out = Vec::with_capacity(cells.len());
+                    for cell in cells {
+                        let payload = db.payload_checked(&page, cell.payload_start, cell.payload_size, |p| self.visited.insert(p))?;
+                        out.push((cell.rowid, payload));
                     }
                     return Ok(Some(out));
                 }
@@ -210,12 +225,10 @@ impl Tables for FileDb {
         for _ in 0..64 {
             let page = self.page(n)?;
             let h = if n == 1 { 100 } else { 0 };
-            let kind = page[h];
-            let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
-            let header_len = if kind == 0x05 { 12 } else { 8 };
-            let cell = |c: usize| cell_pointer(&page, h + header_len + 2 * c);
-            match kind {
+            match page[h] {
                 0x05 => {
+                    let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
+                    let cell = |c: usize| cell_pointer(&page, h + 12 + 2 * c);
                     let (mut lo, mut hi) = (0, cells);
                     while lo < hi {
                         let mid = (lo + hi) / 2;
@@ -230,22 +243,10 @@ impl Tables for FileDb {
                     };
                 }
                 0x0d => {
-                    let (mut lo, mut hi) = (0, cells);
-                    while lo < hi {
-                        let mid = (lo + hi) / 2;
-                        let off = cell(mid)?;
-                        let (size, n1) = varint(&page, off).ok_or_else(|| bad("cell"))?;
-                        let (key, n2) = varint(&page, off + n1).ok_or_else(|| bad("cell"))?;
-                        match key.cmp(&rowid) {
-                            std::cmp::Ordering::Less => lo = mid + 1,
-                            std::cmp::Ordering::Greater => hi = mid,
-                            std::cmp::Ordering::Equal => {
-                                let size = usize::try_from(size).map_err(|_| bad("cell"))?;
-                                return self.payload(&page, off + n1 + n2, size).map(Some);
-                            }
-                        }
-                    }
-                    return Ok(None);
+                    return match sqlite::table_leaf_find(&page, n, self.usable, rowid)? {
+                        Some(cell) => self.payload(n, &page, cell.payload_start, cell.payload_size).map(Some),
+                        None => Ok(None),
+                    };
                 }
                 _ => return Err(bad("unsupported page type")),
             }
@@ -281,5 +282,96 @@ mod tests {
         std::fs::write(&path, crate::drivers::sqlite::fixtures::shared_children(5)).unwrap();
         let error = FileDb::open(path.to_str().unwrap()).err().expect("an error");
         assert!(error.to_string().contains("reached twice"), "{error}");
+    }
+
+    #[test]
+    fn cyclic_overflow_chains_are_errors() {
+        use crate::drivers::sqlite::fixtures;
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bytes) in [
+            ("self.gpkg", fixtures::cyclic_overflow_self()),
+            ("pair.gpkg", fixtures::cyclic_overflow_pair()),
+            ("single.gpkg", fixtures::cyclic_overflow_single_page()),
+            ("shared.gpkg", fixtures::shared_overflow_cells()),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let db = open_raw_without_schema(&path);
+            let mut cursor = db.cursor(1);
+            assert!(cursor.next_leaf(&db).is_err(), "{name}: cursor should reject cyclic/shared overflow");
+            if name != "shared.gpkg" {
+                assert!(db.lookup(1, 1).is_err(), "{name}: lookup should reject cyclic overflow");
+            }
+        }
+
+        // Cross-leaf shared overflow page across cursor leaf steps.
+        let shared_leaves_path = dir.path().join("shared_leaves.gpkg");
+        std::fs::write(&shared_leaves_path, fixtures::shared_overflow_leaves()).unwrap();
+        let db = open_raw_without_schema(&shared_leaves_path);
+        let mut cursor = db.cursor(1);
+        assert!(cursor.next_leaf(&db).unwrap().is_some());
+        assert!(cursor.next_leaf(&db).is_err());
+
+        // Cross-leaf disjoint overflow chains succeed across cursor leaf steps and lookup.
+        let disjoint_leaves_path = dir.path().join("disjoint_leaves.gpkg");
+        std::fs::write(&disjoint_leaves_path, fixtures::disjoint_overflow_leaves()).unwrap();
+        let db = open_raw_without_schema(&disjoint_leaves_path);
+        let mut cursor = db.cursor(1);
+        let leaf1 = cursor.next_leaf(&db).unwrap().unwrap();
+        let leaf2 = cursor.next_leaf(&db).unwrap().unwrap();
+        assert!(cursor.next_leaf(&db).unwrap().is_none());
+        assert_eq!((leaf1.len(), leaf1[0].0, leaf1[0].1[3]), (1, 1, 1));
+        assert_eq!((leaf2.len(), leaf2[0].0, leaf2[0].1[3]), (1, 2, 2));
+        assert_eq!(db.lookup(1, 1).unwrap().unwrap()[3], 1);
+        assert_eq!(db.lookup(1, 2).unwrap().unwrap()[3], 2);
+        assert!(db.lookup(1, 3).unwrap().is_none());
+
+        // Also test FileDb::lookup directly on a valid empty-schema DB with a cyclic overflow
+        // leaf on page 2 (`3 -> 3`).
+        let mut b = fixtures::database(3);
+        b[100] = 0x0d; // empty valid schema leaf on page 1
+        b[512] = 0x0d; // leaf table on page 2
+        b[512 + 3..512 + 5].copy_from_slice(&1u16.to_be_bytes());
+        b[512 + 8..512 + 10].copy_from_slice(&200u16.to_be_bytes());
+        let start = fixtures::write_leaf_cell(&mut b, 2, 200, 1, 92 + 2 * 508);
+        b[start + 92..start + 96].copy_from_slice(&3u32.to_be_bytes());
+        b[1024..1028].copy_from_slice(&3u32.to_be_bytes());
+        let path = dir.path().join("lookup_cycle.gpkg");
+        std::fs::write(&path, b).unwrap();
+        let db = FileDb::open(path.to_str().unwrap()).unwrap();
+        assert!(db.lookup(2, 1).is_err());
+    }
+
+    #[test]
+    fn aliased_and_overlapping_leaf_cells_are_errors() {
+        use crate::drivers::sqlite::fixtures;
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bytes) in [("aliased.gpkg", fixtures::aliased_leaf_cells()), ("overlapping.gpkg", fixtures::overlapping_leaf_cells())] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let db = open_raw_without_schema(&path);
+            let mut cursor = db.cursor(1);
+            assert!(cursor.next_leaf(&db).is_err(), "{name}: cursor should reject aliased/overlapping cells");
+            // A lookup reads one payload by binary search, so it returns the single matching cell.
+            assert!(db.lookup(1, 1).unwrap().is_some(), "{name}: lookup returns one cell");
+        }
+
+        // Cell pointer falling inside the page header / cell pointer array (`104 < 110`).
+        let mut b = fixtures::database(2);
+        b[100] = 0x0d;
+        b[103..105].copy_from_slice(&1u16.to_be_bytes());
+        b[108..110].copy_from_slice(&104u16.to_be_bytes());
+        let header_path = dir.path().join("header_overlap.gpkg");
+        std::fs::write(&header_path, b).unwrap();
+        let db = open_raw_without_schema(&header_path);
+        assert!(db.lookup(1, 1).is_err());
+    }
+
+    /// Opens a synthetic 512-byte-page `FileDb` without decoding `sqlite_master` records, so tests
+    /// can exercise `Cursor::next_leaf` on raw payloads directly.
+    fn open_raw_without_schema(path: &std::path::Path) -> FileDb {
+        let file = std::fs::File::open(path).unwrap();
+        let len = file.metadata().unwrap().len();
+        FileDb { file: Mutex::new(file), page_size: 512, usable: 512, pages: len / 512, encoding: 1, schema: Vec::new() }
     }
 }
