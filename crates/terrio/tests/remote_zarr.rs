@@ -619,6 +619,80 @@ fn sharded_stores_read_only_the_inner_chunks_needed() {
     assert_eq!(local.raster.data.to_f64_vec(), all.raster.data.to_f64_vec());
 }
 
+/// Overlapping windows of one open array, as tiles of a grid read them: each window fetches only
+/// the bytes of its own chunks, no gap between them, and a chunk a window shares with an earlier
+/// one is placed from the cache, neither fetched nor decoded again. A read covering whole chunks
+/// keeps none of them, so the next window fetches its chunks.
+#[test]
+fn overlapping_windows_fetch_their_shared_edge_chunks_once() {
+    // The default size, whatever the environment sets.
+    terrio::block_cache::set_max_bytes(64 << 20);
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("o.zarr");
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::write(store.join("zarr.json"), r#"{"zarr_format": 3, "node_type": "group", "attributes": {}}"#).unwrap();
+    // 256 x 256 UInt16 values row * 256 + col, in chunks of 64 x 64 stored uncompressed (8 KiB
+    // each): whole in their own objects (`u`), or inner chunks of one shard (`s`).
+    let value = |r: usize, c: usize| (r * 256 + c) as u16;
+    let chunk = |iy: usize, ix: usize| -> Vec<u8> {
+        (iy * 64..iy * 64 + 64).flat_map(|r| (ix * 64..ix * 64 + 64).flat_map(move |c| value(r, c).to_le_bytes())).collect()
+    };
+    let bytes_codec = serde_json::json!([{"name": "bytes", "configuration": {"endian": "little"}}]);
+    let meta = |chunks: usize, codecs: serde_json::Value| {
+        serde_json::json!({
+            "zarr_format": 3, "node_type": "array", "shape": [256, 256], "data_type": "uint16",
+            "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [chunks, chunks]}},
+            "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
+            "fill_value": 0, "dimension_names": ["y", "x"],
+            "attributes": {"spatial:transform": [10.0, 0.0, 500000.0, 0.0, -10.0, 4600000.0], "proj:code": "EPSG:32633"},
+            "codecs": codecs
+        })
+    };
+    let sharding = serde_json::json!([{"name": "sharding_indexed", "configuration": {
+        "chunk_shape": [64, 64], "codecs": bytes_codec,
+        "index_codecs": [{"name": "bytes", "configuration": {"endian": "little"}}, {"name": "crc32c"}],
+        "index_location": "end"}}]);
+    write_sharded(&store.join("s"), [256, 256], [256, 256], [64, 64], meta(256, sharding), |iy, ix| Some(chunk(iy, ix)));
+    std::fs::create_dir_all(store.join("u")).unwrap();
+    std::fs::write(store.join("u/zarr.json"), serde_json::to_vec(&meta(64, bytes_codec)).unwrap()).unwrap();
+    for iy in 0..4 {
+        std::fs::create_dir_all(store.join(format!("u/c/{iy}"))).unwrap();
+        for ix in 0..4 {
+            std::fs::write(store.join(format!("u/c/{iy}/{ix}")), chunk(iy, ix)).unwrap();
+        }
+    }
+    let (url, counter) = serve(dir.path().to_path_buf());
+    let one = 64 * 64 * 2;
+    // The shard's index: 16 entries of 16 bytes and a checksum.
+    let index = 16 * 16 + 4;
+    for (array, first_index) in [("s", index), ("u", 0)] {
+        let name = format!("ZARR:\"{url}/o.zarr\":/{array}");
+        let check = |w: &RasterDataset, x: usize, y: usize| {
+            for (row, col) in [(0, 0), (99, 99), (50, 7)] {
+                assert_eq!(w.raster.get(0, row as isize, col as isize), value(y + row, x + col) as f64, "{array} {row} {col}");
+            }
+        };
+        let mut r = terrio::open_raster_lazy(&name).unwrap();
+        counter.take();
+        // Four chunks (rows and columns 0 and 1), the chunks between them left out.
+        let w = r.read_window(Window::new(10, 10, 100, 100), &WindowOptions::default()).unwrap();
+        check(&w, 10, 10);
+        assert_eq!(counter.take().1, (4 * one + first_index) as u64, "{array}");
+        // Columns 1 and 2: column 1 was read by the first window.
+        let w = r.read_window(Window::new(70, 10, 100, 100), &WindowOptions::default()).unwrap();
+        check(&w, 70, 10);
+        assert_eq!(counter.take().1, 2 * one as u64, "{array}");
+        // A reader that has read the whole array has kept none of its chunks.
+        let mut r = terrio::open_raster_lazy(&name).unwrap();
+        let all = r.read().unwrap();
+        assert_eq!(all.raster.get(0, 255, 255), value(255, 255) as f64);
+        counter.take();
+        let w = r.read_window(Window::new(10, 10, 100, 100), &WindowOptions::default()).unwrap();
+        check(&w, 10, 10);
+        assert_eq!(counter.take().1, 4 * one as u64, "{array}");
+    }
+}
+
 #[test]
 fn float16_and_value_codecs() {
     let dir = tempfile::tempdir().unwrap();
@@ -702,6 +776,8 @@ fn cmip6_on_gcs_as_gdal_reads_it() {
 /// chunk once, not once per band.
 #[test]
 fn translated_bands_sharing_a_chunk_fetch_it_once() {
+    // The default size, whatever the environment sets.
+    terrio::block_cache::set_max_bytes(64 << 20);
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("e.zarr");
     std::fs::create_dir_all(store.join("a/c/0/0")).unwrap();
@@ -733,12 +809,19 @@ fn translated_bands_sharing_a_chunk_fetch_it_once() {
         assert_eq!(out.raster.get(k, 0, 0), ((k + 4) * 10 + 3) as f64);
         assert_eq!(out.raster.get(k, 4, 3), ((k + 4) * 10 + 7) as f64);
     }
-    // Bands in another order: still the chunk once, the bands in the order asked.
+    // Bands in another order: still the chunk once, the bands in the order asked. The reader
+    // keeps the chunk, which the window covers in part, so it is not fetched again.
     let o = terrio::ops::translate::TranslateOptions { bands: vec![8, 5, 8], ..o };
+    let kept = terrio::ops::translate::translate_lazy(&mut src, &o, terrio::ops::overview::OverviewSelection::Auto).unwrap();
+    assert_eq!(counter.take().0, 0);
+    // A reader of its own, with nothing kept: the chunk once for all the bands.
+    let mut src = terrio::open_raster_lazy(&format!("ZARR:\"{url}/e.zarr\":/a")).unwrap();
+    counter.take();
     let out = terrio::ops::translate::translate_lazy(&mut src, &o, terrio::ops::overview::OverviewSelection::Auto).unwrap();
     assert_eq!(counter.take().0, 1);
     assert_eq!((out.raster.get(0, 0, 0), out.raster.get(1, 0, 0)), ((7 * 10 + 3) as f64, (4 * 10 + 3) as f64));
     assert_eq!(out.raster.get(2, 0, 0), (7 * 10 + 3) as f64);
+    assert_eq!(kept.raster.data.to_f64_vec(), out.raster.data.to_f64_vec());
 }
 
 #[test]
