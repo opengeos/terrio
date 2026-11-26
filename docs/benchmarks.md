@@ -297,7 +297,9 @@ still ranked but listed apart as not byte-identical. Anything else is a mismatch
 one tool returns as WKB and the other as native GeoArrow (a bbox read of a GeoArrow file: terrio
 native, GDAL WKB) hashes differently, so these cases are `checksum_match` at best.
 Process peak RSS includes initialization, warm-up and retained read results, but excludes
-subsequent validation allocations. RSS units are normalized for Linux and macOS.
+subsequent validation allocations. On Linux it is the worker's own, `VmHWM` of
+`/proc/self/status`: `ru_maxrss` carries the parent's memory over fork and exec, so it would
+include the runner's. Without `VmHWM` it is `ru_maxrss`, its units normalized for Linux and macOS.
 
 Only cases where every sample of both tools succeeded and matched GDAL's values (`exact` or
 `checksum_match`) are ranked; the report lists failures, timeouts and value mismatches apart. Local byte counts need Linux's

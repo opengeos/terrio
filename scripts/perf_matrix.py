@@ -1015,7 +1015,8 @@ class FlatGeobuf:
         ds = None
         levels = FlatGeobuf.levels(count)
         item = np.dtype([("x0", "<f8"), ("y0", "<f8"), ("x1", "<f8"), ("y1", "<f8"), ("off", "<u8")])
-        # Only the bytes used are read: the runner's peak memory is the floor of each worker's.
+        # Only the bytes used are read: without `VmHWM`, a worker's peak memory is `ru_maxrss`,
+        # which can include the runner's.
         with open(path, "rb") as f:
             fd = f.fileno()
             header = 12 + struct.unpack("<I", os.pread(fd, 4, 8))[0]  # magic bytes, header length, header
@@ -1705,8 +1706,8 @@ def _writes_dir(parent: Path) -> Path:
 
 
 def _spawned(fn, *args):
-    """Runs a function in a fresh process: a worker inherits the runner's peak memory as its own
-    floor, which a reference write would raise.
+    """Runs a function in a fresh process: without `VmHWM`, a worker's peak memory is
+    `ru_maxrss`, which can include the runner's, and a reference write would raise it.
 
     Args:
         fn: A module-level function.
@@ -2351,8 +2352,8 @@ class _Handler(SimpleHTTPRequestHandler):
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
             self.end_headers()
             if not head:
-                # In 1 MiB pieces: a worker inherits the runner's peak RSS (`ru_maxrss` survives
-                # exec), so whole-file answers held in memory here would inflate every worker's.
+                # In 1 MiB pieces: without `VmHWM`, a worker's peak memory is `ru_maxrss`,
+                # which can include the runner's, so whole-file answers held here would inflate it.
                 with open(path, "rb") as f:
                     f.seek(start)
                     while sent < end - start + 1 and (piece := f.read(min(1 << 20, end - start + 1 - sent))):
@@ -2421,6 +2422,24 @@ def threads(access: str) -> int:
 
 
 PROC_IO = Path("/proc/self/io")  # Linux: bytes a process read, for local sources
+PROC_STATUS = Path("/proc/self/status")  # Linux: `VmHWM`, a process's peak resident memory since exec
+
+
+def peak_rss_mb() -> float:
+    """This process's peak resident memory, in MiB.
+
+    Linux's `ru_maxrss` carries the parent's memory over fork and exec, so a worker's would include
+    the runner's. `VmHWM`, the resident peak of the fresh memory map exec gave the worker, is its
+    own; without `VmHWM` (no /proc), `ru_maxrss`.
+
+    Returns:
+        The peak, in MiB.
+    """
+    try:
+        line = next(x for x in PROC_STATUS.read_text().splitlines() if x.startswith("VmHWM:"))
+        return int(line.split()[1]) / 1024  # in kB
+    except (OSError, StopIteration):
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**2 if sys.platform == "darwin" else 1024)
 
 
 def _rchar(local: bool) -> int:
@@ -2483,7 +2502,7 @@ def worker(spec: dict) -> dict:
         out = [item(ds) for item in items]
     t2 = time.perf_counter()
     r2 = _rchar(local)
-    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**2 if sys.platform == "darwin" else 1024)
+    rss = peak_rss_mb()
     sums = [check(x) for x in out]  # after the timed read and its peak memory, as the digest
     compares = [s[2] for s in sums if len(s) > 2]  # (sum, n, compare): an output compared with GDAL's
     return {

@@ -3,6 +3,7 @@
 import json
 import os
 import struct
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -346,13 +347,14 @@ def test_bad_worker_samples_do_not_abort_remaining_cases(tmp_path, monkeypatch, 
     assert all("terrio_error" in row and "gdal_error" in row and "time_ratio" not in row for row in rows)
 
 
-@pytest.mark.parametrize("platform", ["linux", "darwin"])
-def test_worker_records_time_and_platform_rss_before_validation(monkeypatch, platform):
-    """Keep validation outside measurements and normalize both supported RSS units.
+@pytest.mark.parametrize("platform", ["linux", "darwin", "proc"])
+def test_worker_records_time_and_platform_rss_before_validation(monkeypatch, tmp_path, platform):
+    """Keep validation outside measurements, prefer `VmHWM` and normalize both `ru_maxrss` units.
 
     Args:
         monkeypatch: Scoped dependency replacements.
-        platform: Platform whose RSS units are returned.
+        tmp_path: Where the /proc status file is, or is absent.
+        platform: Platform whose `ru_maxrss` units are returned, or `proc`: Linux's `VmHWM`.
     """
     clock = [0]
 
@@ -412,9 +414,29 @@ def test_worker_records_time_and_platform_rss_before_validation(monkeypatch, pla
     monkeypatch.setattr(perf_matrix, "_rchar", lambda local: pytest.fail("HTTP must not use local counters") if local else 0)
     monkeypatch.setattr(perf_matrix.resource, "getrusage", lambda _: SimpleNamespace(ru_maxrss=clock[0] * (1024**2 if platform == "darwin" else 1024)))
     monkeypatch.setattr(perf_matrix.sys, "platform", platform)
+    status = tmp_path / "status"  # absent: the `ru_maxrss` fallback
+    if platform == "proc":
+        status.write_text("VmRSS:\t    2048 kB\nVmHWM:\t   30720 kB\n")  # not `ru_maxrss`'s 10 MiB
+    monkeypatch.setattr(perf_matrix, "PROC_STATUS", status)
     result = perf_matrix.worker({"format": "fake", "tool": "terrio", "src": "http://localhost/file.tif", "access": "full", "meta": {}})
-    assert (result["init_s"], result["open_s"], result["read_s"], result["rss_mb"]) == (7, 1, 2, 10)
+    assert (result["init_s"], result["open_s"], result["read_s"], result["rss_mb"]) == (7, 1, 2, 30 if platform == "proc" else 10)
     assert (result["open_bytes"], result["read_bytes"]) == (0, 0)
+
+
+@pytest.mark.skipif(not perf_matrix.PROC_STATUS.exists(), reason="VmHWM needs Linux's /proc")
+def test_peak_rss_is_the_workers_own_not_the_runners():
+    """A runner that allocated 400 MiB launches a worker as `run` does: the worker's `ru_maxrss`
+    carries the runner's peak, its `peak_rss_mb` does not."""
+    worker = "import resource, perf_matrix; print(perf_matrix.peak_rss_mb(), resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024)"
+    runner = (
+        "import subprocess, sys; held = b'x' * (400 << 20); "
+        f"print(subprocess.run([sys.executable, '-c', {worker!r}], capture_output=True, text=True, check=True).stdout)"
+    )
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(perf_matrix.__file__).parent), os.environ.get("PYTHONPATH")]))}
+    out = subprocess.run([sys.executable, "-c", runner], env=env, capture_output=True, text=True, check=True).stdout
+    peak, maxrss = map(float, out.split())
+    assert maxrss >= 400  # the runner's peak, which `ru_maxrss` reported as the worker's
+    assert peak < 100
 
 
 def test_unsettled_http_accounting_fails_instead_of_returning_a_partial_log(monkeypatch):
