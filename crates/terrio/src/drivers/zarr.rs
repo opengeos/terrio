@@ -1233,9 +1233,9 @@ fn scatter_strided(
 }
 
 /// Byte ranges of a shard closer than this are fetched in one request. Inner chunks are stored in
-/// C order, so a window narrower than its shard leaves whole inner chunks between its rows; a gap
-/// smaller than an inner chunk of real data keeps those out of the read, as GDAL 3.13.3 reads only
-/// the inner chunks a window needs, while runs of nearly empty inner chunks are still fetched
+/// C order, so a window narrower than its shard leaves whole inner chunks between its rows. A gap of
+/// 4 KiB, smaller than an inner chunk of real data, leaves those out of the read, as GDAL 3.13.3
+/// reads only the inner chunks a window needs; runs of nearly empty inner chunks are still fetched
 /// together. A window then takes a request (locally, a read of the file) per row of its inner
 /// chunks in a shard, where a gap of 256 KiB took fewer; they are in flight together
 /// ([`read_plan`]). Windows of 512 x 512 Float32 pixels over HTTP with inner chunks of 128 x 128
@@ -1481,8 +1481,8 @@ fn decode_chunk(
     // Keyed by the chunk's place in the grid and an inner chunk's in its shard's index (0 unsharded).
     let slot = chunk_slot(a, idx);
     let cache_key = |inner: usize| Some((slot?, u32::try_from(inner).ok()?));
-    // Hands the chunk from the cache, if it is there.
-    let placed = |pipeline: &Pipeline, inner: usize, origin: &[usize], cshape: &[usize]| {
+    // Places the chunk from the cache into the output through `put`, if it is there: whether it was.
+    let place_cached = |pipeline: &Pipeline, inner: usize, origin: &[usize], cshape: &[usize]| {
         let Some(chunk) = cache_key(inner).and_then(|(s, i)| crate::block_cache::get(a.cache.0, s, i)) else { return false };
         let tiff::decoder::DecodingResult::U8(bytes) = &chunk.samples else { return false };
         put(bytes, &stored_strides(pipeline, cshape), origin, cshape);
@@ -1499,7 +1499,7 @@ fn decode_chunk(
         }
     };
     let Some(shard) = p.shard.as_ref().filter(|_| p.codecs.is_empty()) else {
-        if placed(p, 0, &origin, &a.chunks) {
+        if place_cached(p, 0, &origin, &a.chunks) {
             return Ok(());
         }
         let Some(raw) = a.node.get(&key, Range::Whole).map_err(err)? else { return Ok(()) };
@@ -1517,7 +1517,7 @@ fn decode_chunk(
     for (j, entry) in index.iter().enumerate() {
         let Some((o, l)) = *entry else { continue };
         let iorigin: Vec<usize> = unravel(j, &inner_grid).iter().zip(&shard.chunks).zip(&origin).map(|((i, c), o)| o + i * c).collect();
-        if wanted(&iorigin, &shard.chunks) && !placed(&shard.inner, j, &iorigin, &shard.chunks) {
+        if wanted(&iorigin, &shard.chunks) && !place_cached(&shard.inner, j, &iorigin, &shard.chunks) {
             let end = o.checked_add(l).ok_or_else(|| err(bad("shard index out of range")))?;
             chosen.push((o, end, iorigin, j));
         }
