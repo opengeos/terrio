@@ -75,4 +75,13 @@ fn ballparks_are_named_as_proj_names_them() {
         let op = t.operation_at(x, y, 0.0).unwrap().unwrap();
         assert_eq!((op.name.as_str(), op.ballpark, op.accuracy), (name, true, None), "EPSG:{src} to EPSG:{dst}");
     }
+    // An unregistered WKT 2 geographic CRS (EPSG:4610's, in grads, without its ID), named from
+    // its own `GEOGCRS`, as PROJ 9.9.0 names it.
+    let grad = r#"ANGLEUNIT["grad",0.015707963267949]"#;
+    let xian = SpatialRef::from_wkt(&format!(
+        r#"GEOGCRS["Xian 1980",DATUM["Xian 1980",ELLIPSOID["IAG 1975",6378140,298.257,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],{grad}],AXIS["geodetic longitude (Lon)",east,ORDER[2],{grad}]]"#
+    ));
+    assert_eq!(xian.epsg, None);
+    let op = Transformer::new(&xian, &SpatialRef::from_epsg(4326).unwrap()).unwrap().operation_at(135.0, 42.0, 0.0).unwrap().unwrap();
+    assert_eq!(op.name, "Ballpark geographic offset from Xian 1980 to WGS 84");
 }

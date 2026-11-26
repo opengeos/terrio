@@ -117,7 +117,8 @@ fn south_orientated_offsets_with_a_north_east_wkt1() {
 /// ESRI's South African Lo zones (ESRI:102470 to 102489) are Transverse Mercator at a scale of -1
 /// without offsets, which PROJ 9.9.0 reads as south-orientated at a scale of 1 (`+proj=tmerc
 /// +axis=wsu +k=1`), in ESRI and GDAL WKT 1: placed as PROJ places them, from their geographic
-/// CRS. Another negative scale, or one with offsets, stays refused, as PROJ refuses it.
+/// CRS. So is any negative scale without offsets on east-north axes, at the opposite scale; with
+/// offsets, or on north-east axes, PROJ refuses it, and so does terrio.
 #[test]
 fn a_transverse_mercator_at_a_scale_of_minus_one_is_south_orientated() {
     // PROJ 9.9.0's ESRI WKT 1 of each.
@@ -135,17 +136,28 @@ fn a_transverse_mercator_at_a_scale_of_minus_one_is_south_orientated() {
             let (x, y) = Transformer::new(&geographic, &crs).unwrap().transform(lon, -30.0).unwrap();
             assert!((x - want.0).abs() < 1e-3 && (y - want.1).abs() < 1e-3, "ESRI:{code}: ({x}, {y}) {wkt}");
         }
-        for (scale, fe) in [("-0.9996", "0"), ("-1", "1000")] {
-            let other = gdal
-                .replace("\"scale_factor\",-1", &format!("\"scale_factor\",{scale}"))
-                .replace("\"false_easting\",0", &format!("\"false_easting\",{fe}"))
-                .replace(&format!(",AUTHORITY[\"ESRI\",\"{code}\"]"), "");
-            assert_ne!(other, gdal);
-            let crs = SpatialRef::from_wkt(&other);
-            assert!(
-                Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).and_then(|t| t.transform(lon, -30.0)).is_err(),
-                "{other}"
-            );
-        }
     }
+    // Other negative scales without offsets, from ESRI:102480 (Hartebeesthoek94_Lo15): PROJ 9.9.0
+    // places them at the opposite scale; with a false easting, or north-east axes, it refuses them.
+    let lo15 = SpatialRef::from_esri(102480).unwrap().to_wkt().unwrap().replace(",AUTHORITY[\"ESRI\",\"102480\"]", "");
+    let variant = |scale: &str, fe: &str, ne: bool| {
+        let mut w = lo15
+            .replace("\"scale_factor\",-1", &format!("\"scale_factor\",{scale}"))
+            .replace("\"false_easting\",0", &format!("\"false_easting\",{fe}"));
+        if ne {
+            w = w.replace("AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]", "AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]");
+        }
+        assert_ne!(w, lo15);
+        SpatialRef::from_wkt(&w)
+    };
+    let place = |crs: &SpatialRef| {
+        let geographic = SpatialRef::from_wkt(&crs.geographic_wkt().unwrap());
+        Transformer::new(&geographic, crs).and_then(|t| t.transform(15.5, -30.0))
+    };
+    for (scale, want) in [("-0.9996", (-48224.15122652727, 3318890.5630454323)), ("-2", (-96486.89721193931, 6640437.301011269))] {
+        let (x, y) = place(&variant(scale, "0", false)).unwrap();
+        assert!((x - want.0).abs() < 1e-3 && (y - want.1).abs() < 1e-3, "scale {scale}: ({x}, {y})");
+    }
+    assert!(place(&variant("-1", "1000", false)).is_err());
+    assert!(place(&variant("-1", "0", true)).is_err());
 }

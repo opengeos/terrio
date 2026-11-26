@@ -1826,12 +1826,32 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
 }
 
 /// Whether a WKT's conversion is one terrio reads into a PROJ string of a method it knows but
-/// refuses for its parameters, rather than one of a method it does not know.
+/// refuses for its parameters, rather than one of a method it does not know: the conversion alone,
+/// on a sphere, so that an ellipsoid or datum terrio cannot read does not count.
 #[cfg(feature = "wbprojection-fallback")]
 fn refused_conversion(wkt: &str) -> bool {
+    const FIGURE: &[&str] = &["ellps", "datum", "a", "b", "f", "rf", "es", "e", "R", "towgs84", "nadgrids", "geoidgrids", "pm"];
     let Some(root) = crate::parsed::tree(wkt) else { return false };
     let c = if wkt2::handles(&root) { model::wkt2_to_proj(wkt).ok() } else { model::wkt1_to_proj(wkt) };
-    c.is_some_and(|c| matches!(Def::from_proj(&c.proj), Err(Error::Crs(m)) if !m.starts_with("unsupported projection:")))
+    let Some(c) = c else { return false };
+    let conversion: Vec<&str> = c
+        .proj
+        .split_whitespace()
+        .filter(|t| !FIGURE.contains(&t.trim_start_matches('+').split('=').next().unwrap_or_default()) && !t.starts_with("+R_"))
+        .collect();
+    // `unsupported projection:` is the method's refusal (`Def::wkt_conversion` reads it alike).
+    matches!(Def::from_proj(&format!("{} +R=6371000", conversion.join(" "))), Err(Error::Crs(m)) if !m.starts_with("unsupported projection:"))
+}
+
+/// The name of a CRS's geodetic CRS from its WKT, where [`SpatialRef::geographic_wkt`] gives
+/// none (an unregistered WKT 2 `GEOGCRS`): the root's own name, a compound CRS's horizontal
+/// one's, or a projected CRS's base geodetic CRS's.
+fn geodetic_crs_name(s: &SpatialRef) -> Option<String> {
+    let root = crate::parsed::tree(s.wkt.as_deref()?)?;
+    let horizontal = root.first_in(keywords::HORIZONTAL_CRS).unwrap_or(&root);
+    let geodetic = |n: &wkt1::Node| n.is(keywords::GEOGRAPHIC_OR_GEODETIC_CRS) || n.is(keywords::WKT1_GEOGRAPHIC);
+    let node = if geodetic(horizontal) { horizontal } else { horizontal.first_in(keywords::GEODETIC_BASE)? };
+    node.name().map(str::to_string)
 }
 
 /// Whether a registry CRS has a definition's conversion on its ellipsoid.
@@ -3161,7 +3181,7 @@ impl Transformer {
         if op.name != route::GEOGRAPHIC_BALLPARK {
             return;
         }
-        let name = |s: &SpatialRef| s.geographic_wkt().and_then(|w| SpatialRef::from_wkt(&w).name());
+        let name = |s: &SpatialRef| s.geographic_wkt().and_then(|w| SpatialRef::from_wkt(&w).name()).or_else(|| geodetic_crs_name(s));
         let (Some(s), Some(t)) = (name(&self.src_ref), name(&self.dst_ref)) else { return };
         let (from, to) = (self.src.prime_meridian_radians(), self.dst.prime_meridian_radians());
         op.name = if (from - to).abs() < 1e-12 {
