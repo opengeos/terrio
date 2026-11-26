@@ -399,7 +399,9 @@ def test_zonal_stats_of_a_cube_selects_the_layer_of_any_zones_input(files, cube,
     """`layer=` picks a layer of a VectorDataset as of a path, and names the layer a `Layer`
     must be."""
     pytest.importorskip("shapely")
-    zones = terrio.Layer.from_geojson(files["zones"].to_geojson(), name="polygons", crs="EPSG:32611")
+    zones = terrio.Layer.from_geojson(
+        files["zones"].to_geojson(), name="polygons", crs="EPSG:32611"
+    )
     expected = cube.terrio.zonal_stats(zones, stats=["mean"])
     path = str(tmp_path / "zones.gpkg")
     terrio.write_vector(zones, path)
