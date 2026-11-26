@@ -406,7 +406,8 @@ mod tests {
     /// its occurrences into one longer list that the command then misreads (#1314).
     #[test]
     fn repeated_multi_value_options_are_rejected() {
-        let cases: [&'static [&'static str]; 6] = [
+        let cases: [&'static [&'static str]; 7] = [
+            &["terrio", "vector-clip", "a.gpkg", "b.gpkg", "--bbox", "0,0,1,1", "--bbox", "2,2,3,3"],
             &["terrio", "convert", "a.tif", "b.tif", "--srcwin", "0", "0", "2", "2", "--srcwin", "1", "1", "2", "2"],
             &["terrio", "translate", "a.tif", "b.tif", "--scale", "0", "100", "--scale", "0", "200"],
             &["terrio", "warp", "a.tif", "b.tif", "--tr", "1", "1", "--tr", "2", "2"],
@@ -427,7 +428,8 @@ mod tests {
     /// single-occurrence Set, so repeating it fails instead of appending (#1314). Options that
     /// take one value per occurrence (`--co`, `--band`) stay repeatable Append options.
     /// Delimiter-only lists (`value_delimiter` without `num_args`, such as `xyz --srcnodata`)
-    /// are out of scope: they are open-ended lists where repeating the flag extends the list.
+    /// are not checked here: most are open-ended lists where repeating the flag extends the
+    /// list, but `vector-clip --bbox` is a fixed 4-tuple and is `Set` (see its own test case).
     #[test]
     fn multi_value_options_take_one_occurrence() {
         /// Collects the options of `command` and its subcommands that take several values per
