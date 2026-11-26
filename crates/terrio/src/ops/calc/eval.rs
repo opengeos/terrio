@@ -18,6 +18,7 @@
 use super::expr::{BinOp, CmpOp, Expr, UnaryOp};
 use crate::{Error, Result};
 use half::f16;
+use std::borrow::Cow;
 
 /// A NumPy data type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -242,6 +243,11 @@ impl Arr {
         }
     }
 
+    /// [`cast`](Self::cast), borrowing the array when it already has type `dt`.
+    fn cast_ref(&self, dt: DType) -> Cow<'_, Arr> {
+        if dt == self.dt { Cow::Borrowed(self) } else { Cow::Owned(self.cast(dt)) }
+    }
+
     /// Converts to another type (NumPy's `astype`).
     pub(crate) fn cast(&self, dt: DType) -> Arr {
         if dt == self.dt {
@@ -317,9 +323,9 @@ impl Val {
     }
 
     /// The value as an array, weak scalars taking NumPy's default types.
-    fn strong(&self) -> Result<Arr> {
-        Ok(match self {
-            Val::Arr(a) => a.clone(),
+    fn strong(&self) -> Result<Cow<'_, Arr>> {
+        let a = match self {
+            Val::Arr(a) => return Ok(Cow::Borrowed(a)),
             Val::Int(i) => {
                 if *i >= i64::MIN as i128 && *i <= i64::MAX as i128 {
                     Arr { dt: DType::I64, data: Data::I(vec![*i]) }
@@ -330,24 +336,26 @@ impl Val {
                 }
             }
             Val::Float(f) => Arr { dt: DType::F64, data: Data::F(vec![*f]) },
-        })
+        };
+        Ok(Cow::Owned(a))
     }
 
     /// The value converted to `dt`. Weak integers outside the type's range are an error when
     /// `strict`, and wrap around otherwise.
-    fn to(&self, dt: DType, strict: bool) -> Result<Arr> {
-        match self {
-            Val::Arr(a) => Ok(a.cast(dt)),
+    fn to(&self, dt: DType, strict: bool) -> Result<Cow<'_, Arr>> {
+        let a = match self {
+            Val::Arr(a) => return Ok(a.cast_ref(dt)),
             Val::Int(i) if dt.is_int() || dt == DType::Bool => {
                 let (lo, hi) = dt.range();
                 if strict && dt != DType::Bool && (*i < lo || *i > hi) {
                     return Err(Error::InvalidArgument(format!("Python integer {i} out of bounds for {}", dt.name())));
                 }
-                Ok(Arr { dt: DType::I64, data: Data::I(vec![*i]) }.cast(dt))
+                Arr { dt: DType::I64, data: Data::I(vec![*i]) }.cast(dt)
             }
-            Val::Int(i) => Ok(Arr { dt, data: Data::F(vec![round_float(*i as f64, dt)]) }),
-            Val::Float(f) => Ok(Arr { dt: DType::F64, data: Data::F(vec![*f]) }.cast(dt)),
-        }
+            Val::Int(i) => Arr { dt, data: Data::F(vec![round_float(*i as f64, dt)]) },
+            Val::Float(f) => Arr { dt: DType::F64, data: Data::F(vec![*f]) }.cast(dt),
+        };
+        Ok(Cow::Owned(a))
     }
 }
 
@@ -395,8 +403,14 @@ fn at<T: Copy>(v: &[T], i: usize) -> T {
 }
 
 fn map2<T: Copy, U: Copy, R>(a: &[T], b: &[U], f: impl Fn(T, U) -> R) -> Result<Vec<R>> {
-    let n = bcast(a.len(), b.len())?;
-    Ok((0..n).map(|i| f(at(a, i), at(b, i))).collect())
+    bcast(a.len(), b.len())?;
+    // A loop per broadcast case, without a length test per element.
+    Ok(match (a, b) {
+        _ if a.len() == b.len() => a.iter().zip(b).map(|(x, y)| f(*x, *y)).collect(),
+        ([x], _) => b.iter().map(|y| f(*x, *y)).collect(),
+        (_, [y]) => a.iter().map(|x| f(*x, *y)).collect(),
+        _ => unreachable!("checked by bcast"),
+    })
 }
 
 /// Floating-point arithmetic in a given precision.
@@ -418,7 +432,8 @@ trait Fl:
     fn powf(self, o: Self) -> Self;
     fn atan2(self, o: Self) -> Self;
     fn hypot(self, o: Self) -> Self;
-    fn unary(self, f: &str) -> Option<Self>;
+    /// The function named `f`.
+    fn unary(f: &str) -> Option<fn(Self) -> Self>;
 }
 
 macro_rules! impl_fl {
@@ -448,35 +463,35 @@ macro_rules! impl_fl {
             fn hypot(self, o: Self) -> Self {
                 <$t>::hypot(self, o)
             }
-            fn unary(self, f: &str) -> Option<Self> {
+            fn unary(f: &str) -> Option<fn(Self) -> Self> {
                 const PI: $t = $pi;
                 Some(match f {
-                    "sqrt" => self.sqrt(),
-                    "exp" => self.exp(),
-                    "exp2" => self.exp2(),
-                    "expm1" => self.exp_m1(),
-                    "log" => self.ln(),
-                    "log10" => self.log10(),
-                    "log2" => self.log2(),
-                    "log1p" => self.ln_1p(),
-                    "sin" => self.sin(),
-                    "cos" => self.cos(),
-                    "tan" => self.tan(),
-                    "arcsin" => self.asin(),
-                    "arccos" => self.acos(),
-                    "arctan" => self.atan(),
-                    "sinh" => self.sinh(),
-                    "cosh" => self.cosh(),
-                    "tanh" => self.tanh(),
-                    "arcsinh" => self.asinh(),
-                    "arccosh" => self.acosh(),
-                    "arctanh" => self.atanh(),
-                    "cbrt" => self.cbrt(),
-                    "degrees" => self * (180.0 / PI),
-                    "radians" => self * (PI / 180.0),
-                    "rint" => self.round_ties_even(),
-                    "fabs" => self.abs(),
-                    "reciprocal" => 1.0 / self,
+                    "sqrt" => |x| x.sqrt(),
+                    "exp" => |x| x.exp(),
+                    "exp2" => |x| x.exp2(),
+                    "expm1" => |x| x.exp_m1(),
+                    "log" => |x| x.ln(),
+                    "log10" => |x| x.log10(),
+                    "log2" => |x| x.log2(),
+                    "log1p" => |x| x.ln_1p(),
+                    "sin" => |x| x.sin(),
+                    "cos" => |x| x.cos(),
+                    "tan" => |x| x.tan(),
+                    "arcsin" => |x| x.asin(),
+                    "arccos" => |x| x.acos(),
+                    "arctan" => |x| x.atan(),
+                    "sinh" => |x| x.sinh(),
+                    "cosh" => |x| x.cosh(),
+                    "tanh" => |x| x.tanh(),
+                    "arcsinh" => |x| x.asinh(),
+                    "arccosh" => |x| x.acosh(),
+                    "arctanh" => |x| x.atanh(),
+                    "cbrt" => |x| x.cbrt(),
+                    "degrees" => |x| x * (180.0 / PI),
+                    "radians" => |x| x * (PI / 180.0),
+                    "rint" => |x| x.round_ties_even(),
+                    "fabs" => |x| x.abs(),
+                    "reciprocal" => |x| 1.0 / x,
                     _ => return None,
                 })
             }
@@ -593,7 +608,7 @@ fn fbin_t<T: Fl>(op: Fbin, a: T, b: T) -> T {
 }
 
 fn float_binary(op: Fbin, a: &Arr, b: &Arr, dt: DType) -> Result<Arr> {
-    let (a, b) = (a.cast(dt), b.cast(dt));
+    let (a, b) = (a.cast_ref(dt), b.cast_ref(dt));
     // NumPy computes powers by a scalar 2, 0.5, -1 or 1 as a square, a square root, a
     // reciprocal or a copy.
     if op == Fbin::Pow && b.len() == 1 && matches!(b.floats()[0], 2.0 | 0.5 | -1.0 | 1.0) {
@@ -611,8 +626,30 @@ fn float_binary(op: Fbin, a: &Arr, b: &Arr, dt: DType) -> Result<Arr> {
         };
         return Ok(Arr { dt, data: Data::F(a.floats().iter().map(|x| f(*x)).collect()) });
     }
-    let v = map2(&a.floats(), &b.floats(), |x, y| fbin(dt, x, y, fbin_t::<f64>, fbin_t::<f32>, op))?;
+    let (a, b) = (a.floats(), b.floats());
+    let v = match dt {
+        DType::F64 => float_map(op, &a, &b, |x| x, |r| r)?,
+        DType::F32 => float_map(op, &a, &b, |x| x as f32, |r| r as f64)?,
+        _ => float_map(op, &a, &b, |x| x as f32, |r| f16::from_f32(r).to_f64())?,
+    };
     Ok(Arr { dt, data: Data::F(v) })
+}
+
+/// `op` on each pair of values in type `T`, converted with `to` and back with `from`. The four
+/// arithmetic operators have a loop each, without a test of `op` per element.
+fn float_map<T: Fl>(op: Fbin, a: &[f64], b: &[f64], to: impl Fn(f64) -> T, from: impl Fn(T) -> f64) -> Result<Vec<f64>> {
+    macro_rules! each {
+        ($f:expr) => {
+            map2(a, b, |x, y| from($f(to(x), to(y))))
+        };
+    }
+    match op {
+        Fbin::Add => each!(|x: T, y: T| x + y),
+        Fbin::Sub => each!(|x: T, y: T| x - y),
+        Fbin::Mul => each!(|x: T, y: T| x * y),
+        Fbin::Div => each!(|x: T, y: T| x / y),
+        _ => each!(|x, y| fbin_t(op, x, y)),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -644,7 +681,7 @@ fn int_pow(mut base: i128, mut exp: i128) -> i128 {
 }
 
 fn int_binary(op: Ibin, a: &Arr, b: &Arr, dt: DType) -> Result<Arr> {
-    let (a, b) = (a.cast(dt), b.cast(dt));
+    let (a, b) = (a.cast_ref(dt), b.cast_ref(dt));
     let (av, bv) = (a.ints(), b.ints());
     if op == Ibin::Pow && bv.iter().any(|e| *e < 0) {
         return Err(Error::InvalidArgument("integers to negative integer powers are not allowed".into()));
@@ -848,7 +885,7 @@ impl Val {
     pub(crate) fn into_arr(self) -> Arr {
         match self {
             Val::Arr(a) => a,
-            v => v.strong().unwrap_or(Arr { dt: DType::F64, data: Data::F(vec![f64::NAN]) }),
+            v => v.strong().map(Cow::into_owned).unwrap_or(Arr { dt: DType::F64, data: Data::F(vec![f64::NAN]) }),
         }
     }
 }
@@ -994,16 +1031,22 @@ impl Evaluator<'_> {
                 nargs(1..=1)?;
                 let a = vals[0].strong()?;
                 let dt = a.dt.float_of();
-                let a = a.cast(dt);
-                let v: Vec<f64> = a
-                    .floats()
-                    .iter()
-                    .map(|x| match dt {
-                        DType::F64 => x.unary(canonical).expect("known function"),
-                        DType::F32 => (*x as f32).unary(canonical).expect("known function") as f64,
-                        _ => f16::from_f32((*x as f32).unary(canonical).expect("known function")).to_f64(),
-                    })
-                    .collect();
+                let a = a.cast_ref(dt);
+                let a = a.floats();
+                let v: Vec<f64> = match dt {
+                    DType::F64 => {
+                        let f = f64::unary(canonical).expect("known function");
+                        a.iter().map(|x| f(*x)).collect()
+                    }
+                    DType::F32 => {
+                        let f = f32::unary(canonical).expect("known function");
+                        a.iter().map(|x| f(*x as f32) as f64).collect()
+                    }
+                    _ => {
+                        let f = f32::unary(canonical).expect("known function");
+                        a.iter().map(|x| f16::from_f32(f(*x as f32)).to_f64()).collect()
+                    }
+                };
                 Ok(Val::scalar(dt, Data::F(v)))
             }
             "floor" | "ceil" | "trunc" | "fix" => {
@@ -1022,7 +1065,7 @@ impl Evaluator<'_> {
                                 .collect(),
                         ),
                     },
-                    _ => a,
+                    _ => a.into_owned(),
                 }))
             }
             "round" => {
@@ -1049,7 +1092,7 @@ impl Evaluator<'_> {
                         };
                         Arr { dt, data: Data::F(v.iter().map(|x| round_float(r(*x), dt)).collect()) }
                     }
-                    _ if decimals >= 0 => a,
+                    _ if decimals >= 0 => a.into_owned(),
                     _ => {
                         let exp = decimals.unsigned_abs();
                         let v = if let Ok(exp_u32) = u32::try_from(exp)
@@ -1076,7 +1119,7 @@ impl Evaluator<'_> {
                 nargs(1..=1)?;
                 let a = vals[0].strong()?;
                 Ok(Val::Arr(match &a.data {
-                    Data::B(_) => a,
+                    Data::B(_) => a.into_owned(),
                     Data::I(v) => Arr { dt: a.dt, data: Data::I(v.iter().map(|x| wrap(x.abs(), a.dt)).collect()) },
                     Data::F(v) => Arr { dt: a.dt, data: Data::F(v.iter().map(|x| x.abs()).collect()) },
                 }))
@@ -1111,20 +1154,20 @@ impl Evaluator<'_> {
                 nargs(1..=1)?;
                 let v = &vals[0];
                 let a = v.strong()?;
-                let a = if a.dt == DType::Bool { a.cast(DType::I8) } else { a };
+                let a = if a.dt == DType::Bool { Cow::Owned(a.cast(DType::I8)) } else { a };
                 arith(Ibin::Mul, &a, &a, a.dt).map(Val::Arr)
             }
             "negative" => {
                 nargs(1..=1)?;
-                unary_op(UnaryOp::Neg, &Val::Arr(vals[0].strong()?))
+                unary_op(UnaryOp::Neg, &Val::Arr(vals[0].strong()?.into_owned()))
             }
             "positive" => {
                 nargs(1..=1)?;
-                Ok(Val::Arr(vals[0].strong()?))
+                Ok(Val::Arr(vals[0].strong()?.into_owned()))
             }
             "invert" | "bitwise_not" => {
                 nargs(1..=1)?;
-                unary_op(UnaryOp::Invert, &Val::Arr(vals[0].strong()?))
+                unary_op(UnaryOp::Invert, &Val::Arr(vals[0].strong()?.into_owned()))
             }
             "isnan" | "isinf" | "isfinite" | "signbit" => {
                 nargs(1..=1)?;
@@ -1181,7 +1224,8 @@ impl Evaluator<'_> {
                     }
                     v => v.clone(),
                 };
-                let (a, lo, hi) = (vals[0].to(dt, false)?, bound(&vals[1]).to(dt, false)?, bound(&vals[2]).to(dt, false)?);
+                let (lo, hi) = (bound(&vals[1]), bound(&vals[2]));
+                let (a, lo, hi) = (vals[0].to(dt, false)?, lo.to(dt, false)?, hi.to(dt, false)?);
                 let m = arith(Ibin::Max, &a, &lo, dt)?;
                 arith(Ibin::Min, &m, &hi, dt).map(Val::Arr)
             }
@@ -1227,7 +1271,7 @@ impl Evaluator<'_> {
                     _ => BinOp::BitXor,
                 };
                 let (a, b) = if vals[0].is_weak() && vals[1].is_weak() {
-                    (Val::Arr(vals[0].strong()?), Val::Arr(vals[1].strong()?))
+                    (Val::Arr(vals[0].strong()?.into_owned()), Val::Arr(vals[1].strong()?.into_owned()))
                 } else {
                     (vals[0].clone(), vals[1].clone())
                 };
