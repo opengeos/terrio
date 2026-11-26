@@ -106,6 +106,7 @@ fn downloaded_grids_enter_the_cache_verified_through_their_own_scratch_files() {
         assert!((h - 100.5).abs() < 1e-9, "{heights:?}");
     }
     let paths = transport.paths.lock().unwrap().clone();
+    assert_eq!(paths.len(), THREADS, "downloads that overlapped: {paths:?}");
     let mut unique = paths.clone();
     unique.sort();
     unique.dedup();
@@ -118,4 +119,10 @@ fn downloaded_grids_enter_the_cache_verified_through_their_own_scratch_files() {
     // Only the verified grid is cached, and no scratch file is left behind.
     assert_eq!(files(cache.path()), ["terrio_concurrent_grid.tif"]);
     assert_eq!(std::fs::read(cache.path().join("terrio_concurrent_grid.tif")).unwrap(), geoid_grid());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(cache.path().join("terrio_concurrent_grid.tif")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o644, "{mode:o}");
+    }
 }

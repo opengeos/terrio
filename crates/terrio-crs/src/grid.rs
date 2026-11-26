@@ -540,11 +540,9 @@ fn parse_gdal_metadata(text: &str) -> HashMap<(i32, String), String> {
 /// may decode to (`decoding_buffer_size`, which tiff 0.11.3 also applies to tag values), and the
 /// compressed bytes read for one chunk (`intermediate_buffer_size`). tiff 0.11.3 parses a file's
 /// first IFD with its default limits, which have the same `decoding_buffer_size`. PROJ's GeoTIFF
-/// grids are tiled
-/// 256 x 256 (the largest grids of the CDN, `us_nga_egm08_25.tif` at 8640 x 4321 and
-/// `de_lgl_bw_BWTA2017.tif` at 4369 x 5611 x 3 samples of `Float32`, checked in November 2026),
-/// so a chunk is 768 KiB at most; a whole image of the largest grid as one strip, 149 MB, is
-/// still within both bounds. Tag values hold at most a few hundred thousand chunk offsets.
+/// grids are tiled 256 x 256, so a chunk of the largest (`de_lgl_bw_BWTA2017.tif`, 3 samples of
+/// `Float32`) is 768 KiB; even the largest image (`us_nga_egm08_25.tif`, 8640 x 4321 `Float32`)
+/// as one uncompressed strip, 149 MB, is within both bounds. Tag values hold at most a few hundred thousand chunk offsets.
 fn grid_tiff_limits() -> tiff::decoder::Limits {
     let mut limits = tiff::decoder::Limits::default();
     limits.decoding_buffer_size = 256 << 20;
@@ -1217,17 +1215,58 @@ fn download(name: &str) -> Result<GridFile, bool> {
     let tmp = tempfile::Builder::new().prefix(&format!(".{name}.")).suffix(".part").tempfile_in(&dir).map_err(|_| true)?.into_temp_path();
     crate::network::download(&url, &tmp).map_err(|_| true)?;
     let file = verified_download(name, &tmp)?;
-    tmp.persist(dir.join(name)).map_err(|_| true)?;
+    // Readable by others, as a file created with the usual umask would be (tempfile's are 0600),
+    // so that a cache shared between users works.
+    #[cfg(unix)]
+    let _ = std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o644));
+    // The verified grid is used even when it cannot be cached; a later process downloads it again.
+    let _ = tmp.persist(dir.join(name));
     Ok(file)
 }
 
 /// The grid a download holds, when it is a regular file of at most [`MAX_GRID_BYTES`] that reads
-/// as a grid of its name's format: `Err(true)` when it cannot be read or is larger, `Err(false)`
-/// when it is not a grid.
-#[cfg(any(remote, test))]
+/// as a grid of its name's format, a GeoTIFF's chunks all within the file (its pixels are decoded
+/// only when used): `Err(true)` when it cannot be read or is larger, `Err(false)` when it is not a
+/// complete grid.
+#[cfg(all(not(target_family = "wasm"), any(remote, test)))]
 fn verified_download(name: &str, path: &std::path::Path) -> Result<GridFile, bool> {
     let bytes = read_grid_file(path).ok_or(true)?;
+    if !tiff_chunks_within(&bytes) {
+        return Err(false);
+    }
     read_file(name, bytes).ok_or(false)
+}
+
+/// Whether every chunk (tile or strip) of every image of a TIFF lies within its bytes; true for
+/// anything that is not a TIFF.
+#[cfg(all(not(target_family = "wasm"), any(remote, test)))]
+fn tiff_chunks_within(bytes: &Arc<[u8]>) -> bool {
+    use tiff::tags::Tag;
+    let signature = bytes.get(..4).unwrap_or_default();
+    if ![b"II*\0", b"MM\0*", b"II+\0", b"MM\0+"].iter().any(|s| signature == &s[..]) {
+        return true;
+    }
+    let Ok(dec) = tiff::decoder::Decoder::new(GridReader::Bytes(Cursor::new(bytes.clone()))) else { return false };
+    let mut dec = dec.with_limits(grid_tiff_limits());
+    let len = bytes.len() as u64;
+    loop {
+        let tags = if dec.get_chunk_type() == tiff::decoder::ChunkType::Tile {
+            (Tag::TileOffsets, Tag::TileByteCounts)
+        } else {
+            (Tag::StripOffsets, Tag::StripByteCounts)
+        };
+        let values = |dec: &mut TiffDecoder, t: Tag| dec.find_tag(t).ok().flatten().and_then(|v| v.into_u64_vec().ok());
+        let (Some(offsets), Some(counts)) = (values(&mut dec, tags.0), values(&mut dec, tags.1)) else { return false };
+        if offsets.len() != counts.len() || offsets.iter().zip(&counts).any(|(&o, &c)| o.checked_add(c).is_none_or(|end| end > len)) {
+            return false;
+        }
+        if !dec.more_images() {
+            return true;
+        }
+        if dec.next_image().is_err() {
+            return false;
+        }
+    }
 }
 
 /// The grid file of a name, read once.
@@ -2818,6 +2857,20 @@ mod tests {
         std::fs::write(&path, grid.get_ref()).unwrap();
         assert!(verified_download("grid.tif", &path).is_ok());
         std::fs::write(&path, b"not a grid").unwrap();
+        assert!(matches!(verified_download("grid.tif", &path), Err(false)));
+        // A grid whose IFD is whole but whose strip lies past the end of the file, as in a
+        // download cut short.
+        let mut cut = grid.get_ref().clone();
+        let ifd = u32::from_le_bytes(cut[4..8].try_into().unwrap()) as usize;
+        let entries = u16::from_le_bytes(cut[ifd..ifd + 2].try_into().unwrap()) as usize;
+        let strip = (0..entries).map(|i| ifd + 2 + 12 * i).find(|&e| cut[e..e + 2] == 273u16.to_le_bytes()).unwrap();
+        assert_eq!(u32::from_le_bytes(cut[strip + 4..strip + 8].try_into().unwrap()), 1);
+        let past_end = cut.len() as u32 + 64;
+        if cut[strip + 2..strip + 4] == 3u16.to_le_bytes() {
+            cut[strip + 2..strip + 4].copy_from_slice(&4u16.to_le_bytes());
+        }
+        cut[strip + 8..strip + 12].copy_from_slice(&past_end.to_le_bytes());
+        std::fs::write(&path, &cut).unwrap();
         assert!(matches!(verified_download("grid.tif", &path), Err(false)));
         std::fs::write(&path, grid.get_ref()).unwrap();
         std::fs::File::options().write(true).open(&path).unwrap().set_len(MAX_GRID_BYTES + 1).unwrap();
