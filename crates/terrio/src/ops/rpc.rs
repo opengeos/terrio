@@ -439,9 +439,8 @@ impl Dem {
     }
 
     fn from_dataset(ds: &crate::RasterDataset, o: &RpcOptions, rpc: &Rpc) -> Result<Self> {
-        // Only band 1 is ever sampled: keep just it, as f64, instead of every band of the dataset,
-        // with the raster's georeferencing and CRS carried over.
-        let mut single = ds.clone();
+        // Only band 1 is ever sampled: keep just it, as f64, in a fresh dataset (no clone of every
+        // band), with the georeferencing and CRS carried over in the raster's own fields.
         let cfg = wbraster::RasterConfig {
             cols: ds.raster.cols,
             rows: ds.raster.rows,
@@ -455,9 +454,11 @@ impl Dem {
             crs: ds.raster.crs.clone(),
             metadata: ds.raster.metadata.clone(),
         };
-        single.raster = wbraster::Raster::from_data_native(cfg, wbraster::raster::RasterData::F64(super::band_f64(&ds.raster, 0)))?;
+        let raster = wbraster::Raster::from_data_native(cfg, wbraster::raster::RasterData::F64(super::band_f64(&ds.raster, 0)))?;
+        let mut single = crate::RasterDataset::with_driver(raster, ds.driver, ds.has_nodata);
         single.band_nodata = vec![ds.band_nodata(1)];
-        single.complex = false;
+        single.affine = ds.affine;
+        single.geotransform_present = ds.geotransform_present;
         Self::from_lazy(crate::LazyRaster::from(single), o, rpc)
     }
 
@@ -715,22 +716,29 @@ impl RpcTransformer {
             pl_to_ll: [0.0; 6],
             ref_z: 0.0,
         };
-        // A reference point and the affine approximation around it.
+        // A reference point and the affine approximation around it. The reference pixel and the
+        // reference height come from one height observation, so a transient DEM read error cannot
+        // mix a pixel evaluated at height 0 with a height read later.
+        let observe = |t: &RpcTransformer, lon: f64, lat: f64| -> ((f64, f64), f64) {
+            let z = t.height_at(lon, lat).0.unwrap_or(0.0);
+            (t.rpc.evaluate(lon, lat, z), z)
+        };
         let (mut ref_pixel, mut ref_line) = (-1.0, -1.0);
         let (mut ref_lon, mut ref_lat) = (0.0, 0.0);
+        let mut ref_h = 0.0;
         if rpc.min_long != -180.0 || rpc.max_long != 180.0 {
             ref_lon = (rpc.min_long + rpc.max_long) * 0.5;
             ref_lat = (rpc.min_lat + rpc.max_lat) * 0.5;
-            (ref_pixel, ref_line) = t.to_pixel(ref_lon, ref_lat, 0.0).unwrap_or_else(|| rpc.evaluate(ref_lon, ref_lat, 0.0));
+            let ((p, l), h) = observe(&t, ref_lon, ref_lat);
+            (ref_pixel, ref_line, ref_h) = (p, l, h);
         }
         if !(0.0..=100000.0).contains(&ref_pixel) || !(0.0..=100000.0).contains(&ref_line) {
             ref_lon = rpc.long_off;
             ref_lat = rpc.lat_off;
-            (ref_pixel, ref_line) = t.to_pixel(ref_lon, ref_lat, 0.0).unwrap_or_else(|| rpc.evaluate(ref_lon, ref_lat, 0.0));
+            let ((p, l), h) = observe(&t, ref_lon, ref_lat);
+            (ref_pixel, ref_line, ref_h) = (p, l, h);
         }
-        if let Some(z) = t.height_at(ref_lon, ref_lat).0 {
-            t.ref_z = z;
-        }
+        t.ref_z = ref_h;
         let delta = 0.0001;
         let mut gt = [0.0; 6];
         let (px, py) = rpc.evaluate(ref_lon + delta, ref_lat, t.ref_z);
@@ -1311,11 +1319,11 @@ pub(crate) mod tests {
     #[test]
     fn lazy_dem_heights_match_the_whole_read_dem() {
         let dir = tempfile::tempdir().unwrap();
-        let dem = dem(dir.path());
+        let dem_path = dem(dir.path());
         let r = rpc();
-        let o = RpcOptions { dem: Some(dem.to_str().unwrap().into()), ..Default::default() };
+        let o = RpcOptions { dem: Some(dem_path.to_str().unwrap().into()), ..Default::default() };
         let t = RpcTransformer::new(&r, &o).unwrap();
-        let ds = crate::open_raster(dem.to_str().unwrap()).unwrap();
+        let ds = crate::open_raster(dem_path.to_str().unwrap()).unwrap();
         let t_mem = RpcTransformer::with_dem_dataset(&r, &o, &ds).unwrap();
         for i in 0..20 {
             for j in 0..10 {
@@ -1323,11 +1331,22 @@ pub(crate) mod tests {
                 assert_eq!(t.to_pixel(lon, lat, 0.0), t_mem.to_pixel(lon, lat, 0.0), "{lon} {lat}");
             }
         }
-        // Bilinear at a cell center is that cell's value (the writer casts to Float32).
+        // Sampled cells are the fixture's values (the writer casts to Float32), checked against
+        // the formula independently of the window reads: a cell center, and an interior
+        // bilinear point.
+        let cell = |x: usize, y: usize| -> f64 {
+            let i = y * 300 + x;
+            (300.0 + ((i % 300) as f64 * 0.37).sin() * 200.0 + (i / 300) as f64) as f32 as f64
+        };
         let d = t.dem.as_ref().unwrap();
         let v = d.sample(100.5, 120.5).unwrap();
-        let expect = (300.0 + (100.0f64 * 0.37).sin() * 200.0 + 120.0) as f32 as f64;
-        assert!((v - expect).abs() < 1e-6, "{v} vs {expect}");
+        assert!((v - cell(100, 120)).abs() < 1e-9, "{v} vs {}", cell(100, 120));
+        let (dx, dy) = (0.8f64, 0.2f64);
+        let z1 = cell(99, 120) * (1.0 - dx) + cell(100, 120) * dx;
+        let z2 = cell(99, 121) * (1.0 - dx) + cell(100, 121) * dx;
+        let expect = z1 * (1.0 - dy) + z2 * dy;
+        let v = d.sample(100.3, 120.7).unwrap();
+        assert!((v - expect).abs() < 1e-9, "{v} vs {expect}");
         assert!(d.sample(-1.0, 10.0).is_none(), "outside the DEM");
     }
 
@@ -1336,7 +1355,7 @@ pub(crate) mod tests {
     #[test]
     fn lazy_dem_honors_nodata_like_the_whole_read_dem() {
         let dir = tempfile::tempdir().unwrap();
-        let dem = dir.path().join("dem_nodata.tif");
+        let dem_path = dir.path().join("dem_nodata.tif");
         let (cols, rows) = (300usize, 260usize);
         let cfg = wbraster::RasterConfig {
             cols,
@@ -1359,11 +1378,11 @@ pub(crate) mod tests {
             }
         }
         let ds = crate::RasterDataset::new(wbraster::Raster::from_data(cfg, data).unwrap(), true);
-        crate::write_raster_dataset(&ds, dem.to_str().unwrap(), &Default::default()).unwrap();
+        crate::write_raster_dataset(&ds, dem_path.to_str().unwrap(), &Default::default()).unwrap();
         let r = rpc();
-        let ds = crate::open_raster(dem.to_str().unwrap()).unwrap();
+        let ds = crate::open_raster(dem_path.to_str().unwrap()).unwrap();
         for interpolation in [DemInterpolation::Near, DemInterpolation::Bilinear, DemInterpolation::Cubic] {
-            let o = RpcOptions { dem: Some(dem.to_str().unwrap().into()), dem_interpolation: interpolation, ..Default::default() };
+            let o = RpcOptions { dem: Some(dem_path.to_str().unwrap().into()), dem_interpolation: interpolation, ..Default::default() };
             let t = RpcTransformer::new(&r, &o).unwrap();
             let t_mem = RpcTransformer::with_dem_dataset(&r, &o, &ds).unwrap();
             for i in 0..20 {
@@ -1376,11 +1395,12 @@ pub(crate) mod tests {
         // The nodata cell itself: no value without a missing value, the missing value with one.
         let gt = ds.geo_transform();
         let (lon, lat) = (gt[0] + 101.5 * gt[1] + 121.5 * gt[2], gt[3] + 101.5 * gt[4] + 121.5 * gt[5]);
-        let o = RpcOptions { dem: Some(dem.to_str().unwrap().into()), dem_interpolation: DemInterpolation::Near, ..Default::default() };
+        let o =
+            RpcOptions { dem: Some(dem_path.to_str().unwrap().into()), dem_interpolation: DemInterpolation::Near, ..Default::default() };
         let t = RpcTransformer::new(&r, &o).unwrap();
         assert!(t.to_pixel(lon, lat, 0.0).is_none(), "a nodata cell has no height");
         let o = RpcOptions {
-            dem: Some(dem.to_str().unwrap().into()),
+            dem: Some(dem_path.to_str().unwrap().into()),
             dem_interpolation: DemInterpolation::Near,
             dem_missing_value: Some(0.0),
             ..Default::default()
