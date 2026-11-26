@@ -2455,8 +2455,9 @@ def worker(spec: dict) -> dict:
     fmt = FORMATS[spec["format"]]
     src, access = spec["src"], spec["access"]
     local = src.startswith("/")
-    # `base` is another terrio build, found first on PYTHONPATH
-    tool = "terrio" if spec["tool"] == "base" else spec["tool"]
+    # `base` is another terrio build, found first on PYTHONPATH; `gdal_allcpus` is GDAL in its
+    # second configuration, set by its environment
+    tool = {"base": "terrio", "gdal_allcpus": "gdal"}.get(spec["tool"], spec["tool"])
     n_threads = threads(access)
     ti = time.perf_counter()
     # A format reads its 16 parts for `threads4`; any thread count reads the same parts.
@@ -2603,6 +2604,10 @@ def run(args: argparse.Namespace) -> None:
             if not Path(module_file).resolve().is_relative_to(base_dir):
                 sys.exit(f"--base {base_dir}: terrio is imported from {version.stdout.strip()}, not from it")
             head["machine"]["base"] = f"{module_file} {module_version}"
+        if getattr(args, "gdal_allcpus", False):  # GDAL's second configuration: its own cache size, every CPU
+            envs["gdal_allcpus"] = {k: v for k, v in env.items() if k != "GDAL_CACHEMAX"} | {"GDAL_NUM_THREADS": "ALL_CPUS"}
+            tools.append("gdal_allcpus")
+            head["machine"]["gdal_allcpus"] = True
         if head["machine"]["on_ac"] is False and not args.allow_battery:
             sys.exit("on battery, timings are slower and vary: plug in, or pass --allow-battery")
         try:
@@ -2672,7 +2677,12 @@ def summarize(row: dict) -> dict:
 
     A time ratio only when every sample of terrio and GDAL succeeded (a tool
     stops at its first failure), and a ratio to the base only when the base's did too: a base that
-    failed where this build succeeds is listed as such. `values` is `exact` when every sample's
+    failed where this build succeeds is listed as such. Likewise `gdal_allcpus_ratio`, the ratio to
+    GDAL in its second configuration (`--gdal-allcpus`), when its samples' values equal GDAL's
+    (`gdal_allcpus_values_match`, by digest, else by sum and count): a reference, it does not change
+    `values`. That check covers reads only: an operation's GDAL samples carry no digest and a zero
+    sum, so it compares their pixel count alone; a write's count is its source's and always agrees.
+    `values` is `exact` when every sample's
     digest equals GDAL's first, else `checksum_match` when every sample's sum and count do, else the
     first that differs.
 
@@ -2683,7 +2693,7 @@ def summarize(row: dict) -> dict:
         The row with each tool's medians in place of its samples, the ratios and `values`.
     """
     out = {k: v for k, v in row.items() if not isinstance(v, list)}
-    tools = [t for t in ("terrio", "gdal", "base") if t in row]
+    tools = [t for t in ("terrio", "gdal", "base", "gdal_allcpus") if t in row]
     for tool in tools:
         rs = row.get(tool)
         if not rs:
@@ -2698,13 +2708,24 @@ def summarize(row: dict) -> dict:
             r["n"] == ref["n"] and math.isclose(r["sum"], ref["sum"], rel_tol=1e-6)
             for tool in ("base", "gdal") for r in row[tool]
         )
-    if "terrio" in out and "gdal" in out and not [e for e in _errors(row) if not e.startswith("base ")]:
+    # The base and GDAL's second configuration are optional: their failure drops only their ratio.
+    if "terrio" in out and "gdal" in out and not [e for e in _errors(row) if not e.startswith(("base ", "gdal_allcpus "))]:
         out["time_ratio"] = out["terrio"]["total_s"] / out["gdal"]["total_s"]
         ref = row["gdal"][0]
         if base_ok:
             out["base_ratio"] = out["terrio"]["total_s"] / out["base"]["total_s"]
         else:
             tools = [t for t in tools if t != "base"]
+        if "gdal_allcpus" in out and "gdal_allcpus_error" not in row:
+            # Equal digests first, as for `values`: a NaN read sums to NaN, which no sum check accepts.
+            out["gdal_allcpus_values_match"] = all(
+                (ref.get("digest") is not None and r.get("digest") == ref["digest"])
+                or (r["n"] == ref["n"] and math.isclose(r["sum"], ref["sum"], rel_tol=1e-6))
+                for r in row["gdal_allcpus"]
+            )
+            if out["gdal_allcpus_values_match"]:
+                out["gdal_allcpus_ratio"] = out["terrio"]["total_s"] / out["gdal_allcpus"]["total_s"]
+        tools = [t for t in tools if t != "gdal_allcpus"]
         differ = next(((t, r) for t in tools for r in row[t] if r["n"] != ref["n"] or not math.isclose(r["sum"], ref["sum"], rel_tol=1e-6)), None)
         exact = ref.get("digest") is not None and all(r.get("digest") == ref["digest"] for t in tools for r in row[t])
         # Equal digests are exact first: a NaN read sums to NaN, which no sum check accepts.
@@ -2789,7 +2810,43 @@ def fmt_row(r: dict) -> str:
     s += f" | init {t['init_s'] * 1000:3.0f}/{g['init_s'] * 1000:3.0f} ms rss {t['rss_mb']:4.0f}/{g['rss_mb']:4.0f} MB {label}"
     if "base_ratio" in r:
         s += f" | base {r['base']['total_s'] * 1000:8.1f} ms x{r['base_ratio']:5.2f}"
+    if "gdal_allcpus_ratio" in r:
+        s += f" | gdal ALL_CPUS {r['gdal_allcpus']['total_s'] * 1000:8.1f} ms x{r['gdal_allcpus_ratio']:5.2f}"
+    elif "gdal_allcpus_error" in r or r.get("gdal_allcpus_values_match") is False:
+        s += f" | gdal ALL_CPUS {r.get('gdal_allcpus_error') or 'values differ from the first configuration'}"
     return s
+
+
+def _gdal_allcpus_section(ok: list[dict], computed: list[dict]) -> list[str]:
+    """The report's section on GDAL's second configuration: both ratios side by side.
+
+    Args:
+        ok: The ranked cases, for the ratios.
+        computed: Every case with a time ratio, ranked or not, for the second configuration's
+            failures: a case whose terrio values differ from GDAL's lists its failure here too.
+
+    Returns:
+        The section's lines.
+    """
+    both = [r for r in ok if "gdal_allcpus_ratio" in r]
+    lines = ["\n## GDAL with its default GDAL_CACHEMAX and GDAL_NUM_THREADS=ALL_CPUS (geometric means of terrio time / GDAL time, "
+             "GDAL's first configuration, then this one; cases in brackets)\n"]
+    if both:
+        gm = statistics.geometric_mean
+        lines.append(f"all     x{gm(r['time_ratio'] for r in both):.2f} / x{gm(r['gdal_allcpus_ratio'] for r in both):.2f}({len(both)})")
+        for axis in ("source", "access"):
+            groups: dict[str, list[dict]] = {}
+            for r in both:
+                groups.setdefault(r[axis], []).append(r)
+            lines.append(f"{axis:7} " + "  ".join(
+                f"{k} x{gm(r['time_ratio'] for r in rs):.2f} / x{gm(r['gdal_allcpus_ratio'] for r in rs):.2f}({len(rs)})" for k, rs in sorted(groups.items())))
+    flips = sorted((r for r in both if (r["time_ratio"] < 1) != (r["gdal_allcpus_ratio"] < 1)), key=lambda r: -r["gdal_allcpus_ratio"])
+    lines.append(f"terrio faster than GDAL in one configuration only: {len(flips)}")
+    lines += ["  " + fmt_row(r) for r in flips[:20]]
+    failed = [r for r in computed if "gdal_allcpus_error" in r or r.get("gdal_allcpus_values_match") is False]
+    lines.append(f"GDAL failed or read other values in this configuration only (no second ratio): {len(failed)}")
+    lines += ["  " + fmt_row(r) for r in failed]
+    return lines
 
 
 def report(rows: list[dict]) -> str:
@@ -2839,6 +2896,8 @@ def report(rows: list[dict]) -> str:
         lines += [f"  {fmt_row(r)} | base {r['base_error']}" for r in fixed]
         lines.append(f"this build fails, the base succeeded: {len(broken)}")
         lines += ["  " + fmt_row(r) for r in broken]
+    if any(h.get("gdal_allcpus") for h in heads) or any("gdal_allcpus_error" in r for r in rows):
+        lines += _gdal_allcpus_section(ok, computed)
     lines.append("\n## Worst cases (terrio time / GDAL time)\n")
     lines += [fmt_row(r) for r in sorted(ok, key=lambda r: -r["time_ratio"])[:20]]
     lines.append("\n## Geometric mean of the time ratios by axis (>1: terrio slower; cases in brackets)\n")
@@ -2901,13 +2960,15 @@ def main() -> None:
     r.add_argument("--only", nargs="*", help="fixture name substrings")
     r.add_argument("--access", nargs="*", help="access patterns (default: all of the format's)")
     r.add_argument("--source", nargs="*", choices=["local", "http"])
-    r.add_argument("--threads", type=int, default=4, help="RAYON_NUM_THREADS and GDAL_NUM_THREADS, for every access")
+    r.add_argument("--threads", type=int, default=4, help="RAYON_NUM_THREADS and GDAL_NUM_THREADS, for every access (GDAL's second configuration takes ALL_CPUS)")
     r.add_argument("--latency-ms", type=float, default=20, help="simulated round-trip time of the HTTP source")
     r.add_argument("--samples", type=int, default=3, help="samples per tool, in alternating order; the median")
     r.add_argument("--quick", action="store_true", help="one sample per tool")
     r.add_argument("--timeout", type=float, default=120, help="seconds a read may take before it is reported as a timeout")
     r.add_argument("--out", type=Path, help="results JSONL, a new file (default: DIR/FORMAT/results-<time>.jsonl)")
     r.add_argument("--base", type=Path, help="another terrio build to time too: a directory with its terrio package")
+    r.add_argument("--gdal-allcpus", action="store_true",
+                   help="also time GDAL with its default GDAL_CACHEMAX and GDAL_NUM_THREADS=ALL_CPUS, a second reference configuration")
     r.add_argument("--allow-battery", action="store_true", help="run on battery power (timings slower and noisier)")
     sub.add_parser("touched", help="the formats whose files the paths on standard input change, one a line")
     rep = sub.add_parser("report")
