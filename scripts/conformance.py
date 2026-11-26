@@ -2857,7 +2857,7 @@ PROJ_CASES = {
     "geokeys_read_gdal": {
         "user_defined_geokeys_are_read_as_gdal_reads_them": (
             "GeoKeys as other writers write them: user-defined projected CRSs, a projected code alone or with its unit, "
-            "ellipsoids, datums and prime meridians by code (24 cases)", TOLERANCE,
+            "ellipsoids, datums and prime meridians by code (28 cases)", TOLERANCE,
             "GDAL 3.12.2 (libgeotiff GTIFFetchProjParms, GTIFGetDefn): within 1 mm",
         ),
     },

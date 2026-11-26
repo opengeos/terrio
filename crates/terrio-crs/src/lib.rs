@@ -1782,6 +1782,11 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
             };
             theirs.iter().any(|d| datums.contains(d))
         };
+        // A conversion terrio reads but refuses (an Albers conic of parallels 29.5° and -29.5°,
+        // which PROJ refuses too) is no registered CRS, whatever its name: no code.
+        if own.is_none() && refused_conversion(wkt) {
+            return None;
+        }
         // Else wbprojection's registry (projections terrio cannot compare, CRSs its table lacks).
         let report = wbp::identify_epsg_from_wkt_report(wkt, wbp::EpsgIdentifyPolicy::Lenient)?;
         // The registry matches loosely: keep a code only when its definition converts coordinates
@@ -1818,6 +1823,15 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
     }
     #[cfg(not(feature = "wbprojection-fallback"))]
     None
+}
+
+/// Whether a WKT's conversion is one terrio reads into a PROJ string of a method it knows but
+/// refuses for its parameters, rather than one of a method it does not know.
+#[cfg(feature = "wbprojection-fallback")]
+fn refused_conversion(wkt: &str) -> bool {
+    let Some(root) = crate::parsed::tree(wkt) else { return false };
+    let c = if wkt2::handles(&root) { model::wkt2_to_proj(wkt).ok() } else { model::wkt1_to_proj(wkt) };
+    c.is_some_and(|c| matches!(Def::from_proj(&c.proj), Err(Error::Crs(m)) if !m.starts_with("unsupported projection:")))
 }
 
 /// Whether a registry CRS has a definition's conversion on its ellipsoid.

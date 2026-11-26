@@ -180,6 +180,13 @@ KEYED = [
         False,
     ),
     (
+        "geographic EPSG:4326 with ProjLinearUnitsGeoKey 9002, kept as EPSG:4326",
+        PROJECTED + [(3072, 4326), (3076, 9002)],
+        [],
+        (10.0, 50.0),
+        False,
+    ),
+    (
         "ellipsoid 7030 with a sphere's axes, which win",
         PROJECTED + USER_TM + [(2050, 32767), (2056, 7030)],
         TM + [(2057, 6371007.0), (2059, 0.0)],
@@ -375,6 +382,7 @@ def main():
                 "directory": keys,
                 "doubles": values,
                 "gdal_proj4": srs.ExportToProj4(),
+                "gdal_code": srs.GetAuthorityCode(None),
                 "point": list(point),
                 "from": "geodetic" if geodetic else "wgs84",
                 "gdal": [x, y],
