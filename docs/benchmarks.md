@@ -402,11 +402,12 @@ request can fix all the cases of that area, with the matrix's numbers before and
 
 ### Operations
 
-The `warp` and `terrain` formats time raster operations rather than reads. They run on the
-GeoTIFF fixture `f32_none`: a 4096 × 4096 Float32 DEM in UTM zone 31N (EPSG:32631, 10 m
+The `warp`, `terrain` and `vectorize` formats time raster operations rather than reads. They run
+on the GeoTIFF fixture `f32_none`: a 4096 × 4096 Float32 DEM in UTM zone 31N (EPSG:32631, 10 m
 pixels), uncompressed, as a COG with overviews; proximity runs on `u8_none`, its 8-bit
-counterpart. Their files sit in the GeoTIFF fixture directory, so `fixtures --format warp` makes
-the GeoTIFF fixtures. Each access pattern is one operation:
+counterpart, and polygonize on a class map (below). Their files sit in the GeoTIFF fixture
+directory, so `fixtures --format warp` makes the GeoTIFF fixtures (`fixtures --format vectorize`
+also makes the class map). Each access pattern is one operation:
 
 | Format | Operation | terrio | GDAL | Tolerance |
 |---|---|---|---|---|
@@ -417,11 +418,13 @@ the GeoTIFF fixtures. Each access pattern is one operation:
 | `terrain` | `aspect` | `terrio.dem`, GDAL 3.12 arithmetic | `gdal.DEMProcessing` | 1e-4 degrees |
 | `terrain` | `proximity`: pixel distances to the 255s | `terrio.proximity` | `gdal.ComputeProximity` | 0 |
 | `terrain` | `calc`: `sqrt(abs(A)) * 2 + A / 3` | `terrio.calc` | `gdal_calc.py`'s `Calc` | 0 |
+| `vectorize` | `polygonize`, `polygonize8` (8-connected): polygons of the class map | `terrio.polygonize` | `gdal.Polygonize` | totals 1e-9 |
+| `vectorize` | `contour`: lines every 200 m | `terrio.contour` | `gdal.ContourGenerateEx` | totals 1e-10 |
 
-An operation receives the input's local path and returns its output in memory: a `terrio.Raster`
-or a GDAL `MEM` dataset. The time is that call, reading the input from the OS page cache
-included. Before the timed call, the worker runs the same operation on the warm-up file, so that
-one-time costs (CRS database, thread pools) are reported as `init`. Operations run from a local
+An operation receives the input's local path and returns its output in memory: a `terrio.Raster` or
+`terrio.Layer`, or a GDAL `MEM` dataset. The time is that call, reading the input from the OS page
+cache included. Before the timed call, the worker runs the same operation on the warm-up file, so
+that one-time costs (CRS database, thread pools) are reported as `init`. Operations run from a local
 path only. `--threads` sets both tools' threads: Rayon's, `GDAL_NUM_THREADS`, and `gdalwarp`'s
 `NUM_THREADS` with `-multi`. Cases ending in `_t1` run with one thread in both tools.
 With `GDAL_NUM_THREADS=4`, GDAL's terrain took more CPU and wall time than with 1 on the
@@ -435,10 +438,10 @@ differs from GDAL 3.13.3's by float32 rounding, one float32 step (3.05e-5 degree
 and 360) at most on the fixture. GDAL 3.13's hillshade rounding depends on the CPU, hence one
 level of tolerance.
 
-After the timing, each terrio sample computes GDAL's output in its own process and compares
-the two outputs pixel by pixel, with the rules of `scripts/compare_ops_with_gdal.py` except for
-nodata, where it is stricter (below). Shape, data type,
-CRS, geotransform (to 1e-6 pixel) and nodata must match. A float nodata is compared as the
+After the timing, each terrio sample of `warp` and `terrain` computes GDAL's output in its own
+process and compares the two outputs pixel by pixel, with the rules of
+`scripts/compare_ops_with_gdal.py` except for nodata, where it is stricter (below). Shape, data
+type, CRS, geotransform (to 1e-6 pixel) and nodata must match. A float nodata is compared as the
 output's type holds it: `gdal_calc.py` records float32's largest value as `3.402823466e+38`.
 Then every pixel counts, nodata included (that script compares only the pixels valid in GDAL's
 output): equal values (NaN with NaN) agree, and any other pixel differs by its absolute
@@ -449,6 +452,28 @@ beyond the tolerance, and is not ranked. `average_ts1024` differs at pixels on t
 output's footprint (about 0.1% of them). This is the area-weighting difference that the
 `ops` conformance suite records for #703. The warp tolerances are those of
 `scripts/compare_ops_with_gdal.py`: 0 for nearest, 1e-2 for the other resamplings.
+
+The `vectorize` format turns rasters into features. Polygonize runs on `u8_classes`, a class map
+that `fixtures --format vectorize` derives from the DEM: its elevations in 15 classes 200 m
+apart, a Deflate COG whose noisy class edges make 645,832 polygons (317,596 8-connected).
+Contour runs on `f32_none`, every 200 m (440,113 lines). The output is a `terrio.Layer` or a
+GDAL vector `MEM` dataset, with GDAL's fields as `gdal_polygonize` (`DN`) and
+`gdal_contour -a ELEV -i 200` (`ID`, `ELEV`) write them. Both tools trace in one thread
+(each tool's read of the input may use `--threads`), so the format has no `_t1` cases. Each terrio
+sample then computes GDAL's output in its own process. The comparison follows
+`scripts/compare_vector_ops_with_gdal.py` (polygonize) and
+`scripts/compare_analysis_bindings_with_gdal.py` (contour), with each feature matched by its
+vertices in place of their rasterized round trip and Hausdorff distance: feature count and CRS
+must match, and each of terrio's features must match one of GDAL's with the same value and the
+same vertex sequence, bit for bit (through a 128-bit hash), in each ring or line. Where a ring
+or a closed line starts, which way a ring or line runs and the order of a polygon's holes are
+left out (a polygon's shell is still compared as its shell): the two tracers choose them
+differently. A feature without a match differs. Each value's total area (polygons) or length
+(lines) must then agree within 1e-9 or 1e-10 relative, the conformance scripts' relative
+tolerances (without the contour script's absolute one); a single tiny ring's area or length,
+summed from another start, can differ by more. A case is `exact` when every feature matches and
+every total agrees, so `exact` means the same features, not the same start or direction. A total
+beyond its tolerance makes the case `DIFFER`.
 
 The `rasterize` and `zonal` formats time the two directions between features and pixels:
 
@@ -522,6 +547,9 @@ python scripts/perf_matrix.py fixtures --format geoparquet-write
 python scripts/perf_matrix.py run --format geoparquet-write   # the GeoParquet fixtures, written
 python scripts/perf_matrix.py run --format warp              # operations, on the GeoTIFF fixtures
 python scripts/perf_matrix.py run --format terrain --access slope slope_t1
+python scripts/perf_matrix.py fixtures --format vectorize    # the GeoTIFF fixtures and the class map
+python scripts/perf_matrix.py run --format vectorize --access contour
+
 python scripts/perf_matrix.py fixtures --format rasterize    # the FlatGeobuf fixtures
 python scripts/perf_matrix.py run --format rasterize
 python scripts/perf_matrix.py fixtures --format zonal        # the GeoTIFF fixtures and the zones
@@ -561,10 +589,10 @@ the base's wheel with `pip install --no-deps --target DIR terrio-*.whl`.
 above stay. Each case then also gives terrio's time over GDAL's in that configuration, and the
 report gives the geometric means of both ratios by source and access pattern, and the cases where
 terrio is faster than GDAL in one configuration only. A failure in that configuration, or read
-values that differ from GDAL's first configuration (for operations, a different pixel count), drops
-only its ratio; GDAL's outputs of operations and writes are otherwise not compared between
-configurations. The operations and writes that run with one thread (`_t1`, `cog_threads1`) set
-`GDAL_NUM_THREADS=1` in both configurations, so only the cache size differs there; the `threads1`
+values that differ from GDAL's first configuration (for operations, a different pixel or feature
+count), drops only its ratio; GDAL's outputs of operations and writes are otherwise not compared
+between configurations. The operations and writes that run with one thread (`_t1`, `cog_threads1`)
+set `GDAL_NUM_THREADS=1` in both configurations, so only the cache size differs there; the `threads1`
 reads keep `ALL_CPUS`.
 
 On a pull request, a maintainer's comment `/perf-matrix` runs the matrix on a GitHub runner
@@ -573,8 +601,8 @@ On a pull request, a maintainer's comment `/perf-matrix` runs the matrix on a Gi
 format but `geoparquet-write`, `geotiff-real` and `geoparquet-real` with one sample per tool;
 `/perf-matrix geoparquet --only geoarrow` runs one format with the options of `run`; options
 alone (`/perf-matrix --samples 5`) run the read formats except the real-data ones;
-`/perf-matrix warp`, `/perf-matrix terrain`, `/perf-matrix rasterize` and
-`/perf-matrix zonal` time the operations.
+`/perf-matrix warp`, `/perf-matrix terrain`, `/perf-matrix rasterize`, `/perf-matrix zonal` and
+`/perf-matrix vectorize` time the operations.
 Runner timings vary more than a quiet desktop's, but each comparison is made within one run on
 one runner. The Actions tab runs the same workflow for a pull request
 number. Each format runs in its own job, in parallel.

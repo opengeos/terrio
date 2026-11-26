@@ -25,7 +25,7 @@ Formats: geotiff, zarr, geoparquet, flatgeobuf, geopackage; geotiff-write and ge
 writes of the GeoTIFF and GeoParquet fixtures, each compared with GDAL's output; the operations
 warp and terrain, which run on a GeoTIFF fixture and compare their output with GDAL's pixel by
 pixel; rasterize, of the FlatGeobuf fixtures, compared pixel by pixel; zonal, statistics of a
-GeoTIFF fixture per polygon, compared zone by zone. Needs terrio's Python module (a release
+GeoTIFF fixture per polygon, compared zone by zone; vectorize (polygonize and contour), compared feature by feature. Needs terrio's Python module (a release
 build: `maturin develop --release` in python/), GDAL's Python bindings, pyogrio and PyArrow
 (GeoParquet, FlatGeobuf, GeoPackage) and zarr-python 3 (Zarr fixtures) in one environment.
 Fixtures and results stay in --dir, out of the repository. docs/benchmarks.md describes the method.
@@ -1118,7 +1118,7 @@ class FlatGeobuf:
 
 
 # =============================================================================================
-# Operations: an operation's output, in memory, against GDAL's, compared pixel by pixel.
+# Operations: an operation's output, in memory, against GDAL's, pixel by pixel or feature by feature.
 
 
 def compare_raster(out, ref, tol: float) -> dict:
@@ -1185,10 +1185,11 @@ class _Operation:
     Each access pattern is one operation with its options (`CASES`); `_t1` cases run it with one
     thread in both tools. A worker runs the operation on the warm-up file first, for its one-time
     costs (CRS database, thread pools). After the timing, a terrio sample computes GDAL's output in
-    its process and compares the two pixel by pixel (`compare_raster`).
+    its process and compares the two (`compare`: pixel by pixel, `compare_raster`).
     """
 
     COMPARES_OUTPUT = True  # `check` compares the output with GDAL's: the worker hashes no values
+    compare = staticmethod(compare_raster)  # `(terrio's output, GDAL's, tolerance)`
     DIR = "geotiff"  # the inputs are GeoTIFF fixtures
     EXT = ".tif"
     SOURCES = ["local"]
@@ -1221,7 +1222,7 @@ class _Operation:
 
         Returns:
             `(open, items, check, warm)` as the formats' readers return them; `check` returns
-            `(pixels beyond the tolerance, pixels, compare_raster's result)` for terrio.
+            `(values beyond the tolerance, values, compare's result)` for terrio.
         """
         if access.endswith("_t1"):  # before terrio's and GDAL's thread pools start
             os.environ["RAYON_NUM_THREADS"] = os.environ["GDAL_NUM_THREADS"] = "1"
@@ -1229,11 +1230,23 @@ class _Operation:
 
         def check(out):
             if tool == "gdal":
-                return 0.0, out.RasterCount * out.RasterXSize * out.RasterYSize
-            c = compare_raster(out, cls.op("gdal", access)(meta["path"]), cls.CASES[access][-1])
+                return 0.0, cls.size(out)
+            c = cls.compare(out, cls.op("gdal", access)(meta["path"]), cls.CASES[access][-1])
             return float(c["beyond_tol"]), c["n"], c
 
         return (lambda p: p), [run], check, ((lambda p: p), lambda p: run(p, warm=True))
+
+    @staticmethod
+    def size(out) -> int:
+        """The values of GDAL's output: its pixels.
+
+        Args:
+            out: GDAL's output.
+
+        Returns:
+            The count.
+        """
+        return out.RasterCount * out.RasterXSize * out.RasterYSize
 
 
 class Warp(_Operation):
@@ -2562,6 +2575,215 @@ PATHS["terrain"] = [
 ]
 
 
+def _shapes(features) -> tuple:
+    """Features by their value and vertex sequences, and each value's total area or length.
+
+    Where a ring or a closed line starts, which way a ring or line runs and the order of a
+    polygon's holes are the tracer's choice: a closed part's sequence is taken from its smallest
+    vertex, any part's in the direction that orders first, and the holes are sorted.
+
+    Args:
+        features: `(value, OGR geometry)` pairs: polygons or lines, not multi-geometries.
+
+    Returns:
+        A `Counter` of `(value, 128-bit hash of the geometry type and the bytes of the shell's or
+        line's vertex sequence and the holes', in sorted order, each marked closed or open)`, and `{value: total area of its polygons or
+        length of its lines}`. The hash spares holding both outputs' vertices again as Python
+        tuples (about 2 GB for polygonize's).
+    """
+    import hashlib
+    from array import array
+    from collections import Counter, defaultdict
+
+    shapes, totals = Counter(), defaultdict(float)
+    for value, g in features:
+        parts = []
+        for part in [g.GetGeometryRef(i) for i in range(g.GetGeometryCount())] or [g]:  # rings, or a line
+            p = part.GetPoints()  # None for a multi-geometry's part: an error
+            if len(p) > 1 and p[0] == p[-1]:  # closed: any vertex starts it, either way round
+                p, r, n = p[:-1], p[-2::-1], len(p) - 1
+                first = min(p)  # maybe repeated: every one is a candidate start
+                parts.append((True, min(min(p[i:] + p[:i], r[n - 1 - i:] + r[:n - 1 - i]) for i, q in enumerate(p) if q == first)))
+            else:
+                parts.append((False, min(p, p[::-1])))
+        # The geometry type and whether each part is closed: a closed line is not a polygon, nor an open line.
+        h = hashlib.blake2b(g.GetGeometryName().encode(), digest_size=16)
+        for closed, seq in [parts[0], *sorted(parts[1:])]:  # the shell or line, then the holes
+            h.update(struct.pack("<?Q", closed, len(seq)) + array("d", itertools.chain.from_iterable(seq)).tobytes())
+        shapes[value, h.digest()] += 1
+        totals[value] += g.GetArea() if g.GetGeometryCount() else g.Length()
+    return shapes, totals
+
+
+def compare_features(out, ref, tol: float) -> dict:
+    """terrio's features against GDAL's, as `compare_raster`'s comparison for a raster.
+
+    A feature matches one of GDAL's with the same value (the last field of GDAL's layer:
+    polygonize's `DN`, contour's `ELEV`) and the same vertex sequence in each ring or line, bit
+    for bit, whatever their start, direction or the order of the holes (`_shapes`); a feature
+    with no match differs. Each value's total area or length must then agree within the relative tolerance, as
+    `scripts/compare_vector_ops_with_gdal.py` checks polygonize (a feature's own area or length,
+    from other vertex orders, can differ by more on a tiny ring far from the origin). A different
+    feature count, CRS, value field or total puts every feature beyond the tolerance.
+
+    Args:
+        out: terrio's output, a `terrio.Layer`.
+        ref: GDAL's output, a vector `MEM` dataset of one layer.
+        tol: The largest relative difference of a value's total area or length.
+
+    Returns:
+        `n` features (GDAL's), `differing` and `beyond_tol` features, `max_diff` (the largest
+        relative difference of a total), `tol` and `mismatch` (what else differs, or an empty
+        string).
+    """
+    from osgeo import ogr, osr
+
+    layer = ref.GetLayer(0)
+    defn = layer.GetLayerDefn()
+    field = defn.GetFieldDefn(defn.GetFieldCount() - 1).GetName()
+    n, n_out = layer.GetFeatureCount(), len(out)
+    srs = osr.SpatialReference()
+    if out.crs_wkt:
+        srs.ImportFromWkt(out.crs_wkt)
+    mismatch = [
+        what for what, bad in (
+            (f"features {n_out} vs {n}", n_out != n),
+            (f"no {field} field", field not in out.fields),
+            ("crs", not srs.IsSame(layer.GetSpatialRef() or osr.SpatialReference(), ["IGNORE_DATA_AXIS_TO_SRS_AXIS_MAPPING=YES"])),
+        ) if bad
+    ]
+    if field not in out.fields:
+        return {"n": n, "tol": tol, "mismatch": "; ".join(mismatch), "differing": n, "beyond_tol": n, "max_diff": math.inf}
+    ours, our_totals = _shapes((v, ogr.CreateGeometryFromWkb(w)) for v, w in zip(out.columns()[field], out.to_wkb()))
+    theirs, their_totals = _shapes((f.GetField(field), f.GetGeometryRef()) for f in layer)
+    diff, value = max(((abs(a - b) / (max(abs(a), abs(b)) or 1), v) for v in our_totals.keys() | their_totals.keys()
+                       for a, b in [(our_totals.get(v, 0.0), their_totals.get(v, 0.0))]), key=lambda x: x[0], default=(0.0, None))
+    if diff > tol:
+        mismatch.append(f"{field} {value}: total {'area' if layer.GetGeomType() == ogr.wkbPolygon else 'length'} differs by {diff:.3g}")
+    unmatched = max(n, n_out) - sum((ours & theirs).values())
+    return {"n": n, "tol": tol, "mismatch": "; ".join(mismatch), "differing": unmatched, "max_diff": diff,
+            "beyond_tol": n if mismatch else unmatched}
+
+
+class Vectorize(_Operation):
+    """Rasters to features: polygons of equal pixels, as `gdal_polygonize`, and contour lines, as `gdal_contour`.
+
+    Reference: GDAL 3.13.3.
+    """
+
+    # The class map: the DEM's elevations in 15 classes 200 m apart, whose noisy edges make
+    # 645,832 polygons (317,596 8-connected).
+    FIXTURES = {**_Operation.FIXTURES, "u8_classes": ("uint8", 1, 4096, "DEFLATE", 1, "cog", "BAND", 512)}
+    # access: (input fixture, operation, its argument, relative tolerance of a value's total area or length)
+    # The conformance scripts' relative tolerances: polygon areas 1e-9, contour lengths 1e-10.
+    CASES = {
+        "polygonize": ("u8_classes", "polygonize", 4, 1e-9),  # 4-connected, as gdal_polygonize's default
+        "polygonize8": ("u8_classes", "polygonize", 8, 1e-9),
+        "contour": ("f32_none", "contour", 200.0, 1e-10),  # every 200 m: 440,113 lines
+    }
+    ACCESS = list(CASES)
+    meta = classmethod(Terrain.meta.__func__)
+    compare = staticmethod(compare_features)
+
+    @staticmethod
+    def axes(name: str) -> dict:
+        """The values of the matrix's axes for a fixture.
+
+        Args:
+            name: The fixture's name.
+
+        Returns:
+            As `GeoTiff.axes`.
+        """
+        return {"codec": "DEFLATE", "dtype": "uint8", "layout": "cog/band/1b"} if name == "u8_classes" else GeoTiff.axes(name)
+
+    @staticmethod
+    def make(out: Path) -> None:
+        """Writes the GeoTIFF fixtures, then the class map from the DEM's elevations.
+
+        Args:
+            out: The directory of the GeoTIFF fixtures.
+        """
+        import numpy as np
+        from osgeo import gdal
+
+        GeoTiff.make(out)
+        path = out / "u8_classes.tif"
+        if path.exists():
+            return
+        mem = gdal.GetDriverByName("MEM").Create("", 4096, 4096, 1, gdal.GDT_Byte)
+        mem.SetGeoTransform((500000, 10, 0, 5000000, 0, -10))
+        mem.SetProjection("EPSG:32631")
+        mem.GetRasterBand(1).WriteArray(((terrain(np, 4096, 1, "float32")[0] + 1000) // 200).astype("uint8"))
+        publish(path, lambda tmp: gdal.Translate(str(tmp), mem, format="COG", creationOptions=["COMPRESS=DEFLATE", "BLOCKSIZE=512"]))
+        print(f"{path.name}: {path.stat().st_size >> 20} MB", flush=True)
+
+    @staticmethod
+    def size(out) -> int:
+        """The values of GDAL's output: its features.
+
+        Args:
+            out: GDAL's output.
+
+        Returns:
+            The count.
+        """
+        return out.GetLayer(0).GetFeatureCount()
+
+    @staticmethod
+    def op(tool: str, access: str):
+        """An operation's call.
+
+        Args:
+            tool: `terrio` or `gdal`.
+            access: The operation.
+
+        Returns:
+            `op(path, warm=False)`, which returns the features in memory: a `terrio.Layer`, or a
+            GDAL vector `MEM` dataset.
+        """
+        _, what, arg, _ = Vectorize.CASES[access]
+        if tool == "terrio":
+            import terrio
+
+            if what == "polygonize":
+                return lambda p, warm=False: terrio.polygonize(p, connectedness=arg)
+            return lambda p, warm=False: terrio.contour(p, interval=arg)
+        from osgeo import gdal, ogr
+
+        gdal.UseExceptions()
+        ogr.UseExceptions()
+
+        def op(p, warm=False):
+            src = gdal.Open(p)
+            band = src.GetRasterBand(1)
+            out = ogr.GetDriverByName("MEM").CreateDataSource("")
+            if what == "polygonize":  # as gdal_polygonize: the band's mask, the value in `DN`
+                layer = out.CreateLayer("polygons", src.GetSpatialRef(), ogr.wkbPolygon)
+                layer.CreateField(ogr.FieldDefn("DN", ogr.OFTInteger))
+                gdal.Polygonize(band, band.GetMaskBand(), layer, 0, ["8CONNECTED=8"] if arg == 8 else [])
+            else:  # as gdal_contour -a ELEV -i: `ID` and `ELEV` fields
+                layer = out.CreateLayer("contour", src.GetSpatialRef(), ogr.wkbLineString)
+                layer.CreateField(ogr.FieldDefn("ID", ogr.OFTInteger))
+                layer.CreateField(ogr.FieldDefn("ELEV", ogr.OFTReal))
+                gdal.ContourGenerateEx(band, layer, options=[f"LEVEL_INTERVAL={arg}", "ID_FIELD=0", "ELEV_FIELD=1"])
+            return out
+
+        return op
+
+
+FORMATS["vectorize"] = Vectorize
+PATHS["vectorize"] = [
+    "crates/terrio/src/ops/polygonize.rs",
+    "crates/terrio/src/ops/contour.rs",
+    "crates/terrio/src/ops/sample.rs",  # contour's input checks
+    "crates/terrio/src/ops/mod.rs",
+    "python/src/ops.rs",  # `terrio.polygonize`
+    "python/src/analysis.rs",  # `terrio.contour`
+    "python/src/vector.rs",  # the `terrio.Layer` both return
+]
+
+
 # =============================================================================================
 # Real data: public files, downloaded once into the fixture directory, read as the fixtures of
 # their format are.
@@ -3331,7 +3553,8 @@ def summarize(row: dict) -> dict:
     GDAL in its second configuration (`--gdal-allcpus`), when its samples' values equal GDAL's
     (`gdal_allcpus_values_match`, by digest, else by sum and count): a reference, it does not change
     `values`. That check covers reads only: an operation's GDAL samples carry no digest and a zero
-    sum, so it compares their pixel count alone; a write's count is its source's and always agrees.
+    sum, so it compares their pixel or feature count alone; a write's count is its source's and
+    always agrees.
     `values` is `exact` when every sample's
     digest equals GDAL's first, else `checksum_match` when every sample's sum and count do, else the
     first that differs.
@@ -3382,7 +3605,7 @@ def summarize(row: dict) -> dict:
         out["values"] = "exact" if exact else "checksum_match" if differ is None else f"DIFFER: {differ[0]} n {differ[1]['n']} sum {differ[1]['sum']:.6g} vs gdal n {ref['n']} sum {ref['sum']:.6g}"
         # terrio's outputs label the case; the base build's comparisons stay in its own samples
         compares = [r["compare"] for r in row["terrio"] if "compare" in r]
-        if compares:  # outputs compared with GDAL's, pixel by pixel: the worst sample labels the case
+        if compares:  # outputs compared with GDAL's, pixel by pixel or feature by feature: the worst sample labels the case
             c = out["compare"] = max(compares, key=_badness)
             out["values"] = (
                 f"DIFFER: {c['mismatch']}" if c["mismatch"]
@@ -3408,8 +3631,9 @@ def _badness(c: dict) -> tuple:
 
 
 # The `values` of a case whose values agree with GDAL's: `exact` (the same bytes, or an output
-# equal to GDAL's), `checksum_match` (the same count and sum within 1e-6; `same` in older
-# results), or `within_tol` (an output within its tolerance of GDAL's).
+# equal to GDAL's; features whatever their start or direction), `checksum_match` (the same count
+# and sum within 1e-6; `same` in older results), or `within_tol` (an output within its tolerance
+# of GDAL's).
 MATCH = ("exact", "checksum_match", "same", "within_tol")
 
 
