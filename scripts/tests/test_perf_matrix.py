@@ -1176,6 +1176,168 @@ def test_report_gives_each_tools_speedup_over_one_thread():
     assert "geotiff local threads8  terrio x4.00  gdal x4.00  terrio/gdal time x2.00  (1)" in two_runs
 
 
+def _fs_type(path):
+    """The file system type of a path.
+
+    Args:
+        path: The path.
+
+    Returns:
+        The type of the longest mount point above it, such as `ext4` or `tmpfs`.
+    """
+    path = str(Path(path).resolve()) + "/"  # a mount point is above itself
+    mounts = [line.split()[1:3] for line in Path("/proc/mounts").read_text().splitlines()]
+    return max(((m, k) for m, k in mounts if path.startswith(m.rstrip("/") + "/")), key=lambda x: len(x[0]))[1]
+
+
+# File systems whose files `POSIX_FADV_DONTNEED` drops from the page cache: the eviction must work there.
+EVICTING = ("ext4", "xfs", "btrfs")
+
+
+@pytest.mark.skipif(not hasattr(os, "posix_fadvise") or not Path("/proc/mounts").exists(), reason="Linux page cache")
+def test_eviction_drops_every_file_of_a_fixture_from_the_page_cache(tmp_path):
+    """Evict a fixture's files, a directory store's nested ones too, and count the pages before and after.
+
+    Args:
+        tmp_path: A directory for the fixture.
+    """
+    store = tmp_path / "f.zarr"
+    (store / "c" / "0").mkdir(parents=True)
+    (store / "zarr.json").write_bytes(b"{}")
+    (store / "c" / "0" / "0").write_bytes(os.urandom(1 << 20))  # just written: dirty pages until flushed
+    (store / "empty").write_bytes(b"")
+    page = perf_matrix.resource.getpagesize()
+    first = perf_matrix.evict(store)
+    fs = _fs_type(tmp_path)
+    if first["resident_after"] and fs not in EVICTING:  # tmpfs, or overlayfs in some containers
+        pytest.skip(f"{fs} keeps pages that POSIX_FADV_DONTNEED drops elsewhere")
+    assert first["cache_pages"] == 1 + (1 << 20) // page and first["resident_after"] == 0
+    perf_matrix.rewarm(store)
+    again = perf_matrix.evict(store)
+    if not again["resident_before"]:
+        pytest.skip("reads do not fill the page cache here (ZFS keeps its own cache)")
+    assert again["cache_pages"] == first["cache_pages"] and again["resident_before"] > 0 and again["resident_after"] == 0
+    one = store / "c" / "0" / "0"
+    assert perf_matrix.evict(one)["cache_pages"] == (1 << 20) // page
+
+
+def test_cold_reads_evict_before_each_sample_and_refuse_a_cached_fixture(tmp_path, monkeypatch):
+    """Read a cold case from the local path with eviction, fail a sample whose fixture stayed cached,
+    and read the fixture into the page cache before the warm case.
+
+    Args:
+        tmp_path: Isolated fixture and results directory.
+        monkeypatch: Scoped dependency replacements.
+    """
+    fake = SimpleNamespace(FIXTURES={"a": None}, ACCESS=["full"], EXT=".tif", meta=lambda *_: {"need_bytes": 1},
+                           axes=lambda _: {"codec": "none", "dtype": "uint8", "layout": "cog"})
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
+    monkeypatch.setattr(perf_matrix, "machine", lambda: {"machine": {"on_ac": True}})
+    monkeypatch.setattr(perf_matrix, "report", lambda _: "recorded")
+    monkeypatch.setattr(perf_matrix, "_settled_log", lambda: [])
+    rewarmed, specs = [], []
+    monkeypatch.setattr(perf_matrix, "rewarm", rewarmed.append)
+
+    def worker(cmd, **_kwargs):
+        spec = json.loads(cmd[-1])
+        specs.append(spec)
+        stayed = 3 if spec["tool"] == "gdal" and spec["cold"] else 0
+        cold = {"cache_pages": 8, "resident_before": 8, "resident_after": stayed, "disk_bytes": 4096}
+        sample = {**_sample(1), **cold} if spec["cold"] else _sample(1)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(sample), stderr="")
+
+    monkeypatch.setattr(perf_matrix.subprocess, "run", worker)
+    args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=1, only=None, quick=True, samples=1,
+                           base=None, out=tmp_path / "results.jsonl", source=["local", "cold"], allow_battery=False,
+                           access=None, timeout=1)
+    perf_matrix.run(args)
+    assert {(s["src"], s["cold"]) for s in specs} == {(str(tmp_path / "a.tif"), False), (str(tmp_path / "a.tif"), True)}
+    assert rewarmed == [tmp_path / "a.tif"]  # before the warm case only
+    rows = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()[1:]]
+    assert [r["source"] for r in rows] == ["local", "cold"]
+    assert "gdal_error" not in rows[0] and rows[1]["gdal_error"] == "not evicted: 3 of 8 pages stayed in the page cache"
+
+
+@pytest.mark.parametrize("fmt,ok", [("geotiff", True), ("zarr", True), ("warp", False), ("geotiff-write", False)])
+def test_cold_reads_are_a_source_of_the_read_formats_on_request(tmp_path, monkeypatch, fmt, ok):
+    """Accept `--source cold` for the reads, not for operations and writes.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped argument and runner replacements.
+        fmt: The format.
+        ok: Whether the command line is accepted.
+    """
+    ran = []
+    monkeypatch.setattr(perf_matrix, "run", ran.append)
+    monkeypatch.setattr(sys, "argv", ["perf_matrix.py", "run", "--dir", str(tmp_path), "--format", fmt, "--source", "cold"])
+    if ok:
+        perf_matrix.main()
+        assert ran[0].source == ["cold"]
+    else:
+        with pytest.raises(SystemExit) as exc:
+            perf_matrix.main()
+        assert exc.value.code == 2 and not ran
+
+
+def test_report_compares_cold_reads_with_warm_ones():
+    """Give each tool's cold time over its warm time, and both ratios, over the cases read both ways."""
+    def case(source, t, g):
+        return summarize({**_row(terrio=[_sample(t)], gdal=[_sample(g)]), "source": source})
+
+    text = report([{"machine": _MACHINE}, case("local", 1.0, 2.0), case("cold", 4.0, 4.0)])
+    assert "geotiff cold time / warm time: terrio x4.00  gdal x2.00  terrio/gdal time warm x0.50 cold x1.00  (1)" in text
+    assert "## Cold page cache" not in report([case("local", 1.0, 2.0)])
+
+
+def test_a_cold_read_that_took_nothing_from_storage_is_refused(tmp_path, monkeypatch):
+    """Refuse a cold sample that read no bytes from a block device: a cache `mincore` does not see served it.
+
+    Args:
+        tmp_path: Isolated fixture and results directory.
+        monkeypatch: Scoped dependency replacements.
+    """
+    fake = SimpleNamespace(FIXTURES={"a": None}, ACCESS=["full"], EXT=".tif", meta=lambda *_: {"need_bytes": 1},
+                           axes=lambda _: {"codec": "none", "dtype": "uint8", "layout": "cog"})
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
+    monkeypatch.setattr(perf_matrix, "machine", lambda: {"machine": {"on_ac": True}})
+    monkeypatch.setattr(perf_matrix, "report", lambda _: "recorded")
+    monkeypatch.setattr(perf_matrix, "_settled_log", lambda: [])
+    monkeypatch.setattr(perf_matrix, "rewarm", lambda _: None)
+    sample = {**_sample(1), "cache_pages": 8, "resident_before": 0, "resident_after": 0, "disk_bytes": 0}
+    monkeypatch.setattr(perf_matrix.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0, stdout=json.dumps(sample), stderr=""))
+    args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=1, only=None, quick=True, samples=1,
+                           base=None, out=tmp_path / "results.jsonl", source=["cold"], allow_battery=False, access=None, timeout=1)
+    perf_matrix.run(args)
+    row = json.loads((tmp_path / "results.jsonl").read_text().splitlines()[1])
+    assert row["terrio_error"] == row["gdal_error"] == "not cold: the read took no bytes from a block device"
+
+
+def test_a_cold_worker_evicts_after_the_warm_up_and_counts_storage_bytes_over_the_read(monkeypatch):
+    """Evict after the warm-up and outside `init`, and count the block-device bytes of the timed read only.
+
+    Args:
+        monkeypatch: Scoped format and counter replacements.
+    """
+    events = []
+
+    def reader(_tool, _access, _meta):
+        return (lambda p: events.append("open") or p), [lambda _d: events.append("read") or [1]], perf_matrix.checksum, (
+            lambda p: p, lambda _d: events.append("warm-up"))
+
+    def evict(path):
+        events.append("evict")
+        return {"cache_pages": 2, "resident_before": 2, "resident_after": 0}
+
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", SimpleNamespace(EXT=".tif", reader=reader))
+    monkeypatch.setattr(perf_matrix, "evict", evict)
+    # The block device gives 4096 bytes to the read, none to the warm-up or the eviction.
+    monkeypatch.setattr(perf_matrix, "_proc_io", lambda: {"rchar": 0, "read_bytes": 1000 + 4096 * ("read" in events)})
+    out = perf_matrix.worker({"format": "fake", "tool": "terrio", "src": "/d/f.tif", "access": "full", "meta": {}, "cold": True})
+    assert events == ["warm-up", "evict", "open", "read"]
+    assert out["disk_bytes"] == 4096 and out["resident_after"] == 0 and out["cache_pages"] == 2
+
+
 def test_flatgeobuf_index_levels_end_at_one_root_and_refuse_no_features():
     """Lay out a packed R-tree's levels down to one root, and refuse an index of no features."""
     assert perf_matrix.FlatGeobuf.levels(1) == [(1, 2), (0, 1)]

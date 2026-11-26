@@ -374,6 +374,23 @@ The worker environment sets `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` to avoid di
 for its raster cache. These GDAL settings apply to GDAL; Terrio uses its own I/O and cache
 policies. HTTP request and round counts therefore compare these configured workflows.
 
+A local file is read from the OS page cache after its first read. `--source cold` adds a third
+source, on request: the local path, dropped from the page cache before each sample of each tool,
+without root. After its warm-up, the worker flushes each of the fixture's files (`fsync`) and
+calls `posix_fadvise(POSIX_FADV_DONTNEED)` on it. It counts the files' pages in the page cache
+with `mincore` before and after, and records them with the bytes the worker process read from
+block devices during the open and read (`read_bytes` of `/proc/self/io`, `disk KiB` in the
+report). That count includes any other file the process reads then, such as a library loaded on
+first use, so it is an upper bound on the fixture's storage reads. A sample whose pages did not
+all leave the page cache, for example pages another process maps, is reported as an error rather
+than timed as cold, as is a sample that read nothing from a block device (network and FUSE file
+systems). When `cold` is among the sources, the runner reads the
+fixture into the page cache before each warm case, so a warm case never follows a cold one
+uncached. The report compares each tool's cold time with its warm local time over
+the cases read both ways. Cold reads need Linux, fixtures on a local file system that caches
+in the page cache (ext4 or XFS, not tmpfs or ZFS, whose own cache `mincore` does not see), and
+fixtures the user owns or can write: `mincore` reports other files' pages as cached.
+
 The report ranks the worst cases, gives the geometric mean of the time ratios for each value of
 each axis (by codec, layout, access pattern and source), and lists matching-checksum cases with
 more request rounds than GDAL, bytes above 1.25 times GDAL plus 64 KiB, or bytes above 1.5 times
