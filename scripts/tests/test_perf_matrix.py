@@ -693,15 +693,17 @@ def test_changed_files_choose_the_formats_to_measure():
     assert all("geopackage" in perf_matrix.touched([f]) for f in ("python/src/ops.rs", "crates/terrio/src/drivers/vector/mod.rs"))
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet", "geoparquet-real"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
-    assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "flatgeobuf", "geopackage", "geotiff-write",
+    assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "flatgeobuf", "geopackage", "shapefile", "geotiff-write",
                                                    "geoparquet-write", "warp", "terrain", "geotiff-real", "geoparquet-real"]
-    assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "flatgeobuf", "geopackage", "geoparquet-real"]
-    assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf", "geopackage", "geoparquet-real"]
+    assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "flatgeobuf", "geopackage", "shapefile", "geoparquet-real"]
+    assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf", "geopackage", "shapefile", "geoparquet-real"]
     assert perf_matrix.touched(["crates/terrio/src/ops/sql/select.rs"]) == ["geopackage"]
     assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr", "geotiff-write", "geotiff-real"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/gtiff_write.rs"]) == ["geotiff-write"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet.rs"]) == ["geoparquet", "geoparquet-write", "geoparquet-real"]
-    assert perf_matrix.touched(["python/src/vector.rs"]) == ["flatgeobuf", "geoparquet-write"]
+    assert perf_matrix.touched(["python/src/vector.rs"]) == ["flatgeobuf", "shapefile", "geoparquet-write"]
+    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/shapefile_codepages.rs"]) == ["shapefile"]
+    assert perf_matrix.touched(["python/src/ops.rs"]) == ["geopackage", "shapefile", "geotiff-write", "geoparquet-write", "warp"]
     assert perf_matrix.touched(["crates/terrio/src/ops/warp/window.rs"]) == ["warp"]
     assert perf_matrix.touched(["crates/terrio/src/ops/dem.rs", "crates/terrio/src/ops/calc/eval.rs"]) == ["terrain"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == ["flatgeobuf"]
@@ -1446,6 +1448,114 @@ def test_geopackage_gdal_read_names_the_geometry_as_terrio(tmp_path):
     lyr = ds = None
     open_, items, _, _ = perf_matrix.GeoPackage.reader("gdal", "full", {})
     assert items[0](open_(str(path))).column_names == ["id", "geometry"]
+
+
+def test_shapefile_fixtures_are_directories_whose_bbox_reads_need_the_qix_search(tmp_path, monkeypatch):
+    """Write a fixture directory per shapefile and count what a bbox read needs, with and without a `.qix`.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped dependency replacements.
+    """
+    ogr = pytest.importorskip("osgeo.ogr")
+    if ogr.GetDriverByName("FlatGeobuf") is None:
+        pytest.skip("FlatGeobuf driver is required")
+    ogr.UseExceptions()
+    # 300 points on a 20 x 15 grid over the extent, as the sources' layer and fields.
+    points = [(2500 + 5000 * i, 3333 + 6666 * j) for i in range(20) for j in range(15)]
+    src = tmp_path / "src.fgb"
+    ds = ogr.GetDriverByName("FlatGeobuf").CreateDataSource(str(src))
+    lyr = ds.CreateLayer("data", None, ogr.wkbPoint, ["SPATIAL_INDEX=NO"])  # in `id` order, as the sources
+    for name, kind in (("id", ogr.OFTInteger64), ("value", ogr.OFTReal), ("class", ogr.OFTString), ("year", ogr.OFTInteger)):
+        lyr.CreateField(ogr.FieldDefn(name, kind))
+    for i, (x, y) in enumerate(points):
+        f = ogr.Feature(lyr.GetLayerDefn())
+        f["id"], f["value"], f["class"], f["year"] = i, i / 2, "forest", 2020
+        f.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT ({x} {y})"))
+        lyr.CreateFeature(f)
+    lyr = ds = None
+    fixtures = {"grid_qix": ("point", len(points), True, "UTF-8"), "grid_latin1": ("point", len(points), False, "LATIN1")}
+    monkeypatch.setattr(perf_matrix.Shapefile, "FIXTURES", fixtures)
+    monkeypatch.setattr(perf_matrix.GeoParquet, "sources", lambda out: {"point": src})
+    out = tmp_path / "shapefile"
+    out.mkdir()
+    perf_matrix.Shapefile.make(out)
+    assert (out / "_warmup" / "_warmup.shp").is_file()
+    qix, latin1 = out / "grid_qix", out / "grid_latin1"
+    assert (qix / "grid_qix.qix").is_file() and not (latin1 / "grid_latin1.qix").exists()
+    assert (latin1 / "grid_latin1.cpg").read_text() == "LATIN1"
+    assert "forést".encode("latin-1") in (latin1 / "grid_latin1.dbf").read_bytes()
+
+    def size(d, ext):
+        p = d / f"{d.name}.{ext}"
+        return p.stat().st_size if p.exists() else 0
+
+    meta = perf_matrix.Shapefile.meta
+    for d in (qix, latin1):
+        assert meta(d, "full")["need_bytes"] == meta(d, "columns")["need_bytes"] == sum(size(d, e) for e in ("shp", "dbf", "prj", "cpg"))
+    # The quadtree: a box over the extent reads every node, one beside it the root alone.
+    shapes, nodes = perf_matrix.Shapefile.quadtree(qix / "grid_qix.qix", [(0, 0, 100_000, 100_000)])
+    assert shapes == set(range(len(points))) and nodes == size(qix, "qix") - 16
+    assert perf_matrix.Shapefile.quadtree(qix / "grid_qix.qix", [(-10, -10, -1, -1)]) == (set(), 40)
+    # A missed node is skipped by its offset: the root's children end the file.
+    raw = (qix / "grid_qix.qix").read_bytes()
+    offset, n = struct.unpack_from("<i", raw, 16)[0], struct.unpack_from("<i", raw, 16 + 36)[0]
+    assert raw[3] == 1 and 16 + 44 + 4 * n + offset == len(raw) and offset > 0
+    dbf = (latin1 / "grid_latin1.dbf").read_bytes()
+    header, row = struct.unpack_from("<HH", dbf, 8)
+    for access, boxes in (("bbox", perf_matrix.GeoParquet.bboxes(1)), ("bbox16", perf_matrix.GeoParquet.bboxes(16))):
+        found = {i for i, (x, y) in enumerate(points) if any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in boxes)}
+        assert 0 < len(found) < len(points)
+        assert perf_matrix.Shapefile.found(qix / "grid_qix.shp", len(boxes)) == found
+        small = size(qix, "prj") + size(qix, "cpg")
+        # Without a .qix every shape is read; the .dbf rows of the features found.
+        assert meta(latin1, access)["need_bytes"] == size(latin1, "prj") + size(latin1, "cpg") + size(latin1, "shp") + header + row * len(found)
+        shapes, nodes = perf_matrix.Shapefile.quadtree(qix / "grid_qix.qix", boxes)
+        assert found <= shapes < set(range(len(points))) and nodes < size(qix, "qix") - 16
+        # The .qix header and nodes, the .shx and .shp headers, an 8-byte .shx entry and a 28-byte
+        # point record for each shape given, and the .dbf rows found.
+        expected = small + header + row * len(found) + 16 + nodes + 100 + 8 * len(shapes) + 100 + 28 * len(shapes)
+        assert meta(qix, access)["need_bytes"] == expected
+
+
+def test_shapefile_fixture_names_keep_each_cases_http_requests_apart():
+    """Count a case's requests by its directory's name: no fixture's name starts another's."""
+    names = [*perf_matrix.Shapefile.FIXTURES, "_warmup"]
+    assert not [(a, b) for a in names for b in names if a != b and b.startswith(a)]
+
+
+def test_shapefile_reads_give_both_tools_the_same_values_and_latin1_text(tmp_path):
+    """Read a fixture directory's `<dir>/<dir>.shp` with both tools: the same values, LATIN1 text decoded.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+    """
+    ogr = pytest.importorskip("osgeo.ogr")
+    pytest.importorskip("pyogrio")
+    pytest.importorskip("pyarrow")
+    terrio = pytest.importorskip("terrio")
+    ogr.UseExceptions()
+    d = tmp_path / "tiny"
+    d.mkdir()
+    ds = ogr.GetDriverByName("ESRI Shapefile").CreateDataSource(str(d / "tiny.shp"))
+    lyr = ds.CreateLayer("tiny", None, ogr.wkbPoint, ["ENCODING=LATIN1"])
+    for name, kind in (("id", ogr.OFTInteger64), ("value", ogr.OFTReal), ("class", ogr.OFTString)):
+        lyr.CreateField(ogr.FieldDefn(name, kind))
+    for i, (x, y) in enumerate([(45000, 45000), (1000, 1000)]):
+        f = ogr.Feature(lyr.GetLayerDefn())
+        f["id"], f["value"], f["class"] = i + 1, 1.5, "forêt"
+        f.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT ({x} {y})"))
+        lyr.CreateFeature(f)
+    lyr = ds = None
+    for access, rows in (("full", 2), ("columns", 2), ("bbox", 1)):
+        reads = []
+        for tool in ("terrio", "gdal"):
+            open_, items, check, _ = perf_matrix.Shapefile.reader(tool, access, {})
+            reads.append([item(open_(str(d))) for item in items])
+        assert [check(t) for t in reads[0]] == [check(t) for t in reads[1]]
+        assert reads[0][0].num_rows == rows
+        assert reads[0][0].column("class").to_pylist() == ["forêt"] * rows
+        assert perf_matrix.digest(reads[0]) == perf_matrix.digest(reads[1]), (access, terrio.__version__)
 
 
 def test_a_download_is_kept_only_when_it_is_the_pinned_file(tmp_path):

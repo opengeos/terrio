@@ -21,11 +21,11 @@ time ratios by axis, so a round of optimization starts from the slow areas, not 
 `--base DIR` times a second terrio build (`pip install --target DIR` of its wheel) in the same
 run, interleaved with this one and GDAL: the report then gives this build's time against the base.
 
-Formats: geotiff, zarr, geoparquet, flatgeobuf, geopackage; geotiff-write and geoparquet-write:
+Formats: geotiff, zarr, geoparquet, flatgeobuf, geopackage, shapefile; geotiff-write and geoparquet-write:
 writes of the GeoTIFF and GeoParquet fixtures, each compared with GDAL's output; the operations
 warp and terrain, which run on a GeoTIFF fixture and compare their output with GDAL's pixel by
 pixel. Needs terrio's Python module (a release build: `maturin develop --release` in python/),
-GDAL's Python bindings, pyogrio and PyArrow (GeoParquet, FlatGeobuf, GeoPackage) and zarr-python 3
+GDAL's Python bindings, pyogrio and PyArrow (the vector formats) and zarr-python 3
 (Zarr fixtures) in one environment. Fixtures and results stay in --dir, out of the repository.
 docs/benchmarks.md describes the method.
 
@@ -1693,6 +1693,270 @@ PATHS = {
         "python/src/ops.rs",  # `terrio.sql`, the `where` read
     ],
 }
+
+
+# =============================================================================================
+# Shapefile
+
+
+class Shapefile:
+    """Shapefiles (by geometry, with or without a `.qix` spatial index, by `.cpg` encoding) and their reads.
+
+    A shapefile is several files (`.shp`, `.shx`, `.dbf`, `.prj`, `.cpg` and `.qix`): each fixture
+    is a directory holding one, so a case's HTTP requests are those under the fixture's name.
+    terrio reads a bbox with `terrio.open_vector`, which filters by bbox (`open_stream` does not
+    filter a local shapefile), and every feature or two columns with `terrio.open_stream`. It reads no
+    `.qix`, and downloads a URL's `.shp`, `.shx`, `.dbf`, `.prj` and `.cpg` whole before reading
+    them, where GDAL reads them, and the `.qix`, by range requests.
+    """
+
+    # name: (geometry, rows, .qix, encoding); the features of GeoParquet's sources. The LATIN1
+    # fixture's `class` values with an `e` take an `é`, so that decoding them is measured.
+    FIXTURES = {
+        "poly_qix": ("polygon", 400_000, True, "UTF-8"),
+        "poly_noindex": ("polygon", 400_000, False, "UTF-8"),
+        "poly_latin1": ("polygon", 400_000, False, "LATIN1"),
+        "point_qix": ("point", 2_000_000, True, "UTF-8"),
+        "point_noindex": ("point", 2_000_000, False, "UTF-8"),
+        "line_qix": ("line", 400_000, True, "UTF-8"),
+        "line_noindex": ("line", 400_000, False, "UTF-8"),
+    }
+    # GeoParquet's: every column; the geometry and two attributes; a bbox of 1% of the extent; 16
+    # bboxes; N threads sharing the 16 (`THREAD_COUNTS`).
+    ACCESS = ["full", "columns", "bbox", "bbox16", "threads4"]
+    EXT = ""  # a fixture is a directory
+    ACCENTED = "SELECT id, value, REPLACE(class, 'e', 'é') AS class, year, geometry FROM data"
+
+    @staticmethod
+    def axes(name: str) -> dict:
+        """The values of the matrix's axes for a fixture.
+
+        Args:
+            name: The fixture's name.
+
+        Returns:
+            Its `codec`, `dtype` and `layout`.
+        """
+        geom, rows, qix, encoding = Shapefile.FIXTURES[name]
+        return {"codec": encoding, "dtype": geom, "layout": f"{'qix' if qix else 'no index'}/{rows}"}
+
+    @staticmethod
+    def make(out: Path) -> None:
+        """Writes the format's fixtures that are not there yet, and its warm-up file.
+
+        Args:
+            out: The directory of the format's fixtures.
+        """
+        from osgeo import gdal
+
+        gdal.UseExceptions()
+        sources = GeoParquet.sources(out)
+
+        def write(tmp, src, rows, lco, **kw):
+            tmp.mkdir()
+            gdal.VectorTranslate(str(tmp / f"{tmp.name}.shp"), str(src), format="ESRI Shapefile", layerCreationOptions=lco, limit=rows, **kw)
+
+        for name, (geom, rows, qix, encoding) in Shapefile.FIXTURES.items():
+            path = out / name
+            if path.exists():
+                continue
+            lco = [f"SPATIAL_INDEX={'YES' if qix else 'NO'}", f"ENCODING={encoding}"]
+            sql = {} if encoding == "UTF-8" else {"SQLStatement": Shapefile.ACCENTED, "SQLDialect": "SQLITE"}
+            publish(path, lambda tmp: write(tmp, sources[geom], rows, lco, **sql))
+            print(f"{name}: {sum(f.stat().st_size for f in path.iterdir()) >> 20} MB", flush=True)
+        publish(out / "_warmup", lambda tmp: write(tmp, sources["point"], 100, ["ENCODING=UTF-8"]))
+
+    @staticmethod
+    def quadtree(path: Path, boxes) -> tuple[set[int], int]:
+        """The shapes a `.qix` quadtree gives for boxes, and the bytes of the nodes its search reads.
+
+        The search matches shapelib's, written from its file layout rather than translated from
+        its code (reference: GDAL 3.13.3): it reads a node's offset, bounds and
+        shape count (40 bytes), skips the node and its subtree when the box misses its bounds, and
+        otherwise reads its shape ids and child count and searches its children. A node several
+        boxes read counts once.
+
+        Args:
+            path: The `.qix` file.
+            boxes: `(min_x, min_y, max_x, max_y)` of each box.
+
+        Returns:
+            The ids of the shapes in the nodes the boxes intersect, and the bytes of the nodes read.
+
+        Raises:
+            ValueError: If the file is not a `.qix` quadtree.
+        """
+        data = path.read_bytes()  # 4 bytes a shape and 44 a node
+        if data[:3] != b"SQT" or data[3] not in (1, 2):
+            raise ValueError(f"{path.name}: not a .qix quadtree")
+        order = "<" if data[3] == 1 else ">"
+        ids, read = set(), {}
+
+        def search(pos, box):
+            """Searches the subtree at `pos` and returns where it ends."""
+            offset, x0, y0, x1, y1, n = struct.unpack_from(f"{order}i4di", data, pos)
+            end = pos + 44 + 4 * n  # past the ids and the child count; the children follow
+            if x0 > box[2] or x1 < box[0] or y0 > box[3] or y1 < box[1]:
+                read[pos] = max(read.get(pos, 0), 40)
+                return end + offset  # the offset is the children's size
+            read[pos] = 44 + 4 * n
+            ids.update(struct.unpack_from(f"{order}{n}i", data, pos + 40))
+            pos = end
+            for _ in range(struct.unpack_from(f"{order}i", data, end - 4)[0]):
+                pos = search(pos, box)
+            return pos
+
+        for box in boxes:
+            search(16, box)  # after the 16-byte header
+        return ids, sum(read.values())
+
+    @staticmethod
+    def found(shp: Path, n: int) -> frozenset[int]:
+        """The features GDAL's spatial filter gives for n of GeoParquet's boxes, through any `.qix`.
+
+        Args:
+            shp: The `.shp` file.
+            n: The number of boxes.
+
+        Returns:
+            Their feature ids, the shapes' record numbers from 0.
+        """
+        from osgeo import ogr
+
+        ogr.UseExceptions()
+        ds = ogr.Open(str(shp))
+        lyr = ds.GetLayer(0)
+        defn = lyr.GetLayerDefn()
+        lyr.SetIgnoredFields([defn.GetFieldDefn(i).GetName() for i in range(defn.GetFieldCount())])
+        out = set()
+        for box in GeoParquet.bboxes(n):
+            lyr.SetSpatialFilterRect(*box)
+            out.update(f.GetFID() for f in lyr)
+        lyr = ds = None
+        return frozenset(out)
+
+    @staticmethod
+    def bbox_need(path: Path, n: int) -> int:
+        """The bytes a read of n of GeoParquet's boxes needs: see `meta`.
+
+        Args:
+            path: The fixture's directory.
+            n: The number of boxes.
+
+        Returns:
+            The bytes.
+
+        Raises:
+            ValueError: If the `.qix` does not give a feature GDAL's spatial filter finds.
+        """
+        import numpy as np
+
+        files = {e: path / f"{path.name}.{e}" for e in ("shp", "shx", "dbf", "prj", "cpg", "qix")}
+        size = {e: f.stat().st_size if f.exists() else 0 for e, f in files.items()}
+        found = Shapefile.found(files["shp"], n)
+        with open(files["dbf"], "rb") as f:
+            header, row = struct.unpack("<HH", os.pread(f.fileno(), 4, 8))
+        need = size["prj"] + size["cpg"] + header + row * len(found)
+        if not files["qix"].exists():
+            return need + size["shp"]
+        shapes, nodes = Shapefile.quadtree(files["qix"], GeoParquet.bboxes(n))
+        if not found <= shapes:
+            raise ValueError(f"{path.name}: the .qix does not give {len(found - shapes)} of the features found")
+        # A record's content length in 16-bit words, after its offset (big-endian, as the header's).
+        words = np.fromfile(files["shx"], ">i4", offset=100)[1::2]
+        records = sum(8 + 2 * int(words[i]) for i in shapes)  # a record's header and content
+        # The .qix header (16 bytes) and nodes; the .shx header (100) and an entry (8) per shape;
+        # the .shp header (100) and the shapes' records.
+        return need + 16 + nodes + 100 + 8 * len(shapes) + 100 + records
+
+    @staticmethod
+    @functools.cache
+    def meta(path: Path, access: str) -> dict | None:
+        """What a read of a fixture needs, from its `.shx`, `.dbf` header and `.qix`.
+
+        The `.prj` and `.cpg`, then: a whole or column read, the `.shp` and `.dbf` (a `.dbf` row
+        holds its fields together); a bbox read, the `.dbf` header and the rows of the features
+        found, and without a `.qix` the whole `.shp`, with one the quadtree nodes the search reads
+        and the headers, `.shx` entries and `.shp` records of the shapes it gives. As in the other
+        formats, a node or feature that several of `bbox16`'s boxes touch counts once. A bbox
+        read's count runs GDAL's spatial filter in a fresh process, as a worker inherits the
+        runner's peak memory; it is cached, as both sources and every thread count ask again.
+
+        Args:
+            path: The fixture's directory.
+            access: The access pattern.
+
+        Returns:
+            `need_bytes`.
+
+        Raises:
+            ValueError: If the `.qix` does not give a feature GDAL's spatial filter finds.
+        """
+        n = {"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0)
+        if n:
+            return {"need_bytes": _spawned(Shapefile.bbox_need, path, n)}
+        sidecars = [path / f"{path.name}.{e}" for e in ("prj", "cpg")]
+        need = sum(f.stat().st_size for f in sidecars if f.exists())
+        return {"need_bytes": need + sum((path / f"{path.name}.{e}").stat().st_size for e in ("shp", "dbf"))}
+
+    @staticmethod
+    def reader(tool: str, access: str, meta: dict):
+        """How a tool reads a fixture in an access pattern.
+
+        Args:
+            tool: `terrio` or `gdal`.
+            access: The access pattern.
+            meta: What `meta` returned for the fixture.
+
+        Returns:
+            `(open, items, check, warm)`: `open(path)` opens the source, each item reads one part of
+            it, `check` turns an item's result into `(sum, count)` after the timed read, and `warm` is the
+            open and read of the warm-up file.
+        """
+
+        def shp(p):
+            return f"{p}/{p.rsplit('/', 1)[-1]}.shp"  # the fixture directory's shapefile
+
+        if tool == "terrio":
+            import pyarrow as pa
+            import terrio
+
+            open_ = shp  # nothing is held between reads
+
+            def read(p, bbox=None, columns=None):
+                if bbox is not None:
+                    return pa.table(terrio.open_vector(p, bbox=bbox).layers[0])
+                return pa.table(terrio.open_stream(p, columns=columns))
+        else:
+            def open_(p):
+                return shp(p) if p.startswith("/") else "/vsicurl/" + shp(p)
+
+            def read(p, **kw):
+                return gdal_read_arrow(p, **kw)
+
+        boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
+        if boxes:
+            items = [lambda p, b=b: read(p, bbox=b) for b in boxes]
+        elif access == "columns":
+            items = [lambda p: read(p, columns=GeoParquet.COLUMNS)]
+        else:
+            items = [lambda p: read(p)]
+        warm = (open_, lambda p: read(p))
+        return open_, items, table_checksum, warm
+
+
+FORMATS["shapefile"] = Shapefile
+PATHS["shapefile"] = [
+    "crates/terrio/src/drivers/vector/shapefile*",
+    "crates/terrio/src/drivers/vector/mod.rs",  # the eager read of the bbox reads
+    "crates/terrio/src/dataset.rs",
+    "python/src/ops.rs",  # `terrio.open_vector`
+    "crates/terrio/src/stream/*",
+    "crates/terrio/src/arrow.rs",
+    "python/src/stream.rs",
+    "python/src/vector.rs",
+    "python/src/arrow.rs",
+]
 
 
 # =============================================================================================
