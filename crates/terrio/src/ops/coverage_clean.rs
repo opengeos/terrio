@@ -245,9 +245,10 @@ impl FaceBorders {
         Self { segments, index }
     }
 
-    /// Returns `common_border(faces[i], faces[f])` for every other face `f`
-    /// sharing an edge with face `i`, ordered by `f`. Lengths are summed in
-    /// `f`'s segment order, so each value is bit-identical to `common_border`.
+    /// Returns the length of the border face `i` shares with every other face
+    /// `f` sharing an edge with it, ordered by `f`. Lengths are summed in `f`'s
+    /// segment order, so each value is bit-identical to the reference
+    /// `common_border` scan kept in the tests.
     ///
     /// Args:
     ///     i: The face whose neighbors are wanted.
@@ -1102,6 +1103,7 @@ mod tests {
     #[test]
     fn indexed_assignment_matches_unindexed_scan() {
         let mut overlap_faces = 0;
+        let mut filled_gaps = 0;
         for seed in 1..5 {
             let (sources, points, edges) = noded(&jittered_grid(9, seed));
             let faces = polygonize(&points, &edges);
@@ -1115,15 +1117,21 @@ mod tests {
             ] {
                 for maximum_gap_width in [0., 0.1] {
                     let options = CoverageCleanOptions { merge_strategy: strategy, maximum_gap_width, ..Default::default() };
+                    let assigned = assign_faces(&faces, &sources, &options);
                     assert_eq!(
-                        assign_faces(&faces, &sources, &options),
+                        assigned,
                         assign_faces_unindexed(&faces, &sources, &options),
                         "seed {seed} {strategy:?} gap {maximum_gap_width}"
                     );
+                    if maximum_gap_width > 0. {
+                        let without_gaps = assign_faces(&faces, &sources, &CoverageCleanOptions { maximum_gap_width: 0., ..options });
+                        filled_gaps += assigned.iter().map(Vec::len).sum::<usize>() - without_gaps.iter().map(Vec::len).sum::<usize>();
+                    }
                 }
             }
         }
-        assert!(overlap_faces > 0);
+        // Both the overlap and the gap-filling branches must be exercised.
+        assert!(overlap_faces > 0 && filled_gaps > 0, "{overlap_faces} overlaps, {filled_gaps} filled gaps");
     }
     #[test]
     fn indexed_hole_matching_matches_unindexed_scan() {
