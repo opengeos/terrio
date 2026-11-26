@@ -2981,7 +2981,7 @@ PROJ_CASES = {
         ),
     },
     "south_orientated_offsets": {
-        "a_transverse_mercator_at_a_scale_of_minus_one_is_south_orientated": (
+        "a_negative_transverse_mercator_scale_without_offsets_is_south_orientated": (
             "ESRI's Lo zones and other negative Transverse Mercator scales without offsets, ESRI and GDAL WKT 1", TOLERANCE,
             "PROJ 9.9.0 (pyproj 3.8.0): within 1 mm; refused with offsets or north-east axes, as PROJ refuses them",
         ),

@@ -120,7 +120,7 @@ fn south_orientated_offsets_with_a_north_east_wkt1() {
 /// CRS. So is any negative scale without offsets on east-north axes, at the opposite scale; with
 /// offsets, or on north-east axes, PROJ refuses it, and so does terrio.
 #[test]
-fn a_transverse_mercator_at_a_scale_of_minus_one_is_south_orientated() {
+fn a_negative_transverse_mercator_scale_without_offsets_is_south_orientated() {
     // PROJ 9.9.0's ESRI WKT 1 of each.
     let cape = r#"PROJCS["Cape_Lo15",GEOGCS["GCS_Cape",DATUM["D_Cape",SPHEROID["Clarke_1880_Arc",6378249.145,293.4663077]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",15.0],PARAMETER["Scale_Factor",-1.0],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]"#;
     let hartebeesthoek = r#"PROJCS["Hartebeesthoek94_Lo33",GEOGCS["GCS_Hartebeesthoek_1994",DATUM["D_Hartebeesthoek_1994",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",33.0],PARAMETER["Scale_Factor",-1.0],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]"#;
