@@ -145,8 +145,9 @@ impl Store {
                 use std::io::{Read, Seek, SeekFrom};
                 let p = if key.is_empty() { root.clone() } else { root.join(key) };
                 if crate::memfs::is_virtual(&p) {
-                    // In memory: the whole file, then the range of it.
-                    let Ok(all) = crate::memfs::read(&p) else { return Ok(None) };
+                    // In memory: the range, read in place.
+                    let Ok(shared) = crate::memfs::read_shared(&p) else { return Ok(None) };
+                    let all = shared.as_ref();
                     let len = all.len() as u64;
                     let (start, end) = match range {
                         Range::Whole => (0, len),
@@ -559,5 +560,19 @@ mod tests {
         assert!(!safe_key("a#frag", false, true));
         assert!(safe_key("a#frag", true, false));
         assert!(!safe_key("../escape", true, false));
+    }
+
+    /// A range of a store's object in memory is read in place: the object is not copied, so a
+    /// window's requests for the inner chunks of a large shard each copy only their range.
+    #[test]
+    fn ranges_of_objects_in_memory_copy_only_the_range() {
+        let root = Path::new("/vsimem/zarr_store_ranges/a.zarr");
+        crate::memfs::write(&root.join("c/0/0"), vec![7u8; 1 << 20]).unwrap();
+        let node = Node::local(root);
+        crate::memfs::COPIED.with(|c| c.set(0));
+        assert_eq!(node.get("c/0/0", Range::At(10, 4)).unwrap(), Some(vec![7u8; 4]));
+        assert_eq!(node.get("c/0/0", Range::Suffix(3)).unwrap(), Some(vec![7u8; 3]));
+        assert_eq!(crate::memfs::COPIED.with(|c| c.get()), 0);
+        assert!(crate::memfs::remove_file(&root.join("c/0/0")));
     }
 }

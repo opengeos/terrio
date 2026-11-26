@@ -404,6 +404,19 @@ process-wide, as GDAL's block cache keeps the blocks it decodes. A window read a
 the chunks no longer in the cache: the least recently used are dropped first when the cache is
 full, a chunk larger than the cache is never kept, and a size of 0 keeps none.
 
+Lazy Zarr reads keep, in the same cache, the decoded chunks (or inner chunks of a shard) that a
+window covers only in part: those along its edges, which an adjacent tile of a grid shares (and,
+when a chunk holds several bands and the read asks for some of them, every chunk it reads). A later
+window of the same open array places them from memory, without fetching or decoding them again. An
+open array (each level of a multiscale store is one) keeps at most 16 MiB of chunks, whatever the
+cache's size (`TERRIO_CACHEMAX` or `GDAL_CACHEMAX`), dropping its least recently used first; a cache
+size of 0 keeps none. A read keeps none of the chunks it covers whole (a later window overlapping
+such chunks reads them again), and a read whose decoded values take more than a quarter of those 16
+MiB (or of the cache, when smaller) keeps none at all (a decimated read: the values of the window it
+samples): the largest reads, such as that of a whole array, add nothing to the cache. An open
+array's kept chunks are those it read: chunks rewritten in the store meanwhile are read anew by an
+array opened after the change.
+
 Lazy GRIB reads keep the bands they decode in the same cache, alongside the decoded chunks of other
 formats and files: they all make room for one another, the least recently used first. A read shares
 the cache equally among the bands it asks for. Of each band it decodes, a read keeps the rows it

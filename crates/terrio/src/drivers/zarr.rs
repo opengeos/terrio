@@ -309,6 +309,24 @@ struct Array {
     attrs: Value,
     /// The indexes of the shards read so far, by chunk key ([`Array::shard_index`]).
     shard_indexes: ShardIndexes,
+    /// The array's decoded chunks in [`crate::block_cache`] ([`decode_chunk`]).
+    cache: CacheHandle,
+}
+
+/// An open array's identity in [`crate::block_cache`]: the chunks it decoded are dropped with it.
+#[derive(Debug)]
+struct CacheHandle(u64);
+
+impl Default for CacheHandle {
+    fn default() -> Self {
+        Self(crate::block_cache::new_handle())
+    }
+}
+
+impl Drop for CacheHandle {
+    fn drop(&mut self) {
+        crate::block_cache::remove_handle(self.0);
+    }
 }
 
 /// Parsed shard indexes and the bytes their entries take, at most [`SHARD_INDEX_CACHE_BYTES`].
@@ -500,6 +518,7 @@ fn read_array_opt(node: &Node) -> Result<Option<Array>> {
             dims,
             attrs,
             shard_indexes: ShardIndexes::default(),
+            cache: CacheHandle::default(),
         }));
     }
     let m = match (v2, node.json("zarr.json")?) {
@@ -549,6 +568,7 @@ fn read_array_opt(node: &Node) -> Result<Option<Array>> {
         dims,
         attrs: m["attributes"].clone(),
         shard_indexes: ShardIndexes::default(),
+        cache: CacheHandle::default(),
     }))
 }
 
@@ -1114,9 +1134,15 @@ fn chunk_buffer(p: &Pipeline, raw: Vec<u8>, cshape: &[usize], t: DataType, fill:
             let origin: Vec<usize> = unravel(j, &inner_grid).iter().zip(&shard.chunks).map(|(i, c)| i * c).collect();
             scatter_strided(&buf.bytes, &buf.strides, &origin, &shard.chunks, &mut out, &zeros, cshape, t.size_bytes());
         }
-        return Ok(Decoded { bytes: out, strides: strides(None, cshape) });
+        return Ok(Decoded { bytes: out, strides: stored_strides(p, cshape) });
     }
-    Ok(Decoded { bytes: to_array_elements(p, data, n, t)?, strides: strides(p.order.as_deref(), cshape) })
+    Ok(Decoded { bytes: to_array_elements(p, data, n, t)?, strides: stored_strides(p, cshape) })
+}
+
+/// The [`strides`] of a chunk of shape `cshape` that `p` decodes ([`chunk_buffer`]): a shard
+/// decoded whole is in C order, another chunk in the order it is stored.
+fn stored_strides(p: &Pipeline, cshape: &[usize]) -> Vec<usize> {
+    strides(if p.shard.is_some() { None } else { p.order.as_deref() }, cshape)
 }
 
 /// A shard index: `(offset, length)` of each inner chunk, `None` for missing ones.
@@ -1206,8 +1232,16 @@ fn scatter_strided(
     }
 }
 
-/// Byte ranges of a shard closer than this are fetched in one request.
-const MERGE_GAP: usize = 256 * 1024;
+/// Byte ranges of a shard closer than this are fetched in one request. Inner chunks are stored in
+/// C order, so a window narrower than its shard leaves whole inner chunks between its rows; a gap
+/// smaller than an inner chunk of real data keeps those out of the read, as GDAL 3.13.3 reads only
+/// the inner chunks a window needs, while runs of nearly empty inner chunks are still fetched
+/// together. A window then takes a request (locally, a read of the file) per row of its inner
+/// chunks in a shard, where a gap of 256 KiB took fewer; they are in flight together
+/// ([`read_plan`]). Windows of 512 x 512 Float32 pixels over HTTP with inner chunks of 128 x 128
+/// and 256 x 256 (50 and 210 KiB compressed) took 1.1 to 1.75 times the requests and as many
+/// rounds, and read only their inner chunks' bytes, where they read 1.15 to 1.35 times as many.
+const MERGE_GAP: usize = 4 * 1024;
 /// The most bytes fetched in one request of inner chunks of a remote store, so that large reads
 /// go in parallel: a connection far from the server delivers a large range slowly while its
 /// window grows. Reading 34.5 MB of TESSERA embeddings across the Atlantic took a median 9.95 s in
@@ -1385,19 +1419,57 @@ fn check_chunks(a: &Array, allow_big: bool) -> Result<()> {
     Ok(())
 }
 
-/// A decoded chunk handed on: its elements (see [`Decoded`]), its origin and shape.
-type Put<'a> = dyn Fn(&Decoded, &[usize], &[usize]) + Sync + 'a;
+/// A decoded chunk handed on: its elements and their strides (see [`Decoded`]), its origin and
+/// shape.
+type Put<'a> = dyn Fn(&[u8], &[usize], &[usize], &[usize]) + Sync + 'a;
+
+/// The position of the chunk at grid position `idx` in the array's grid, in C order: its key in
+/// [`crate::block_cache`]. `None` past the address space.
+fn chunk_slot(a: &Array, idx: &[usize]) -> Option<usize> {
+    idx.iter().zip(a.shape.iter().zip(&a.chunks)).try_fold(0usize, |n, (&i, (&len, &c))| n.checked_mul(len.div_ceil(c))?.checked_add(i))
+}
+
+/// Whether the region of shape `shape` at `start` covers only part of the chunk (or inner chunk)
+/// of shape `cshape` at `origin`, within the array.
+fn partly_covered(a: &Array, (start, shape): (&[usize], &[usize]), origin: &[usize], cshape: &[usize]) -> bool {
+    (0..origin.len()).any(|d| origin[d] < start[d] || (origin[d] + cshape[d]).min(a.shape[d]) > start[d] + shape[d])
+}
+
+/// The most bytes of decoded chunks an open array keeps in [`crate::block_cache`], whatever the
+/// cache's size: its least recently used are dropped first. Enough for the chunks a row of windows
+/// of 512 x 512 off the chunk grid keeps over an array 4096 elements wide in chunks of 256 x 256
+/// Float32 (at most three rows of 16, about 12 MiB).
+const KEPT_PER_ARRAY: u64 = 16 << 20;
+
+/// The region of shape `shape` at `start` of an array, when a read of it keeps the chunks it
+/// covers in part ([`decode_chunk`]): when the region's elements take at most a quarter of what the
+/// array may keep ([`KEPT_PER_ARRAY`], or the cache's size, [`crate::block_cache::max_bytes`], when
+/// smaller). A larger read keeps none, so that it adds nothing to the cache.
+fn kept_region<'a>(a: &Array, start: &'a [usize], shape: &'a [usize]) -> Option<(&'a [usize], &'a [usize])> {
+    let bytes = shape.iter().try_fold(a.data_type.size_bytes() as u64, |n, &d| n.checked_mul(d as u64))?;
+    (bytes <= crate::block_cache::max_bytes().min(KEPT_PER_ARRAY) / 4).then_some((start, shape))
+}
 
 /// Decodes the chunk at grid position `idx` of an array and hands it to `put`; for a shard read by
 /// parts, its index, then the inner chunks `wanted` keeps (given an inner chunk's origin and
 /// shape), nearby ones fetched in one request, decoded `inner_at_once` at a time (on threads
 /// waiting on the server when `waiting`, see [`read_plan`]), in at least as many requests as
 /// `slots` when given and the inner chunks allow ([`run_slots`]). Missing chunks are not handed.
+///
+/// A (inner) chunk the array keeps decoded in [`crate::block_cache`] is handed from there, neither
+/// fetched nor decoded. The array keeps those that `region`, the region read, covers only in part,
+/// along its edges or a band dimension (none when `region` is `None`, see [`kept_region`]): a later
+/// read sharing one, such as an adjacent tile of a grid, reads it from memory, as GDAL 3.13.3's
+/// block cache serves its Zarr blocks. GDAL keeps every block it decodes; a read here keeps none of
+/// the chunks it covers whole, and a read larger than a quarter of what the array may keep none at
+/// all, so the reads that take the most memory add nothing to the cache. An array keeps at most
+/// [`KEPT_PER_ARRAY`] bytes, its least recently used chunks dropped first.
 fn decode_chunk(
     a: &Array,
     idx: &[usize],
     allow_big: bool,
     (inner_at_once, waiting, slots): (usize, bool, Option<usize>),
+    region: Option<(&[usize], &[usize])>,
     wanted: &(dyn Fn(&[usize], &[usize]) -> bool + Sync),
     put: &Put,
 ) -> Result<()> {
@@ -1406,24 +1478,48 @@ fn decode_chunk(
     let origin: Vec<usize> = idx.iter().zip(&a.chunks).map(|(i, c)| i * c).collect();
     let key = a.chunk_key(idx);
     let err = |e: Error| if e.is_resource_refusal() { e } else { bad(format!("chunk {}/{key}: {e}", a.node.display())) };
+    // Keyed by the chunk's place in the grid and an inner chunk's in its shard's index (0 unsharded).
+    let slot = chunk_slot(a, idx);
+    let cache_key = |inner: usize| Some((slot?, u32::try_from(inner).ok()?));
+    // Hands the chunk from the cache, if it is there.
+    let placed = |pipeline: &Pipeline, inner: usize, origin: &[usize], cshape: &[usize]| {
+        let Some(chunk) = cache_key(inner).and_then(|(s, i)| crate::block_cache::get(a.cache.0, s, i)) else { return false };
+        let tiff::decoder::DecodingResult::U8(bytes) = &chunk.samples else { return false };
+        put(bytes, &stored_strides(pipeline, cshape), origin, cshape);
+        true
+    };
+    let keep = |inner: usize, origin: &[usize], cshape: &[usize], buf: Decoded| {
+        if let Some((s, i)) = cache_key(inner)
+            && region.is_some_and(|r| partly_covered(a, r, origin, cshape))
+        {
+            // A placeholder image size: the cache counts a chunk's bytes, and Zarr reads never
+            // use the size.
+            let len = buf.bytes.len();
+            crate::block_cache::insert_within(a.cache.0, s, i, tiff::decoder::DecodingResult::U8(buf.bytes), (len, 1), KEPT_PER_ARRAY);
+        }
+    };
     let Some(shard) = p.shard.as_ref().filter(|_| p.codecs.is_empty()) else {
+        if placed(p, 0, &origin, &a.chunks) {
+            return Ok(());
+        }
         let Some(raw) = a.node.get(&key, Range::Whole).map_err(err)? else { return Ok(()) };
         let buf = chunk_buffer(p, raw, &a.chunks, a.data_type, &fill, allow_big).map_err(err)?;
-        put(&buf, &origin, &a.chunks);
+        put(&buf.bytes, &buf.strides, &origin, &a.chunks);
+        keep(0, &origin, &a.chunks, buf);
         return Ok(());
     };
     let (count, index_len) = shard.index_len(&a.chunks).map_err(err)?;
     let range = if shard.index_at_start { Range::At(0, index_len as u64) } else { Range::Suffix(index_len as u64) };
     let Some(index) = a.shard_index(&key, count, range).map_err(err)? else { return Ok(()) };
     let inner_grid: Vec<usize> = a.chunks.iter().zip(&shard.chunks).map(|(c, i)| c.div_ceil(*i)).collect();
-    // The inner chunks wanted, by offset in the shard: (offset, end, origin).
-    let mut chosen: Vec<(u64, u64, Vec<usize>)> = Vec::new();
+    // The inner chunks wanted and not cached, by offset in the shard: (offset, end, origin, index).
+    let mut chosen: Vec<(u64, u64, Vec<usize>, usize)> = Vec::new();
     for (j, entry) in index.iter().enumerate() {
         let Some((o, l)) = *entry else { continue };
         let iorigin: Vec<usize> = unravel(j, &inner_grid).iter().zip(&shard.chunks).zip(&origin).map(|((i, c), o)| o + i * c).collect();
-        if wanted(&iorigin, &shard.chunks) {
+        if wanted(&iorigin, &shard.chunks) && !placed(&shard.inner, j, &iorigin, &shard.chunks) {
             let end = o.checked_add(l).ok_or_else(|| err(bad("shard index out of range")))?;
-            chosen.push((o, end, iorigin));
+            chosen.push((o, end, iorigin, j));
         }
     }
     chosen.sort_by_key(|w| w.0);
@@ -1445,7 +1541,7 @@ fn decode_chunk(
         let from = chosen[s].0;
         let to = chosen[s..e].iter().map(|w| w.1).max().unwrap_or(from);
         let Some(bytes) = a.node.get(&key, Range::At(from, to - from))? else { return Ok(()) };
-        for (o, end, iorigin) in &chosen[s..e] {
+        for (o, end, iorigin, j) in &chosen[s..e] {
             let part = copied(
                 bytes
                     .get(
@@ -1456,7 +1552,8 @@ fn decode_chunk(
                 "a Zarr chunk",
             )?;
             let buf = chunk_buffer(&shard.inner, part, &shard.chunks, a.data_type, &fill, allow_big)?;
-            put(&buf, iorigin, &shard.chunks);
+            put(&buf.bytes, &buf.strides, iorigin, &shard.chunks);
+            keep(*j, iorigin, &shard.chunks, buf);
         }
         Ok(())
     };
@@ -1498,17 +1595,18 @@ fn read_region_with(a: &Array, start: &[usize], shape: &[usize], requests: usize
     let counts: Vec<usize> = (0..nd).map(|d| (start[d] + shape[d] - 1) / a.chunks[d] - first[d] + 1).collect();
     // Fewer chunks than elements: the product of the counts does not overflow.
     let total: usize = counts.iter().product();
-    let put = |buf: &Decoded, origin: &[usize], cshape: &[usize]| {
+    let put = |bytes: &[u8], strides: &[usize], origin: &[usize], cshape: &[usize]| {
         if let Ok(mut o) = out.lock() {
-            scatter_strided(&buf.bytes, &buf.strides, origin, cshape, &mut o, start, shape, size);
+            scatter_strided(bytes, strides, origin, cshape, &mut o, start, shape, size);
         }
     };
     let wanted =
         |iorigin: &[usize], ishape: &[usize]| (0..nd).all(|d| iorigin[d] < start[d] + shape[d] && iorigin[d] + ishape[d] > start[d]);
     let (at_once, inner_at_once, waiting) = read_plan(a, total, requests);
+    let region = kept_region(a, start, shape);
     each(waiting, total, at_once, |i| {
         let idx: Vec<usize> = unravel(i, &counts).iter().zip(&first).map(|(k, f)| k + f).collect();
-        decode_chunk(a, &idx, allow_big, (inner_at_once, waiting, run_slots(a, total)), &wanted, &put)
+        decode_chunk(a, &idx, allow_big, (inner_at_once, waiting, run_slots(a, total)), region, &wanted, &put)
     })?;
     out.into_inner().map_err(|_| bad("a chunk decoder panicked"))
 }
@@ -1555,6 +1653,10 @@ fn read_points(a: &Array, sel: &[Vec<usize>]) -> Result<Vec<u8>> {
     let out = std::sync::Mutex::new(repeated(&a.fill_bytes(), n, "a Zarr selection")?);
     let ostrides: Vec<usize> = (0..nd).map(|d| shape[d + 1..].iter().product()).collect();
     let groups: Vec<ByChunk> = (0..nd).map(|d| by_chunk(&sel[d], a.chunks[d])).collect();
+    // The box the selection spans: the chunks it covers only in part are kept ([`decode_chunk`]).
+    let first: Vec<usize> = sel.iter().map(|s| s.iter().copied().min().unwrap_or(0)).collect();
+    let span: Vec<usize> = sel.iter().zip(&first).map(|(s, f)| s.iter().copied().max().unwrap_or(0) - f + 1).collect();
+    let region = kept_region(a, &first, &span);
     let counts: Vec<usize> = groups.iter().map(Vec::len).collect();
     // At most one chunk per selected element: the product does not overflow.
     let total: usize = counts.iter().product();
@@ -1568,7 +1670,7 @@ fn read_points(a: &Array, sel: &[Vec<usize>]) -> Result<Vec<u8>> {
             (0..nd).map(|d| members[d].iter().copied().filter(|&(_, x)| x >= origin[d] && x < origin[d] + cshape[d]).collect()).collect()
         };
         let wanted = |origin: &[usize], cshape: &[usize]| inside(origin, cshape).iter().all(|m| !m.is_empty());
-        let put = |buf: &Decoded, origin: &[usize], cshape: &[usize]| {
+        let put = |bytes: &[u8], strides: &[usize], origin: &[usize], cshape: &[usize]| {
             let local = inside(origin, cshape);
             if local.iter().any(Vec::is_empty) {
                 return;
@@ -1581,9 +1683,9 @@ fn read_points(a: &Array, sel: &[Vec<usize>]) -> Result<Vec<u8>> {
                 for d in 0..nd {
                     let (pos, x) = local[d][at[d]];
                     to += pos * ostrides[d];
-                    from += (x - origin[d]) * buf.strides[d];
+                    from += (x - origin[d]) * strides[d];
                 }
-                o[to * size..(to + 1) * size].copy_from_slice(&buf.bytes[from * size..(from + 1) * size]);
+                o[to * size..(to + 1) * size].copy_from_slice(&bytes[from * size..(from + 1) * size]);
                 let mut d = nd;
                 loop {
                     if d == 0 {
@@ -1598,7 +1700,7 @@ fn read_points(a: &Array, sel: &[Vec<usize>]) -> Result<Vec<u8>> {
                 }
             }
         };
-        decode_chunk(a, &idx, allow_big, (inner_at_once, waiting, run_slots(a, total)), &wanted, &put)
+        decode_chunk(a, &idx, allow_big, (inner_at_once, waiting, run_slots(a, total)), region, &wanted, &put)
     })?;
     out.into_inner().map_err(|_| bad("a chunk decoder panicked"))
 }
@@ -3719,6 +3821,79 @@ mod tests {
         out
     }
 
+    /// A read keeps the chunks it covers in part while its elements take at most a quarter of the
+    /// cache, and none of those it covers whole; a larger read keeps none.
+    #[test]
+    fn reads_keep_the_chunks_they_cover_in_part_while_small() {
+        let _guard = crate::block_cache::tests::cache_test_guard(64 << 10);
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("k.zarr");
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(
+            p.join("zarr.json"),
+            r#"{"zarr_format": 3, "node_type": "array", "shape": [128, 128], "data_type": "uint16",
+            "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [16, 16]}},
+            "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}}, "fill_value": 0,
+            "codecs": [{"name": "bytes", "configuration": {"endian": "little"}}]}"#,
+        )
+        .unwrap();
+        for y in 0..8 {
+            std::fs::create_dir_all(p.join(format!("c/{y}"))).unwrap();
+            for x in 0..8 {
+                std::fs::write(p.join(format!("c/{y}/{x}")), vec![1u8; 16 * 16 * 2]).unwrap();
+            }
+        }
+        let kept = |a: &Array, y: usize, x: usize| crate::block_cache::contains(a.cache.0, y * 8 + x, 0);
+        // 40 x 40 elements (3200 bytes): its edge chunks kept, its inner ones not.
+        let a = read_array(&Node::local(&p)).unwrap();
+        read_region(&a, &[10, 10], &[40, 40]).unwrap();
+        assert!(kept(&a, 0, 0) && kept(&a, 3, 1));
+        assert!(!kept(&a, 1, 1) && !kept(&a, 2, 2));
+        // 126 x 126 elements (31752 bytes, more than 16 KiB): none kept.
+        let a = read_array(&Node::local(&p)).unwrap();
+        read_region(&a, &[1, 1], &[126, 126]).unwrap();
+        assert!((0..64).all(|i| !kept(&a, i / 8, i % 8)));
+    }
+
+    /// However large the cache, an open array keeps at most [`KEPT_PER_ARRAY`] bytes of chunks,
+    /// its least recently used dropped first: 16 windows, each covering four chunks of 512 KiB in
+    /// part, read 36 such chunks (18 MiB); the first window's are dropped, the last one's kept.
+    #[test]
+    fn an_array_keeps_at_most_its_share_of_the_cache() {
+        let _guard = crate::block_cache::tests::cache_test_guard(512 << 20);
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("share.zarr");
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(
+            p.join("zarr.json"),
+            r#"{"zarr_format": 3, "node_type": "array", "shape": [2048, 8192], "data_type": "uint16",
+            "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [512, 512]}},
+            "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}}, "fill_value": 0,
+            "codecs": [{"name": "bytes", "configuration": {"endian": "little"}}, {"name": "gzip", "configuration": {"level": 1}}]}"#,
+        )
+        .unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut gz, &vec![0u8; 512 * 512 * 2]).unwrap();
+        let zeros = gz.finish().unwrap();
+        for y in 0..4 {
+            std::fs::create_dir_all(p.join(format!("c/{y}"))).unwrap();
+            for x in 0..16 {
+                std::fs::write(p.join(format!("c/{y}/{x}")), &zeros).unwrap();
+            }
+        }
+        let a = read_array(&Node::local(&p)).unwrap();
+        // Along chunk rows 0 and 1, then one window over rows 2 and 3.
+        for x in 0..15 {
+            read_region(&a, &[256, x * 512 + 256], &[512, 512]).unwrap();
+        }
+        read_region(&a, &[1280, 256], &[512, 512]).unwrap();
+        let kept = |y: usize, x: usize| crate::block_cache::contains(a.cache.0, y * 16 + x, 0);
+        let count = (0..4).flat_map(|y| (0..16).map(move |x| (y, x))).filter(|&(y, x)| kept(y, x)).count();
+        assert!(count * (512 * 512 * 2 + 64) <= KEPT_PER_ARRAY as usize, "{count} chunks kept");
+        assert!([(0, 0), (0, 1), (1, 0), (1, 1)].iter().all(|&(y, x)| !kept(y, x)), "the first window's are dropped");
+        assert!([(2, 0), (2, 1), (3, 0), (3, 1)].iter().all(|&(y, x)| kept(y, x)), "the last window's are kept");
+    }
+
     /// Chunks stored in Fortran order (v2, little- and big-endian) and transposed (v3: by the
     /// chunk, in shards read by parts and in shards decoded whole), which are read in place rather
     /// than copied into C order, give their elements where they are, across chunks and at the
@@ -3829,6 +4004,9 @@ mod tests {
             let mut r = crate::LazyRaster::open(&name).unwrap();
             let window = r.read_window(crate::Window::new(3, 2, 6, 5), &options).unwrap();
             assert_eq!(window.raster.data.to_f64_vec(), picked(&[2, 3, 4, 5, 6], &[3, 4, 5, 6, 7, 8]), "{name}: a window");
+            // The chunks the window covers in part, kept decoded, give the same elements.
+            let again = r.read_window(crate::Window::new(3, 2, 6, 5), &options).unwrap();
+            assert_eq!(again.raster.data.to_f64_vec(), window.raster.data.to_f64_vec(), "{name}: a window again");
             let (cs, rs) = ([10, 0, 4, 5, 4], [8, 3, 0]);
             let sampled = r.read_sampled(&cs, &rs, &options).unwrap().unwrap();
             assert_eq!(sampled.to_f64_vec(), picked(&rs, &cs), "{name}: a decimated read");

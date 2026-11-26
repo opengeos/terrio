@@ -6,7 +6,7 @@ crates/terrio        the library
   formats.rs         the driver registry, with GDAL's short names
   drivers/           terrio's own raster drivers; drivers/vector/ its vector drivers
   geotiff.rs, cog.rs GeoTIFF tags and decoding, lazy window and overview reads
-  block_cache.rs     process-wide LRU cache of decoded GeoTIFF tiles and strips and GRIB bands
+  block_cache.rs     process-wide LRU cache of decoded GeoTIFF tiles and strips, GRIB bands and Zarr chunks
   resampled_read.rs  overview-aware resampled window reads (GDAL RasterIO semantics)
   catalog.rs         GTI-compatible indexed raster catalogs with bounded source caching
   stac.rs, stacta.rs STAC items, API searches, STACIT mosaics and STACTA tiled assets
