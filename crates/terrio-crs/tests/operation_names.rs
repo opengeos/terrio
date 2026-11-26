@@ -33,8 +33,7 @@ fn registered_concatenations_are_named_as_proj_names_them() {
 
 /// A ballpark that is a transformation's only datum operation is named as PROJ 9.9.0 names it,
 /// from the geographic CRSs' names, both ways; between CRSs of different prime meridians, with
-/// the transformation that alters one of them to the other's; beside a vertical transformation
-/// too (#1012 item 54).
+/// the transformation that alters one of them to the other's (#1012 item 54).
 #[test]
 fn ballparks_are_named_as_proj_names_them() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
@@ -85,10 +84,157 @@ fn ballparks_are_named_as_proj_names_them() {
     assert_eq!(xian.epsg, None);
     let op = Transformer::new(&xian, &SpatialRef::from_epsg(4326).unwrap()).unwrap().operation_at(135.0, 42.0, 0.0).unwrap().unwrap();
     assert_eq!(op.name, "Ballpark geographic offset from Xian 1980 to WGS 84");
-    // Beside a vertical transformation too: PROJ 9.9.0 names the geographic step so between
-    // Beijing 1954 + EGM96 height and WGS 84 + NAVD88 height. Only that step is checked; terrio
-    // names the vertical ballpark otherwise (`Ballpark vertical transformation`, #1012).
-    let (src, dst) = (SpatialRef::compound(4214, 5773).unwrap(), SpatialRef::compound(4326, 5703).unwrap());
-    let op = Transformer::new(&src, &dst).unwrap().operation_at(116.0, 40.0, 0.0).unwrap().unwrap();
-    assert!(op.name.split(" + ").any(|step| step == "Ballpark geographic offset from Beijing 1954 to WGS 84"), "{}", op.name);
+}
+
+/// PROJ's ballpark vertical transformation is named as PROJ 9.9.0 names it, from the vertical
+/// CRSs, or to or from a geographic 3D CRS's geographic CRS, after the horizontal operations;
+/// into a CRS with a vertical CRS from one without, the operation the other way, inverted
+/// (#1012 item 54). Codes are EPSG's, compound CRSs given as horizontal+vertical.
+#[test]
+fn vertical_ballparks_are_named_as_proj_names_them() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let crs = |s: &str| {
+        let codes: Vec<u32> = s.split('+').map(|c| c.parse().unwrap()).collect();
+        match codes[..] {
+            [h, v] => SpatialRef::compound(h, v).unwrap(),
+            _ => SpatialRef::from_epsg(codes[0]).unwrap(),
+        }
+    };
+    for (src, dst, x, y, name) in [
+        ("4326+5773", "4326+5703", 116.0, 40.0, "Transformation from EGM96 height to NAVD88 height (ballpark vertical transformation)"),
+        ("4326+5703", "4326+5773", 116.0, 40.0, "Transformation from NAVD88 height to EGM96 height (ballpark vertical transformation)"),
+        (
+            "4214+5773",
+            "4326+5703",
+            116.0,
+            40.0,
+            "Transformation from EGM96 height to NAVD88 height (ballpark vertical transformation) + Ballpark geographic offset from Beijing 1954 to WGS 84",
+        ),
+        (
+            "4214+5773",
+            "4979",
+            116.0,
+            40.0,
+            "Ballpark geographic offset from Beijing 1954 to WGS 84 + Transformation from EGM96 height to WGS 84 (ballpark vertical transformation, without ellipsoid height to vertical height correction)",
+        ),
+        (
+            "4979",
+            "4214+5773",
+            116.0,
+            40.0,
+            "Inverse of Transformation from EGM96 height to WGS 84 (ballpark vertical transformation, without ellipsoid height to vertical height correction) + Inverse of Ballpark geographic offset from Beijing 1954 to WGS 84",
+        ),
+        (
+            "4326+5773",
+            "4979",
+            116.0,
+            40.0,
+            "Transformation from EGM96 height to WGS 84 (ballpark vertical transformation, without ellipsoid height to vertical height correction)",
+        ),
+        (
+            "4979",
+            "4326+5703",
+            116.0,
+            40.0,
+            "Inverse of Transformation from NAVD88 height to WGS 84 (ballpark vertical transformation, without ellipsoid height to vertical height correction)",
+        ),
+        (
+            "4214+5773",
+            "4610+5703",
+            116.0,
+            40.0,
+            "Transformation from EGM96 height to NAVD88 height (ballpark vertical transformation) + Ballpark geographic offset from Beijing 1954 to Xian 1980",
+        ),
+        ("4326+3855", "4326+5773", 116.0, 40.0, "Transformation from EGM2008 height to EGM96 height (ballpark vertical transformation)"),
+        ("4214+5703", "4214+5773", 116.0, 40.0, "Transformation from NAVD88 height to EGM96 height (ballpark vertical transformation)"),
+        ("4979", "4214", 116.0, 40.0, "Ballpark geographic offset from WGS 84 to Beijing 1954"),
+        ("4326", "4214+5773", 116.0, 40.0, "Inverse of Ballpark geographic offset from Beijing 1954 to WGS 84"),
+        ("4214", "4326+5773", 116.0, 40.0, "Inverse of Ballpark geographic offset from WGS 84 to Beijing 1954"),
+        ("4326+5773", "4214", 116.0, 40.0, "Ballpark geographic offset from WGS 84 to Beijing 1954"),
+        ("4214+5773", "4326", 116.0, 40.0, "Ballpark geographic offset from Beijing 1954 to WGS 84"),
+        (
+            "4979",
+            "4326+5773",
+            116.0,
+            40.0,
+            "Inverse of Transformation from EGM96 height to WGS 84 (ballpark vertical transformation, without ellipsoid height to vertical height correction)",
+        ),
+        (
+            "4937",
+            "4214+5773",
+            116.0,
+            40.0,
+            "Inverse of Transformation from EGM96 height to ETRS89 (ballpark vertical transformation, without ellipsoid height to vertical height correction) + Inverse of Ballpark geographic offset from Beijing 1954 to ETRS89",
+        ),
+        (
+            "4214+5773",
+            "4937",
+            116.0,
+            40.0,
+            "Ballpark geographic offset from Beijing 1954 to ETRS89 + Transformation from EGM96 height to ETRS89 (ballpark vertical transformation, without ellipsoid height to vertical height correction)",
+        ),
+        (
+            "4979",
+            "4230+5773",
+            10.0,
+            50.0,
+            "Inverse of Transformation from EGM96 height to WGS 84 (ballpark vertical transformation, without ellipsoid height to vertical height correction) + Inverse of ED50 to WGS 84 (17)",
+        ),
+        (
+            "4230+5773",
+            "4979",
+            10.0,
+            50.0,
+            "ED50 to WGS 84 (17) + Transformation from EGM96 height to WGS 84 (ballpark vertical transformation, without ellipsoid height to vertical height correction)",
+        ),
+        (
+            "4230+5773",
+            "4326+5703",
+            10.0,
+            50.0,
+            "Transformation from EGM96 height to NAVD88 height (ballpark vertical transformation) + ED50 to WGS 84 (17)",
+        ),
+        ("4326", "4230+5773", 10.0, 50.0, "Inverse of ED50 to WGS 84 (17)"),
+    ] {
+        let t = Transformer::new(&crs(src), &crs(dst)).unwrap_or_else(|e| panic!("{src} to {dst}: {e}"));
+        let op = t.operation_at(x, y, 0.0).unwrap().unwrap();
+        assert_eq!(op.name, name, "{src} to {dst}");
+    }
+}
+
+/// A ballpark between CRSs whose names hold ` + ` is named whole: into a compound CRS of an
+/// unregistered geographic CRS named `Alpha + Beta`, inverted and quoted as PROJ 9.9.0 quotes it.
+#[test]
+fn ballparks_keep_crs_names_that_hold_a_plus_whole() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let custom = SpatialRef::from_wkt(
+        r#"COMPD_CS["Alpha + Beta + EGM96 height",GEOGCS["Alpha + Beta",DATUM["Alpha",SPHEROID["Alpha",6378300,298.3]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AXIS["Latitude",NORTH],AXIS["Longitude",EAST]],VERT_CS["EGM96 height",VERT_DATUM["EGM96 geoid",2005,AUTHORITY["EPSG","5171"]],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Gravity-related height",UP],AUTHORITY["EPSG","5773"]]]"#,
+    );
+    assert_eq!(custom.epsg, None);
+    let into = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &custom).unwrap();
+    let op = into.operation_at(116.0, 40.0, 0.0).unwrap().unwrap();
+    assert_eq!(op.name, "Inverse of 'Ballpark geographic offset from Alpha + Beta to WGS 84'");
+    let from = Transformer::new(&custom, &SpatialRef::from_epsg(4979).unwrap()).unwrap();
+    let op = from.operation_at(116.0, 40.0, 0.0).unwrap().unwrap();
+    let vertical = "Transformation from EGM96 height to WGS 84 (ballpark vertical transformation, without ellipsoid height to vertical height correction)";
+    assert_eq!(op.name, format!("Ballpark geographic offset from Alpha + Beta to WGS 84 + {vertical}"));
+}
+
+/// A vertical CRS of an empty name is named so, after the horizontal ballpark, as PROJ 9.9.0
+/// names it: `Transformation from  to WGS 84 (...)`.
+#[test]
+fn a_vertical_ballpark_of_an_empty_name_follows_the_horizontal_step() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let compound = SpatialRef::from_wkt(
+        r#"COMPD_CS["x",GEOGCS["Beijing 1954",DATUM["Beijing_1954",SPHEROID["Krassowsky 1940",6378245,298.3,AUTHORITY["EPSG","7024"]],AUTHORITY["EPSG","6214"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","4214"]],VERT_CS["",VERT_DATUM["",2005],UNIT["metre",1],AXIS["Gravity-related height",UP]]]"#,
+    );
+    let t = Transformer::new(&compound, &SpatialRef::from_epsg(4979).unwrap()).unwrap();
+    let op = t.operation_at(116.0, 40.0, 0.0).unwrap().unwrap();
+    assert_eq!(
+        op.name,
+        "Ballpark geographic offset from Beijing 1954 to WGS 84 + Transformation from  to WGS 84 (ballpark vertical transformation, without ellipsoid height to vertical height correction)"
+    );
 }

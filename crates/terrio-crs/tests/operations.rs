@@ -40,9 +40,10 @@ fn reports_ballparks_and_no_operation() {
             ballpark: true
         }
     );
-    // EGM96's grid is missing: heights are kept.
+    // EGM96's grid is missing: heights are kept, by PROJ 9.9.0's ballpark of that name.
     let op = operation("EPSG:4326+5773", "EPSG:4979", 153.0, -27.0, 0.0).unwrap();
-    assert_eq!((op.name.as_str(), op.ballpark), ("Ballpark vertical transformation", true));
+    let name = "Transformation from EGM96 height to WGS 84 (ballpark vertical transformation, without ellipsoid height to vertical height correction)";
+    assert_eq!((op.name.as_str(), op.ballpark), (name, true));
     // One datum: no transformation.
     assert_eq!(operation("EPSG:4326", "EPSG:3857", 10.0, 45.0, 0.0), None);
     assert_eq!(operation("EPSG:4326", "EPSG:4326", 10.0, 45.0, 0.0), None);

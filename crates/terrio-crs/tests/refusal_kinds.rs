@@ -62,7 +62,12 @@ fn vertical_crs_in_feet_refuses_a_missing_geoid_grid_as_in_metres() {
     let only_best = TransformOptions { only_best: true, ..Default::default() };
     let no_ballpark = TransformOptions { allow_ballpark: Some(false), ..Default::default() };
     let dst = SpatialRef::parse("EPSG:6319").unwrap();
-    for (src, z) in [("EPSG:6318+5703", 100.0), ("EPSG:6318+6360", 100.0 / 0.3048006096012192), ("EPSG:6318+8228", 100.0 / 0.3048)] {
+    // PROJ 9.9.0 names the ballpark from the vertical CRS.
+    for (src, z, vertical) in [
+        ("EPSG:6318+5703", 100.0, "NAVD88 height"),
+        ("EPSG:6318+6360", 100.0 / 0.3048006096012192, "NAVD88 height (ftUS)"),
+        ("EPSG:6318+8228", 100.0 / 0.3048, "NAVD88 height (ft)"),
+    ] {
         let src = SpatialRef::parse(src).unwrap();
         let t = Transformer::with_options(&src, &dst, &only_best).unwrap();
         assert!(matches!(t.transform_3d(-97.0, 30.0, z), Err(Error::MissingGrid(_))), "{src:?}");
@@ -72,7 +77,10 @@ fn vertical_crs_in_feet_refuses_a_missing_geoid_grid_as_in_metres() {
         let (_, _, h) = t.transform_3d(-97.0, 30.0, z).unwrap();
         assert!((h - 100.0).abs() < 1e-9, "{h}");
         let op = t.operation_at(-97.0, 30.0, z).unwrap().unwrap();
-        assert!(op.ballpark && op.name == "Ballpark vertical transformation", "{op:?}");
+        let name = format!(
+            "Transformation from {vertical} to NAD83(2011) (ballpark vertical transformation, without ellipsoid height to vertical height correction)"
+        );
+        assert!(op.ballpark && op.name == name, "{op:?}");
     }
 }
 
