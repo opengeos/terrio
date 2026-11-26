@@ -1176,18 +1176,22 @@ def test_report_gives_each_tools_speedup_over_one_thread():
     assert "geotiff local threads8  terrio x4.00  gdal x4.00  terrio/gdal time x2.00  (1)" in two_runs
 
 
-def _on_tmpfs(path):
-    """Whether a path is on tmpfs, where the page cache holds the only copy and nothing is evicted.
+def _fs_type(path):
+    """The file system type of a path.
 
     Args:
         path: The path.
 
     Returns:
-        Whether the longest mount point above it is a tmpfs.
+        The type of the longest mount point above it, such as `ext4` or `tmpfs`.
     """
-    path = str(Path(path).resolve())
+    path = str(Path(path).resolve()) + "/"  # a mount point is above itself
     mounts = [line.split()[1:3] for line in Path("/proc/mounts").read_text().splitlines()]
-    return max(((m, k) for m, k in mounts if path.startswith(m.rstrip("/") + "/")), key=lambda x: len(x[0]))[1] == "tmpfs"
+    return max(((m, k) for m, k in mounts if path.startswith(m.rstrip("/") + "/")), key=lambda x: len(x[0]))[1]
+
+
+# File systems whose files `POSIX_FADV_DONTNEED` drops from the page cache: the eviction must work there.
+EVICTING = ("ext4", "xfs", "btrfs")
 
 
 @pytest.mark.skipif(not hasattr(os, "posix_fadvise") or not Path("/proc/mounts").exists(), reason="Linux page cache")
@@ -1197,8 +1201,6 @@ def test_eviction_drops_every_file_of_a_fixture_from_the_page_cache(tmp_path):
     Args:
         tmp_path: A directory for the fixture.
     """
-    if _on_tmpfs(tmp_path):
-        pytest.skip("tmpfs keeps its files in the page cache")
     store = tmp_path / "f.zarr"
     (store / "c" / "0").mkdir(parents=True)
     (store / "zarr.json").write_bytes(b"{}")
@@ -1206,6 +1208,9 @@ def test_eviction_drops_every_file_of_a_fixture_from_the_page_cache(tmp_path):
     (store / "empty").write_bytes(b"")
     page = perf_matrix.resource.getpagesize()
     first = perf_matrix.evict(store)
+    fs = _fs_type(tmp_path)
+    if first["resident_after"] and fs not in EVICTING:  # tmpfs, or overlayfs in some containers
+        pytest.skip(f"{fs} keeps pages that POSIX_FADV_DONTNEED drops elsewhere")
     assert first["cache_pages"] == 1 + (1 << 20) // page and first["resident_after"] == 0
     perf_matrix.rewarm(store)
     again = perf_matrix.evict(store)

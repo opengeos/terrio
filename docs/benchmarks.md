@@ -377,10 +377,12 @@ source, on request: the local path, dropped from the page cache before each samp
 without root. After its warm-up, the worker flushes each of the fixture's files (`fsync`) and
 calls `posix_fadvise(POSIX_FADV_DONTNEED)` on it. It counts the files' pages in the page cache
 with `mincore` before and after, and records them with the bytes the worker process read from
-a block device during the read (`read_bytes` of `/proc/self/io`, `disk KiB` in the report). A
-sample whose pages did not all leave the page cache, for example pages another process maps, is
-reported as an error rather than timed as cold, as is a sample that read nothing from a block
-device (network and FUSE file systems). When `cold` is among the sources, the runner reads the
+block devices during the open and read (`read_bytes` of `/proc/self/io`, `disk KiB` in the
+report). That count includes any other file the process reads then, such as a library loaded on
+first use, so it is an upper bound on the fixture's storage reads. A sample whose pages did not
+all leave the page cache, for example pages another process maps, is reported as an error rather
+than timed as cold, as is a sample that read nothing from a block device (network and FUSE file
+systems). When `cold` is among the sources, the runner reads the
 fixture into the page cache before each warm case, so a warm case never follows a cold one
 uncached. The report compares each tool's cold time with its warm local time over
 the cases read both ways. Cold reads need Linux, fixtures on a local file system that caches

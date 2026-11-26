@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import errno
+import functools
 import itertools
 import json
 import math
@@ -2459,6 +2460,23 @@ def _files(path: Path) -> list[Path]:
     return [path] if path.is_file() else sorted(f for f in path.rglob("*") if f.is_file())
 
 
+@functools.cache
+def _libc():
+    """The C library, with the argument types of the calls `_resident_pages` makes.
+
+    Returns:
+        The library, loaded and configured once per process.
+    """
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.mmap.restype = ctypes.c_void_p
+    libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
+    libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+    return libc
+
+
 def _resident_pages(fd: int, size: int) -> int:
     """How many pages of an open file are in the OS page cache (Linux's `mincore`).
 
@@ -2471,11 +2489,7 @@ def _resident_pages(fd: int, size: int) -> int:
     """
     import ctypes
 
-    libc = ctypes.CDLL(None, use_errno=True)
-    libc.mmap.restype = ctypes.c_void_p
-    libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
-    libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-    libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+    libc = _libc()
     # Mapping a file reads none of it; mincore then tells which of its pages are cached.
     addr = libc.mmap(None, size, 1, 1, fd, 0)  # PROT_READ, MAP_SHARED
     if addr in (None, ctypes.c_void_p(-1).value):
@@ -2492,8 +2506,9 @@ def _resident_pages(fd: int, size: int) -> int:
 def evict(path: Path) -> dict:
     """Drops a fixture's files from the OS page cache, without root, and counts what stayed.
 
-    Each file is flushed first, as `POSIX_FADV_DONTNEED` leaves dirty pages, such as those of a
-    file just written. It also leaves the pages another process maps.
+    Each file is flushed first, because `POSIX_FADV_DONTNEED` does not drop dirty pages, which a
+    file just written has. Nor does it drop pages that another process maps: `resident_after`
+    counts those.
 
     Args:
         path: The fixture: a file or a directory store.
@@ -2540,7 +2555,9 @@ def worker(spec: dict) -> dict:
     Returns:
         The sample: init, open and read times, bytes, peak memory, and the values' sum and count;
         for a cold read, also the fixture's pages in the page cache before and after the
-        eviction and the bytes read from a block device.
+        eviction, and `disk_bytes`: what this process read from block devices during the open
+        and read. It counts any file read then (a library or data file loaded on first use), so
+        it is an upper bound on the fixture's storage reads, not a measure of them alone.
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -2581,7 +2598,7 @@ def worker(spec: dict) -> dict:
         out = [item(ds) for item in items]
     t2 = time.perf_counter()
     r2 = _rchar(local)
-    if cold:  # the bytes read from storage, open included
+    if cold:  # block-device bytes of the whole process over the open and read, not only the fixture's
         cold["disk_bytes"] += _proc_io()["read_bytes"]
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**2 if sys.platform == "darwin" else 1024)
     sums = [check(x) for x in out]  # after the timed read and its peak memory, as the digest
@@ -2752,7 +2769,9 @@ def run(args: argparse.Namespace) -> None:
                         if r.get("resident_after"):  # still cached: not a cold read
                             row[f"{tool}_error"] = f"not evicted: {r['resident_after']} of {r['cache_pages']} pages stayed in the page cache"
                             continue
-                        if source == "cold" and not r["disk_bytes"]:  # NFS, FUSE: no block device
+                        # NFS, FUSE: no block device. Any block-device read counts, so this catches
+                        # a read served entirely from another cache, not one that also loaded a library.
+                        if source == "cold" and not r["disk_bytes"]:
                             row[f"{tool}_error"] = "not cold: the read took no bytes from a block device"
                             continue
                         # this case's requests, not the warm-up's
