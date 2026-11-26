@@ -28,6 +28,9 @@ pixel. Needs terrio's Python module (a release build: `maturin develop --release
 GDAL's Python bindings, pyogrio and PyArrow (GeoParquet, FlatGeobuf, GeoPackage) and zarr-python 3
 (Zarr fixtures) in one environment. Fixtures and results stay in --dir, out of the repository.
 docs/benchmarks.md describes the method.
+
+geotiff-real and geoparquet-real read public files, downloaded once and pinned by size and
+SHA-256, as the fixtures of their format are read.
 """
 
 from __future__ import annotations
@@ -359,28 +362,35 @@ class GeoTiff:
 
         gdal.UseExceptions()
         ds = gdal.Open(str(path))
-        size = ds.RasterXSize
+        # The windows lie in the square of the shorter side; whole and decimated reads cover the raster.
+        xsize, ysize = ds.RasterXSize, ds.RasterYSize
+        size = min(xsize, ysize)
         if access == "overview" and ds.GetRasterBand(1).GetOverviewCount() == 0:
             return None
         level = None
         if access == "overview":  # the overview GDAL reads a decimation by 8 from
-            level = min(range(ds.GetRasterBand(1).GetOverviewCount()), key=lambda i: abs(ds.GetRasterBand(1).GetOverview(i).XSize - size // 8))
-        wins = {"window": windows(size, 1), "windows16": windows(size, 16), "threads4": windows(size, 16)}.get(access, [(0, 0, size, size)])
+            level = min(range(ds.GetRasterBand(1).GetOverviewCount()), key=lambda i: abs(ds.GetRasterBand(1).GetOverview(i).XSize - xsize // 8))
+        wins = {"window": windows(size, 1), "windows16": windows(size, 16), "threads4": windows(size, 16)}.get(access, [(0, 0, xsize, ysize)])
         # The bytes of the chunks the read touches, each counted once, from the TIFF block tables.
         need, seen = 0, set()
         for b in range(1, ds.RasterCount + 1):
             band = ds.GetRasterBand(b) if level is None else ds.GetRasterBand(b).GetOverview(level)
+            if access == "masks":  # geotiff-real's: a mask band's blocks, a nodata mask's pixels, or none
+                if band.GetMaskFlags() & gdal.GMF_ALL_VALID:
+                    continue
+                if (band.GetMaskFlags() & (gdal.GMF_PER_DATASET | gdal.GMF_NODATA)) == gdal.GMF_PER_DATASET:  # a mask band
+                    band = band.GetMaskBand()
             bw, bh = band.GetBlockSize()
-            f = size / band.XSize
+            fx, fy = xsize / band.XSize, ysize / band.YSize
             for x, y, w, h in wins:
-                x, y, w, h = int(x / f), int(y / f), math.ceil(w / f), math.ceil(h / f)
+                x, y, w, h = int(x / fx), int(y / fy), math.ceil(w / fx), math.ceil(h / fy)
                 for by in range(y // bh, (y + h - 1) // bh + 1):
                     for bx in range(x // bw, (x + w - 1) // bw + 1):
                         off = band.GetMetadataItem(f"BLOCK_OFFSET_{bx}_{by}", "TIFF")
                         if off is not None and off not in seen:
                             seen.add(off)
                             need += int(band.GetMetadataItem(f"BLOCK_SIZE_{bx}_{by}", "TIFF") or 0)
-        return {"size": size, "need_bytes": need}
+        return {"size": size, "xsize": xsize, "ysize": ysize, "need_bytes": need}
 
     @staticmethod
     def reader(tool: str, access: str, meta: dict):
@@ -397,6 +407,7 @@ class GeoTiff:
             open and read of the warm-up file.
         """
         size = meta["size"]
+        xsize, ysize = meta["xsize"], meta["ysize"]
         if tool == "terrio":
             import terrio.rio as rio
             from terrio.rio.windows import Window
@@ -411,7 +422,7 @@ class GeoTiff:
                 return ds.read()
 
             def decimated(ds):
-                return ds.read(out_shape=(ds.count, size // 8, size // 8))
+                return ds.read(out_shape=(ds.count, ysize // 8, xsize // 8))
         else:
             from osgeo import gdal
 
@@ -427,7 +438,7 @@ class GeoTiff:
                 return ds.ReadAsArray()
 
             def decimated(ds):
-                return ds.ReadAsArray(buf_xsize=size // 8, buf_ysize=size // 8)
+                return ds.ReadAsArray(buf_xsize=xsize // 8, buf_ysize=ysize // 8)
 
         n = {"window": 1, "windows16": 16, "threads4": 16}.get(access)
         if n:
@@ -793,8 +804,8 @@ class GeoParquet:
             print(f"{path.name}: {path.stat().st_size >> 20} MB", flush=True)
         publish(out / "_warmup.parquet", lambda tmp: gdal.VectorTranslate(str(tmp), str(sources["point"]), format="Parquet", limit=100))
 
-    @staticmethod
-    def bboxes(n: int) -> list[tuple[float, float, float, float]]:
+    @classmethod
+    def bboxes(cls, n: int) -> list[tuple[float, float, float, float]]:
         """The n boxes of 1/10 x 1/10 of the extent (1% of its area), spread over it.
 
         Args:
@@ -803,16 +814,19 @@ class GeoParquet:
         Returns:
             `(min_x, min_y, max_x, max_y)` of each box.
         """
-        x0, y0, x1, y1 = GeoParquet.EXTENT
+        x0, y0, x1, y1 = cls.EXTENT
         w, h = (x1 - x0) / 10, (y1 - y0) / 10
         corners = [(x0 + (x1 - x0 - w) * ((i * 0.37 + 0.45) % 1), y0 + (y1 - y0 - h) * ((i * 0.61 + 0.45) % 1)) for i in range(n)]
         return [(bx, by, bx + w, by + h) for bx, by in corners]
 
     COLUMNS = ["value", "class"]
-    WHERE = "id < 4000"  # 1% of the polygons or lines, 0.2% of the points
+    # 1% of the polygons or lines, 0.2% of the points: `WHERE_COLUMN < WHERE_BELOW`, which the
+    # column's row group statistics prune
+    WHERE_COLUMN, WHERE_BELOW = "id", 4000
+    WHERE = f"{WHERE_COLUMN} < {WHERE_BELOW}"
 
-    @staticmethod
-    def meta(path: Path, access: str) -> dict | None:
+    @classmethod
+    def meta(cls, path: Path, access: str) -> dict | None:
         """What a read of a fixture needs, from the fixture's own chunk tables.
 
         Args:
@@ -831,7 +845,7 @@ class GeoParquet:
         names = [md.schema.column(i).path for i in range(md.num_columns)]
         # The covering bbox columns, as the file's metadata names them (GDAL: `<geometry>_bbox`).
         cover = geo["columns"][gcol].get("covering", {}).get("bbox")
-        boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
+        boxes = cls.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
         need = md.serialized_size + 8  # the footer
         for g in range(md.num_row_groups):
             rg = md.row_group(g)
@@ -844,15 +858,15 @@ class GeoParquet:
                     if not hits:
                         continue
             if access == "where":
-                st = cols["id"].statistics
-                if st is not None and st.has_min_max and st.min >= 4000:
+                st = cols[cls.WHERE_COLUMN].statistics
+                if st is not None and st.has_min_max and st.min >= cls.WHERE_BELOW:
                     continue
-            keep = [n for n in names if n.split(".")[0] in (gcol, *GeoParquet.COLUMNS)] if access == "columns" else names
+            keep = [n for n in names if n.split(".")[0] in (gcol, *cls.COLUMNS)] if access == "columns" else names
             need += sum(cols[n].total_compressed_size for n in keep)
         return {"need_bytes": need}
 
-    @staticmethod
-    def reader(tool: str, access: str, meta: dict):
+    @classmethod
+    def reader(cls, tool: str, access: str, meta: dict):
         """How a tool reads a fixture in an access pattern.
 
         Args:
@@ -879,22 +893,22 @@ class GeoParquet:
         def read(p, **kw):
             return po.read_arrow(p, **kw)
 
-        boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
+        boxes = cls.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
         if boxes:
             items = [lambda p, b=b: read(p, bbox=b) for b in boxes]
         elif access == "columns":
-            items = [lambda p: read(p, columns=GeoParquet.COLUMNS)]
+            items = [lambda p: read(p, columns=cls.COLUMNS)]
         elif access == "where" and tool == "terrio":  # terrio.pyogrio has no `where`: terrio's SQL
             import pyarrow as pa
             import terrio
 
             def where(p):
                 layer = p.rsplit("/", 1)[-1].removesuffix(".parquet")
-                return pa.table(terrio.sql(p, f"SELECT * FROM {layer} WHERE {GeoParquet.WHERE}"))
+                return pa.table(terrio.sql(p, f"SELECT * FROM {layer} WHERE {cls.WHERE}"))
 
             items = [where]
         elif access == "where":
-            items = [lambda p: read(p, where=GeoParquet.WHERE)]
+            items = [lambda p: read(p, where=cls.WHERE)]
         else:
             items = [lambda p: read(p)]
         warm = (open_, lambda p: read(p))
@@ -2278,6 +2292,223 @@ PATHS["terrain"] = [
 
 
 # =============================================================================================
+# Real data: public files, downloaded once into the fixture directory, read as the fixtures of
+# their format are.
+
+
+def fetch(path: Path, url: str, size: int, sha256: str) -> None:
+    """Downloads a public file once, refusing one that is not the pinned file.
+
+    Args:
+        path: The fixture's path: a file already there is checked, not downloaded again.
+        url: Where the file is downloaded from.
+        size: The file's size in bytes.
+        sha256: The SHA-256 of its bytes, in hexadecimal.
+
+    Raises:
+        ValueError: If the download's size or SHA-256 is not the pinned one (nothing is kept), or
+            the file already there is not the pinned one (delete it to download it again).
+    """
+    import hashlib
+    import urllib.request
+
+    def check(file):
+        h = hashlib.sha256()
+        with open(file, "rb") as f:
+            while piece := f.read(1 << 20):
+                h.update(piece)
+        got = (file.stat().st_size, h.hexdigest())
+        if got != (size, sha256):
+            raise ValueError(f"{url}: {got[0]} bytes with SHA-256 {got[1]} in {file}, not the pinned {size} bytes with {sha256}")
+
+    def write(tmp):
+        with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as f:
+            while piece := r.read(1 << 20):
+                f.write(piece)
+                if f.tell() > size:  # stop: not the pinned file
+                    raise ValueError(f"{url}: more than the pinned {size} bytes")
+        check(tmp)
+
+    if path.exists():
+        check(path)
+        return
+    print(f"{path.name}: downloading {size >> 20} MB from {url}", flush=True)
+    publish(path, write)
+
+
+class GeoTiffReal(GeoTiff):
+    """Public GeoTIFFs, read as the GeoTIFF fixtures are, and also each band's mask (`masks`).
+
+    A Sentinel-2 L2A red band (B04) of a tile the satellite's swath covers by 40%, nodata 0
+    elsewhere; two COGs GDAL makes from it: a sparse one, which leaves the blocks holding only
+    nodata out of the file, and one whose nodata becomes an internal mask band; and a USGS 30 m DEM
+    stored big-endian, in strips, not square, without nodata (its mask is all valid). Reference:
+    GDAL 3.13.3.
+    """
+
+    # name: (URL, size in bytes, SHA-256)
+    DOWNLOADS = {
+        "s2_b04_nodata": (
+            "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/31/U/ER/2024/7/S2B_31UER_20240730_0_L2A/B04.tif",
+            87_106_242, "9c6c2381b3340f65f08e1e6f8dfe4784a3b08581bf04e091fa05efbe60a01d9b"),
+        "dem_i16_big_endian": (
+            "https://download.osgeo.org/geotiff/samples/usgs/m30dem.tif",
+            5_526_132, "b97f296164c39c4aab362a128eff05dea639341d9d6fce515b7bb20396a6ff6f"),
+    }
+    # name: (the download GDAL's COG driver translates, `gdal.Translate`'s options)
+    DERIVED = {
+        "s2_b04_sparse": ("s2_b04_nodata", {"creationOptions": ["COMPRESS=DEFLATE", "PREDICTOR=2", "BLOCKSIZE=512", "SPARSE_OK=TRUE",
+                                                                "OVERVIEW_RESAMPLING=AVERAGE"]}),
+        # band 1's nodata mask written as an internal mask band, without nodata
+        "s2_b04_mask": ("s2_b04_nodata", {"maskBand": "mask,1", "noData": "none", "creationOptions": [
+            "COMPRESS=DEFLATE", "PREDICTOR=2", "BLOCKSIZE=512", "OVERVIEW_RESAMPLING=AVERAGE"]}),
+    }
+    # name: (codec, dtype, layout)
+    FIXTURES = {
+        "s2_b04_nodata": ("DEFLATE+p2", "uint16", "cog 1024/nodata 0/10980"),
+        "s2_b04_sparse": ("DEFLATE+p2", "uint16", "cog 512/sparse/10980"),
+        "s2_b04_mask": ("DEFLATE+p2", "uint16", "cog 512/mask band/10980"),
+        "dem_i16_big_endian": ("NONE", "int16", "strip/big-endian/1479x1863"),
+    }
+    ACCESS = [*GeoTiff.ACCESS, "masks"]
+
+    @staticmethod
+    def axes(name: str) -> dict:
+        """The values of the matrix's axes for a fixture.
+
+        Args:
+            name: The fixture's name.
+
+        Returns:
+            Its `codec`, `dtype` and `layout`.
+        """
+        return dict(zip(("codec", "dtype", "layout"), GeoTiffReal.FIXTURES[name], strict=True))
+
+    @staticmethod
+    def make(out: Path) -> None:
+        """Downloads the files that are not there yet, makes the derived ones and the warm-up file.
+
+        Args:
+            out: The directory of the format's fixtures.
+        """
+        from osgeo import gdal
+
+        gdal.UseExceptions()
+        for name, spec in GeoTiffReal.DOWNLOADS.items():
+            fetch(out / f"{name}.tif", *spec)
+        for name, (src, opts) in GeoTiffReal.DERIVED.items():
+            publish(out / f"{name}.tif", lambda tmp, src=src, opts=opts: gdal.Translate(str(tmp), str(out / f"{src}.tif"), format="COG", **opts))
+        publish(out / "_warmup.tif", lambda tmp: gdal.Translate(str(tmp), str(out / "s2_b04_nodata.tif"), srcWin=[0, 0, 256, 256], creationOptions=["COMPRESS=DEFLATE", "TILED=YES"]))
+
+    @staticmethod
+    def reader(tool: str, access: str, meta: dict):
+        """How a tool reads a fixture: as a GeoTIFF fixture, or every band's mask for `masks`.
+
+        terrio reads the masks with `read_masks`, GDAL with each band's `GetMaskBand`: 255 valid, 0 not.
+
+        Args:
+            tool: `terrio` or `gdal`.
+            access: The access pattern.
+            meta: What `meta` returned for the fixture.
+
+        Returns:
+            As `GeoTiff.reader`.
+        """
+        if access != "masks":
+            return GeoTiff.reader(tool, access, meta)
+        open_, _, check, _ = GeoTiff.reader(tool, "full", meta)
+        if tool == "terrio":
+
+            def masks(ds):
+                return ds.read_masks()
+        else:
+            import numpy as np
+
+            def masks(ds):
+                return np.stack([ds.GetRasterBand(b).GetMaskBand().ReadAsArray() for b in range(1, ds.RasterCount + 1)])
+
+        return open_, [masks], check, (open_, masks)  # the mask code's first use counts as `init`
+
+
+FORMATS["geotiff-real"] = GeoTiffReal
+PATHS["geotiff-real"] = PATHS["geotiff"]
+
+
+class GeoParquetReal(GeoParquet):
+    """A public GeoParquet file, read as the GeoParquet fixtures are.
+
+    Estonia's building footprints of the Google-Microsoft Open Buildings by VIDA (Source
+    Cooperative): 737,334 polygons in WGS 84, each with `bf_source` "microsoft" (the column has no
+    other value), GeoParquet 1.1 with a covering bbox column, rows clustered in space, Snappy, row
+    groups of 5,000 rows. Reference: GDAL 3.13.3.
+    """
+
+    # name: (URL, size in bytes, SHA-256)
+    DOWNLOADS = {
+        "buildings_est": (
+            "https://data.source.coop/vida/google-microsoft-open-buildings/geoparquet/by_country/country_iso=EST/EST.parquet",
+            100_824_895, "f1da47d6fc2fcc207339c508232c50ae11caf4fa6742caeb381109c30df025f6"),
+    }
+    # name: (codec, dtype, layout)
+    FIXTURES = {"buildings_est": ("WKB/SNAPPY", "polygon", "rg 5000/bbox/clustered")}
+    EXTENT = (21.811368210735864, 57.52128950216659, 28.20660017454815, 59.6279495684748)  # the file's `geo` bbox
+    COLUMNS = ["area_in_meters", "bf_source"]
+    # 1% of the buildings; every row group holds smaller ones, so statistics prune none
+    WHERE_COLUMN, WHERE_BELOW = "area_in_meters", 5.2
+    WHERE = f"{WHERE_COLUMN} < {WHERE_BELOW}"
+
+    @staticmethod
+    def axes(name: str) -> dict:
+        """The values of the matrix's axes for a fixture.
+
+        Args:
+            name: The fixture's name.
+
+        Returns:
+            Its `codec`, `dtype` and `layout`.
+        """
+        return dict(zip(("codec", "dtype", "layout"), GeoParquetReal.FIXTURES[name], strict=True))
+
+    @staticmethod
+    def make(out: Path) -> None:
+        """Downloads the files that are not there yet, and makes the warm-up file.
+
+        Args:
+            out: The directory of the format's fixtures.
+        """
+        from osgeo import gdal
+
+        gdal.UseExceptions()
+        for name, spec in GeoParquetReal.DOWNLOADS.items():
+            fetch(out / f"{name}.parquet", *spec)
+        publish(out / "_warmup.parquet", lambda tmp: gdal.VectorTranslate(str(tmp), str(out / "buildings_est.parquet"), format="Parquet", limit=100))
+
+    @classmethod
+    def reader(cls, tool: str, access: str, meta: dict):
+        """How a tool reads a fixture, as a GeoParquet fixture; the check sums `area_in_meters`.
+
+        Args:
+            tool: `terrio` or `gdal`.
+            access: The access pattern.
+            meta: What `meta` returned for the fixture.
+
+        Returns:
+            As `GeoParquet.reader`.
+        """
+        open_, items, _, warm = super().reader(tool, access, meta)
+
+        def check(res):
+            table = res[1] if isinstance(res, tuple) else res
+            return float(table.column("area_in_meters").to_numpy().sum(dtype="float64")), table.num_rows
+
+        return open_, items, check, warm
+
+
+FORMATS["geoparquet-real"] = GeoParquetReal
+PATHS["geoparquet-real"] = PATHS["geoparquet"]
+
+
+# =============================================================================================
 # HTTP server with a simulated round-trip time, logging every request.
 
 _lock = threading.Condition()
@@ -2740,7 +2971,7 @@ def run(args: argparse.Namespace) -> None:
         rows = []
         for case_index, (name, access, source) in enumerate(itertools.product(names, args.access or accesses(fmt), sources)):
             path = data / f"{name}{fmt.EXT}"
-            label = "where/sql-vs-filter" if args.format in ("geoparquet", "geopackage") and access == "where" else access
+            label = "where/sql-vs-filter" if args.format in ("geoparquet", "geopackage", "geoparquet-real") and access == "where" else access
             try:
                 meta = fmt.meta(path, "threads4" if threads(access) else access)
             except Exception as exc:
