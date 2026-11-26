@@ -1742,8 +1742,10 @@ class GeoTiffWrite:
         "u8_rgb_deflate_p2_t512": ("u8_rgb_deflate_band", "DEFLATE", 2, 512, "PIXEL", None),
         "u8_rgb_jpeg_rgb_t512": ("u8_rgb_deflate_band", "JPEG", 1, 512, "PIXEL", "RGB"),  # GTiff only
         "u8_rgb_jpeg_ycbcr_t512": ("u8_rgb_deflate_band", "JPEG", 1, 512, "PIXEL", "YCBCR"),
+        "u8_rgb_jxl_t512": ("u8_rgb_deflate_band", "JXL", 1, 512, "PIXEL", None),
         "u16_deflate_p2_t512": ("u16_deflate_p2", "DEFLATE", 2, 512, "BAND", None),
         "u16_deflate_p2_t256": ("u16_deflate_p2", "DEFLATE", 2, 256, "BAND", None),
+        "u16_jxl_t256": ("u16_deflate_p2", "JXL", 1, 256, "BAND", None),
         "u16_lzw_p2_t512": ("u16_deflate_p2", "LZW", 2, 512, "BAND", None),
         "u16_zstd_p2_t512": ("u16_deflate_p2", "ZSTD", 2, 512, "BAND", None),
         "u16_12b_zstd_p2_band_t256": ("u16_12b_zstd_band", "ZSTD", 2, 256, "BAND", None),
@@ -2031,6 +2033,7 @@ FORMATS["geotiff-write"] = GeoTiffWrite
 PATHS["geotiff-write"] = [
     "crates/terrio/src/drivers/gtiff_write.rs",
     "crates/terrio/src/drivers/tiff_lzw.rs",
+    "crates/terrio/src/drivers/jxl_encoder/*",
     "crates/terrio/src/cog.rs",
     "crates/terrio/src/tiff_*",
     "crates/terrio/src/deflate_compress.rs",

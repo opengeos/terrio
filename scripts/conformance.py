@@ -1115,7 +1115,8 @@ def suite_benchmark_compat(ctx):
         "Benchmark compatibility and codec roundtrips", "Installed GDAL independent decoder",
         "GDAL 3.13 recursive COG pyramids, versioned slope/hillshade, the bilinear NAD83 to UTM warp "
         "and counties to Conus Albers match exactly on glibc Linux. "
-        "WebP lossless pixels/masks and JPEG XL Byte/UInt16 layouts roundtrip exactly; "
+        "WebP lossless pixels/masks, JPEG XL Byte/UInt16 layouts and JPEG XL tiles of noise over a "
+        "uniform run roundtrip exactly; "
         "lossy WebP quality must change valid decoded output, with no cross-encoder pixel equality claim.", 1,
     )
 
