@@ -694,16 +694,17 @@ def test_changed_files_choose_the_formats_to_measure():
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
     assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "flatgeobuf", "geopackage", "geotiff-write",
-                                                   "geoparquet-write", "warp", "terrain"]
+                                                   "geoparquet-write", "warp", "terrain", "vectorize"]
     assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
     assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
     assert perf_matrix.touched(["crates/terrio/src/ops/sql/select.rs"]) == ["geopackage"]
     assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr", "geotiff-write"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/gtiff_write.rs"]) == ["geotiff-write"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet.rs"]) == ["geoparquet", "geoparquet-write"]
-    assert perf_matrix.touched(["python/src/vector.rs"]) == ["flatgeobuf", "geoparquet-write"]
+    assert perf_matrix.touched(["python/src/vector.rs"]) == ["flatgeobuf", "geoparquet-write", "vectorize"]
     assert perf_matrix.touched(["crates/terrio/src/ops/warp/window.rs"]) == ["warp"]
     assert perf_matrix.touched(["crates/terrio/src/ops/dem.rs", "crates/terrio/src/ops/calc/eval.rs"]) == ["terrain"]
+    assert perf_matrix.touched(["crates/terrio/src/ops/contour.rs", "python/src/analysis.rs"]) == ["vectorize"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == ["flatgeobuf"]
     assert perf_matrix.touched(["docs/benchmarks.md"]) == []
 
@@ -853,6 +854,79 @@ def test_an_operation_output_is_compared_with_gdal_pixel_by_pixel():
         assert c["mismatch"] and c["beyond_tol"] == 12
 
 
+class _Layer:
+    """A stand-in for a `terrio.Layer`: features as `(value, WKT)`."""
+
+    def __init__(self, rows, crs_wkt, field="DN"):
+        self.rows, self.crs_wkt, self.fields = rows, crs_wkt, {field: "Integer"}
+
+    def __len__(self):
+        return len(self.rows)
+
+    def columns(self):
+        return {f: [v for v, _ in self.rows] for f in self.fields}
+
+    def to_wkb(self):
+        from osgeo import ogr
+
+        return [ogr.CreateGeometryFromWkt(w).ExportToWkb() for _, w in self.rows]
+
+
+def test_features_match_gdal_whatever_their_order_start_and_direction():
+    """Match features by value and vertices, then each value's total area; anything else differs."""
+    ogr = pytest.importorskip("osgeo.ogr")
+    osr = pytest.importorskip("osgeo.osr")
+    ogr.UseExceptions()
+    crs = osr.SpatialReference()
+    crs.ImportFromEPSG(32631)
+    holed = "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0), (1 1, 2 1, 2 2, 1 2, 1 1), (3 3, 3.5 3, 3.5 3.5, 3 3))"
+    rows = [(1, holed), (2, "POLYGON ((4 0, 5 0, 5 1, 4 1, 4 0))")]
+    ref = ogr.GetDriverByName("MEM").CreateDataSource("")
+    layer = ref.CreateLayer("polygons", crs, ogr.wkbPolygon)
+    layer.CreateField(ogr.FieldDefn("DN", ogr.OFTInteger))
+    for v, w in rows:
+        f = ogr.Feature(layer.GetLayerDefn())
+        f.SetField("DN", v)
+        f.SetGeometry(ogr.CreateGeometryFromWkt(w))
+        layer.CreateFeature(f)
+    wkt = crs.ExportToWkt()
+    # The other feature first, each ring from another vertex and the other way round, holes swapped.
+    same = [(2, "POLYGON ((5 1, 5 0, 4 0, 4 1, 5 1))"),
+            (1, "POLYGON ((4 4, 0 4, 0 0, 4 0, 4 4), (3 3, 3.5 3.5, 3.5 3, 3 3), (2 2, 1 2, 1 1, 2 1, 2 2))")]
+    c = perf_matrix.compare_features(_Layer(same, wkt), ref, 1e-9)
+    assert (c["n"], c["differing"], c["beyond_tol"], c["max_diff"], c["mismatch"]) == (2, 0, 0, 0.0, "")
+    # Moved by half a pixel: the same areas, but no match.
+    c = perf_matrix.compare_features(_Layer([(2, "POLYGON ((4 0.5, 5 0.5, 5 1.5, 4 1.5, 4 0.5))"), rows[0]], wkt), ref, 1e-9)
+    assert (c["differing"], c["beyond_tol"], c["mismatch"]) == (1, 1, ""), c
+    # Another value, or the same vertices in another sequence: no match, and a value's total differs.
+    for bad, totals in (([(3, rows[1][1]), rows[0]], ("DN 2: total area differs by 1", "DN 3: total area differs by 1")),
+                        ([(2, "POLYGON ((4 0, 5 1, 5 0, 4 1, 4 0))"), rows[0]], ("DN 2: total area differs by",))):
+        c = perf_matrix.compare_features(_Layer(bad, wkt), ref, 1e-9)
+        assert (c["differing"], c["beyond_tol"]) == (1, 2) and c["mismatch"].startswith(totals), c
+    c = perf_matrix.compare_features(_Layer(rows[:1], wkt), ref, 1e-9)
+    assert c["mismatch"].startswith("features 1 vs 2") and c["beyond_tol"] == 2
+    assert "crs" in perf_matrix.compare_features(_Layer(rows, None), ref, 1e-9)["mismatch"]
+    assert perf_matrix.compare_features(_Layer(rows, wkt, field="ELEV"), ref, 1e-9)["beyond_tol"] == 2
+    # A closed line from another start, and the other way round, matches; its length is compared.
+    lines = ogr.GetDriverByName("MEM").CreateDataSource("")
+    layer = lines.CreateLayer("contour", crs, ogr.wkbLineString)
+    layer.CreateField(ogr.FieldDefn("ID", ogr.OFTInteger))
+    layer.CreateField(ogr.FieldDefn("ELEV", ogr.OFTReal))
+    f = ogr.Feature(layer.GetLayerDefn())
+    f.SetField("ELEV", 200.0)
+    f.SetGeometry(ogr.CreateGeometryFromWkt("LINESTRING (0 0, 1 0, 1 1, 0 0)"))
+    layer.CreateFeature(f)
+    c = perf_matrix.compare_features(_Layer([(200.0, "LINESTRING (1 1, 1 0, 0 0, 1 1)")], wkt, field="ELEV"), lines, 1e-10)
+    assert (c["differing"], c["beyond_tol"], c["mismatch"]) == (0, 0, "")
+    # A ring through its smallest vertex twice may start at either; an open line may run either way.
+    def shapes(w):
+        return perf_matrix._shapes([(1, ogr.CreateGeometryFromWkt(w))])[0]
+
+    assert shapes("POLYGON ((0 0, 1 0, 1 1, 0 0, 0 2, 1 2, 0 0))") == shapes("POLYGON ((0 0, 0 2, 1 2, 0 0, 1 0, 1 1, 0 0))")
+    assert shapes("LINESTRING (0 0, 1 0, 2 1)") == shapes("LINESTRING (2 1, 1 0, 0 0)") != shapes("LINESTRING (0 0, 2 1, 1 0)")
+    assert shapes("LINESTRING (-1 0, 5 5)") != shapes("LINESTRING (-2 0, 5 5)")  # hash(-1.0) == hash(-2.0) in CPython
+
+
 def _compare(differing=0, beyond=0, mismatch=""):
     return {"n": 4, "tol": 0.01, "differing": differing, "beyond_tol": beyond, "max_diff": 0.001 * differing, "mismatch": mismatch}
 
@@ -883,7 +957,8 @@ def test_an_operation_is_exact_within_tolerance_or_differs_by_its_pixels():
 
 
 @pytest.mark.parametrize("fmt,access", [("warp", "bilinear"), ("warp", "near_t1"), ("terrain", "slope_t1"), ("terrain", "aspect"),
-                                        ("terrain", "proximity"), ("terrain", "calc")])
+                                        ("terrain", "proximity"), ("terrain", "calc"), ("vectorize", "polygonize"),
+                                        ("vectorize", "polygonize8"), ("vectorize", "contour")])
 def test_an_operation_runs_in_a_worker_and_matches_gdal(tmp_path, monkeypatch, fmt, access):
     """Run an operation as the runner's worker does, on a small DEM, against GDAL's output.
 
@@ -905,9 +980,10 @@ def test_an_operation_runs_in_a_worker_and_matches_gdal(tmp_path, monkeypatch, f
     dem = perf_matrix.terrain(np, 256, 1, "float32")[0]
     gdal.Translate(str(tmp_path / "f32_none.tif"), _mem(np, gdal, dem), format="GTiff")
     gdal.Translate(str(tmp_path / "u8_none.tif"), _mem(np, gdal, perf_matrix.terrain(np, 256, 1, "uint8")[0]), format="GTiff")
-    src = tmp_path / f"{op.CASES[access][0] if fmt == 'terrain' else 'f32_none'}.tif"
-    if fmt == "terrain":  # an operation is measured on its own input only
-        assert op.meta(tmp_path / ("f32_none.tif" if src.stem == "u8_none" else "u8_none.tif"), access) is None
+    gdal.Translate(str(tmp_path / "u8_classes.tif"), _mem(np, gdal, ((dem + 1000) // 200).astype("uint8")), format="GTiff")
+    src = tmp_path / f"{op.CASES[access][0] if fmt in ('terrain', 'vectorize') else 'f32_none'}.tif"
+    if fmt in ("terrain", "vectorize"):  # an operation is measured on its own input only
+        assert op.meta(tmp_path / f"{next(f for f in op.FIXTURES if f != src.stem)}.tif", access) is None
     warm = _mem(np, gdal, np.ones((64, 64), "float32"), gt=(0, 1, 0, 0, 0, -1))
     warm.SetProjection("")
     gdal.Translate(str(tmp_path / "_warmup.tif"), warm, format="GTiff")
@@ -918,7 +994,7 @@ def test_an_operation_runs_in_a_worker_and_matches_gdal(tmp_path, monkeypatch, f
     c = samples["terrio"]["compare"]
     assert c["n"] == samples["gdal"]["n"] > 0 and c["beyond_tol"] == 0 and not c["mismatch"], c
     row = summarize({**_row(terrio=[samples["terrio"]], gdal=[samples["gdal"]]), "format": fmt, "access": access})
-    assert row["values"] in ("exact", "within_tol")
+    assert row["values"] == "exact" if fmt == "vectorize" else row["values"] in ("exact", "within_tol")
 
 
 def _compared(beyond=0, differing=0, max_diff=0.0, mismatch=None):
