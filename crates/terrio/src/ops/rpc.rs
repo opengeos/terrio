@@ -323,10 +323,11 @@ pub struct RpcOptions {
     /// A factor multiplying the DEM heights (`RPC_HEIGHT_SCALE`, 1 by default).
     pub height_scale: f64,
     /// A DEM giving the ground height (`RPC_DEM`): a raster path. GeoTIFF/COG, VRT, STAC and
-    /// catalog sources are read lazily, by window — only the blocks the transform reads are
+    /// catalog sources are read lazily, by window: only the blocks the transform reads are
     /// decoded; other formats are read whole, as before. One cell is read at open, which catches a
-    /// DEM whose first block is unreadable. A block that fails later is a read error at transform
-    /// time: the point fails (no `dem_missing_value` applies — that is for a point with no DEM
+    /// DEM whose first block is unreadable. An unreadable reference cell also fails construction.
+    /// A block that fails later is a read error at transform
+    /// time: the point fails (no `dem_missing_value` applies: that is for a point with no DEM
     /// value, not a failed read) and a warning is recorded.
     pub dem: Option<String>,
     /// How the DEM is sampled (`RPC_DEMINTERPOLATION`).
@@ -549,7 +550,7 @@ impl Dem {
     }
 
     /// The DEM's value at a DEM pixel/line position (`GDALInterpolateAtPoint`): `Ok(None)` outside
-    /// the DEM or on nodata, `Err` on a read error — a failed read is not a nodata result.
+    /// the DEM or on nodata, `Err` on a read error: a failed read is not a nodata result.
     fn sample(&self, mut x: f64, mut y: f64) -> Result<Option<f64>> {
         let (w, h) = (self.width as f64, self.height as f64);
         let mut method = self.interpolation;
@@ -715,9 +716,9 @@ impl RpcTransformer {
         // A reference point and the affine approximation around it. The reference pixel and the
         // reference height come from one height observation, so a transient DEM read error cannot
         // mix a pixel evaluated at height 0 with a height read later.
-        let observe = |t: &RpcTransformer, lon: f64, lat: f64| -> ((f64, f64), f64) {
-            let z = t.height_at(lon, lat).0.unwrap_or(0.0);
-            (t.rpc.evaluate(lon, lat, z), z)
+        let observe = |t: &RpcTransformer, lon: f64, lat: f64| -> Result<((f64, f64), f64)> {
+            let z = t.height_at_checked(lon, lat)?.0.unwrap_or(0.0);
+            Ok((t.rpc.evaluate(lon, lat, z), z))
         };
         let (mut ref_pixel, mut ref_line) = (-1.0, -1.0);
         let (mut ref_lon, mut ref_lat) = (0.0, 0.0);
@@ -725,13 +726,13 @@ impl RpcTransformer {
         if rpc.min_long != -180.0 || rpc.max_long != 180.0 {
             ref_lon = (rpc.min_long + rpc.max_long) * 0.5;
             ref_lat = (rpc.min_lat + rpc.max_lat) * 0.5;
-            let ((p, l), h) = observe(&t, ref_lon, ref_lat);
+            let ((p, l), h) = observe(&t, ref_lon, ref_lat)?;
             (ref_pixel, ref_line, ref_h) = (p, l, h);
         }
         if !(0.0..=100000.0).contains(&ref_pixel) || !(0.0..=100000.0).contains(&ref_line) {
             ref_lon = rpc.long_off;
             ref_lat = rpc.lat_off;
-            let ((p, l), h) = observe(&t, ref_lon, ref_lat);
+            let ((p, l), h) = observe(&t, ref_lon, ref_lat)?;
             (ref_pixel, ref_line, ref_h) = (p, l, h);
         }
         t.ref_z = ref_h;
@@ -763,6 +764,12 @@ impl RpcTransformer {
     /// the DEM's scaled and offset; `None` where the DEM has none. Also the DEM pixel/line
     /// position last sampled.
     fn height_at(&self, lon: f64, lat: f64) -> (Option<f64>, (f64, f64)) {
+        self.height_at_checked(lon, lat).unwrap_or((None, (0.0, 0.0)))
+    }
+
+    /// A height observation that preserves a failed DEM read separately from missing coverage.
+    /// Construction propagates the error; inverse transforms fail without retrying it as nodata.
+    fn height_at_checked(&self, lon: f64, lat: f64) -> Result<(Option<f64>, (f64, f64))> {
         let mut dem_h = 0.0;
         let mut at = (0.0, 0.0);
         if let Some(d) = &self.dem {
@@ -770,7 +777,7 @@ impl RpcTransformer {
             if let Some(ct) = &d.ct {
                 match ct.transform(x, y) {
                     Ok(p) => (x, y) = p,
-                    Err(_) => return (None, at),
+                    Err(_) => return Ok((None, at)),
                 }
             }
             let mut retried = false;
@@ -783,7 +790,7 @@ impl RpcTransformer {
                     }
                     // A read error fails the point; it is not a nodata result, so
                     // `dem_missing_value` does not apply.
-                    Err(_) => return (None, at),
+                    Err(e) => return Err(e),
                     Ok(None) => {}
                 }
                 // A DEM spanning [-180, 180] with the longitude beyond it.
@@ -799,12 +806,12 @@ impl RpcTransformer {
                 }
                 match self.dem_missing_value {
                     Some(m) => dem_h = m,
-                    None => return (None, at),
+                    None => return Ok((None, at)),
                 }
                 break;
             }
         }
-        (Some(self.height_offset + dem_h * self.height_scale), at)
+        Ok((Some(self.height_offset + dem_h * self.height_scale), at))
     }
 
     /// The pixel/line position of a longitude, latitude and height above the fixed height or the
@@ -993,7 +1000,7 @@ impl RpcTransformer {
         };
         let mut below2 = 0;
         for iter in 0..max_iter {
-            let (dem_h, (mut dp, mut dl)) = self.height_at(rx, ry);
+            let (dem_h, (mut dp, mut dl)) = self.height_at_checked(rx, ry).ok()?;
             let dem_h = match dem_h {
                 Some(h) => h,
                 None if iter == 0 => {
@@ -1413,35 +1420,69 @@ pub(crate) mod tests {
         assert!(t.to_pixel(lon, lat, 0.0).is_some(), "a nodata cell takes the missing value");
     }
 
-    /// A DEM read error fails the point; it does not take `dem_missing_value` (that is for a
-    /// point with no DEM value, not a failed read), and records a warning.
-    #[test]
-    fn lazy_dem_read_error_fails_the_point_without_the_missing_value() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        struct Flaky(Arc<AtomicUsize>);
+    /// A lazy DEM whose read after `successful_reads` successes fails once, then recovers.
+    fn dem_failing_after_reads(successful_reads: usize, options: &RpcOptions, rpc: &Rpc) -> Dem {
+        struct Flaky {
+            reads: usize,
+            successful_reads: usize,
+        }
         impl crate::cog::WindowSource for Flaky {
             fn overviews(&self) -> Vec<(usize, usize)> {
                 Vec::new()
             }
             fn read(&mut self, _level: usize, window: crate::Window, bands: &[usize]) -> Result<wbraster::raster::RasterData> {
-                if self.0.fetch_add(1, Ordering::Relaxed) == 0 {
-                    // The one-cell read at open succeeds.
-                    return Ok(wbraster::raster::RasterData::F32(vec![100.0; window.width * window.height * bands.len()]));
+                let fails = self.reads == self.successful_reads;
+                self.reads += 1;
+                if fails {
+                    return Err(Error::InvalidData("simulated read failure".into()));
                 }
-                Err(Error::InvalidData("simulated read failure".into()))
+                Ok(wbraster::raster::RasterData::F32(vec![100.0; window.width * window.height * bands.len()]))
             }
         }
         let dir = tempfile::tempdir().unwrap();
         let header = crate::open_raster_lazy(dem(dir.path()).to_str().unwrap()).unwrap().header();
+        let source = Flaky { reads: 0, successful_reads };
+        Dem::from_lazy(crate::LazyRaster::from_source(header, Box::new(source)), options, rpc).unwrap()
+    }
+
+    /// A failed reference read after the initial one-cell check refuses construction, even with
+    /// a missing value configured; neither it nor a zero height substitutes for failed I/O.
+    #[test]
+    fn lazy_dem_reference_read_error_refuses_the_transformer() {
         let r = rpc();
         let o = RpcOptions { dem_missing_value: Some(0.0), ..Default::default() };
-        let count = Arc::new(AtomicUsize::new(0));
-        let dem = Dem::from_lazy(crate::LazyRaster::from_source(header, Box::new(Flaky(count))), &o, &r).unwrap();
+        let dem = dem_failing_after_reads(1, &o, &r);
+        crate::warnings::take();
+        let error = RpcTransformer::with_dem(&r, &o, Some(dem)).unwrap_err();
+        assert!(error.to_string().contains("simulated read failure"), "{error}");
+        assert!(crate::warnings::take().iter().any(|w| w.contains("could not be read")), "a warning is recorded");
+    }
+
+    /// A DEM read error fails the point; it does not take `dem_missing_value` (that is for a
+    /// point with no DEM value, not a failed read), and records a warning.
+    #[test]
+    fn lazy_dem_read_error_fails_the_point_without_the_missing_value() {
+        let r = rpc();
+        let o = RpcOptions { dem_missing_value: Some(0.0), ..Default::default() };
+        let dem = dem_failing_after_reads(2, &o, &r);
         let t = RpcTransformer::with_dem(&r, &o, Some(dem)).unwrap();
         crate::warnings::take();
         assert!(t.to_pixel(10.0, 45.0, 0.0).is_none(), "a read error fails the point, not the missing value");
         assert!(crate::warnings::take().iter().any(|w| w.contains("could not be read")), "a warning is recorded");
+    }
+
+    /// A failed inverse read is not retried as missing coverage, even if the next read succeeds.
+    #[test]
+    fn lazy_dem_inverse_read_error_fails_without_retrying_as_nodata() {
+        let r = rpc();
+        let o = RpcOptions { dem_missing_value: Some(0.0), ..Default::default() };
+        let dem = dem_failing_after_reads(2, &o, &r);
+        let t = RpcTransformer::with_dem(&r, &o, Some(dem)).unwrap();
+        let (pixel, line) = r.evaluate(10.0, 45.0, 100.0);
+        crate::warnings::take();
+        assert!(t.to_geo(pixel, line, 0.0).is_none(), "the read error fails the inverse point");
+        assert!(crate::warnings::take().iter().any(|w| w.contains("could not be read")), "a warning is recorded");
+        assert!(t.to_geo(pixel, line, 0.0).is_some(), "a subsequent call can recover");
     }
 
     /// The ±180° wrap retry still works with a lazy DEM: a DEM spanning [-180, 180] answers a
