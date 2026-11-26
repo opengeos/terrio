@@ -366,11 +366,11 @@ GeoPackage reads are `terrio.open_stream` against `pyogrio.read_arrow`, and the 
 `terrio.sql` against `read_arrow(where=...)`, labelled `where/sql-vs-filter` too. The bytes a
 GeoPackage read needs are the schema's pages and, for a bbox read through an R-tree, the nodes the
 R-tree visits and the pages of the rows it gives; any other read needs the whole table, as the
-fixtures have no attribute index and a row store reads a row's columns together. terrio
-downloads a GeoPackage URL whole before reading it, while GDAL reads its pages by range requests.
-GDAL's HTTP bbox reads of the larger GeoPackage fixtures take from about 110 s to over 300 s at
-the 20 ms round-trip time, so the default `--timeout` of 120 s reports several of them as
-timeouts; three samples with `--timeout 300` take about 95 minutes.
+fixtures have no attribute index and a row store reads a row's columns together. Over HTTP,
+`terrio.open_stream` reads a GeoPackage's pages by range requests, as GDAL does, while `terrio.sql`
+downloads the file first. GDAL's HTTP bbox reads of the larger GeoPackage fixtures take from about
+110 s to over 300 s at the 20 ms round-trip time, so the default `--timeout` of 120 s reports
+several of them as timeouts; three samples with `--timeout 300` take about 95 minutes.
 
 Shapefile fixtures are GDAL translations of the vector sources, written with
 `SPATIAL_INDEX=YES` (a `.qix` quadtree) or `NO` and `ENCODING=UTF-8` or `LATIN1` (a `.cpg`);

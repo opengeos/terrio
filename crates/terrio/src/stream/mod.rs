@@ -422,6 +422,19 @@ fn open_untyped_layers(path: &str, options: &VectorOpenOptions, batch: usize) ->
         crate::dataset::layer_selection(&options.layers, &[layer.name.as_str()], Some(path), false)?;
         return Ok(vec![FeatureReader::new(layer, Box::new(ParquetSource(s))).with_range(options)]);
     }
+    // A remote GeoPackage (named so by its URL's file name, a query string aside) is read in
+    // place, its pages by range requests.
+    #[cfg(all(remote, feature = "sqlite"))]
+    if !local
+        && let location = crate::vfs::Location::parse(path)
+        && let Some(remote) = location.remote()
+        && VectorDriver::for_extension(&location.file_name()) == Some(VectorDriver::GPKG)
+    {
+        // As the download it replaces checked it: by name and by content.
+        crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
+        let (reader, http) = open_remote_gpkg(&remote)?;
+        return open_gpkg(path, options, batch, || sqlite::FileDb::open_remote(reader.clone(), &http));
+    }
     let Some(driver) = driver.filter(|d| local && can_read_stream(*d)) else {
         let ds = crate::open_vector(path, options)?;
         return Ok(ds
@@ -438,7 +451,7 @@ fn open_untyped_layers(path: &str, options: &VectorOpenOptions, batch: usize) ->
     crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
     #[cfg(feature = "sqlite")]
     if driver == VectorDriver::GPKG {
-        return open_gpkg(path, options, batch);
+        return open_gpkg(path, options, batch, || sqlite::FileDb::open(path));
     }
     let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
     let (layer, source): (Layer, Box<dyn FeatureSource>) = match driver {
@@ -890,7 +903,13 @@ struct GpkgSource {
 #[cfg(feature = "sqlite")]
 enum GpkgRows {
     Scan(sqlite::Cursor),
-    Lookup { root: u32, ids: std::vec::IntoIter<i64> },
+    /// The rows of `ids`, looked up; the next `fetched` of them have their pages fetched (see
+    /// [`gpkg_read::Tables::prefetch_rows`]).
+    Lookup {
+        root: u32,
+        ids: std::vec::IntoIter<i64>,
+        fetched: usize,
+    },
 }
 
 #[cfg(feature = "sqlite")]
@@ -914,12 +933,19 @@ impl FeatureSource for GpkgSource {
                     }
                 }
             }
-            GpkgRows::Lookup { root, ids } => {
+            GpkgRows::Lookup { root, ids, fetched } => {
                 // Ids without a row (stale R-tree entries) are skipped: only the end of the ids
                 // ends the stream.
                 let mut bytes = 0;
                 while rows.len() < self.batch && bytes < self.batch_bytes {
+                    if *fetched == 0 && ids.len() > 0 {
+                        // The ids a prefetch descends for: its budget's leaves hold fewer when
+                        // the rows are scattered, more of them than this when they are not.
+                        let next = &ids.as_slice()[..ids.len().min(1 << 16)];
+                        *fetched = gpkg_read::Tables::prefetch_rows(&self.db, *root, next)?.clamp(1, next.len());
+                    }
                     let Some(id) = ids.next() else { break };
+                    *fetched -= 1;
                     if let Some(p) = gpkg_read::Tables::lookup(&self.db, *root, id)? {
                         bytes += p.len();
                         rows.push((id, p));
@@ -940,9 +966,34 @@ impl FeatureSource for GpkgSource {
     }
 }
 
+/// Opens a remote GeoPackage to read its pages by range requests: the reader, and the options it
+/// was opened with. Blocks are 4 KiB (a usual page) unless a valid size is set: the rows a bbox
+/// gives may be on pages scattered over the file, and a larger block fetches pages around each
+/// that are not needed.
+#[cfg(all(remote, feature = "sqlite"))]
+fn open_remote_gpkg(remote: &crate::http::Remote) -> Result<(crate::http::RangeReader, crate::http::HttpOptions)> {
+    let mut http = crate::http::HttpOptions::from_env();
+    let set = crate::config::get_any(&["TERRIO_HTTP_BLOCK_SIZE", "CPL_VSIL_CURL_CHUNK_SIZE"]);
+    if set.and_then(|v| v.trim().parse::<u64>().ok()).is_none_or(|b| b < 1024) {
+        http.block_size = 4096;
+        // The first request as large as with the default blocks: the header and the first pages
+        // (often the schema and GeoPackage tables) at once, and a server that ignores ranges
+        // still accepted for files up to ten times that request, as before.
+        http.ingested_bytes_at_open.get_or_insert(crate::http::FIRST_READ);
+    }
+    Ok((crate::http::RangeReader::open_with(remote, http.clone())?, http))
+}
+
+/// Opens the layers of a GeoPackage as streams, the file's pages read through `open` (the file
+/// is opened again for each layer).
 #[cfg(feature = "sqlite")]
-fn open_gpkg(path: &str, options: &VectorOpenOptions, batch: usize) -> Result<Vec<FeatureReader>> {
-    let db = sqlite::FileDb::open(path)?;
+fn open_gpkg(
+    path: &str,
+    options: &VectorOpenOptions,
+    batch: usize,
+    open: impl Fn() -> Result<sqlite::FileDb>,
+) -> Result<Vec<FeatureReader>> {
+    let db = open()?;
     let (layers, _) = gpkg_read::contents(&db)?;
     if layers.is_empty() {
         // Rasters only: as the dataset reader reports it.
@@ -953,7 +1004,7 @@ fn open_gpkg(path: &str, options: &VectorOpenOptions, batch: usize) -> Result<Ve
     crate::crs::prefetch();
     let mut out = Vec::new();
     for c in layers.iter().zip(selected).filter_map(|(c, keep)| keep.then_some(c)) {
-        let db = sqlite::FileDb::open(path)?;
+        let db = open()?;
         let def = gpkg_read::layer_def(&db, c)?;
         let (root, sql) = db.table_root(&c.name)?;
         let columns = crate::drivers::sqlite::column_types(&sql).len();
@@ -964,7 +1015,7 @@ fn open_gpkg(path: &str, options: &VectorOpenOptions, batch: usize) -> Result<Ve
             _ => None,
         };
         let rows = match candidates {
-            Some(ids) => GpkgRows::Lookup { root, ids: ids.into_iter() },
+            Some(ids) => GpkgRows::Lookup { root, ids: ids.into_iter(), fetched: 0 },
             None => GpkgRows::Scan(db.cursor(root)),
         };
         let layer = crate::dataset::fix_layer(def.layer.clone(), path, VectorDriver::GPKG);
@@ -2027,31 +2078,62 @@ impl Default for ConvertOptions {
 pub fn can_convert_stream(src: &str, dst: &str, options: &ConvertOptions) -> bool {
     let out = options.write.driver.or_else(|| VectorDriver::for_extension(dst));
     let ext = crate::formats::extension(src);
-    let input = VectorDriver::for_extension(src).filter(|_| ext.as_deref() != Some("json"));
+    let location = crate::vfs::Location::parse(src);
+    // A GeoPackage URL by its file name, a query string aside, as its stream takes it.
+    #[cfg(remote)]
+    let remote_gpkg = || location.remote().is_some() && VectorDriver::for_extension(&location.file_name()) == Some(VectorDriver::GPKG);
+    #[cfg(not(remote))]
+    let remote_gpkg = || false;
+    let input =
+        VectorDriver::for_extension(src).or_else(|| remote_gpkg().then_some(VectorDriver::GPKG)).filter(|_| ext.as_deref() != Some("json"));
     let pbf = || input == Some(VectorDriver::OSM) && ext.as_deref() == Some("pbf") && osm_sorted(src);
-    let raster_only_gpkg = input == Some(VectorDriver::GPKG) && gpkg_is_raster_only(src);
+    // Last: for a remote file, it reads the file.
+    let raster_only_gpkg = || input == Some(VectorDriver::GPKG) && gpkg_is_raster_only(src);
     options.translate.sql.is_none()
         && !options.write.preserve_fid
-        && !raster_only_gpkg
         && out.is_some_and(can_write_stream)
         && (input.is_some_and(can_read_stream) || pbf())
-        && (crate::vfs::Location::parse(src).is_local() || {
-            #[cfg(all(remote, feature = "parquet"))]
+        && (location.is_local() || {
+            // Remote files these drivers read in place. A GeoPackage only for outputs written
+            // without a profile: those that need one read the stream twice, the file twice over
+            // the network, where the whole conversion downloads it once. GeoParquet needs one for
+            // integer and date fields, which are not known before the file is opened, so every
+            // GeoParquet output is converted whole.
+            #[cfg(remote)]
             {
-                input == Some(VectorDriver::Parquet) && crate::vfs::Location::parse(src).remote().is_some()
+                ((cfg!(feature = "parquet") && input == Some(VectorDriver::Parquet))
+                    || (cfg!(feature = "sqlite")
+                        && input == Some(VectorDriver::GPKG)
+                        && !out.is_some_and(|d| {
+                            matches!(d, VectorDriver::CSV | VectorDriver::Shapefile | VectorDriver::GPKG | VectorDriver::Parquet)
+                        })))
+                    && location.remote().is_some()
             }
-            #[cfg(not(all(remote, feature = "parquet")))]
+            #[cfg(not(remote))]
             {
                 false
             }
         })
         && !same_dataset(src, dst, output_driver(dst, options))
+        && !raster_only_gpkg()
 }
 
-/// Whether `src` is a local GeoPackage containing only raster tables and no vector layers.
+/// Whether `src` is a GeoPackage, local or a URL (read by range requests), containing only raster
+/// tables and no vector layers.
 fn gpkg_is_raster_only(src: &str) -> bool {
     #[cfg(all(feature = "sqlite", not(target_family = "wasm")))]
     {
+        // A remote file is read in place, as its stream would read it: its header, schema and
+        // GeoPackage tables, which the stream then reads from the cache.
+        #[cfg(remote)]
+        if let Some(remote) = crate::vfs::Location::parse(src).remote() {
+            // Not read when the allowed drivers refuse it: its stream reports that.
+            if crate::formats::check_allowed(src, Some(crate::formats::Kind::Vector)).is_err() {
+                return false;
+            }
+            let db = open_remote_gpkg(&remote).and_then(|(reader, http)| sqlite::FileDb::open_remote(reader, &http));
+            return matches!(db.and_then(|db| gpkg_read::contents(&db)), Ok((layers, rasters)) if layers.is_empty() && !rasters.is_empty());
+        }
         let path = std::path::Path::new(src);
         if !path.is_file() {
             return false;

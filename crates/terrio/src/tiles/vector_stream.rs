@@ -1523,6 +1523,12 @@ mod tests {
         let mut opts = crate::stream::ConvertOptions::default();
         opts.write.driver = Some(VectorDriver::PMTiles);
         assert!(!crate::stream::can_convert_stream(gpkg_str, pm_path.to_str().unwrap(), &opts));
+        // A remote one too, read in place to tell.
+        #[cfg(remote)]
+        {
+            let (base, _) = crate::http::test_server(std::fs::read(&gpkg_path).unwrap());
+            assert!(!crate::stream::can_convert_stream(&format!("{base}/raster_only.gpkg"), pm_path.to_str().unwrap(), &opts));
+        }
     }
 
     #[test]

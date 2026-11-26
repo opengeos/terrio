@@ -65,6 +65,19 @@ levels are its overviews; a vector archive's layers are read from the tiles of o
 (`--oo ZOOM_LEVEL=N`), only those in a spatial filter (`--spat`) when there is one. MBTiles are
 SQLite files and are downloaded first.
 
+GeoPackage feature layers read as streams (`terrio.open_stream`, and `terrio convert` to an
+output written as a stream; GeoPackage, CSV, Shapefile and GeoParquet outputs, whose conversion
+may read the input twice, are converted whole) from a URL whose file name ends in `.gpkg` are read
+in place too, page by page through the block cache, in blocks of 4 KiB unless
+`TERRIO_HTTP_BLOCK_SIZE` (or `CPL_VSIL_CURL_CHUNK_SIZE`) sets them. Opening reads the header and
+the schema, then fetches the first page of each GeoPackage table together. A bbox read fetches the
+R-tree's nodes a level at a time, then the pages of the rows it finds, a level of the table's tree
+at a time; each round of requests asks for at most a quarter of the cache, as a whole read does
+for the table's pages. The overflow pages of rows longer than a page come with the pages holding
+them, a quarter of the cache at a time for longer rows; past a jump in a chain of them, a page,
+then runs twice as long each time it goes on in order. A `-wal` file beside a remote GeoPackage is
+not read. `terrio.open_vector`, `terrio.sql` and a GeoPackage's tiles download the file first.
+
 ```sh
 # A 30 GB archive of terrain tiles: the header and one tile for info, a few tiles for a window.
 terrio info https://r2-public.protomaps.com/protomaps-sample-datasets/terrarium_z9.pmtiles
