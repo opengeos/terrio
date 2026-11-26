@@ -4,8 +4,9 @@
 //     frmts/gtiff/gtiffdataset_read.cpp (MultiThreadedRead's bSkipBlockCache)
 // No code is translated from these sources.
 
-//! A process-wide cache of the decoded chunks (tiles or strips) of GeoTIFFs and COGs read lazily,
-//! as GDAL's raster block cache (`GDAL_CACHEMAX`) keeps the blocks it decodes.
+//! A process-wide cache of the decoded chunks (tiles or strips) of GeoTIFFs and COGs read lazily
+//! (and of GRIB bands and Zarr chunks, below), as GDAL's raster block cache (`GDAL_CACHEMAX`) keeps
+//! the blocks it decodes.
 //!
 //! Without it, every [`crate::LazyRaster::read_window`] decodes its chunks again, whatever
 //! was read before: reading one pixel of a file with one-row LZW strips costs a strip's
@@ -23,6 +24,14 @@
 //! whatever its thread count and codec): its output holds every chunk, and keeping them too would
 //! double the read's memory. An 8-bit CMYK image, which GDAL reads through its RGBA bands, keeps
 //! them.
+//!
+//! An open Zarr array (each
+//! level of a multiscale store is one) keeps at most 16 MiB of decoded chunks, whatever the cache's
+//! size, its least recently used dropped first: the chunks (or inner chunks of a shard) a window
+//! read covers only in part (along its edges, which an adjacent tile of a grid shares, or along a
+//! band dimension), and none of those it covers whole, even when a later window overlapping it
+//! reads them again. A read whose decoded values take more than a quarter of those 16 MiB (or of
+//! the cache, when smaller) keeps none (a decimated read: the values of the window it samples).
 //!
 //! The cache holds at most [`max_bytes`] bytes of decoded samples (and a small fixed overhead per
 //! chunk), dropping the least recently used chunks first. A chunk larger than the cache is not
@@ -217,8 +226,14 @@ struct Entry {
     tick: u64,
 }
 
-/// The chunks of an open reader, by `(ifd, chunk)`.
-type HandleChunks = HashMap<(usize, u32), Entry>;
+/// The chunks of an open reader, by `(ifd, chunk)`, the bytes they count for and their order of
+/// use (by tick, the first the least recently used).
+#[derive(Default)]
+struct HandleChunks {
+    chunks: HashMap<(usize, u32), Entry>,
+    bytes: u64,
+    order: BTreeMap<u64, (usize, u32)>,
+}
 
 /// The least recently used chunks, by `(handle, ifd, chunk)`.
 struct Cache {
@@ -253,8 +268,8 @@ impl Cache {
     fn set_max(&mut self, bytes: u64) {
         self.max = Some(bytes);
         self.shrink(bytes);
-        for chunks in self.handles.values_mut() {
-            chunks.shrink_to_fit();
+        for held in self.handles.values_mut() {
+            held.chunks.shrink_to_fit();
         }
     }
 
@@ -267,9 +282,12 @@ impl Cache {
     /// A chunk, marked as the most recently used.
     fn get(&mut self, handle: u64, ifd: usize, chunk: u32) -> Option<Arc<CachedChunk>> {
         let tick = self.next_tick();
-        let entry = self.handles.get_mut(&handle)?.get_mut(&(ifd, chunk))?;
+        let held = self.handles.get_mut(&handle)?;
+        let entry = held.chunks.get_mut(&(ifd, chunk))?;
         let old = std::mem::replace(&mut entry.tick, tick);
         let found = entry.chunk.clone();
+        held.order.remove(&old);
+        held.order.insert(tick, (ifd, chunk));
         self.order.remove(&old);
         self.order.insert(tick, (handle, ifd, chunk));
         Some(found)
@@ -277,12 +295,14 @@ impl Cache {
 
     /// Drops a chunk, if it is cached, and its reader's table once it is empty.
     fn remove(&mut self, handle: u64, ifd: usize, chunk: u32) {
-        let Some(chunks) = self.handles.get_mut(&handle) else { return };
-        if let Some(entry) = chunks.remove(&(ifd, chunk)) {
+        let Some(held) = self.handles.get_mut(&handle) else { return };
+        if let Some(entry) = held.chunks.remove(&(ifd, chunk)) {
             self.bytes -= entry.cost;
+            held.bytes -= entry.cost;
+            held.order.remove(&entry.tick);
             self.order.remove(&entry.tick);
         }
-        if chunks.is_empty() {
+        if held.chunks.is_empty() {
             self.handles.remove(&handle);
         }
     }
@@ -301,23 +321,38 @@ impl Cache {
 
     /// Stores a chunk within the size held by the cache; nothing when the size is not set yet.
     fn insert(&mut self, handle: u64, ifd: usize, chunk: u32, value: CachedChunk) {
+        self.insert_within(handle, ifd, chunk, value, u64::MAX);
+    }
+
+    /// [`Cache::insert`], the reader's chunks then taking at most `most` bytes: its least recently
+    /// used ones are dropped first.
+    fn insert_within(&mut self, handle: u64, ifd: usize, chunk: u32, value: CachedChunk, most: u64) {
         let Some(max) = self.max else { return };
         let cost = value.cost();
-        if cost > max {
+        if cost > max.min(most) {
             return;
         }
         self.remove(handle, ifd, chunk);
+        // The reader's own least recently used chunks first, then, if still needed, the cache's.
+        while let Some(&(ifd, chunk)) =
+            self.handles.get(&handle).filter(|held| held.bytes + cost > most).and_then(|held| held.order.values().next())
+        {
+            self.remove(handle, ifd, chunk);
+        }
         self.shrink(max - cost);
         let tick = self.next_tick();
         self.bytes += cost;
         self.order.insert(tick, (handle, ifd, chunk));
-        self.handles.entry(handle).or_default().insert((ifd, chunk), Entry { chunk: Arc::new(value), cost, tick });
+        let held = self.handles.entry(handle).or_default();
+        held.bytes += cost;
+        held.order.insert(tick, (ifd, chunk));
+        held.chunks.insert((ifd, chunk), Entry { chunk: Arc::new(value), cost, tick });
     }
 
     /// Drops every chunk of a reader.
     fn remove_handle(&mut self, handle: u64) {
-        if let Some(chunks) = self.handles.remove(&handle) {
-            for entry in chunks.into_values() {
+        if let Some(held) = self.handles.remove(&handle) {
+            for entry in held.chunks.into_values() {
                 self.bytes -= entry.cost;
                 self.order.remove(&entry.tick);
             }
@@ -384,7 +419,7 @@ pub(crate) fn get(handle: u64, ifd: usize, chunk: u32) -> Option<Arc<CachedChunk
 
 /// Whether a chunk is decoded already, without changing its recency or lookup statistics.
 pub(crate) fn contains(handle: u64, ifd: usize, chunk: u32) -> bool {
-    cache().handles.get(&handle).is_some_and(|chunks| chunks.contains_key(&(ifd, chunk)))
+    cache().handles.get(&handle).is_some_and(|held| held.chunks.contains_key(&(ifd, chunk)))
 }
 
 /// Caches a decoded chunk, evicting the least recently used ones to stay within [`max_bytes`]. A
@@ -396,6 +431,15 @@ pub(crate) fn insert(handle: u64, ifd: usize, chunk: u32, samples: DecodingResul
         return;
     }
     cache().insert(handle, ifd, chunk, CachedChunk::new(samples, dims));
+}
+
+/// [`insert`], the reader's chunks then taking at most `most` bytes of the cache: its least
+/// recently used ones are dropped first, and a chunk larger than that is not kept.
+pub(crate) fn insert_within(handle: u64, ifd: usize, chunk: u32, samples: DecodingResult, dims: (usize, usize), most: u64) {
+    if max_bytes() == 0 {
+        return;
+    }
+    cache().insert_within(handle, ifd, chunk, CachedChunk::new(samples, dims), most);
 }
 
 /// Caches the rows from `first_row` on of a decoded image of size `dims`, as [`insert`] caches a
@@ -623,6 +667,28 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_reader_held_within_its_share_drops_its_own_oldest_chunks() {
+        // A full cache: the reader makes room by dropping its own chunks, not the other reader's.
+        let mut c = private_cache(3 * cost(100));
+        let (h, other) = (new_handle(), new_handle());
+        put(&mut c, other, 0, 0, 100, 9, (1, 1));
+        for i in 0..4u32 {
+            c.insert_within(h, 0, i, CachedChunk::new(chunk(100, i as u8), (1, 1)), 2 * cost(100));
+        }
+        // The reader keeps its two most recent chunks; the other reader's older chunk stays.
+        assert_eq!(c.handles[&h].bytes, 2 * cost(100));
+        assert!(c.get(h, 0, 0).is_none() && c.get(h, 0, 1).is_none());
+        assert!(c.get(h, 0, 2).is_some() && c.get(h, 0, 3).is_some());
+        assert!(c.get(other, 0, 0).is_some());
+        assert_eq!(c.bytes, 3 * cost(100));
+        // A chunk larger than the reader's share is not kept.
+        c.insert_within(h, 0, 9, CachedChunk::new(chunk(300, 1), (1, 1)), 2 * cost(100));
+        assert!(c.get(h, 0, 9).is_none());
+        c.remove_handle(h);
+        assert_eq!(c.bytes, cost(100));
+    }
+
+    #[test]
     fn the_total_never_passes_the_maximum() {
         let mut c = private_cache(1000);
         let h = new_handle();
@@ -664,12 +730,12 @@ pub(crate) mod tests {
         for i in 0..100u32 {
             put(&mut c, h, 0, i, 100, 0, (1, 1));
         }
-        let before = c.handles[&h].capacity();
+        let before = c.handles[&h].chunks.capacity();
         c.set_max(2 * cost(100));
         assert_eq!(c.bytes, 2 * cost(100));
         // The most recent two are kept.
         assert!(c.get(h, 0, 99).is_some() && c.get(h, 0, 98).is_some());
-        assert!(c.handles[&h].capacity() < before, "the reader's table gave memory back");
+        assert!(c.handles[&h].chunks.capacity() < before, "the reader's table gave memory back");
     }
 
     #[test]

@@ -233,7 +233,8 @@ fn clear_http_cache() {
 
 /// The most bytes of decoded GeoTIFF/COG chunks the process-wide block cache keeps (GDAL's
 /// `gdal.GetCacheMax`): `TERRIO_CACHEMAX`, else `GDAL_CACHEMAX`, else 64 MiB; 0 means the cache is
-/// off. It also keeps the bands lazy GRIB reads decode.
+/// off. It also keeps the bands lazy GRIB reads decode and the Zarr chunks a window read covers in
+/// part.
 #[pyfunction]
 fn block_cache_max() -> u64 {
     terrio::block_cache::max_bytes()
@@ -249,7 +250,8 @@ fn set_block_cache_max(nbytes: i64) -> PyResult<()> {
     Ok(())
 }
 
-/// Empties the block cache of decoded GeoTIFF/COG chunks and GRIB bands, giving its memory back.
+/// Empties the block cache of decoded GeoTIFF/COG chunks, GRIB bands and Zarr chunks, giving its
+/// memory back.
 #[pyfunction]
 fn clear_block_cache() {
     terrio::block_cache::clear();
