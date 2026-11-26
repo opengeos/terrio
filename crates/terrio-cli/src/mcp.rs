@@ -283,13 +283,26 @@ pub(crate) fn tool_call(params: &Value) -> Result<(String, Vec<OsString>), RpcEr
     Ok((name.to_string(), args))
 }
 
-/// Runs `terrio <name> <args>`: the tool's result, or `None` when `cancel` was set and the command
-/// killed. A failing command is a result the model reads (`isError`), not a protocol error.
+/// Runs `terrio <name> <args>` as an MCP tool call (`TERRIO_MCP_TOOL=1`): the tool's result, or
+/// `None` when `cancel` was set and the command killed. A failing command is a result the model
+/// reads (`isError`), not a protocol error.
 pub(crate) fn call_tool(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &AtomicBool) -> Option<Value> {
+    call_tool_with_env(terrio, name, args, cancel, false)
+}
+
+/// Runs `terrio <name> <args>` for the local, token-protected browser UI. It keeps the MCP tool
+/// guards (`TERRIO_MCP_TOOL=1`: confined grid search paths, GDAL exit codes reported in the
+/// result) and adds `TERRIO_UI_TOOL=1`, which only lets the command read `@FILE` and `--inputs`
+/// lists, so the UI's user can name their own list files.
+pub(crate) fn call_ui_tool(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &AtomicBool) -> Option<Value> {
+    call_tool_with_env(terrio, name, args, cancel, true)
+}
+
+fn call_tool_with_env(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &AtomicBool, ui_tool: bool) -> Option<Value> {
     if name == "preview" {
-        return call_preview(terrio, args, cancel);
+        return call_preview(terrio, args, cancel, ui_tool);
     }
-    call_command(terrio, name, args, cancel)
+    call_command(terrio, name, args, cancel, ui_tool)
 }
 
 /// The largest PNG a tool result attaches, in bytes; its base64 form is about a third larger.
@@ -297,12 +310,12 @@ const MAX_IMAGE: u64 = 8 << 20;
 
 /// Runs `terrio preview`, adding the PNG to its result as image content, so that a client can see
 /// it. Without `-o` it is written to a private temporary directory and removed afterwards.
-fn call_preview(terrio: &[OsString], mut args: Vec<OsString>, cancel: &AtomicBool) -> Option<Value> {
+fn call_preview(terrio: &[OsString], mut args: Vec<OsString>, cancel: &AtomicBool, ui_tool: bool) -> Option<Value> {
     use clap::Args as _;
     let parsed = crate::cmd::preview::Args::augment_args(clap::Command::new("preview")).no_binary_name(true).try_get_matches_from(&args);
     let Ok(matches) = parsed else {
         // Let the command word the usage error.
-        return call_command(terrio, "preview", args, cancel);
+        return call_command(terrio, "preview", args, cancel, ui_tool);
     };
     let failed = |text: String| Some(json!({"content": [{"type": "text", "text": text}], "isError": true}));
     let (path, temporary) = match matches.get_one::<String>("output") {
@@ -321,7 +334,7 @@ fn call_preview(terrio: &[OsString], mut args: Vec<OsString>, cancel: &AtomicBoo
             (path, Some(directory))
         }
     };
-    let mut result = call_command(terrio, "preview", args, cancel);
+    let mut result = call_command(terrio, "preview", args, cancel, ui_tool);
     if let Some(result) = result.as_mut().filter(|r| r["isError"] == false) {
         let image = std::fs::metadata(&path).ok().filter(|m| m.len() <= MAX_IMAGE).and_then(|_| std::fs::read(&path).ok());
         let content = result["content"].as_array_mut().expect("tool results have content");
@@ -357,8 +370,8 @@ fn tempfile_directory() -> std::io::Result<std::path::PathBuf> {
 }
 
 /// Runs a command as a tool: its text result, or `None` when it was cancelled.
-fn call_command(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &AtomicBool) -> Option<Value> {
-    let (text, failed) = match run(terrio, name, args, cancel) {
+fn call_command(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &AtomicBool, ui_tool: bool) -> Option<Value> {
+    let (text, failed) = match run(terrio, name, args, cancel, ui_tool) {
         Ok(None) => return None,
         Ok(Some((status, stdout, stderr))) => {
             // Standard error, which says why a command failed, first: standard output gets the room
@@ -392,17 +405,24 @@ type Output = (Vec<u8>, usize);
 
 /// Runs the command, killing it if `cancel` is set (`None`): its exit status, standard output and
 /// standard error.
-fn run(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &AtomicBool) -> std::io::Result<Option<(ExitStatus, Output, Output)>> {
+fn run(
+    terrio: &[OsString],
+    name: &str,
+    args: Vec<OsString>,
+    cancel: &AtomicBool,
+    ui_tool: bool,
+) -> std::io::Result<Option<(ExitStatus, Output, Output)>> {
     let (program, before) = terrio.split_first().expect("the terrio command line has a program");
-    let mut child = Command::new(program)
-        .args(before)
-        .arg(name)
-        .args(args)
-        .env("TERRIO_MCP_TOOL", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+    let mut cmd = Command::new(program);
+    cmd.args(before).arg(name).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.env("TERRIO_MCP_TOOL", "1");
+    // An MCP server started from a shell that sets `TERRIO_UI_TOOL` must not pass it on.
+    if ui_tool {
+        cmd.env("TERRIO_UI_TOOL", "1");
+    } else {
+        cmd.env_remove("TERRIO_UI_TOOL");
+    }
+    let mut child = cmd.spawn()?;
     // Both pipes are drained as the command writes, so that it never blocks on a full one.
     let stdout = read_bounded(child.stdout.take().expect("piped"));
     let stderr = read_bounded(child.stderr.take().expect("piped"));
@@ -518,6 +538,9 @@ fn tool_list() -> Vec<Value> {
             let mut description = c.render_long_help().to_string().trim_end().to_string();
             // A group of subcommands (`vsi list`, `vsi sozip create`...): each one's help too.
             push_subcommand_help(&mut description, &name, &mut c);
+            if name == "zonal-stats" {
+                description.push_str("\n\nOver MCP, `--inputs` tables are refused: pass each raster as a `--raster` argument.");
+            }
             // The help offers `@FILE` input lists, which tool calls refuse (`expand_file_lists`).
             if offers_file_lists(&mut c) {
                 description.push_str("\n\nOver MCP, `@FILE` lists are refused: pass each input as an item of `args`.");

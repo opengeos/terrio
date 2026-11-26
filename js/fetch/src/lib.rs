@@ -227,11 +227,16 @@ impl Fetcher {
         p.dyn_into::<js_sys::Promise>().map_err(|_| JsError::new("fetch did not return a promise"))
     }
 
+    /// URL with userinfo, query string, and fragment stripped so signed URL tokens cannot leak into errors.
+    fn safe_url(&self) -> String {
+        redact_url(&self.url)
+    }
+
     /// Waits for a response and reads it: an error unless its status is 2xx.
     pub async fn response(&self, promise: js_sys::Promise) -> Result<Fetched, JsError> {
         let f = self.any_response(promise).await?;
         if !(200..300).contains(&f.status) {
-            return Err(JsError::new(&format!("{}: HTTP status {}", self.url, f.status)));
+            return Err(JsError::new(&format!("{}: HTTP status {}", self.safe_url(), f.status)));
         }
         Ok(f)
     }
@@ -257,7 +262,7 @@ impl Fetcher {
         let resp = JsFuture::from(self.request(None, true)?).await.map_err(js_error)?;
         let status = get(&resp, "status").as_f64().unwrap_or(0.0) as u16;
         if !(200..300).contains(&status) {
-            return Err(JsError::new(&format!("{}: HEAD: HTTP status {status}", self.url)));
+            return Err(JsError::new(&format!("{}: HEAD: HTTP status {status}", self.safe_url())));
         }
         let len = call(&get(&resp, "headers"), "get", &["content-length".into()])?.as_string();
         Ok(len.and_then(|l| l.trim().parse().ok()))
@@ -294,7 +299,7 @@ impl Fetcher {
                 if !(200..300).contains(&status) {
                     cancel_body(&response);
                     self.requests.set(self.requests.get() + 1);
-                    return Err(JsError::new(&format!("{}: HTTP status {status}", self.url)));
+                    return Err(JsError::new(&format!("{}: HTTP status {status}", self.safe_url())));
                 }
                 if status == 200 {
                     // The whole file: the bodies of the other ranges are not needed.
@@ -317,7 +322,7 @@ impl Fetcher {
                         return Err(JsError::new(&format!(
                             "{}: bytes {offset}-{last}: unexpected response (status {status}, {} bytes): the server must \
                              answer Range requests, without a Content-Encoding",
-                            self.url,
+                            self.safe_url(),
                             data.len()
                         )));
                     }
@@ -381,7 +386,7 @@ impl Fetcher {
                         objects.insert(key, *range, None);
                         return Ok(());
                     }
-                    return Err(JsError::new(&format!("{base}/{key}: HTTP status {status}")));
+                    return Err(JsError::new(&format!("{}/{key}: HTTP status {status}", redact_url(base))));
                 }
                 let data = self.read_body(&response, readers).await?;
                 if failed.get() {
@@ -416,12 +421,14 @@ impl Fetcher {
                                         .map_err(|_| JsError::new("object range exceeds address space"))?,
                             )
                             .map(<[u8]>::to_vec)
-                            .ok_or_else(|| JsError::new(&format!("{base}/{key}: bytes {o}+{n} past the end of the object")))?,
+                            .ok_or_else(|| {
+                                JsError::new(&format!("{}/{key}: bytes {o}+{n} past the end of the object", redact_url(base)))
+                            })?,
                     ),
                     (200, ObjectRange::Suffix(n)) => {
                         Some(f.data[f.data.len().saturating_sub(usize::try_from(n).unwrap_or(usize::MAX))..].to_vec())
                     }
-                    (status, _) => return Err(JsError::new(&format!("{base}/{key}: HTTP status {status}"))),
+                    (status, _) => return Err(JsError::new(&format!("{}/{key}: HTTP status {status}", redact_url(base)))),
                 };
                 objects.insert(key, *range, data);
                 Ok(())
@@ -623,7 +630,15 @@ impl Fetcher {
         let mut data = Vec::new();
         let opened = loop {
             match next_chunk(&reader).await {
-                Ok(Some(chunk)) => append(&mut data, &chunk),
+                Ok(Some(chunk)) => {
+                    if (data.len() as u64).saturating_add(chunk.length() as u64) > expected {
+                        // The rejected chunk was received too.
+                        self.bytes.set(self.bytes.get() + data.len() as u64 + u64::from(chunk.length()));
+                        let _ = call(&reader, "cancel", &[]).map(settle);
+                        return Err(JsError::new("initial range response exceeded expected length"));
+                    }
+                    append(&mut data, &chunk);
+                }
                 Ok(None) => break None,
                 Err(e) => {
                     self.bytes.set(self.bytes.get() + data.len() as u64);
@@ -659,6 +674,9 @@ impl Fetcher {
         let done = wasm_bindgen_futures::future_to_promise(async move {
             let result: Result<(), JsError> = async {
                 while let Some(chunk) = next_chunk(&reader).await? {
+                    if (data.len() as u64).saturating_add(chunk.length() as u64) > expected {
+                        return Err(JsError::new("range response exceeded expected length"));
+                    }
                     append(&mut data, &chunk);
                 }
                 finish_first(&rest, &data, expected, content_range.as_deref(), len)
@@ -688,7 +706,7 @@ impl Fetcher {
             (206, None) => self.head_len().await?.ok_or_else(|| {
                 JsError::new(&format!(
                     "{}: the server's response has no Content-Range (cross-origin servers must expose it) and no Content-Length",
-                    self.url.split(['?', '#']).next().unwrap_or(&self.url)
+                    self.safe_url()
                 ))
             })?,
             (200..300, _) => last.data.len() as u64,
@@ -718,8 +736,8 @@ impl Fetcher {
                 None => {
                     return Err(JsError::new(&format!(
                         "{}: the server's response has no Content-Range (cross-origin servers must expose it) and no Content-Length",
-                        // Without the query, which may hold a signed URL's credentials.
-                        self.url.split(['?', '#']).next().unwrap_or(&self.url)
+                        // Without userinfo or query, which may hold a signed URL's credentials.
+                        self.safe_url()
                     )));
                 }
             },
@@ -750,6 +768,22 @@ async fn next_chunk(reader: &JsValue) -> Result<Option<js_sys::Uint8Array>, JsEr
     let promise = call(reader, "read", &[])?.dyn_into::<js_sys::Promise>().map_err(|_| JsError::new("no body"))?;
     let chunk = JsFuture::from(promise).await.map_err(js_error)?;
     Ok((!get(&chunk, "done").is_truthy()).then(|| js_sys::Uint8Array::new(&get(&chunk, "value"))))
+}
+
+/// Strips userinfo, query string, and fragment from a URL before including it in errors.
+fn redact_url(url: &str) -> String {
+    let base = url.split(['?', '#']).next().unwrap_or(url);
+    if let Some((scheme, rest)) = base.split_once("://") {
+        let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, _)| (a, &rest[a.len()..]));
+        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        return format!("{scheme}://{host}{path}");
+    }
+    if let Some(rest) = base.strip_prefix("//") {
+        let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, _)| (a, &rest[a.len()..]));
+        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        return format!("//{host}{path}");
+    }
+    base.to_string()
 }
 
 fn append(data: &mut Vec<u8>, chunk: &js_sys::Uint8Array) {

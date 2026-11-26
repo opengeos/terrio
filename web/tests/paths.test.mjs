@@ -40,6 +40,13 @@ test("other tokens, URLs in free text among them, are left as they are", () => {
     // Not a bucket name: left alone, not made into a host.
     "s3://a?b/key",
     "s3://Upper/key",
+    "gs://../evil.example/data.tif",
+    "/vsigs/../evil.example/data.tif",
+    "gs://bucket?alt=media#frag/obj.tif",
+    // A dot segment in the key would resolve into another bucket.
+    "gs://bucket/../other/obj.tif",
+    "/vsigs/bucket/a/./b.tif",
+    "s3://my.dotted.bucket/../other/obj.tif",
   ]) {
     assert.equal(toWorkerPath(token), token, token);
   }

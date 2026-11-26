@@ -3419,11 +3419,12 @@ def cmd_calc(args: argparse.Namespace, env: Any) -> None:
         output, files = resolve_inout(
             files=args.files, output=args.output, overwrite=args.overwrite
         )
-        inputs = [tuple(n.split("=")) for n in args.name] + [(None, n) for n in files]
+        inputs = [tuple(n.split("=", 1)) for n in args.name] + [(None, n) for n in files]
+        name_to_idx = {name: i for i, (name, _) in enumerate(inputs) if name is not None}
         sources = [stack.enter_context(rasterio.open(path)) for _, path in inputs]
 
         def get_bands(d: Any, i: Any = None) -> Any:
-            idx = d if d in dict(inputs) else int(d) - 1
+            idx = name_to_idx[d] if d in name_to_idx else int(d) - 1
             src = sources[idx]
             return rasterio.band(src, i) if i else [rasterio.band(src, j) for j in src.indexes]
 
@@ -3441,6 +3442,42 @@ def cmd_calc(args: argparse.Namespace, env: Any) -> None:
             arr = evaluator.lookup(ix, subix)
             return arr.astype(dtype) if dtype else arr
 
+        current_window: Window = Window(0, 0, 16, 16)
+        sieve_cache: dict[tuple[int, Any, int, int], Any] = {}
+
+        def calc_sieve(
+            source: Any, size: int, out: Any = None, mask: Any = None, connectivity: int = 4
+        ) -> Any:
+            """Sieves a band for the current chunk of `rio calc`.
+
+            Connected regions can span chunks, so a band's sieve needs the whole band: it is
+            read and sieved once, then cached for the run and sliced per chunk. That full
+            band and its sieve are held outside `--mem-limit`, which bounds only the chunked
+            expression evaluation.
+
+            Args:
+                source: A band (`read`/`band` result) or a 2-D array.
+                size: The minimum region size in pixels.
+                out: An array to write into; bypasses the cache.
+                mask: Pixels to consider; bypasses the cache.
+                connectivity: 4 or 8.
+
+            Returns:
+                numpy.ndarray: The sieved values for the current chunk.
+            """
+            if hasattr(source, "ds") and hasattr(source, "bidx") and mask is None and out is None:
+                key = (id(source.ds), source.bidx, int(size), int(connectivity))
+                full = sieve_cache.get(key)
+                if full is None:
+                    full = sieve(source, size, connectivity=connectivity)
+                    sieve_cache[key] = full
+                r0 = int(current_window.row_off)
+                r1 = r0 + int(current_window.height)
+                c0 = int(current_window.col_off)
+                c1 = c0 + int(current_window.width)
+                return full[r0:r1, c0:c1]
+            return sieve(source, size, out=out, mask=mask, connectivity=connectivity)
+
         funcs: dict[str, Callable[..., Any]] = {
             "asarray": asarray,
             "take": lambda a, idx: numpy.take(a, idx - 1, axis=0),
@@ -3448,7 +3485,7 @@ def cmd_calc(args: argparse.Namespace, env: Any) -> None:
             "band": lambda d, i: get_bands(d, i),
             "bands": lambda d: get_bands(d),
             "fillnodata": fillnodata,
-            "sieve": sieve,
+            "sieve": calc_sieve,
         }
         first = sources[0]
         kwargs = first.profile
@@ -3460,6 +3497,7 @@ def cmd_calc(args: argparse.Namespace, env: Any) -> None:
             kwargs["driver"] = args.driver
         work_windows = [Window(0, 0, 16, 16)]
         for window in work_windows:
+            current_window = window
             ctxkwds: OrderedDict[str, Any] = OrderedDict()
             for i, ((name, _), src) in enumerate(zip(inputs, sources, strict=True)):
                 ctxkwds[name or f"_i{i + 1}"] = src.read(masked=args.masked, window=window)
@@ -3542,7 +3580,10 @@ def add_calc(sub: Any) -> None:
         "--mem-limit",
         type=int,
         default=64,
-        help="Limit on memory used to perform calculations, in MB.",
+        help=(
+            "Limit on memory used to perform calculations, in MB. A band passed to "
+            "sieve() is read and sieved whole, outside this limit."
+        ),
     )
     opt_co(p)
 

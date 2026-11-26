@@ -90,6 +90,7 @@ const FEATURES: &[(&str, bool)] = &[
     ("pointcloud", cfg!(feature = "pointcloud")),
     ("sqlite", cfg!(feature = "sqlite")),
     ("tiles", cfg!(feature = "tiles")),
+    ("xlsx", cfg!(feature = "xlsx")),
     ("zarr", cfg!(feature = "zarr")),
 ];
 
@@ -648,12 +649,12 @@ pub fn raster_from_array(
     nodata: Option<f64>,
 ) -> Result<Dataset, JsError> {
     let data = raster_data(&data)?;
-    let per_band = width * height;
+    let per_band = width.checked_mul(height).ok_or_else(|| JsError::new("width * height overflows"))?;
     if per_band == 0 || data.len() % per_band != 0 {
         return Err(JsError::new("the array length is not a multiple of width * height"));
     }
     let g = transform;
-    if g.len() != 6 || g[2] != 0.0 || g[4] != 0.0 || g[1] <= 0.0 || g[5] >= 0.0 {
+    if g.len() != 6 || !g.iter().all(|v| v.is_finite()) || g[2] != 0.0 || g[4] != 0.0 || g[1] <= 0.0 || g[5] >= 0.0 {
         return Err(JsError::new("transform must be a north-up GDAL geotransform of 6 numbers"));
     }
     let crs = crs.as_deref().map(SpatialRef::parse_literal).transpose().map_err(js_err)?.unwrap_or_default();
@@ -895,6 +896,9 @@ impl Dataset {
         let index = if let Some(name) = layer.as_string() {
             layers.iter().position(|l| l.name == name).ok_or_else(|| JsError::new(&format!("no layer named {name}")))?
         } else if let Some(i) = layer.as_f64() {
+            if !i.is_finite() || i < 0.0 || i.fract() != 0.0 || i > usize::MAX as f64 {
+                return Err(JsError::new(&format!("no layer {i}")));
+            }
             Some(i as usize).filter(|&i| i < layers.len()).ok_or_else(|| JsError::new(&format!("no layer {i}")))?
         } else if layers.is_empty() {
             return Err(JsError::new("no layers"));

@@ -67,10 +67,11 @@ pub fn run(a: Args) -> terrio::Result<()> {
         for n in &v.layout_notes {
             println!("Note: {n}");
         }
+        let shown = terrio::vsi::redact_diagnostic_location(&a.input);
         if v.is_valid {
-            println!("{} is a valid cloud optimized GeoTIFF", a.input);
+            println!("{shown} is a valid cloud optimized GeoTIFF");
         } else {
-            println!("{} is NOT a valid cloud optimized GeoTIFF", a.input);
+            println!("{shown} is NOT a valid cloud optimized GeoTIFF");
         }
     }
     // As GDAL's script: 1 when the file is not a valid COG.

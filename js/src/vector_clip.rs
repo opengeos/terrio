@@ -12,7 +12,6 @@ use wasm_bindgen::prelude::*;
 struct Args {
     bbox: Option<[f64; 4]>,
     geometry: Option<serde_json::Value>,
-    like: Option<serde::de::IgnoredAny>,
     crs: Option<String>,
     layers: Option<Vec<String>>,
     like_layer: Option<String>,
@@ -30,14 +29,16 @@ struct Args {
 /// polygon topology is XY.
 #[wasm_bindgen(js_name=clipVector)]
 pub fn clip_vector(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
-    let args: Args = parse_options(&options)?;
-    if usize::from(args.bbox.is_some()) + usize::from(args.geometry.is_some()) + usize::from(args.like.is_some()) != 1 {
+    let (rest, taken) = crate::ops::split_options(&options, &["like"])?;
+    let args: Args = parse_options(&rest)?;
+    let like = taken[0].as_ref();
+    if usize::from(args.bbox.is_some()) + usize::from(args.geometry.is_some()) + usize::from(like.is_some()) != 1 {
         return Err(invalid("provide exactly one of bbox, geometry or like"));
     }
-    if args.like.is_none() && (args.like_layer.is_some() || args.like_where.is_some() || args.like_sql.is_some()) {
+    if like.is_none() && (args.like_layer.is_some() || args.like_where.is_some() || args.like_sql.is_some()) {
         return Err(invalid("likeLayer/Where/Sql require like"));
     }
-    if args.like.is_some() && args.crs.is_some() {
+    if like.is_some() && args.crs.is_some() {
         return Err(invalid("crs applies only to bbox/geometry"));
     }
     let crs = args.crs.as_deref().map(SpatialRef::parse_literal).transpose().map_err(js_err)?;
@@ -51,8 +52,7 @@ pub fn clip_vector(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         };
         ClipRegion::parse(&text, crs).map_err(js_err)?
     } else {
-        let like = js_sys::Reflect::get(&options, &JsValue::from_str("like")).map_err(|_| invalid("cannot read like"))?;
-        template_region(&like, &template)?
+        template_region(like.expect("checked above"), &template)?
     };
     let layers = selected_input_layers(&src, args.layers.as_deref().unwrap_or_default())?;
     let out = layers.iter().map(|l| terrio::ops::vector_clip::clip(l, &region)).collect::<terrio::Result<Vec<_>>>().map_err(js_err)?;

@@ -405,7 +405,11 @@ fn failure(status: u16, message: &str) -> Reply {
 
 /// Refuses a request not meant for this server, or an API request without the token.
 fn check(request: &Request, session: &Session) -> Result<(), Reply> {
-    let hosts = [format!("127.0.0.1:{}", session.port), format!("localhost:{}", session.port)];
+    let mut hosts = vec![format!("127.0.0.1:{}", session.port), format!("localhost:{}", session.port)];
+    if session.port == 80 {
+        hosts.push("127.0.0.1".to_string());
+        hosts.push("localhost".to_string());
+    }
     if !request.header("host").is_some_and(|h| hosts.iter().any(|a| a == h)) {
         return Err(failure(403, "wrong Host header"));
     }
@@ -579,7 +583,7 @@ fn parse_run(request: &Request) -> Result<(String, Vec<OsString>), String> {
 fn run_until_client_leaves(stream: &TcpStream, session: &Session, name: &str, args: Vec<OsString>) -> Option<Value> {
     let cancel = AtomicBool::new(false);
     std::thread::scope(|scope| {
-        let run = scope.spawn(|| mcp::call_tool(&session.terrio, name, args, &cancel));
+        let run = scope.spawn(|| mcp::call_ui_tool(&session.terrio, name, args, &cancel));
         let watching = stream.set_nonblocking(true).is_ok();
         let mut buf = [0u8; 1];
         while !run.is_finished() {
@@ -996,5 +1000,25 @@ mod tests {
             assert!(started.elapsed() < Duration::from_secs(20), "the command outlived its client");
             std::thread::sleep(POLL);
         }
+    }
+
+    #[test]
+    fn port_80_accepts_default_port_host_and_origin() {
+        let s = std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .stack_size(crate::STACK_SIZE)
+                .spawn_scoped(scope, || session(vec![], 80).unwrap())
+                .unwrap()
+                .join()
+                .unwrap()
+        });
+        let req = Request {
+            method: "GET".into(),
+            path: "/".into(),
+            query: String::new(),
+            headers: vec![("host".into(), "127.0.0.1".into()), ("origin".into(), "http://127.0.0.1".into())],
+            body: Vec::new(),
+        };
+        assert!(check(&req, &s).is_ok());
     }
 }

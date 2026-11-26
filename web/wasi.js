@@ -418,7 +418,9 @@ export class Wasi {
   resolve(fd, path, { create = false } = {}) {
     const base = this.fds.get(fd);
     if (!base || base.kind !== "dir") return E.BADF;
-    const parts = [];
+    // Start from the descriptor's own directory path so relative `..` can ascend to parent folders
+    // while still refusing to escape the preopened root `/`.
+    const parts = base.node === this.root || !base.path ? [] : base.path.split("/").filter(Boolean);
     for (const part of path.split("/")) {
       if (part === "" || part === ".") continue;
       if (part === "..") {
@@ -426,9 +428,7 @@ export class Wasi {
         parts.pop();
       } else parts.push(part);
     }
-    // Directories are resolved from the root, so that `..` stays within it.
-    const start = base.path ? base.path.split("/").filter(Boolean) : [];
-    const full = base.node === this.root ? parts : [...start, ...parts];
+    const full = parts;
     let parent = null, node = this.root, name = "";
     for (let i = 0; i < full.length; i++) {
       if (!isDir(node)) return E.NOTDIR;
@@ -765,6 +765,8 @@ export class Wasi {
         if (!from.parent || !to.parent) return E.BUSY;
         // The remote mount (and anything in it) is neither moved nor replaced.
         if (from.parent.readonly || !to.parent || to.parent.readonly || from.node.readonly || (to.node && to.node.readonly)) return E.ROFS;
+        // POSIX rename(2): renaming a directory or hardlink to the same underlying node is a no-op.
+        if (from.node === to.node) return E.SUCCESS;
         if (to.node && isDir(to.node) && !isDir(from.node)) return E.ISDIR;
         if (isDir(from.node) && to.node && !isDir(to.node)) return E.NOTDIR;
         // A folder moved into itself would make a cycle.
@@ -772,6 +774,15 @@ export class Wasi {
         if (to.node instanceof MemDir && to.node.entries.size) return E.NOTEMPTY;
         from.parent.entries.delete(from.name);
         to.parent.entries.set(to.name, from.node);
+        // Keep open directory descriptors anchored to the directory's new path after a rename.
+        if (isDir(from.node)) {
+          const oldPrefix = `${from.path}/`;
+          for (const entry of self.fds.values()) {
+            if (entry.kind !== "dir" || !entry.path) continue;
+            if (entry.path === from.path) entry.path = to.path;
+            else if (entry.path.startsWith(oldPrefix)) entry.path = `${to.path}${entry.path.slice(from.path.length)}`;
+          }
+        }
         return E.SUCCESS;
       }),
       path_readlink: guard((fd, pathPtr, pathLen) => {

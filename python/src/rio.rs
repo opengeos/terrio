@@ -184,9 +184,14 @@ impl Reader {
             11 => TagValue::Floats(d.chunks(4).map(|c| f32::from_bits(self.u32(c)) as f64).collect()),
             12 => TagValue::Floats(d.chunks(8).map(|c| f64::from_bits(self.u64(c))).collect()),
             5 => TagValue::Floats(d.chunks(8).map(|c| self.u32(&c[..4]) as f64 / self.u32(&c[4..]).max(1) as f64).collect()),
-            _ => {
-                TagValue::Floats(d.chunks(8).map(|c| self.u32(&c[..4]) as i32 as f64 / (self.u32(&c[4..]) as i32).max(1) as f64).collect())
-            }
+            _ => TagValue::Floats(
+                d.chunks(8)
+                    .map(|c| {
+                        let den = self.u32(&c[4..]) as i32;
+                        self.u32(&c[..4]) as i32 as f64 / if den == 0 { 1 } else { den } as f64
+                    })
+                    .collect(),
+            ),
         }
     }
 }
@@ -637,7 +642,7 @@ fn resampled_read<'py>(
             if all.len() != bands * n {
                 return Err(invalid("the masks do not match the region"));
             }
-            all.chunks(n).map(|c| Some(c.to_vec())).collect()
+            if n == 0 { vec![Some(Vec::new()); bands] } else { all.chunks(n).map(|c| Some(c.to_vec())).collect() }
         }
         None => Vec::new(),
     };

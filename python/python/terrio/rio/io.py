@@ -4202,10 +4202,33 @@ class MemoryFile:
         data = None if file_or_bytes is None else bytes(file_or_bytes)
         if ext is None:
             ext = ".tif" if data is None else _extension_from_signature(data)
+        filename_str = os.fsdecode(filename) if filename is not None else None
         name = (
-            filename or f"{uuid.uuid4().hex}{ext if ext.startswith('.') or not ext else '.' + ext}"
+            filename_str
+            or f"{uuid.uuid4().hex}{ext if ext.startswith('.') or not ext else '.' + ext}"
         )
-        self.name = os.path.join(self._dir, name)
+        if filename_str is not None:
+            normalized = filename_str.replace("\\", "/")
+            if (
+                os.path.isabs(filename_str)
+                or os.path.isabs(normalized)
+                or os.path.splitdrive(filename_str)[0]
+                or ".." in normalized.split("/")
+            ):
+                raise ValueError(
+                    f"MemoryFile filename must stay inside the memory file directory: {filename!r}"
+                )
+        candidate = os.path.join(self._dir, name)
+        root_real = os.path.realpath(self._dir)
+        cand_real = os.path.realpath(candidate)
+        if os.path.commonpath([root_real, cand_real]) != root_real or cand_real == root_real:
+            raise ValueError(
+                f"MemoryFile filename must stay inside the memory file directory: {filename!r}"
+            )
+        parent = os.path.dirname(candidate)
+        if parent != self._dir:
+            os.makedirs(parent, exist_ok=True)
+        self.name = candidate
         self._pos = 0
         self.closed = False
         if data is not None:

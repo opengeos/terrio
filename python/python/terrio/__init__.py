@@ -194,6 +194,7 @@ from terrio._terrio import (
     zonal_stats,
 )
 from terrio.errors import (
+    CancelledError,
     CRSError,
     InternalError,
     InvalidArgumentError,
@@ -218,6 +219,7 @@ __all__ = [
     "ArrowArray",
     "ArrowTable",
     "CRSError",
+    "CancelledError",
     "DatasetIndex",
     "FeatureStream",
     "GeoTiffWriter",

@@ -49,7 +49,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
                 return Err(terrio::Error::InvalidArgument(format!("unknown open option '{k}'")));
             }
         }
-        let ds = terrio::Dataset::Vector(terrio::open_vector(&input, &open)?);
+        let ds = terrio::Dataset::Vector(super::quiet(|| terrio::open_vector(&input, &open))?);
         terrio::info::info(&ds, &options)
     };
     if a.json {

@@ -381,3 +381,46 @@ test("a folder is not renamed over a file or into itself", () => {
   assert.equal(rename("A", "B"), 0);
   assert.ok(root.entries.get("B") === dir);
 });
+
+test("relative parent traversal, self-rename, and open dirfds across renames work", () => {
+  const root = new MemDir();
+  const a = new MemDir();
+  const sub = new MemDir();
+  const sibling = new MemFile(new Uint8Array([42]));
+  a.entries.set("sub", sub);
+  a.entries.set("sibling.txt", sibling);
+  const b = new MemDir();
+  root.entries.set("a", a);
+  root.entries.set("b", b);
+  const wasi = new Wasi(root, ["terrio"], { stdout: () => {}, stderr: () => {} });
+  wasi.memory = new WebAssembly.Memory({ initial: 1 });
+  const writeStr = (offset, s) => {
+    const bytes = new TextEncoder().encode(s);
+    wasi.bytes().set(bytes, offset);
+    return bytes.length;
+  };
+  // Open directory descriptor for /a/sub.
+  const subFd = wasi.open(sub, { kind: "dir", path: "a/sub" });
+  const resolved = wasi.resolve(subFd, "../sibling.txt");
+  assert.equal(resolved.node, sibling);
+  // Escaping above root is refused.
+  assert.equal(typeof wasi.resolve(subFd, "../../../etc/passwd"), "number");
+  // Self-rename is a no-op and does not delete the entry.
+  const lenA = writeStr(0, "a");
+  assert.equal(wasi.imports.path_rename(3, 0, lenA, 3, 0, lenA), 0);
+  assert.equal(root.entries.get("a"), a);
+  // Renaming /a/sub to /b/sub updates open dirfd path so relative `..` targets /b/.
+  const lFrom = writeStr(0, "a/sub");
+  const lTo = writeStr(256, "b/sub");
+  assert.equal(wasi.imports.path_rename(3, 0, lFrom, 3, 256, lTo), 0);
+  const afterRename = wasi.resolve(subFd, "../out", { create: true });
+  assert.equal(afterRename.path, "b/out");
+  assert.equal(afterRename.parent, b);
+  // Renaming ancestor /b to /c also updates descendant open dirfd /b/sub -> /c/sub.
+  const lB = writeStr(0, "b");
+  const lC = writeStr(256, "c");
+  assert.equal(wasi.imports.path_rename(3, 0, lB, 3, 256, lC), 0);
+  const afterAncestor = wasi.resolve(subFd, "../out2", { create: true });
+  assert.equal(afterAncestor.path, "c/out2");
+  assert.equal(afterAncestor.parent, b);
+});
