@@ -335,10 +335,9 @@ pub(crate) fn local_payload_size(usable: usize, size: usize, x: usize) -> usize 
     if k <= x { k } else { m }
 }
 
-/// Parses and validates all cells on a table b-tree leaf page (`0x0d`), returning them in cell
-/// pointer order. Rejects cell pointers that fall inside the page header or cell pointer array,
-/// run past `usable`, or alias/overlap another cell on the page.
-pub(crate) fn table_leaf_cells(page: &[u8], page_num: u32, usable: usize) -> Result<Vec<TableLeafCell>> {
+/// The header offset and the end of the cell pointer array of table b-tree leaf page
+/// `page_num` (`0x0d`), checked against the usable page size.
+fn table_leaf_header(page: &[u8], page_num: u32, usable: usize) -> Result<(usize, usize, usize)> {
     let h = if page_num == 1 { 100 } else { 0 };
     if usable < 480 || usable > page.len() {
         return Err(bad("page"));
@@ -351,26 +350,43 @@ pub(crate) fn table_leaf_cells(page: &[u8], page_num: u32, usable: usize) -> Res
     if header_end > usable {
         return Err(bad("cell pointer"));
     }
+    Ok((h, cells, header_end))
+}
+
+/// Parses the `c`-th cell of a table leaf page, rejecting a cell that starts inside the page
+/// header or cell pointer array or runs past `usable`. Returns the cell and the end of its
+/// on-page bytes.
+fn table_leaf_cell(page: &[u8], h: usize, header_end: usize, usable: usize, c: usize) -> Result<(TableLeafCell, usize)> {
+    let off = cell_pointer(page, h + 8 + 2 * c)?;
+    if off < header_end {
+        return Err(bad("cell overlaps page header"));
+    }
+    let (size, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
+    let (rowid, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
+    let size = usize::try_from(size).map_err(|_| bad("cell"))?;
+    let payload_start = off + n1 + n2;
     let x = usable - 35;
+    let local = local_payload_size(usable, size, x);
+    let overflow_ptr = if size > x { 4 } else { 0 };
+    let cell_end = payload_start.checked_add(local).and_then(|end| end.checked_add(overflow_ptr)).ok_or_else(|| bad("cell"))?;
+    if cell_end > usable {
+        return Err(bad("cell runs past page"));
+    }
+    Ok((TableLeafCell { rowid, payload_start, payload_size: size }, cell_end))
+}
+
+/// Parses and validates all cells on a table b-tree leaf page (`0x0d`), returning them in cell
+/// pointer order. Rejects cell pointers that fall inside the page header or cell pointer array,
+/// run past `usable`, or alias/overlap another cell on the page.
+pub(crate) fn table_leaf_cells(page: &[u8], page_num: u32, usable: usize) -> Result<Vec<TableLeafCell>> {
+    let (h, cells, header_end) = table_leaf_header(page, page_num, usable)?;
     let mut out = Vec::with_capacity(cells);
     let mut spans = Vec::with_capacity(cells);
     for c in 0..cells {
         let off = cell_pointer(page, h + 8 + 2 * c)?;
-        if off < header_end {
-            return Err(bad("cell overlaps page header"));
-        }
-        let (size, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
-        let (rowid, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
-        let size = usize::try_from(size).map_err(|_| bad("cell"))?;
-        let payload_start = off + n1 + n2;
-        let local = local_payload_size(usable, size, x);
-        let overflow_ptr = if size > x { 4 } else { 0 };
-        let cell_end = payload_start.checked_add(local).and_then(|end| end.checked_add(overflow_ptr)).ok_or_else(|| bad("cell"))?;
-        if cell_end > usable {
-            return Err(bad("cell runs past page"));
-        }
+        let (cell, cell_end) = table_leaf_cell(page, h, header_end, usable, c)?;
         spans.push((off, cell_end));
-        out.push(TableLeafCell { rowid, payload_start, payload_size: size });
+        out.push(cell);
     }
     spans.sort_unstable_by_key(|&(start, _)| start);
     for pair in spans.windows(2) {
@@ -379,6 +395,25 @@ pub(crate) fn table_leaf_cells(page: &[u8], page_num: u32, usable: usize) -> Res
         }
     }
     Ok(out)
+}
+
+/// The cell with `rowid` on a table b-tree leaf page, found by binary search over the cell
+/// pointers. Only the cells the search reads are parsed, each checked as in
+/// [`table_leaf_cells`], so a lookup stays O(log cells) on the per-feature R-tree query path.
+/// Aliased cells cannot amplify work here: one lookup returns at most one payload.
+pub(crate) fn table_leaf_find(page: &[u8], page_num: u32, usable: usize, rowid: i64) -> Result<Option<TableLeafCell>> {
+    let (h, cells, header_end) = table_leaf_header(page, page_num, usable)?;
+    let (mut lo, mut hi) = (0, cells);
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        let (cell, _) = table_leaf_cell(page, h, header_end, usable, mid)?;
+        match cell.rowid.cmp(&rowid) {
+            std::cmp::Ordering::Less => lo = mid + 1,
+            std::cmp::Ordering::Greater => hi = mid,
+            std::cmp::Ordering::Equal => return Ok(Some(cell)),
+        }
+    }
+    Ok(None)
 }
 
 impl Db {
@@ -774,12 +809,10 @@ impl Db {
                     };
                 }
                 0x0d => {
-                    let cells = table_leaf_cells(page, n, self.usable)?;
-                    if let Ok(i) = cells.binary_search_by_key(&rowid, |c| c.rowid) {
-                        let cell = &cells[i];
-                        return self.payload(n, page, cell.payload_start, cell.payload_size).map(Some);
-                    }
-                    return Ok(None);
+                    return match table_leaf_find(page, n, self.usable, rowid)? {
+                        Some(cell) => self.payload(n, page, cell.payload_start, cell.payload_size).map(Some),
+                        None => Ok(None),
+                    };
                 }
                 _ => return Err(bad("unsupported page type")),
             }
@@ -1817,7 +1850,9 @@ mod tests {
         for bytes in [fixtures::aliased_leaf_cells(), fixtures::overlapping_leaf_cells()] {
             let db = Db::new(bytes).unwrap();
             assert!(db.leaf_rows(1).is_err());
-            assert!(db.lookup(1, 1).is_err());
+            // A lookup binary-searches the cell pointers and reads one payload, so aliased cells
+            // cannot duplicate rows or amplify work there; it returns the single matching cell.
+            assert!(db.lookup(1, 1).unwrap().is_some());
             let mut visit = |_, _, _: &[u8]| Ok(true);
             let mut scan = TableScan { skip: 0, remaining: None, ordinal: 0, visited: PageSet::new(db.pages() as u64), visit: &mut visit };
             assert!(db.walk_table(1, &mut scan, 0).is_err());

@@ -243,12 +243,10 @@ impl Tables for FileDb {
                     };
                 }
                 0x0d => {
-                    let cells = sqlite::table_leaf_cells(&page, n, self.usable)?;
-                    if let Ok(i) = cells.binary_search_by_key(&rowid, |c| c.rowid) {
-                        let cell = &cells[i];
-                        return self.payload(n, &page, cell.payload_start, cell.payload_size).map(Some);
-                    }
-                    return Ok(None);
+                    return match sqlite::table_leaf_find(&page, n, self.usable, rowid)? {
+                        Some(cell) => self.payload(n, &page, cell.payload_start, cell.payload_size).map(Some),
+                        None => Ok(None),
+                    };
                 }
                 _ => return Err(bad("unsupported page type")),
             }
@@ -354,7 +352,8 @@ mod tests {
             let db = open_raw_without_schema(&path);
             let mut cursor = db.cursor(1);
             assert!(cursor.next_leaf(&db).is_err(), "{name}: cursor should reject aliased/overlapping cells");
-            assert!(db.lookup(1, 1).is_err(), "{name}: lookup should reject aliased/overlapping cells");
+            // A lookup reads one payload by binary search, so it returns the single matching cell.
+            assert!(db.lookup(1, 1).unwrap().is_some(), "{name}: lookup returns one cell");
         }
 
         // Cell pointer falling inside the page header / cell pointer array (`104 < 110`).
