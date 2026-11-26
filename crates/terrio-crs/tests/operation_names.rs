@@ -33,7 +33,8 @@ fn registered_concatenations_are_named_as_proj_names_them() {
 
 /// A ballpark that is a transformation's only datum operation is named as PROJ 9.9.0 names it,
 /// from the geographic CRSs' names, both ways; between CRSs of different prime meridians, with
-/// the transformation that alters one of them to the other's (#1012 item 54).
+/// the transformation that alters one of them to the other's; beside a vertical transformation
+/// too (#1012 item 54).
 #[test]
 fn ballparks_are_named_as_proj_names_them() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
@@ -84,4 +85,10 @@ fn ballparks_are_named_as_proj_names_them() {
     assert_eq!(xian.epsg, None);
     let op = Transformer::new(&xian, &SpatialRef::from_epsg(4326).unwrap()).unwrap().operation_at(135.0, 42.0, 0.0).unwrap().unwrap();
     assert_eq!(op.name, "Ballpark geographic offset from Xian 1980 to WGS 84");
+    // Beside a vertical transformation too: PROJ 9.9.0 names the geographic step so between
+    // Beijing 1954 + EGM96 height and WGS 84 + NAVD88 height. Only that step is checked; terrio
+    // names the vertical ballpark otherwise (`Ballpark vertical transformation`, #1012).
+    let (src, dst) = (SpatialRef::compound(4214, 5773).unwrap(), SpatialRef::compound(4326, 5703).unwrap());
+    let op = Transformer::new(&src, &dst).unwrap().operation_at(116.0, 40.0, 0.0).unwrap().unwrap();
+    assert!(op.name.split(" + ").any(|step| step == "Ballpark geographic offset from Beijing 1954 to WGS 84"), "{}", op.name);
 }

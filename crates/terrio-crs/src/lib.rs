@@ -2552,8 +2552,8 @@ pub struct CoordinateOperation {
     /// geographic CRSs, with a transformation of the prime meridian between CRSs of different
     /// ones (`Transformation from Monte Mario (Rome) to Monte Mario (Rome) altered to use prime
     /// meridian of WGS 84 + Ballpark geographic offset from Monte Mario (Rome) altered to use
-    /// prime meridian of WGS 84 to WGS 84`); `Ballpark geographic offset` in a chain of other
-    /// transformations.
+    /// prime meridian of WGS 84 to WGS 84`), also beside a vertical transformation;
+    /// `Ballpark geographic offset` in a chain of other datum transformations.
     pub name: String,
     /// The accuracy in metres: the sum of the transformations' accuracies, as PROJ adds them;
     /// `None` when one of them has none (a ballpark, a `+towgs84` definition).
@@ -3183,7 +3183,7 @@ impl Transformer {
         }
         let name = |s: &SpatialRef| s.geographic_wkt().and_then(|w| SpatialRef::from_wkt(&w).name()).or_else(|| geodetic_crs_name(s));
         let (Some(s), Some(t)) = (name(&self.src_ref), name(&self.dst_ref)) else { return };
-        let (from, to) = (self.src.prime_meridian_radians(), self.dst.prime_meridian_radians());
+        let (from, to) = (self.src.pm(), self.dst.pm());
         op.name = if (from - to).abs() < 1e-12 {
             format!("Ballpark geographic offset from {s} to {t}")
         } else if from != 0.0 {

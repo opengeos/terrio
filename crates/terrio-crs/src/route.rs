@@ -90,6 +90,7 @@ pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
     USED.with(|u| {
         let mut u = u.borrow_mut();
         let Some(used) = u.as_mut() else { return };
+        let datum = matches!(kind, OpKind::Datum);
         used.push(match op {
             // A named transformation without steps is EPSG's null transformation (SWEREF99 to
             // WGS 84 (1), ETRS89 to WGS 84 (1)), or a concatenation of them (Inverse of ETRS89 to
@@ -126,7 +127,7 @@ pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
                     grids: op.grids().into_iter().map(|(g, _)| g).collect(),
                     ballpark: op.framed,
                     shifts,
-                    datum: matches!(kind, OpKind::Datum),
+                    datum,
                 }
             }
             _ => {
@@ -134,14 +135,7 @@ pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
                     OpKind::Datum => GEOGRAPHIC_BALLPARK,
                     OpKind::Vertical => "Ballpark vertical transformation",
                 };
-                Used {
-                    name: name.into(),
-                    accuracy: -1.0,
-                    grids: Vec::new(),
-                    ballpark: true,
-                    shifts: false,
-                    datum: matches!(kind, OpKind::Datum),
-                }
+                Used { name: name.into(), accuracy: -1.0, grids: Vec::new(), ballpark: true, shifts: false, datum }
             }
         });
     });

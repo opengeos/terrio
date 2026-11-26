@@ -43,7 +43,11 @@ fn user_defined_geokeys_are_read_as_gdal_reads_them() {
         // EPSG:4326 whatever the linear unit, none for a projected code in another unit.
         let stated = directory[4..].chunks(4).any(|e| e[0] == 3072 && e[3] != 32767);
         if stated {
-            let code = case["gdal_code"].as_str().map(|c| c.parse::<u32>().unwrap());
+            let code = case
+                .get("gdal_code")
+                .expect("gdal_code (run scripts/gen_geokeys_read_gdal.py)")
+                .as_str()
+                .map(|c| c.parse::<u32>().unwrap());
             assert_eq!(crs.epsg, code, "{name}");
         }
     }
@@ -137,7 +141,9 @@ fn a_citation_names_its_crs_only_for_the_same_standard_parallels() {
 #[test]
 fn a_refused_variant_of_a_registered_crs_is_not_identified_by_its_name() {
     let wkt = SpatialRef::from_epsg(5070).unwrap().to_wkt().unwrap();
-    let wkt = wkt.replace("\"standard_parallel_2\",45.5", "\"standard_parallel_2\",-29.5");
+    let refused = wkt.replace("\"standard_parallel_2\",45.5", "\"standard_parallel_2\",-29.5");
+    assert_ne!(refused, wkt);
+    let wkt = refused;
     let wkt = format!("{}]", &wkt[..wkt.rfind(",AUTHORITY").unwrap()]);
     let crs = SpatialRef::from_wkt(&wkt);
     assert_eq!(crs.epsg, None, "{wkt}");
