@@ -379,6 +379,56 @@ the estimated need plus 256 KiB. A slow axis value points to
 one area of code (decoding, copying into the output, fetching, threading or opening), so one pull
 request can fix all the cases of that area, with the matrix's numbers before and after.
 
+### Operations
+
+The `warp` and `terrain` formats time raster operations rather than reads. They run on the
+GeoTIFF fixture `f32_none`: a 4096 × 4096 Float32 DEM in UTM zone 31N (EPSG:32631, 10 m
+pixels), uncompressed, as a COG with overviews; proximity runs on `u8_none`, its 8-bit
+counterpart. Their files sit in the GeoTIFF fixture directory, so `fixtures --format warp` makes
+the GeoTIFF fixtures. Each access pattern is one operation:
+
+| Format | Operation | terrio | GDAL | Tolerance |
+|---|---|---|---|---|
+| `warp` | `near`, `bilinear`, `cubic`: to EPSG:4326 at GDAL's default size (4744 × 3367) | `terrio.warp` | `gdal.Warp` | near 0, others 1e-2 |
+| `warp` | `bilinear_ts8192` (about 2x upsampled), `bilinear_ts1024` (about 4x downsampled, from an overview) | | | 1e-2 |
+| `warp` | `average_ts1024` | | | 1e-2 |
+| `terrain` | `slope`, `hillshade` | `terrio.dem`, GDAL 3.13 arithmetic | `gdal.DEMProcessing` | 0; hillshade 1 (Byte) |
+| `terrain` | `aspect` | `terrio.dem`, GDAL 3.12 arithmetic | `gdal.DEMProcessing` | 1e-4 degrees |
+| `terrain` | `proximity`: pixel distances to the 255s | `terrio.proximity` | `gdal.ComputeProximity` | 0 |
+| `terrain` | `calc`: `sqrt(abs(A)) * 2 + A / 3` | `terrio.calc` | `gdal_calc.py`'s `Calc` | 0 |
+
+An operation receives the input's local path and returns its output in memory: a `terrio.Raster`
+or a GDAL `MEM` dataset. The time is that call, reading the input from the OS page cache
+included. Before the timed call, the worker runs the same operation on the warm-up file, so that
+one-time costs (CRS database, thread pools) are reported as `init`. Operations run from a local
+path only. `--threads` sets both tools' threads: Rayon's, `GDAL_NUM_THREADS`, and `gdalwarp`'s
+`NUM_THREADS` with `-multi`. Cases ending in `_t1` run with one thread in both tools.
+With `GDAL_NUM_THREADS=4`, GDAL's terrain took more CPU and wall time than with 1 on the
+development machine (hillshade about twice the wall time), so the `_t1` terrain cases are GDAL's
+faster setting. GDAL's proximity and `gdal_calc.py` (NumPy) compute in one thread.
+
+terrio's warp runs in its GDAL reproduction mode: `kernel_version="3.13"` and
+`grid_invariant=False`. Its default grid-invariant sampling gives other values, so its time
+would not compare equal work. The terrio aspect has no GDAL 3.13 arithmetic: the 3.12 arithmetic
+differs from GDAL 3.13.3's by float32 rounding, one float32 step (3.05e-5 degrees between 256
+and 360) at most on the fixture. GDAL 3.13's hillshade rounding depends on the CPU, hence one
+level of tolerance.
+
+After the timing, each terrio sample computes GDAL's output in its own process and compares
+the two outputs pixel by pixel, with the rules of `scripts/compare_ops_with_gdal.py` except for
+nodata, where it is stricter (below). Shape, data type,
+CRS, geotransform (to 1e-6 pixel) and nodata must match. A float nodata is compared as the
+output's type holds it: `gdal_calc.py` records float32's largest value as `3.402823466e+38`.
+Then every pixel counts, nodata included (that script compares only the pixels valid in GDAL's
+output): equal values (NaN with NaN) agree, and any other pixel differs by its absolute
+difference. A case is `exact` when no pixel differs and `within_tol` when every pixel is within
+the case's tolerance. The report lists the within-tolerance cases with their differing pixel
+count and maximum difference. Otherwise, the case is `DIFFER`, with the number of pixels
+beyond the tolerance, and is not ranked. `average_ts1024` differs at pixels on the edge of the
+output's footprint (about 0.1% of them). This is the area-weighting difference that the
+`ops` conformance suite records for #703. The warp tolerances are those of
+`scripts/compare_ops_with_gdal.py`: 0 for nearest, 1e-2 for the other resamplings.
+
 ```sh
 # The same environment as above, with terrio's Python module built in release mode, pyogrio and
 # PyArrow (GeoParquet) and zarr-python 3 (Zarr fixtures).
@@ -390,6 +440,8 @@ python scripts/perf_matrix.py run --format zarr --only shard --access window --q
 python scripts/perf_matrix.py run --format geotiff-write      # the GeoTIFF fixtures, written
 python scripts/perf_matrix.py fixtures --format geoparquet-write
 python scripts/perf_matrix.py run --format geoparquet-write   # the GeoParquet fixtures, written
+python scripts/perf_matrix.py run --format warp              # operations, on the GeoTIFF fixtures
+python scripts/perf_matrix.py run --format terrain --access slope slope_t1
 # `run` prints its results file path; report summarizes one again:
 python scripts/perf_matrix.py report "$HOME/.cache/terrio-bench/matrix/geotiff/results-20261124-120000.jsonl"
 # Run the matrix's regression tests:
@@ -423,8 +475,9 @@ On a pull request, a maintainer's comment `/perf-matrix` runs the matrix on a Gi
 3.13.3, with the base branch's harness, and posts the report. With no arguments it runs every
 format but `geoparquet-write` with one sample per tool; `/perf-matrix geoparquet --only geoarrow`
 runs one format with the options of `run`; options alone (`/perf-matrix --samples 5`) run the
-read formats. Runner timings vary more than a quiet desktop's, but each comparison is made within
-one run on one runner. The Actions tab runs the same workflow for a pull request
+read formats; `/perf-matrix warp` and `/perf-matrix terrain` time the operations.
+Runner timings vary more than a quiet desktop's, but each comparison is made within one run on
+one runner. The Actions tab runs the same workflow for a pull request
 number. Each format runs in its own job, in parallel.
 
 Run this workflow only on code you would build yourself. Pull request build scripts share the

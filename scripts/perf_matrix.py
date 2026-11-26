@@ -22,11 +22,12 @@ time ratios by axis, so a round of optimization starts from the slow areas, not 
 run, interleaved with this one and GDAL: the report then gives this build's time against the base.
 
 Formats: geotiff, zarr, geoparquet, flatgeobuf, geopackage; geotiff-write and geoparquet-write:
-writes of the GeoTIFF and GeoParquet fixtures, each compared with GDAL's output. Needs terrio's
-Python module (a release build: `maturin develop --release` in python/), GDAL's Python bindings,
-pyogrio and PyArrow (GeoParquet, FlatGeobuf, GeoPackage) and zarr-python 3 (Zarr fixtures) in one
-environment. Fixtures and results stay in --dir, out of the repository. docs/benchmarks.md
-describes the method.
+writes of the GeoTIFF and GeoParquet fixtures, each compared with GDAL's output; the operations
+warp and terrain, which run on a GeoTIFF fixture and compare their output with GDAL's pixel by
+pixel. Needs terrio's Python module (a release build: `maturin develop --release` in python/),
+GDAL's Python bindings, pyogrio and PyArrow (GeoParquet, FlatGeobuf, GeoPackage) and zarr-python 3
+(Zarr fixtures) in one environment. Fixtures and results stay in --dir, out of the repository.
+docs/benchmarks.md describes the method.
 """
 
 from __future__ import annotations
@@ -1100,7 +1101,261 @@ class FlatGeobuf:
 
 
 # =============================================================================================
-# GeoPackage (vector)
+# Operations: an operation's output, in memory, against GDAL's, compared pixel by pixel.
+
+
+def compare_raster(out, ref, tol: float) -> dict:
+    """terrio's output of an operation against GDAL's, pixel by pixel.
+
+    The rules are `scripts/compare_ops_with_gdal.py`'s, but stricter for nodata: that script
+    compares only the pixels valid in GDAL's output, while here every pixel counts, nodata
+    included: equal values (NaN with NaN) agree, and a pixel differs by `|terrio - GDAL|`
+    (infinite where one is NaN). A different shape, type, CRS, geotransform
+    (by more than 1e-6 pixel) or nodata value (in the output's type) puts every pixel beyond the
+    tolerance.
+
+    Args:
+        out: terrio's output, a `terrio.Raster`.
+        ref: GDAL's output, a `gdal.Dataset`.
+        tol: The largest difference a pixel may have.
+
+    Returns:
+        `n` pixels, `differing` (not equal), `beyond_tol`, `max_diff` (finite differences),
+        `tol` and `mismatch` (what else differs, or an empty string).
+    """
+    import numpy as np
+    from osgeo import osr
+
+    g = ref.ReadAsArray().reshape(ref.RasterCount, ref.RasterYSize, ref.RasterXSize)
+    t = np.asarray(out.read())
+    t = t.reshape(-1, *t.shape[-2:])
+    nd, gnd = out.nodata, ref.GetRasterBand(1).GetNoDataValue()
+    gt, ggt = out.transform, ref.GetGeoTransform()
+    srs = osr.SpatialReference()
+    if out.crs_wkt:
+        srs.ImportFromWkt(out.crs_wkt)
+
+    def held(v):  # a float nodata as the pixels hold it: 3.402823466e+38 is float32's largest
+        return float(np.asarray(v).astype(g.dtype)) if v is not None and g.dtype.kind == "f" else v
+
+    a, b = held(nd), held(gnd)
+    same_nodata = a == b or (a is not None and b is not None and math.isnan(a) and math.isnan(b))
+    mismatch = [
+        what for what, bad in (
+            (f"shape {t.shape} vs {g.shape}", t.shape != g.shape),
+            (f"type {t.dtype} vs {g.dtype}", t.dtype != g.dtype),
+            ("crs", not srs.IsSame(ref.GetSpatialRef() or osr.SpatialReference(), [
+                "IGNORE_DATA_AXIS_TO_SRS_AXIS_MAPPING=YES", "CRITERION=EQUIVALENT_EXCEPT_AXIS_ORDER_GEOGCRS"])),
+            (f"geotransform {gt} vs {ggt}", max(abs(a - b) for a, b in zip(gt, ggt, strict=True)) > 1e-6 * abs(ggt[1])),
+            (f"nodata {nd} vs {gnd}", not same_nodata),
+        ) if bad
+    ]
+    res = {"n": int(g.size), "tol": tol, "mismatch": "; ".join(mismatch)}
+    if t.shape != g.shape:
+        return {**res, "differing": res["n"], "beyond_tol": res["n"], "max_diff": math.inf}
+    with np.errstate(invalid="ignore"):
+        diff = np.abs(t.astype("float64") - g)
+    diff[(t == g) | (np.isnan(t) & np.isnan(g))] = 0
+    diff[np.isnan(diff)] = np.inf
+    finite = diff[np.isfinite(diff)]
+    return {**res, "differing": int(np.count_nonzero(diff)), "max_diff": float(finite.max()) if finite.size else 0.0,
+            "beyond_tol": res["n"] if mismatch else int((diff > tol).sum())}
+
+
+class _Operation:
+    """An operation on the GeoTIFF fixtures of a DEM, timed from the path to the output in memory.
+
+    Each access pattern is one operation with its options (`CASES`); `_t1` cases run it with one
+    thread in both tools. A worker runs the operation on the warm-up file first, for its one-time
+    costs (CRS database, thread pools). After the timing, a terrio sample computes GDAL's output in
+    its process and compares the two pixel by pixel (`compare_raster`).
+    """
+
+    COMPARES_OUTPUT = True  # `check` compares the output with GDAL's: the worker hashes no values
+    DIR = "geotiff"  # the inputs are GeoTIFF fixtures
+    EXT = ".tif"
+    SOURCES = ["local"]
+    FIXTURES = {"f32_none": GeoTiff.FIXTURES["f32_none"]}  # a 4096 x 4096 float32 DEM, uncompressed
+    CASES: dict = {}
+    make = staticmethod(GeoTiff.make)
+    axes = staticmethod(GeoTiff.axes)
+
+    @staticmethod
+    def meta(path: Path, access: str) -> dict:
+        """What an operation reads: the whole of the fixture's full resolution.
+
+        Args:
+            path: The fixture.
+            access: The operation.
+
+        Returns:
+            `need_bytes` and the fixture's `path`.
+        """
+        return {"need_bytes": GeoTiff.meta(path, "full")["need_bytes"], "path": str(path)}
+
+    @classmethod
+    def reader(cls, tool: str, access: str, meta: dict):
+        """How a tool runs an operation on a fixture.
+
+        Args:
+            tool: `terrio` or `gdal`.
+            access: The operation.
+            meta: What `meta` returned for the fixture.
+
+        Returns:
+            `(open, items, check, warm)` as the formats' readers return them; `check` returns
+            `(pixels beyond the tolerance, pixels, compare_raster's result)` for terrio.
+        """
+        if access.endswith("_t1"):  # before terrio's and GDAL's thread pools start
+            os.environ["RAYON_NUM_THREADS"] = os.environ["GDAL_NUM_THREADS"] = "1"
+        run = cls.op(tool, access)  # a terrio worker loads GDAL only for the check, after the timing
+
+        def check(out):
+            if tool == "gdal":
+                return 0.0, out.RasterCount * out.RasterXSize * out.RasterYSize
+            c = compare_raster(out, cls.op("gdal", access)(meta["path"]), cls.CASES[access][-1])
+            return float(c["beyond_tol"]), c["n"], c
+
+        return (lambda p: p), [run], check, ((lambda p: p), lambda p: run(p, warm=True))
+
+
+class Warp(_Operation):
+    """Reprojection of a UTM DEM to WGS 84 longitudes and latitudes, as `gdalwarp -t_srs EPSG:4326`.
+
+    Reference: GDAL 3.13.3.
+    """
+
+    # access: (resampling, output width (0: GDAL's default, about the source's resolution), tolerance)
+    # Tolerances as compare_ops_with_gdal.py's: nearest exact, interpolating resamplings 1e-2.
+    CASES = {
+        "near": ("near", 0, 0.0),
+        "bilinear": ("bilinear", 0, 1e-2),
+        "cubic": ("cubic", 0, 1e-2),
+        "bilinear_t1": ("bilinear", 0, 1e-2),
+        "bilinear_ts8192": ("bilinear", 8192, 1e-2),  # about 2x upsampled
+        "bilinear_ts1024": ("bilinear", 1024, 1e-2),  # about 4x downsampled, from an overview
+        "average_ts1024": ("average", 1024, 1e-2),  # GDAL weighs footprint-edge pixels differently (#703)
+    }
+    ACCESS = list(CASES)
+
+    @staticmethod
+    def op(tool: str, access: str):
+        """An operation's call.
+
+        terrio reproduces GDAL 3.13's kernels and chunk-dependent sampling (`kernel_version="3.13"`,
+        `grid_invariant=False`): its default, grid-invariant sampling gives other values.
+
+        Args:
+            tool: `terrio` or `gdal`.
+            access: The operation.
+
+        Returns:
+            `op(path, warm=False)`, which returns the output in memory; `warm` runs it on the
+            warm-up file, which has no CRS, at its own size.
+        """
+        resampling, width, _ = Warp.CASES[access]
+        threads = os.environ.get("GDAL_NUM_THREADS", "1")
+        if tool == "terrio":
+            import terrio
+
+            def op(p, warm=False):
+                size = {"ts": (width, 0)} if width and not warm else {}
+                return terrio.warp(p, s_srs="EPSG:32631" if warm else None, t_srs="EPSG:4326", resampling=resampling,
+                                   kernel_version="3.13", grid_invariant=False, **size)
+        else:
+            from osgeo import gdal
+
+            gdal.UseExceptions()
+
+            def op(p, warm=False):
+                size = {"width": width, "height": 0} if width and not warm else {}
+                return gdal.Warp("", p, format="MEM", srcSRS="EPSG:32631" if warm else None, dstSRS="EPSG:4326",
+                                 resampleAlg=resampling, multithread=threads != "1",
+                                 warpOptions=[f"NUM_THREADS={threads}"], **size)
+        return op
+
+
+class Terrain(_Operation):
+    """Terrain products of a DEM, as `gdaldem`, and the raster analyses `gdal_proximity` and `gdal_calc`.
+
+    Reference: GDAL 3.13.3.
+    """
+
+    FIXTURES = {**_Operation.FIXTURES, "u8_none": GeoTiff.FIXTURES["u8_none"]}
+    # access: (input fixture, operation, its argument, tolerance)
+    CASES = {
+        "slope": ("f32_none", "slope", "3.13", 0.0),  # the argument: terrio's GDAL arithmetic
+        "hillshade": ("f32_none", "hillshade", "3.13", 1.0),  # GDAL 3.13 rounds hillshade per CPU (SIMD): 1 DN
+        # terrio has no GDAL 3.13 aspect: the 3.12 arithmetic differs by float32 rounding (one ulp is
+        # 3.05e-5 degrees from 256 to 360)
+        "aspect": ("f32_none", "aspect", "3.12", 1e-4),
+        "slope_t1": ("f32_none", "slope", "3.13", 0.0),
+        "hillshade_t1": ("f32_none", "hillshade", "3.13", 1.0),
+        "aspect_t1": ("f32_none", "aspect", "3.12", 1e-4),
+        # pixel distances to the 8-bit fixture's 255s, as `gdal_proximity.py -values 255`
+        "proximity": ("u8_none", "proximity", "255", 0.0),
+        "proximity_t1": ("u8_none", "proximity", "255", 0.0),
+        "calc": ("f32_none", "calc", "sqrt(abs(A)) * 2 + A / 3", 0.0),  # as `gdal_calc.py --calc`
+    }
+    ACCESS = list(CASES)
+
+    @classmethod
+    def meta(cls, path: Path, access: str) -> dict | None:
+        """What an operation reads, for its own input fixture only.
+
+        Args:
+            path: The fixture.
+            access: The operation.
+
+        Returns:
+            As `_Operation.meta`, or `None` for another operation's input.
+        """
+        return _Operation.meta(path, access) if path.stem == cls.CASES[access][0] else None
+
+    @staticmethod
+    def op(tool: str, access: str):
+        """An operation's call.
+
+        Args:
+            tool: `terrio` or `gdal`.
+            access: The operation.
+
+        Returns:
+            `op(path, warm=False)`, which returns the output in memory.
+        """
+        _, what, arg, _ = Terrain.CASES[access]
+        if tool == "terrio":
+            import terrio
+
+            if what == "proximity":
+                return lambda p, warm=False: terrio.proximity(p, values=[int(arg)])
+            if what == "calc":
+                return lambda p, warm=False: terrio.calc(arg, A=p)
+            return lambda p, warm=False: terrio.dem(p, what, kernel_version=arg)
+        from osgeo import gdal
+
+        gdal.UseExceptions()
+
+        if what == "proximity":
+
+            def proximity(p, warm=False):
+                src = gdal.Open(p)
+                out = gdal.GetDriverByName("MEM").Create("", src.RasterXSize, src.RasterYSize, 1, gdal.GDT_Float32)
+                out.SetGeoTransform(src.GetGeoTransform())
+                out.SetProjection(src.GetProjection())
+                gdal.ComputeProximity(src.GetRasterBand(1), out.GetRasterBand(1), [f"VALUES={arg}"])
+                return out
+
+            return proximity
+        if what == "calc":
+            from osgeo_utils.gdal_calc import Calc
+
+            return lambda p, warm=False: Calc(arg, A=p, outfile="", format="MEM", quiet=True)
+        return lambda p, warm=False: gdal.DEMProcessing("", p, what, format="MEM")
+
+
+
+# ======================================================================================# GeoPackage (vector)
 
 
 def _varint(b: bytes, i: int) -> int:
@@ -1499,6 +1754,7 @@ class GeoTiffWrite:
     # A COG with average overviews; without overviews; a tiled GeoTIFF without overviews; the COG
     # with one thread (RAYON_NUM_THREADS and GDAL_NUM_THREADS 1).
     ACCESS = ["cog", "cog_no_overviews", "gtiff", "cog_threads1"]
+    COMPARES_OUTPUT = True  # `check` compares the written file with GDAL's: the worker hashes no values
     # The largest difference of a JPEG value from GDAL's within tolerance: the largest measured
     # between terrio's and GDAL's RGB JPEG of `u8_rgb_deflate_band` (1.3% of the values differ,
     # by 0.07 on average; both outputs' mean error against the source is 6.43).
@@ -1807,6 +2063,7 @@ class GeoParquetWrite:
         "line_wkb_snappy_rg64k_bbox": "line_wkb_rg64k_zstd_bbox_sorted",
     }
     ACCESS = ["write"]
+    COMPARES_OUTPUT = True  # `check` compares the written file with GDAL's: the worker hashes no values
     LCO = ["GEOMETRY_ENCODING=WKB", "WRITE_COVERING_BBOX=YES", "COMPRESSION=SNAPPY", "ROW_GROUP_SIZE=65536", "SORT_BY_BBOX=NO"]
 
     @staticmethod
@@ -1996,6 +2253,24 @@ def touched(paths: list[str]) -> list[str]:
 
     hit = lambda patterns: any(fnmatch.fnmatch(p, pat) for p in paths for pat in patterns)  # noqa: E731
     return [f for f in FORMATS if hit(PATHS[f] + _SHARED)]
+
+
+FORMATS["warp"], FORMATS["terrain"] = Warp, Terrain
+PATHS["warp"] = [
+    "crates/terrio/src/ops/warp*",
+    "crates/terrio/src/ops/mod.rs",
+    "crates/terrio/src/crs.rs",
+    "crates/terrio-crs/src/*",
+    "python/src/ops.rs",
+]
+PATHS["terrain"] = [
+    "crates/terrio/src/ops/dem.rs",
+    "crates/terrio/src/ops/window.rs",
+    "crates/terrio/src/ops/mod.rs",
+    "crates/terrio/src/ops/proximity.rs",
+    "crates/terrio/src/ops/calc/*",
+    "python/src/terrain.rs",
+]
 
 
 # =============================================================================================
@@ -2221,8 +2496,8 @@ def worker(spec: dict) -> dict:
         "rss_mb": rss,
         "sum": sum(s[0] for s in sums),
         "n": sum(s[1] for s in sums),
-        # A write's items return the written file, compared by `check`: only read values are hashed.
-        "digest": None if any(isinstance(x, Path) for x in out) else digest(out),
+        # A write's or an operation's output is compared by `check`: only read values are hashed.
+        "digest": None if getattr(fmt, "COMPARES_OUTPUT", False) else digest(out),
     }
 
 
@@ -2458,9 +2733,9 @@ def _badness(c: dict) -> tuple:
     return (bool(c["mismatch"]), c["beyond_tol"], c["differing"], c["max_diff"])
 
 
-# The `values` of a case whose values agree with GDAL's: `exact` (the same bytes, or a written
-# output equal to GDAL's), `checksum_match` (the same count and sum within 1e-6; `same` in older
-# results), or `within_tol` (a written output within its tolerance of GDAL's).
+# The `values` of a case whose values agree with GDAL's: `exact` (the same bytes, or an output
+# equal to GDAL's), `checksum_match` (the same count and sum within 1e-6; `same` in older
+# results), or `within_tol` (an output within its tolerance of GDAL's).
 MATCH = ("exact", "checksum_match", "same", "within_tol")
 
 
@@ -2543,7 +2818,7 @@ def report(rows: list[dict]) -> str:
     computed = [r for r in rows if "time_ratio" in r]
     ok = [r for r in computed if r["values"] in MATCH]
     differ = [r for r in computed if r["values"] not in MATCH]
-    inexact = [r for r in ok if r["values"] != "exact"]
+    inexact = [r for r in ok if r["values"] not in ("exact", "within_tol")]
     based = [r for r in ok if "base_ratio" in r]
     if based:
         gm = math.exp(statistics.fmean(math.log(r["base_ratio"]) for r in based))
@@ -2596,7 +2871,12 @@ def report(rows: list[dict]) -> str:
     lines.append(f"more than 1.5x the bytes needed (+ 256 KiB): {len(over_need)}/{len(ok)}")
     lines += ["  " + fmt_row(r) for r in over_need]
     errors = [r for r in rows if "time_ratio" not in r]
-    lines.append(f"\nvalues equal to GDAL's but not exact (checksum_match: count and sum within 1e-6; within_tol: every pixel within the case's tolerance; ranked): {len(inexact)}")
+    within = [r for r in ok if r["values"] == "within_tol"]
+    if within:
+        lines.append(f"\noutputs within tolerance of GDAL's (ranked): {len(within)}" + "".join(
+            f"\n  {r['fixture']}/{r['access']}: {c['differing']} of {c['n']} values differ, max {c['max_diff']:.6g} <= {c['tol']:g}"
+            for r in within for c in [r["compare"]]))
+    lines.append(f"\nvalues not byte-identical to GDAL's (sum within 1e-6 and count equal; ranked): {len(inexact)}")
     lines += ["  " + fmt_row(r) for r in inexact]
     lines.append(f"\nvalues differ from GDAL (not ranked): {len(differ)}" + "".join(f"\n  {r['fixture']}/{r['access']}/{r['source']} x{r['time_ratio']:.2f}: {r['values']}" for r in differ))
     lines.append(f"errors: {len(errors)}" + "".join("\n  " + fmt_row(r) for r in errors))
