@@ -1402,8 +1402,9 @@ pub fn features() -> Result<JsValue, JsError> {
     to_js(&serde_json::json!({ "build": BUILD, "features": built, "threads": threads, "memory": memory }))
 }
 
-/// The most bytes of decoded GeoTIFF/COG chunks the block cache keeps (GDAL's `GDALGetCacheMax64`):
-/// 64 MiB, since a module reads no environment variables; 0 means the cache is off.
+/// The most bytes of decoded GeoTIFF/COG, GRIB and Zarr chunks the block cache keeps (GDAL's
+/// `GDALGetCacheMax64`): 64 MiB, since a module reads no environment variables; 0 means the cache
+/// is off.
 #[wasm_bindgen(js_name = blockCacheMax)]
 pub fn block_cache_max() -> f64 {
     terrio::block_cache::max_bytes() as f64
@@ -1420,7 +1421,7 @@ pub fn set_block_cache_max(bytes: f64) -> Result<(), JsError> {
     Ok(())
 }
 
-/// Empties the block cache of decoded GeoTIFF/COG chunks, giving its memory back.
+/// Empties the block cache of decoded GeoTIFF/COG, GRIB and Zarr chunks, giving its memory back.
 #[wasm_bindgen(js_name = clearBlockCache)]
 pub fn clear_block_cache() {
     terrio::block_cache::clear();

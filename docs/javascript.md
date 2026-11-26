@@ -261,10 +261,12 @@ lock for all threads, and ran several times slower on more threads.
 
 ## The block cache
 
-`blockCacheMax()` returns the most bytes of decoded GeoTIFF/COG chunks the cache keeps (64 MiB by
+`blockCacheMax()` returns the most bytes of decoded chunks the cache keeps (64 MiB by
 default, as WebAssembly reads no environment variables; GDAL's `GDALGetCacheMax64`),
 `setBlockCacheMax(bytes)` sets it (0 turns the cache off; it throws for a negative or non-integer
-value) and `clearBlockCache()` empties it. The cache also keeps the bands lazy GRIB reads decode.
+value) and `clearBlockCache()` empties it. The cache also keeps the bands lazy GRIB reads decode
+and the Zarr chunks a window read covers in part, for as long as their array is open: a chunk
+rewritten in the store meanwhile is read anew only by an array opened after the change.
 
 ## Datasets larger than 4 GB: `terrio-js/memory64`
 
