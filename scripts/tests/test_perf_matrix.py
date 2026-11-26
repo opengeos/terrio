@@ -1421,3 +1421,85 @@ def test_sql_filter_reads_are_labelled_against_gdals_attribute_filter(tmp_path, 
     perf_matrix.run(args)
     rows = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()[1:]]
     assert [r["access"] for r in rows] == ["where/sql-vs-filter"]
+
+
+def test_gdals_second_configuration_gets_its_own_ratio_and_its_failure_drops_only_that_ratio():
+    """Report terrio against GDAL in both configurations; a failure in the second keeps the others."""
+    both = summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)], gdal_allcpus=[_sample(4)], base=[_sample(4)]))
+    assert (both["time_ratio"], both["gdal_allcpus_ratio"], both["base_ratio"], both["values"]) == (2, 0.5, 0.5, "checksum_match")
+    failed = summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)], gdal_allcpus=[], base=[_sample(4)],
+                            gdal_allcpus_error="timeout: over 120 s"))
+    assert (failed["time_ratio"], failed["base_ratio"], failed["values"]) == (2, 0.5, "checksum_match")
+    assert "gdal_allcpus_ratio" not in failed
+    # Values unlike GDAL's drop its ratio too, and leave the case's `values` to terrio's.
+    differ = summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)], gdal_allcpus=[_sample(4, n=5)]))
+    assert differ["values"] == "checksum_match" and "gdal_allcpus_ratio" not in differ
+    # Equal digests match although a NaN read's sums do not.
+    nan = summarize(_row(**{t: [{**_sample(k, s=float("nan")), "digest": "a"}] for t, k in (("terrio", 2), ("gdal", 1), ("gdal_allcpus", 4))}))
+    assert (nan["values"], nan["gdal_allcpus_ratio"], nan["gdal_allcpus_values_match"]) == ("exact", 0.5, True)
+    # Both GDAL configurations failed: the case is an error, not a failure of the second only.
+    both_failed = summarize(_row(terrio=[_sample(2)], gdal=[], gdal_allcpus=[], gdal_error="exit 1", gdal_allcpus_error="exit 1"))
+    text = report([{"machine": {**_MACHINE, "gdal_allcpus": True}}, both, {**failed, "fixture": "f32_none"},
+                   {**differ, "fixture": "f64_deflate_p3"}, {**both_failed, "fixture": "i16_lzw_strip"}])
+    assert "all     x2.00 / x0.50(1)" in text and "source  local x2.00 / x0.50(1)" in text
+    assert "terrio faster than GDAL in one configuration only: 1\n  u8_none" in text
+    section = text.split("this configuration only (no second ratio): ")[1].split("\n\n")[0]
+    assert section.startswith("2\n") and "i16_lzw_strip" not in section
+    assert "f32_none" in section and "gdal ALL_CPUS timeout: over 120 s" in section
+    assert "f64_deflate_p3" in section and "gdal ALL_CPUS values differ from the first configuration" in section
+    assert "ALL_CPUS" not in report([{"machine": _MACHINE}, summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)]))])
+    # A second-configuration failure is listed when terrio's own values differ from GDAL's too.
+    unranked = summarize(_row(terrio=[_sample(2, s=11.0)], gdal=[_sample(1)], gdal_allcpus=[], gdal_allcpus_error="timeout: over 120 s"))
+    text = report([{"machine": {**_MACHINE, "gdal_allcpus": True}}, both, {**unranked, "fixture": "u16_zstd"}])
+    section = text.split("this configuration only (no second ratio): ")[1].split("\n\n")[0]
+    assert section.startswith("1\n") and "u16_zstd" in section and "gdal ALL_CPUS timeout: over 120 s" in section
+
+
+def test_gdals_second_configuration_runs_with_its_default_cache_and_every_cpu(tmp_path, monkeypatch):
+    """Time GDAL a second time with GDAL_CACHEMAX unset and GDAL_NUM_THREADS=ALL_CPUS, in turn with the others.
+
+    Args:
+        tmp_path: Isolated results directory.
+        monkeypatch: Scoped dependency replacements.
+    """
+    fake = SimpleNamespace(FIXTURES={"a": None}, ACCESS=["full"], EXT=".tif", meta=lambda *_: {"need_bytes": 1},
+                           axes=lambda _: {"codec": "none", "dtype": "uint8", "layout": "cog"})
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
+    monkeypatch.setattr(perf_matrix, "machine", lambda: {"machine": {"on_ac": True}})
+    monkeypatch.setattr(perf_matrix, "report", lambda _: "recorded")
+    monkeypatch.setattr(perf_matrix, "_settled_log", lambda: [])
+    monkeypatch.setenv("GDAL_CACHEMAX", "64")  # a shell's value is not the default either
+    envs = {}
+
+    def worker(cmd, env, **_kwargs):
+        envs.setdefault(json.loads(cmd[-1])["tool"], []).append(env)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(_sample(1)), stderr="")
+
+    monkeypatch.setattr(perf_matrix.subprocess, "run", worker)
+    args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=4, only=None, quick=False, samples=2,
+                           base=None, out=tmp_path / "results.jsonl", source=["local"], allow_battery=False,
+                           access=None, timeout=1, gdal_allcpus=True)
+    perf_matrix.run(args)
+    assert {t: len(e) for t, e in envs.items()} == {"terrio": 2, "gdal": 2, "gdal_allcpus": 2}
+    second = envs["gdal_allcpus"][0]
+    assert "GDAL_CACHEMAX" not in second and second["GDAL_NUM_THREADS"] == "ALL_CPUS"
+    assert envs["gdal"][0]["GDAL_CACHEMAX"] == "512" and envs["gdal"][0]["GDAL_NUM_THREADS"] == "4"
+    head = json.loads((tmp_path / "results.jsonl").read_text().splitlines()[0])
+    assert head["machine"]["gdal_allcpus"] is True
+
+
+def test_gdals_second_configuration_reads_with_gdal(monkeypatch):
+    """Read with GDAL's reader in a `gdal_allcpus` worker.
+
+    Args:
+        monkeypatch: Scoped format replacement.
+    """
+    tools = []
+
+    def reader(tool, _access, _meta):
+        tools.append(tool)
+        return (lambda p: p), [lambda _d: [1]], perf_matrix.checksum, (lambda p: p, lambda _d: None)
+
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", SimpleNamespace(EXT=".tif", reader=reader))
+    perf_matrix.worker({"format": "fake", "tool": "gdal_allcpus", "src": "http://localhost/f.tif", "access": "full", "meta": {}})
+    assert tools == ["gdal"]

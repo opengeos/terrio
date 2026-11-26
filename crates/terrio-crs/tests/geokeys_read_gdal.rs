@@ -7,7 +7,9 @@
 //! ellipsoid, datum or prime meridian by its code alone, Mercator's scale and latitude keys, and
 //! Laborde oblique Mercator (items 32 to 35). Not as GDAL: a Stereographic CRS's
 //! ProjScaleAtCenterGeoKey, which terrio wrote before and still reads where there is no
-//! ProjScaleAtNatOriginGeoKey (GDAL reads a scale of 1).
+//! ProjScaleAtNatOriginGeoKey (GDAL reads a scale of 1), and a polar stereographic CRS's
+//! ProjStdParallel1GeoKey without an origin latitude, read as its standard parallel for the
+//! writers that put it there (GDAL reads a latitude of true scale of 0 at the north pole).
 //!
 //! `data/geokeys_read_gdal.json` (`scripts/gen_geokeys_read_gdal.py`, GDAL 3.12.2,
 //! `PROJ_NETWORK=OFF`) holds the keys and where GDAL's CRS places a point from WGS 84
@@ -20,7 +22,7 @@ use terrio_crs::{SpatialRef, Transformer};
 fn user_defined_geokeys_are_read_as_gdal_reads_them() {
     let data: Value = serde_json::from_str(include_str!("data/geokeys_read_gdal.json")).unwrap();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 27);
+    assert_eq!(cases.len(), 28);
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     for case in cases {
         let name = case["name"].as_str().unwrap();
@@ -37,6 +39,17 @@ fn user_defined_geokeys_are_read_as_gdal_reads_them() {
         let (x, y) = Transformer::new(&source, &crs).and_then(|t| t.transform(lon, lat)).unwrap_or_else(|e| panic!("{name}: {e}"));
         let (gx, gy) = (case["gdal"][0].as_f64().unwrap(), case["gdal"][1].as_f64().unwrap());
         assert!((x - gx).abs() < 1e-3 && (y - gy).abs() < 1e-3, "{name}: ({x}, {y}), GDAL ({gx}, {gy})");
+        // A code stated in ProjectedCSTypeGeoKey gives the CRS the code GDAL gives it, or none:
+        // EPSG:4326 whatever the linear unit, none for a projected code in another unit.
+        let stated = directory[4..].chunks(4).any(|e| e[0] == 3072 && e[3] != 32767);
+        if stated {
+            let code = case
+                .get("gdal_code")
+                .expect("gdal_code (run scripts/gen_geokeys_read_gdal.py)")
+                .as_str()
+                .map(|c| c.parse::<u32>().unwrap());
+            assert_eq!(crs.epsg, code, "{name}");
+        }
     }
 }
 
@@ -120,6 +133,23 @@ fn a_citation_names_its_crs_only_for_the_same_standard_parallels() {
         let back = terrio_crs::geokeys::read(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).crs.unwrap();
         assert_eq!(back.epsg, code, "standard parallel {key} of {parallel}");
     }
+}
+
+/// A variant of EPSG:5070 that PROJ 9.9.0 refuses (parallels 29.5° and -29.5°, its code removed)
+/// is no EPSG:5070, with wbprojection too, which matches it by name: PROJ identifies no code and
+/// places no point, and its GeoKeys are user-defined, not ProjectedCSTypeGeoKey 5070.
+#[test]
+fn a_refused_variant_of_a_registered_crs_is_not_identified_by_its_name() {
+    let wkt = SpatialRef::from_epsg(5070).unwrap().to_wkt().unwrap();
+    let refused = wkt.replace("\"standard_parallel_2\",45.5", "\"standard_parallel_2\",-29.5");
+    assert_ne!(refused, wkt);
+    let wkt = refused;
+    let wkt = format!("{}]", &wkt[..wkt.rfind(",AUTHORITY").unwrap()]);
+    let crs = SpatialRef::from_wkt(&wkt);
+    assert_eq!(crs.epsg, None, "{wkt}");
+    assert!(Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).and_then(|t| t.transform(-96.0, 40.0)).is_err());
+    let tags = crs.to_geokeys().unwrap().encode().unwrap();
+    assert!(!tags.directory[4..].chunks(4).any(|e| e[0] == 3072 && e[3] != 32767), "{:?}", tags.directory);
 }
 
 /// With wbprojection, a citation does not name a CRS for keys of a conversion terrio does not read:

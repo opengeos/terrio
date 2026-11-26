@@ -113,3 +113,55 @@ fn south_orientated_offsets_with_a_north_east_wkt1() {
         }
     }
 }
+
+/// ESRI's South African Lo zones (ESRI:102470 to 102489) are Transverse Mercator at a scale of -1
+/// without offsets, which PROJ 9.9.0 reads as south-orientated at a scale of 1 (`+proj=tmerc
+/// +axis=wsu +k=1`), in ESRI and GDAL WKT 1: placed as PROJ places them, from their geographic
+/// CRS. So is any negative scale without offsets on east-north axes, at the opposite scale; with
+/// offsets, or on north-east or other axes, PROJ refuses it, and so does terrio.
+#[test]
+fn a_negative_transverse_mercator_scale_without_offsets_is_south_orientated() {
+    // PROJ 9.9.0's ESRI WKT 1 of each.
+    let cape = r#"PROJCS["Cape_Lo15",GEOGCS["GCS_Cape",DATUM["D_Cape",SPHEROID["Clarke_1880_Arc",6378249.145,293.4663077]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",15.0],PARAMETER["Scale_Factor",-1.0],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]"#;
+    let hartebeesthoek = r#"PROJCS["Hartebeesthoek94_Lo33",GEOGCS["GCS_Hartebeesthoek_1994",DATUM["D_Hartebeesthoek_1994",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",33.0],PARAMETER["Scale_Factor",-1.0],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]"#;
+    for (code, esri, lon, want) in [
+        (102470, cape, 15.5, (-48244.95594939949, 3319959.4317436223)),
+        (102489, hartebeesthoek, 33.5, (-48243.44860596966, 3320218.6505056345)),
+    ] {
+        let gdal = SpatialRef::from_esri(code).unwrap().to_wkt().unwrap();
+        let esri = esri.to_string();
+        for wkt in [&gdal, &esri] {
+            let crs = SpatialRef::from_wkt(wkt);
+            let geographic = SpatialRef::from_wkt(&crs.geographic_wkt().unwrap());
+            let (x, y) = Transformer::new(&geographic, &crs).unwrap().transform(lon, -30.0).unwrap();
+            assert!((x - want.0).abs() < 1e-3 && (y - want.1).abs() < 1e-3, "ESRI:{code}: ({x}, {y}) {wkt}");
+        }
+    }
+    // Other negative scales without offsets, from ESRI:102480 (Hartebeesthoek94_Lo15): PROJ 9.9.0
+    // places them at the opposite scale; with a false easting, or north-east axes, it refuses them.
+    let lo15 = SpatialRef::from_esri(102480).unwrap().to_wkt().unwrap().replace(",AUTHORITY[\"ESRI\",\"102480\"]", "");
+    let variant = |scale: &str, fe: &str, ne: bool| {
+        let mut w = lo15
+            .replace("\"scale_factor\",-1", &format!("\"scale_factor\",{scale}"))
+            .replace("\"false_easting\",0", &format!("\"false_easting\",{fe}"));
+        if ne {
+            w = w.replace("AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]", "AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]");
+        }
+        assert_ne!(w, lo15);
+        SpatialRef::from_wkt(&w)
+    };
+    let place = |crs: &SpatialRef| {
+        let geographic = SpatialRef::from_wkt(&crs.geographic_wkt().unwrap());
+        Transformer::new(&geographic, crs).and_then(|t| t.transform(15.5, -30.0))
+    };
+    for (scale, want) in [("-0.9996", (-48224.15122652727, 3318890.5630454323)), ("-2", (-96486.89721193931, 6640437.301011269))] {
+        let (x, y) = place(&variant(scale, "0", false)).unwrap();
+        assert!((x - want.0).abs() < 1e-3 && (y - want.1).abs() < 1e-3, "scale {scale}: ({x}, {y})");
+    }
+    assert!(place(&variant("-1", "1000", false)).is_err());
+    assert!(place(&variant("-1", "0", true)).is_err());
+    // On axes of no direction PROJ reads, PROJ 9.9.0 refuses it too.
+    let other = lo15.replace("AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]", "AXIS[\"X\",OTHER],AXIS[\"Y\",OTHER]");
+    assert_ne!(other, lo15);
+    assert!(place(&SpatialRef::from_wkt(&other)).is_err());
+}

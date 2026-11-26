@@ -52,8 +52,10 @@ surrounding whitespace and scientific notation. Values outside 1 to 100 and malf
 are refused; valid fractional values are truncated for the integer encoder. The same validation
 applies to MBTiles/PMTiles `QUALITY`. GeoTIFF/COG JPEG `QUALITY` and `JPEG_QUALITY`
 retain their integer-only syntax: decimal and exponent spellings are refused there.
-Other data types are rounded and saturated to Byte; GDAL's 4-band
-(CMYK) and 12-bit JPEGs are not written. WebP files hold 3 (RGB) or 4 (RGBA) Byte bands of at most
+Other data types are rounded and saturated to Byte, with a warning naming the declared and the
+written type, as GDAL warns before converting a type it cannot write; GDAL's 4-band (CMYK) and
+12-bit JPEGs are not written (GDAL 3.13.3 writes Int16 and UInt16 as 12-bit, UInt16 with no type
+warning). WebP files hold 3 (RGB) or 4 (RGBA) Byte bands of at most
 16383 x 16383 pixels, as GDAL's WEBP driver requires. With no lossy options, files are
 lossless, every sample kept, including RGB under fully transparent pixels. `LOSSLESS=NO`
 or `QUALITY` without `LOSSLESS=YES` selects lossy VP8 encoding; `QUALITY` ranges from 0 to
@@ -71,7 +73,9 @@ is approximate even under transparent pixels. Other libwebp tuning options remai
 WebP files are read lossless or lossy, as 3 bands, or 4 with an alpha channel.
 
 PNG image data is compressed at the `ZLEVEL` creation option, the Deflate level, from 1 (the
-least effort) to 9 (the most), 6 by default; another value is refused.
+least effort) to 9 (the most), 6 by default; another value is refused. PNG holds Byte and UInt16
+bands: Int8 is written as Byte and other types as UInt16, rounded and saturated, with a warning
+naming the declared and the written type. GDAL 3.13.3 warns too, but writes those types as Byte.
 
 A raster without a geotransform and without a CRS (`GEOREFERENCED=NO`, which `terrio.rio`,
 `translate`, `convert` and pipelines give a source without a geotransform) is written to PNG,

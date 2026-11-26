@@ -646,6 +646,21 @@ pub(crate) fn convert(input: &Wkt1Input, geogcs: &Node) -> Option<Converted> {
         }
     };
     match method.as_str() {
+        // A negative scale without false easting and northing, on east-north axes or none, is
+        // south-orientated (ESRI's South African Lo zones at -1, ESRI:102480...), as PROJ 9.9.0
+        // reads it: west and south, at the opposite scale. With offsets, or other axes (north-east,
+        // or AXIS nodes terrio does not read), PROJ refuses it, and so does terrio.
+        "transversemercator"
+            if k.is_some_and(|k| k < 0.0)
+                && fe == 0.0
+                && fn_ == 0.0
+                && (input.axes == Some(*b"en") || input.axes.is_none() && !input.has_axis) =>
+        {
+            out.push("+proj=tmerc +axis=wsu".into());
+            push(&mut out, "lat_0", lat_0.or(Some(0.0)));
+            push(&mut out, "lon_0", lon_0);
+            push(&mut out, "k", k.map(|k| -k));
+        }
         "transversemercator" | "gausskruger" | "transversemercatorcomplex" => {
             out.push("+proj=tmerc".into());
             push(&mut out, "lat_0", lat_0.or(Some(0.0)));

@@ -37,6 +37,8 @@ pub(crate) struct Used {
     pub ballpark: bool,
     /// Whether it runs datum steps on the point (a shift, not a null transformation).
     pub shifts: bool,
+    /// Whether it changes the datum (rather than heights).
+    pub datum: bool,
 }
 
 thread_local! {
@@ -71,6 +73,10 @@ pub(crate) fn recording_forwarded<T>(f: impl FnOnce() -> T) -> (T, Vec<Used>) {
     (out, used)
 }
 
+/// The name of PROJ's geographic ballpark as recorded, before `operation_at` names it from the
+/// CRSs it links.
+pub(crate) const GEOGRAPHIC_BALLPARK: &str = "Ballpark geographic offset";
+
 /// Whether an operation changes the datum or heights, for its name when it has none.
 #[derive(Clone, Copy)]
 pub(crate) enum OpKind {
@@ -84,6 +90,7 @@ pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
     USED.with(|u| {
         let mut u = u.borrow_mut();
         let Some(used) = u.as_mut() else { return };
+        let datum = matches!(kind, OpKind::Datum);
         used.push(match op {
             // A named transformation without steps is EPSG's null transformation (SWEREF99 to
             // WGS 84 (1), ETRS89 to WGS 84 (1)), or a concatenation of them (Inverse of ETRS89 to
@@ -114,14 +121,21 @@ pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
                 };
                 // One PROJ frames with its ballpark has a ballpark step.
                 let shifts = !op.steps.is_empty();
-                Used { name, accuracy: op.accuracy, grids: op.grids().into_iter().map(|(g, _)| g).collect(), ballpark: op.framed, shifts }
+                Used {
+                    name,
+                    accuracy: op.accuracy,
+                    grids: op.grids().into_iter().map(|(g, _)| g).collect(),
+                    ballpark: op.framed,
+                    shifts,
+                    datum,
+                }
             }
             _ => {
                 let name = match kind {
-                    OpKind::Datum => "Ballpark geographic offset",
+                    OpKind::Datum => GEOGRAPHIC_BALLPARK,
                     OpKind::Vertical => "Ballpark vertical transformation",
                 };
-                Used { name: name.into(), accuracy: -1.0, grids: Vec::new(), ballpark: true, shifts: false }
+                Used { name: name.into(), accuracy: -1.0, grids: Vec::new(), ballpark: true, shifts: false, datum }
             }
         });
     });

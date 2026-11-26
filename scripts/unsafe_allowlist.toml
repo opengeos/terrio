@@ -73,9 +73,9 @@ origin = "added"
 reason = "Windows RPF frame identity: GetFileInformationByHandle on an owned live file handle into a correctly sized initialized output, with its return value checked"
 
 [files."crates/terrio/src/par.rs"]
-count = 7
+count = 8
 origin = "added"
-reason = "native module: pthread_atfork registration (1), pool publication (4), held-back jobs (2); lines 148; 91, 125, 127, 131; 188, 208"
+reason = "native module: pthread_atfork registration (1), pool publication (5, one reading the started pool without starting it, for #1302), held-back jobs (2); lines 225; 147, 154, 202, 204, 208; 265, 285"
 
 [files."crates/terrio/src/pointcloud/ept_append.rs"]
 count = 1

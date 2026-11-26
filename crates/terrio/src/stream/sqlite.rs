@@ -15,6 +15,12 @@ pub(crate) struct FileDb {
     pages: u64,
     encoding: u32,
     schema: Vec<SchemaEntry>,
+    /// The pages of the last [`Tables::lookup`], from the root down: lookups of ascending rowids
+    /// (an R-tree's candidates) read each page on their way once, not once a row.
+    lookup_path: Mutex<Vec<(u32, Vec<u8>)>>,
+    /// The pages read, in order.
+    #[cfg(test)]
+    reads: Mutex<Vec<u32>>,
 }
 
 impl FileDb {
@@ -46,6 +52,9 @@ impl FileDb {
             pages: len / page_size as u64,
             encoding: sqlite::text_encoding(u32::from_be_bytes([h[56], h[57], h[58], h[59]])),
             schema: Vec::new(),
+            lookup_path: Mutex::default(),
+            #[cfg(test)]
+            reads: Mutex::default(),
         };
         let mut entries = Vec::new();
         let mut cursor = db.cursor(1);
@@ -64,6 +73,8 @@ impl FileDb {
         if n == 0 || n as u64 > self.pages {
             return Err(bad("page out of range"));
         }
+        #[cfg(test)]
+        self.reads.lock().map_err(|_| bad("page log lock"))?.push(n);
         let mut buf = vec![0u8; self.page_size];
         let mut f = self.file.lock().map_err(|_| bad("file lock"))?;
         f.seek(SeekFrom::Start((n as u64 - 1) * self.page_size as u64))?;
@@ -221,18 +232,23 @@ impl Tables for FileDb {
     }
 
     fn lookup(&self, root: u32, rowid: i64) -> Result<Option<Vec<u8>>> {
+        let mut path = self.lookup_path.lock().map_err(|_| bad("page path lock"))?;
         let mut n = root;
-        for _ in 0..64 {
-            let page = self.page(n)?;
+        for depth in 0..64 {
+            if path.get(depth).is_none_or(|(p, _)| *p != n) {
+                path.truncate(depth);
+                path.push((n, self.page(n)?));
+            }
+            let page = &path[depth].1;
             let h = if n == 1 { 100 } else { 0 };
             match page[h] {
                 0x05 => {
                     let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
-                    let cell = |c: usize| cell_pointer(&page, h + 12 + 2 * c);
+                    let cell = |c: usize| cell_pointer(page, h + 12 + 2 * c);
                     let (mut lo, mut hi) = (0, cells);
                     while lo < hi {
                         let mid = (lo + hi) / 2;
-                        let (key, _) = varint(&page, cell(mid)? + 4).ok_or_else(|| bad("cell"))?;
+                        let (key, _) = varint(page, cell(mid)? + 4).ok_or_else(|| bad("cell"))?;
                         if key < rowid { lo = mid + 1 } else { hi = mid }
                     }
                     n = if lo < cells {
@@ -243,8 +259,8 @@ impl Tables for FileDb {
                     };
                 }
                 0x0d => {
-                    return match sqlite::table_leaf_find(&page, n, self.usable, rowid)? {
-                        Some(cell) => self.payload(n, &page, cell.payload_start, cell.payload_size).map(Some),
+                    return match sqlite::table_leaf_find(page, n, self.usable, rowid)? {
+                        Some(cell) => self.payload(n, page, cell.payload_start, cell.payload_size).map(Some),
                         None => Ok(None),
                     };
                 }
@@ -367,11 +383,65 @@ mod tests {
         assert!(db.lookup(1, 1).is_err());
     }
 
+    /// A bbox read looks up the rows its R-tree finds in ascending rowid order, and reads each page
+    /// on the way once, not the root and interior pages again for every row. Lookups return what a
+    /// scan of the table returns, in any order, and nothing for a rowid the table lacks.
+    #[test]
+    fn rtree_lookups_read_each_page_once() {
+        use wbvector::{Feature, FieldDef, FieldType, FieldValue, Geometry, Layer};
+        let mut layer = Layer::new("points");
+        layer.add_field(FieldDef::new("name", FieldType::Text));
+        for i in 0..3000 {
+            layer.push(Feature {
+                fid: i,
+                geometry: Some(Geometry::point(i as f64, 0.0)),
+                attributes: vec![FieldValue::Text(format!("row {i} {}", "x".repeat(120)))],
+            });
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("points.gpkg");
+        std::fs::write(&path, crate::drivers::vector::geopackage::to_bytes(&[layer]).unwrap()).unwrap();
+        let db = FileDb::open(path.to_str().unwrap()).unwrap();
+        let (root, _) = db.table_root("points").unwrap();
+        assert_eq!(db.page(root).unwrap()[0], 0x05, "the table's root is an interior page");
+
+        let ids =
+            crate::drivers::vector::gpkg_read::rtree_candidates(&db, "rtree_points_geom", (100.0, -1.0, 1100.0, 1.0)).unwrap().unwrap();
+        db.reads.lock().unwrap().clear();
+        let found: Vec<(i64, Vec<u8>)> = ids.iter().map(|&id| (id, db.lookup(root, id).unwrap().unwrap())).collect();
+        let reads = db.reads.lock().unwrap().clone();
+        let distinct: std::collections::HashSet<_> = reads.iter().collect();
+        assert_eq!(found.len(), 1001);
+        assert_eq!(reads.len(), distinct.len(), "pages read more than once: {} reads of {} pages", reads.len(), distinct.len());
+
+        let mut scanned = Vec::new();
+        let mut cursor = db.cursor(root);
+        while let Some(leaf) = cursor.next_leaf(&db).unwrap() {
+            scanned.extend(leaf.into_iter().filter(|(id, _)| ids.contains(id)));
+        }
+        assert_eq!(found, scanned);
+        // Backwards, and between rowids the table lacks.
+        for (id, payload) in found.iter().rev() {
+            assert!(db.lookup(root, -id).unwrap().is_none());
+            assert_eq!(&db.lookup(root, *id).unwrap().unwrap(), payload);
+            assert!(db.lookup(root, id + 1_000_000).unwrap().is_none());
+        }
+    }
+
     /// Opens a synthetic 512-byte-page `FileDb` without decoding `sqlite_master` records, so tests
     /// can exercise `Cursor::next_leaf` on raw payloads directly.
     fn open_raw_without_schema(path: &std::path::Path) -> FileDb {
         let file = std::fs::File::open(path).unwrap();
         let len = file.metadata().unwrap().len();
-        FileDb { file: Mutex::new(file), page_size: 512, usable: 512, pages: len / 512, encoding: 1, schema: Vec::new() }
+        FileDb {
+            file: Mutex::new(file),
+            page_size: 512,
+            usable: 512,
+            pages: len / 512,
+            encoding: 1,
+            schema: Vec::new(),
+            lookup_path: Mutex::default(),
+            reads: Mutex::default(),
+        }
     }
 }

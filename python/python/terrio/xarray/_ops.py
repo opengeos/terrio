@@ -18,6 +18,7 @@ from affine import Affine
 
 from terrio import _terrio
 from terrio.rio.crs import CRS
+from terrio.rio.transform import compose
 from terrio.xarray.exceptions import TooManyDimensions
 
 
@@ -46,9 +47,9 @@ def _grid(obj: xarray.DataArray | xarray.Dataset) -> _Grid:
     reversed_x = bool(x.size > 1 and x[1] < x[0])
     transform = acc.transform(recalc=True)
     if ascending:
-        transform = transform @ Affine.translation(0, y.size) @ Affine.scale(1, -1)
+        transform = compose(compose(transform, Affine.translation(0, y.size)), Affine.scale(1, -1))
     if reversed_x:
-        transform = transform @ Affine.translation(x.size, 0) @ Affine.scale(-1, 1)
+        transform = compose(compose(transform, Affine.translation(x.size, 0)), Affine.scale(-1, 1))
     nodata = acc.nodata if isinstance(obj, xarray.DataArray) else None
     encoded = acc.encoded_nodata if isinstance(obj, xarray.DataArray) else None
     return _Grid(acc.y_dim, acc.x_dim, acc.crs, transform, ascending, reversed_x, nodata, encoded)

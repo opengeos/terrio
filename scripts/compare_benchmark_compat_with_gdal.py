@@ -309,6 +309,44 @@ def main():
                         jxl,
                     )
 
+        # #1355: 512-pixel JPEG XL tiles of noise over a long uniform run, as an image smaller
+        # than its tile (zero padding) or a full tile whose lower rows are constant.
+        noise = np.random.default_rng(1355)
+        for width, height, noise_rows, bands in [
+            (480, 300, 300, 1),
+            (480, 300, 300, 3),
+            (512, 512, 300, 3),
+        ]:
+
+            def jxl_runs(width=width, height=height, noise_rows=noise_rows, bands=bands):
+                source = tmp / "jxl-runs-source.tif"
+                data = noise.integers(0, 256, (bands, height, width), dtype=np.uint8)
+                data[:, noise_rows:] = 7
+                ds = gdal.GetDriverByName("GTiff").Create(
+                    str(source), width, height, bands, gdal.GDT_Byte
+                )
+                ds.WriteRaster(0, 0, width, height, data.tobytes())
+                ds = None
+                actual = tmp / "jxl-runs.tif"
+                command(
+                    [
+                        args.terrio,
+                        "convert",
+                        source,
+                        actual,
+                        "--compress",
+                        "JXL",
+                        "--tile-size",
+                        512,
+                    ]
+                )
+                exact(actual, source)
+
+            run(
+                f"JPEG-XL Byte {bands} bands {width}x{height} 512 tile noise over a uniform run independent roundtrip",
+                jxl_runs,
+            )
+
         warp_source = args.data / "usgs_dem.tif"
         counties = args.data / "UScounties.gpkg"
 

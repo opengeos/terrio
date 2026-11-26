@@ -90,8 +90,7 @@ openjp2 = { version = "0.6", default-features = false, features = ["std"] }
 lerc-reader = { version = "0.5", default-features = false }
 lerc-core = "0.5"
 lerc-writer = "0.5"
-# Lossless JPEG XL encoding of GeoTIFF chunks (without threads, for WebAssembly).
-zune-jpegxl = { version = "0.5", default-features = false, features = ["std"] }
+# Options and types of the lossless JPEG XL encoder of GeoTIFF chunks (`drivers::jxl_encoder`).
 zune-core = "0.5"
 jxl-oxide = { version = "0.12", default-features = false }
 # AVIF tiles: a pure-Rust port of dav1d, without its assembly so that it builds for WebAssembly.
