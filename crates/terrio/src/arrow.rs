@@ -705,8 +705,8 @@ pub fn open_geoparquet(path: &str, options: &GeoParquetReadOptions) -> Result<Ge
     #[cfg(remote)]
     if let Some(remote) = crate::vfs::Location::parse(path).remote() {
         let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
-        // The footer, then the column chunks of each window of row groups, in parallel requests
-        // through the block cache, a window of at most half the cache at a time.
+        // The footer, then the column chunks of the row groups, in parallel requests through the
+        // block cache ahead of the windows that decode them, at most half the cache at a time.
         let (file, prefetch) = gp::open_remote_file(&remote)?;
         return GeoParquetBatches::open(file, options, Some(prefetch));
     }

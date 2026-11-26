@@ -412,7 +412,7 @@ fn open_untyped_layers(path: &str, options: &VectorOpenOptions, batch: usize) ->
     // `.json` files may be STAC items or collections, which the dataset reader recognizes.
     let driver = VectorDriver::for_extension(path).filter(|_| crate::formats::extension(path).as_deref() != Some("json"));
     let local = crate::vfs::Location::parse(path).is_local() && std::path::Path::new(path).is_file();
-    // A remote GeoParquet file is read in place, a window of row groups at a time.
+    // A remote GeoParquet file is read in place, its row groups decoded a window at a time.
     #[cfg(all(remote, feature = "parquet"))]
     if !local
         && crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector)).is_ok()

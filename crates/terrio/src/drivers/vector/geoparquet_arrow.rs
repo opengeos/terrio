@@ -66,9 +66,15 @@ impl std::fmt::Debug for GeoParquetBatches {
 /// holds a window, however many threads decode it.
 const DECODED_WINDOW_BYTES: u64 = 512 << 20;
 
+/// An announcement takes at most the prefetcher's budget divided by this (8 MiB of the default
+/// 64 MiB cache), or the window's own row groups when they take more: the bytes of an
+/// announcement arrive while the block cache is full, so they add to a read's memory.
+const READ_AHEAD_SHARE: u64 = 4;
+
 /// The row groups of a file decoded in parallel, a window at a time, and their batches handed out
 /// in the file's order: as many row groups at once as there are threads, within the bytes the
-/// prefetcher takes at once. Memory holds a window's batches, not the file.
+/// prefetcher takes at once. Memory holds a window's batches, not the file. The prefetcher is
+/// told of the column chunks ahead of the windows (see [`GroupWindows::next`]).
 pub(crate) struct GroupWindows {
     /// The row groups left, with the rows to read of each (all by default).
     groups: VecDeque<(usize, Option<RowSelection>)>,
@@ -79,6 +85,12 @@ pub(crate) struct GroupWindows {
     /// The bytes the columns read take decoded (uncompressed), in each row group of the file.
     decoded: Vec<u64>,
     prefetch: Option<Prefetcher>,
+    /// The row groups at the front of `groups` whose column chunks were announced.
+    announced: usize,
+    /// The bytes of the column chunks last announced.
+    ahead: u64,
+    /// Set once a read-ahead failed: windows are then announced alone.
+    no_read_ahead: bool,
     /// The caller's options and STAC asset policy, for the threads that read.
     context: crate::stac::AssetReadContext,
     window: usize,
@@ -96,11 +108,12 @@ impl GroupWindows {
     pub(crate) fn select_groups(&mut self, groups: Vec<(usize, Option<RowSelection>)>) {
         debug_assert!(self.ready.is_empty(), "select groups before decoding batches");
         self.groups = groups.into();
+        (self.announced, self.ahead) = (0, 0);
     }
 
     /// Decodes `groups` with `decode`; `ranges` are the byte ranges each row group of the file
-    /// reads, announced to `prefetch` a window at a time. The caller's options and asset policy
-    /// are those of the thread that calls this.
+    /// reads, announced to `prefetch` ahead of the windows (see [`Self::next`]). The caller's
+    /// options and asset policy are those of the thread that calls this.
     pub(crate) fn new(
         groups: impl IntoIterator<Item = (usize, Option<RowSelection>)>,
         decode: DecodeGroup,
@@ -115,6 +128,9 @@ impl GroupWindows {
             ranges: Vec::new(),
             decoded: Vec::new(),
             prefetch,
+            announced: 0,
+            ahead: 0,
+            no_read_ahead: false,
             context: crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current()),
             window: crate::par::threads().max(1),
             failed: false,
@@ -133,14 +149,20 @@ impl GroupWindows {
         let read =
             |rg: &parquet::file::metadata::RowGroupMetaData| (0..rg.num_columns()).filter(|&i| mask.leaf_included(i)).collect::<Vec<_>>();
         self.ranges = meta.row_groups().iter().map(|rg| read(rg).into_iter().map(|i| rg.column(i).byte_range()).collect()).collect();
-        self.decoded =
-            meta.row_groups().iter().map(|rg| read(rg).into_iter().map(|i| rg.column(i).uncompressed_size().max(0) as u64).sum()).collect();
+        self.decoded = meta
+            .row_groups()
+            .iter()
+            .map(|rg| read(rg).into_iter().fold(0u64, |t, i| t.saturating_add(rg.column(i).uncompressed_size().max(0) as u64)))
+            .collect();
+        (self.announced, self.ahead) = (0, 0);
         true
     }
 
-    /// Announces the column chunks of each window to `prefetch` from now on.
+    /// Announces the column chunks of the row groups to `prefetch` from now on, ahead of the
+    /// windows that decode them (see [`Self::next`]).
     pub(crate) fn set_prefetcher(&mut self, prefetch: Prefetcher) {
         self.prefetch = Some(prefetch);
+        (self.announced, self.ahead) = (0, 0);
     }
 
     /// The prefetcher's budget: the bytes it takes at once (`None` without one).
@@ -164,6 +186,13 @@ impl GroupWindows {
 
     /// The next batch, decoding the next window of row groups when the batches held are out. After
     /// an error, every call fails: the rest of the file would be read without the failed window.
+    ///
+    /// A window whose row groups were not all announced to the prefetcher announces them with
+    /// the row groups after it, up to twice the bytes of the last announcement, within a share of
+    /// the prefetcher's budget or the window's own bytes, whichever is larger
+    /// ([`READ_AHEAD_SHARE`]): a remote file read whole takes a few
+    /// round trips rather than one a window, and a reader that stops early has fetched at most
+    /// about twice the row groups it decoded.
     pub(crate) fn next(&mut self) -> Result<Option<RecordBatch>> {
         if self.failed {
             return Err(perr(&"an earlier read of this file failed"));
@@ -175,22 +204,49 @@ impl GroupWindows {
 
     fn next_window(&mut self) -> Result<Option<RecordBatch>> {
         while self.ready.is_empty() && !self.groups.is_empty() {
-            let bytes = |g: usize| self.ranges[g].iter().map(|r| r.1).sum::<u64>();
+            // Footer lengths, saturated: a corrupt footer's cannot overflow.
+            let bytes = |g: usize| self.ranges[g].iter().fold(0u64, |t, r| t.saturating_add(r.1));
             let budget = self.prefetch.as_ref().map_or(u64::MAX, |p| p.1);
             // within the bytes the prefetcher takes at once and the decoded bytes a window holds
+            // (sums checked: a row group whose sum overflows goes to the next window).
             let (mut n, mut total, mut decoded) = (0, 0u64, 0u64);
-            while n < self.window.min(self.groups.len())
-                && (n == 0 || total + bytes(self.groups[n].0) <= budget && decoded + self.decoded[self.groups[n].0] <= DECODED_WINDOW_BYTES)
-            {
-                total += bytes(self.groups[n].0);
-                decoded += self.decoded[self.groups[n].0];
+            while n < self.window.min(self.groups.len()) {
+                let g = self.groups[n].0;
+                let (t, d) = (total.checked_add(bytes(g)), decoded.checked_add(self.decoded[g]));
+                if n > 0 && !(t.is_some_and(|t| t <= budget) && d.is_some_and(|d| d <= DECODED_WINDOW_BYTES)) {
+                    break;
+                }
+                (total, decoded) = (t.unwrap_or(u64::MAX), d.unwrap_or(u64::MAX));
                 n += 1;
             }
-            let window: Vec<(usize, Option<RowSelection>)> = self.groups.drain(..n).collect();
-            if self.prefetch.is_some() {
-                let mut ranges: Vec<(u64, u64)> = window.iter().flat_map(|(g, _)| self.ranges[*g].iter().copied()).collect();
-                self.prefetch(&mut ranges)?;
+            if self.prefetch.is_some() && self.announced < n {
+                // From the window's first row group: the cache keeps the blocks a prefetch
+                // covers, so those announced earlier stay until they are decoded.
+                let limit = match self.no_read_ahead {
+                    true => total,
+                    false => self.ahead.saturating_mul(2).clamp(total, (budget / READ_AHEAD_SHARE).max(total)),
+                };
+                let (mut end, mut size) = (0, 0u64);
+                while end < self.groups.len() && (end < n || size.saturating_add(bytes(self.groups[end].0)) <= limit) {
+                    size = size.saturating_add(bytes(self.groups[end].0));
+                    end += 1;
+                }
+                let ranges = |upto: usize| -> Vec<(u64, u64)> {
+                    self.groups.range(..upto).flat_map(|(g, _)| self.ranges[*g].iter().copied()).collect()
+                };
+                // A failed read-ahead fails only the reads of its row groups: the window is
+                // announced alone again, and so are the windows after it.
+                if let Err(e) = self.prefetch(&mut ranges(end)) {
+                    if end == n {
+                        return Err(e);
+                    }
+                    (end, size, self.no_read_ahead) = (n, total, true);
+                    self.prefetch(&mut ranges(n))?;
+                }
+                (self.announced, self.ahead) = (end, size);
             }
+            self.announced = self.announced.saturating_sub(n);
+            let window: Vec<(usize, Option<RowSelection>)> = self.groups.drain(..n).collect();
             let (decode, context) = (&self.decode, &self.context);
             for batches in crate::par::map_range_coarse(n, |i| {
                 let _scope = context.enter()?;
@@ -204,8 +260,8 @@ impl GroupWindows {
 }
 
 impl GeoParquetBatches {
-    /// Opens the file `input` holds; `prefetch` is told the column chunks of each window of row
-    /// groups before they are decoded.
+    /// Opens the file `input` holds; `prefetch` is told the column chunks of the row groups ahead
+    /// of the windows that decode them (see [`GroupWindows::next`]).
     pub(crate) fn open<R: ChunkReader + 'static>(input: R, options: &GeoParquetReadOptions, prefetch: Option<Prefetcher>) -> Result<Self> {
         let bbox = options.bbox.map(super::corners_extent);
         let input = SharedInput(Arc::new(input));
@@ -765,6 +821,195 @@ mod tests {
         drop(unread);
     }
 
+    /// A remote file of many row groups read whole takes a few requests, the prefetcher told of
+    /// the row groups ahead of the windows that decode them, not one request a window.
+    #[cfg(remote)]
+    #[test]
+    fn a_remote_file_read_whole_takes_a_few_requests() {
+        use crate::arrow::{GeoParquetReadOptions, open_geoparquet};
+        use arrow_array::{BinaryArray, Int64Array, RecordBatch, StringArray};
+        use arrow_schema::{DataType, Field, Schema};
+        use std::sync::Arc;
+        // 1024 row groups of 8 points, more than any thread count decodes at once, each row
+        // group larger than a block (8 rows of 600 bytes of text)
+        let n = 8192;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("text", DataType::Utf8, false),
+            Field::new("geometry", DataType::Binary, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..n)),
+                Arc::new(StringArray::from_iter_values((0..n).map(|i| format!("{i:0>600}")))),
+                Arc::new(BinaryArray::from_iter_values((0..n).map(|i| Geometry::point(i as f64, 0.0).to_wkb()))),
+            ],
+        )
+        .unwrap();
+        let geo = serde_json::json!({"version": "1.1.0", "primary_column": "geometry", "columns": {"geometry": {"encoding": "WKB"}}});
+        let props = parquet::file::properties::WriterProperties::builder()
+            .set_max_row_group_row_count(Some(8))
+            .set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new("geo".into(), geo.to_string())]))
+            .build();
+        let mut data = Vec::new();
+        let mut w = parquet::arrow::ArrowWriter::try_new(&mut data, schema, Some(props)).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let (base, seen) = crate::http::test_server(data);
+        let options = [("TERRIO_HTTP_BLOCK_SIZE", "4096"), ("TERRIO_HTTP_CACHE_SIZE", "67108864")];
+        let got: Vec<RecordBatch> = crate::config::with_options(&options, || {
+            open_geoparquet(&format!("{base}/many_groups.parquet"), &GeoParquetReadOptions::default())
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap();
+        let ids: Vec<i64> = got.iter().flat_map(|b| b.column(0).as_any().downcast_ref::<Int64Array>().unwrap().values().to_vec()).collect();
+        assert_eq!(ids, (0..n).collect::<Vec<_>>());
+        // The footer's 4 requests, then those of each announcement, twice the bytes of the last
+        // from the first window's: 6 to 11 announcements for 1024 row groups (32 threads to 1),
+        // 11 to 15 requests in all from 32 threads to 1 (a long run is split in pieces). One
+        // announcement a window would make 4 + 1024 / threads requests (36 with 32 threads, 260
+        // with 4).
+        let requests = seen.lock().unwrap().len();
+        assert!(requests <= 20, "{requests} requests");
+    }
+
+    /// Column chunk lengths and decoded sizes from a footer that overflow when summed saturate,
+    /// in one row group and across a window's: the reader reads on rather than panicking or
+    /// wrapping, a row group whose sum would overflow going to the next window.
+    #[test]
+    fn overflowing_chunk_lengths_saturate() {
+        use super::GroupWindows;
+        use arrow_array::{ArrayRef, Int32Array, RecordBatch};
+        use std::sync::Arc;
+        for window in [1, 2, 3] {
+            let mut w = GroupWindows {
+                groups: (0..3).map(|g| (g, None)).collect(),
+                ready: Default::default(),
+                decode: Box::new(|g, _| {
+                    Ok(vec![RecordBatch::try_from_iter([("g", Arc::new(Int32Array::from(vec![g as i32])) as ArrayRef)]).unwrap()])
+                }),
+                ranges: vec![vec![(0, u64::MAX), (0, u64::MAX)]; 3],
+                decoded: vec![u64::MAX; 3],
+                prefetch: Some((Box::new(|_: &[(u64, u64)]| Ok(())), u64::MAX)),
+                announced: 0,
+                ahead: 0,
+                no_read_ahead: false,
+                context: crate::stac::AssetReadContext::capture(None),
+                window,
+                failed: false,
+            };
+            for _ in 0..3 {
+                assert!(w.next().unwrap().is_some(), "window {window}");
+            }
+            assert!(w.next().unwrap().is_none());
+        }
+    }
+
+    /// The row groups whose column chunks are announced to the prefetcher at each call: the
+    /// window's, with those after it up to twice the bytes of the last announcement, within a
+    /// share of the budget, and none while the window's were announced already.
+    #[test]
+    fn row_groups_are_announced_ahead_of_their_windows() {
+        use super::GroupWindows;
+        use arrow_array::{ArrayRef, Int32Array, RecordBatch};
+        use std::sync::{Arc, Mutex};
+        // 16 row groups of 100 bytes, decoded `window` at a time: the row groups of each
+        // announcement once `batches` batches are read
+        let announced = |window: usize, budget: u64, batches: usize| -> Vec<Vec<u64>> {
+            let calls: Arc<Mutex<Vec<Vec<u64>>>> = Default::default();
+            let (log, seen) = (calls.clone(), calls.clone());
+            let mut w = GroupWindows {
+                groups: (0..16).map(|g| (g, None)).collect(),
+                ready: Default::default(),
+                decode: Box::new(move |g, _| {
+                    assert!(
+                        seen.lock().unwrap().iter().flatten().any(|&a| a == g as u64),
+                        "row group {g} is announced before it is decoded"
+                    );
+                    Ok(vec![RecordBatch::try_from_iter([("g", Arc::new(Int32Array::from(vec![g as i32])) as ArrayRef)]).unwrap()])
+                }),
+                ranges: (0..16).map(|g| vec![(g * 100, 100)]).collect(),
+                decoded: vec![1; 16],
+                prefetch: Some((
+                    Box::new(move |r: &[(u64, u64)]| {
+                        log.lock().unwrap().push(r.iter().map(|&(at, _)| at / 100).collect());
+                        Ok(())
+                    }),
+                    budget,
+                )),
+                announced: 0,
+                ahead: 0,
+                no_read_ahead: false,
+                context: crate::stac::AssetReadContext::capture(None),
+                window,
+                failed: false,
+            };
+            for g in 0..batches {
+                let batch = w.next().unwrap().unwrap();
+                assert_eq!(batch.column(0).as_any().downcast_ref::<Int32Array>().unwrap().value(0), g as i32);
+            }
+            if batches == 16 {
+                assert!(w.next().unwrap().is_none());
+            }
+            calls.lock().unwrap().clone()
+        };
+        let groups = |r: std::ops::Range<u64>| r.collect::<Vec<_>>();
+        assert_eq!(announced(1, u64::MAX, 16), [groups(0..1), groups(1..3), groups(3..7), groups(7..15), groups(15..16)]);
+        assert_eq!(announced(4, u64::MAX, 16), [groups(0..4), groups(4..12), groups(12..16)]);
+        // Within a share of the budget (a quarter): three or five row groups. A window the last
+        // announcement ends in is announced again from its first row group, whose blocks the
+        // cache then keeps.
+        assert_eq!(
+            announced(1, 1200, 16),
+            [groups(0..1), groups(1..3), groups(3..6), groups(6..9), groups(9..12), groups(12..15), groups(15..16)]
+        );
+        assert_eq!(announced(2, 2000, 16), [groups(0..2), groups(2..6), groups(6..11), groups(10..15), groups(14..16)]);
+        // A reader that stops after the first batch was told of the first window only.
+        assert_eq!(announced(1, u64::MAX, 1), [groups(0..1)]);
+    }
+
+    /// A read-ahead that fails leaves the window it was announced with readable: only the row
+    /// groups whose bytes fail fail.
+    #[test]
+    fn a_failed_read_ahead_leaves_the_window_readable() {
+        use super::{GroupWindows, perr};
+        use arrow_array::{ArrayRef, Int32Array, RecordBatch};
+        use std::sync::Arc;
+        let batch = |g: usize| RecordBatch::try_from_iter([("g", Arc::new(Int32Array::from(vec![g as i32])) as ArrayRef)]).unwrap();
+        // 4 row groups of 100 bytes, a window of one each; the bytes of row group 2 fail
+        let calls: Arc<std::sync::Mutex<Vec<Vec<u64>>>> = Default::default();
+        let log = calls.clone();
+        let mut w = GroupWindows {
+            groups: (0..4).map(|g| (g, None)).collect(),
+            ready: Default::default(),
+            decode: Box::new(move |g, _| Ok(vec![batch(g)])),
+            ranges: (0..4).map(|g| vec![(g * 100, 100)]).collect(),
+            decoded: vec![1; 4],
+            prefetch: Some((
+                Box::new(move |r: &[(u64, u64)]| {
+                    log.lock().unwrap().push(r.iter().map(|&(at, _)| at / 100).collect());
+                    if r.iter().any(|&(at, _)| at == 200) { Err(perr(&"broken")) } else { Ok(()) }
+                }),
+                u64::MAX,
+            )),
+            announced: 0,
+            ahead: 0,
+            no_read_ahead: false,
+            context: crate::stac::AssetReadContext::capture(None),
+            window: 1,
+            failed: false,
+        };
+        // row groups 0, then 1 announced with 2, which fails: 1 is announced alone, and so is 2
+        let g = |b: RecordBatch| b.column(0).as_any().downcast_ref::<Int32Array>().unwrap().value(0);
+        assert_eq!(g(w.next().unwrap().unwrap()), 0);
+        assert_eq!(g(w.next().unwrap().unwrap()), 1);
+        assert!(w.next().is_err(), "row group 2 fails");
+        assert_eq!(*calls.lock().unwrap(), [vec![0], vec![1, 2], vec![1], vec![2]]);
+    }
+
     #[test]
     fn a_failed_window_stops_the_reader() {
         use super::{GroupWindows, perr};
@@ -779,6 +1024,9 @@ mod tests {
             ranges: vec![Vec::new(); 3],
             decoded: vec![0; 3],
             prefetch: None,
+            announced: 0,
+            ahead: 0,
+            no_read_ahead: false,
             context: crate::stac::AssetReadContext::capture(None),
             window: 1,
             failed: false,
@@ -808,6 +1056,9 @@ mod tests {
                 ranges: vec![Vec::new(); decoded.len()],
                 decoded: decoded.to_vec(),
                 prefetch: None,
+                announced: 0,
+                ahead: 0,
+                no_read_ahead: false,
                 context: crate::stac::AssetReadContext::capture(None),
                 window: 8,
                 failed: false,

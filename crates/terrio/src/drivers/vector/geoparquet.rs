@@ -311,8 +311,8 @@ fn parse_source<R: parquet::file::reader::ChunkReader + 'static>(
 }
 
 /// Opens a remote file to be read by range requests, and the prefetcher that announces the byte
-/// ranges of each window of row groups to its block cache: a window of at most half the cache at
-/// a time.
+/// ranges of the row groups to its block cache ahead of the windows that decode them, at most
+/// half the cache at a time (see [`GroupWindows::next`]).
 #[cfg(remote)]
 pub(crate) fn open_remote_file(remote: &crate::http::Remote) -> Result<(crate::http::RangeReader, Prefetcher)> {
     let options = crate::http::HttpOptions::from_env();
@@ -325,8 +325,8 @@ pub(crate) fn open_remote_file(remote: &crate::http::Remote) -> Result<(crate::h
 
 /// A remote GeoParquet file (a URL whose file name ends in `.parquet` or `.geoparquet`) opened to
 /// be read by range requests: its footer, the covering column of the row groups a filter keeps,
-/// then the column chunks of each window of row groups, fetched in parallel through the block
-/// cache, a window of at most half the cache at a time. `None` for other paths.
+/// then the column chunks of the row groups, fetched in parallel through the block cache ahead of
+/// the windows that decode them, at most half the cache at a time. `None` for other paths.
 #[cfg(remote)]
 pub(crate) fn open_remote(path: &str, bbox: Option<(f64, f64, f64, f64)>, batch_size: usize) -> Result<Option<ParquetStream>> {
     let location = crate::vfs::Location::parse(path);
@@ -339,8 +339,8 @@ pub(crate) fn open_remote(path: &str, bbox: Option<(f64, f64, f64, f64)>, batch_
     let (file, remote_prefetch) = open_remote_file(&remote)?;
     let name = std::path::Path::new(&file_name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer").to_string();
     // The covering column of the row groups a filter keeps is fetched at once, when the stream
-    // opens; their data chunks are announced a window at a time (`with_prefetcher`), not all at
-    // the open, which would fetch up to half the cache before a batch is asked for.
+    // opens; their data chunks are announced as batches are asked for (`with_prefetcher`), not
+    // at the open, which would fetch up to half the cache before a batch is asked for.
     let covering_pass = std::cell::Cell::new(bbox.is_some());
     let prefetch = |ranges: &[(u64, u64)]| -> Result<()> {
         if covering_pass.replace(false) {
@@ -584,8 +584,8 @@ impl ParquetStream {
         Ok(layer)
     }
 
-    /// Announces the column chunks of each window of row groups to `prefetch` before they are
-    /// decoded (a remote file's block cache, which fetches them in parallel requests).
+    /// Announces the column chunks of the row groups to `prefetch` ahead of the windows that
+    /// decode them (a remote file's block cache, which fetches them in parallel requests).
     pub(crate) fn with_prefetcher(mut self, prefetch: Prefetcher) -> Self {
         self.windows.set_prefetcher(prefetch);
         self
