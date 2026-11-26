@@ -3647,6 +3647,22 @@ impl Transformer {
 mod tests {
     use super::*;
 
+    /// A conversion terrio refuses for its parameters (an Albers conic of parallels 29.5° and
+    /// -29.5°, which PROJ 9.9.0 refuses too) is refused; one of a method neither terrio nor
+    /// wbprojection reads (Goode Homolosine) is not, so its WKT still reaches wbprojection's registry.
+    #[cfg(feature = "wbprojection-fallback")]
+    #[test]
+    fn refused_conversion_tells_a_refused_conversion_from_an_unknown_method() {
+        let albers = SpatialRef::from_epsg(5070).unwrap().to_wkt().unwrap();
+        let refused = albers.replace("\"standard_parallel_2\",45.5", "\"standard_parallel_2\",-29.5");
+        assert_ne!(refused, albers);
+        assert!(refused_conversion(&refused));
+        assert!(!refused_conversion(&albers));
+        let goode = r#"PROJCRS["Goode",BASEGEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],UNIT["degree",0.0174532925199433]],CONVERSION["Goode",METHOD["Goode Homolosine"],PARAMETER["Longitude of natural origin",0,ANGLEUNIT["degree",0.0174532925199433]],PARAMETER["False easting",0,LENGTHUNIT["metre",1]],PARAMETER["False northing",0,LENGTHUNIT["metre",1]]],CS[Cartesian,2],AXIS["(E)",east],AXIS["(N)",north],LENGTHUNIT["metre",1]]"#;
+        assert!(model::wkt2_to_proj(goode).is_ok_and(|c| c.proj.contains("+proj=goode")), "{goode}");
+        assert!(!refused_conversion(goode));
+    }
+
     /// Missing destination geoid warnings use the destination datum's coordinates.
     /// GDAL 3.13.3 uses the same horizontal datum shift for this compound CRS.
     #[test]
