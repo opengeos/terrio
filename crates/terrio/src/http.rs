@@ -1017,7 +1017,14 @@ impl Client {
                 record_fetch(&self.url, &self.stats_name(), 0);
                 return Err(over_cap(&self.url, cap));
             }
+            // A range response is read into a buffer of its declared length (at most the range
+            // asked for): grown by doubling, the buffers of large responses left freed memory
+            // that a long read kept.
             let mut data = Vec::new();
+            if let (206, Some(n), Some(declared)) = (status, limit, declared) {
+                // a failed reservation leaves the buffer to grow as the body arrives
+                let _ = data.try_reserve_exact(usize::try_from(n.min(declared)).unwrap_or(0));
+            }
             let reader = response.into_body().into_reader();
             let read = match limit.or(cap) {
                 Some(limit) => reader.take(limit.saturating_add(1)).read_to_end(&mut data),
