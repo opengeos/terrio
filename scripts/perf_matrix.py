@@ -2434,9 +2434,9 @@ class GeoParquetReal(GeoParquet):
     """A public GeoParquet file, read as the GeoParquet fixtures are.
 
     Estonia's building footprints of the Google-Microsoft Open Buildings by VIDA (Source
-    Cooperative): 737,334 polygons in WGS 84, all from Microsoft's dataset, GeoParquet 1.1 with a
-    covering bbox column, rows clustered in space, Snappy, row groups of 5,000 rows. Reference:
-    GDAL 3.13.3.
+    Cooperative): 737,334 polygons in WGS 84, each with `bf_source` "microsoft" (the column has no
+    other value), GeoParquet 1.1 with a covering bbox column, rows clustered in space, Snappy, row
+    groups of 5,000 rows. Reference: GDAL 3.13.3.
     """
 
     # name: (URL, size in bytes, SHA-256)

@@ -446,7 +446,7 @@ the command. About 370 MB in all:
 | `s2_b04_sparse` | made from `s2_b04_nodata` by GDAL's COG driver with `SPARSE_OK=TRUE` and 512-pixel tiles | a sparse COG: the tiles holding only nodata are left out of the file (36 of the 64 tiles the 16 windows touch) |
 | `s2_b04_mask` | made from `s2_b04_nodata` by GDAL's COG driver with `-mask mask,1 -a_nodata none` and 512-pixel tiles | an internal mask band in place of nodata, with its overviews |
 | `dem_i16_big_endian` | USGS 30 m DEM `m30dem.tif` of the GeoTIFF samples on download.osgeo.org, 5.5 MB | big-endian Int16, uncompressed, one-row strips, 1479 × 1863 (not square), no nodata, no overviews |
-| `buildings_est` | Estonia's buildings of the Google-Microsoft Open Buildings by VIDA (Source Cooperative), 101 MB | GeoParquet 1.1, 737,334 WKB polygons in WGS 84, Snappy, row groups of 5,000 rows clustered in space, a covering bbox column |
+| `buildings_est` | Estonia's buildings of the Google-Microsoft Open Buildings by VIDA (Source Cooperative), 101 MB | GeoParquet 1.1, 737,334 WKB polygons in WGS 84, all with `bf_source` "microsoft", Snappy, row groups of 5,000 rows clustered in space, a covering bbox column |
 
 `s2_b04_sparse` and `s2_b04_mask` are derived, not downloaded: GDAL makes them in `fixtures`, so
 their bytes depend on the GDAL version. Their source is pinned. The `masks` access reads every
@@ -507,8 +507,8 @@ On a pull request, a maintainer's comment `/perf-matrix` runs the matrix on a Gi
 3.13.3, with the base branch's harness, and posts the report. With no arguments it runs every
 format but `geoparquet-write`, `geotiff-real` and `geoparquet-real` with one sample per tool;
 `/perf-matrix geoparquet --only geoarrow` runs one format with the options of `run`; options
-alone (`/perf-matrix --samples 5`) run the read formats; `/perf-matrix warp` and
-`/perf-matrix terrain` time the operations.
+alone (`/perf-matrix --samples 5`) run the read formats except the real-data ones;
+`/perf-matrix warp` and `/perf-matrix terrain` time the operations.
 Runner timings vary more than a quiet desktop's, but each comparison is made within one run on
 one runner. The Actions tab runs the same workflow for a pull request
 number. Each format runs in its own job, in parallel.
