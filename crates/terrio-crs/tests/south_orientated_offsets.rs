@@ -118,7 +118,7 @@ fn south_orientated_offsets_with_a_north_east_wkt1() {
 /// without offsets, which PROJ 9.9.0 reads as south-orientated at a scale of 1 (`+proj=tmerc
 /// +axis=wsu +k=1`), in ESRI and GDAL WKT 1: placed as PROJ places them, from their geographic
 /// CRS. So is any negative scale without offsets on east-north axes, at the opposite scale; with
-/// offsets, or on north-east axes, PROJ refuses it, and so does terrio.
+/// offsets, or on north-east or other axes, PROJ refuses it, and so does terrio.
 #[test]
 fn a_negative_transverse_mercator_scale_without_offsets_is_south_orientated() {
     // PROJ 9.9.0's ESRI WKT 1 of each.
@@ -160,4 +160,8 @@ fn a_negative_transverse_mercator_scale_without_offsets_is_south_orientated() {
     }
     assert!(place(&variant("-1", "1000", false)).is_err());
     assert!(place(&variant("-1", "0", true)).is_err());
+    // On axes of no direction PROJ reads, PROJ 9.9.0 refuses it too.
+    let other = lo15.replace("AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]", "AXIS[\"X\",OTHER],AXIS[\"Y\",OTHER]");
+    assert_ne!(other, lo15);
+    assert!(place(&SpatialRef::from_wkt(&other)).is_err());
 }
