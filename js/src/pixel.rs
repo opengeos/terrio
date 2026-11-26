@@ -27,7 +27,8 @@ pub fn unscale(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     Ok(Dataset::from_raster(terrio::ops::pixel::unscale(&ds, &o).map_err(js_err)?))
 }
 
-/// JSON can carry non-finite nodata values as strings.
+/// A nodata value: a number, or a string for the non-finite values JSON cannot hold (`"nan"`,
+/// `"inf"`, `"-inf"`, as [`crate::parse_options`] writes raw `NaN`, `Infinity` and `-Infinity`).
 #[derive(Deserialize)]
 #[serde(untagged)]
 pub(crate) enum NodataValue {
@@ -35,14 +36,48 @@ pub(crate) enum NodataValue {
     Text(String),
 }
 
+/// The error of a nodata string that is not a number.
+const NODATA_TEXT: &str = "nodata must be a number or 'nan', 'inf', '-inf'";
+
 impl NodataValue {
-    pub(crate) fn number(self) -> Result<f64, JsError> {
+    /// The value, or the error of a string that is not a number.
+    fn value(self) -> Result<f64, &'static str> {
         match self {
             Self::Number(value) => Ok(value),
-            Self::Text(text) => {
-                text.trim().to_ascii_lowercase().parse().map_err(|_| invalid("nodata must be a number or 'nan', 'inf', '-inf'"))
-            }
+            Self::Text(text) => text.trim().to_ascii_lowercase().parse().map_err(|_| NODATA_TEXT),
         }
+    }
+
+    /// The value, or a JavaScript error for a string that is not a number.
+    pub(crate) fn number(self) -> Result<f64, JsError> {
+        self.value().map_err(invalid)
+    }
+
+    /// Parses a nodata string (`"nan"`, `"inf"`, `"-inf"` or a number).
+    pub(crate) fn parse(text: &str) -> Result<f64, JsError> {
+        Self::Text(text.to_owned()).number()
+    }
+}
+
+/// Serde helpers reading nodata fields as [`NodataValue`]s, so that they accept `"nan"`, `"inf"`
+/// and `"-inf"` (and the raw non-finite numbers [`crate::parse_options`] turns into them).
+pub(crate) mod nodata_field {
+    use super::NodataValue;
+    use serde::{Deserialize, Deserializer, de::Error};
+
+    /// A required nodata value.
+    pub(crate) fn one<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+        NodataValue::deserialize(d)?.value().map_err(D::Error::custom)
+    }
+
+    /// An optional nodata value (`null` reads as unset).
+    pub(crate) fn option<'de, D: Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+        Option::<NodataValue>::deserialize(d)?.map(NodataValue::value).transpose().map_err(D::Error::custom)
+    }
+
+    /// A list of nodata values.
+    pub(crate) fn list<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<f64>, D::Error> {
+        Vec::<NodataValue>::deserialize(d)?.into_iter().map(NodataValue::value).collect::<Result<_, _>>().map_err(D::Error::custom)
     }
 }
 
@@ -62,17 +97,15 @@ struct NodataToAlphaArgs {
 
 /// Replaces nodata values with an alpha band (`gdal raster nodata-to-alpha`). Options:
 /// `nodata`, a value overriding the source's, or one per band (transparent where every band has
-/// its value). Use strings `"nan"`, `"inf"`, `"-inf"` for non-finite overrides; raw
-/// non-finite numbers and null are rejected before JSON serialization.
+/// its value). Non-finite overrides are `NaN`, `Infinity`, `-Infinity` or the strings `"nan"`,
+/// `"inf"`, `"-inf"`; `null` is refused rather than read as no override.
 #[wasm_bindgen(js_name = nodataToAlpha)]
 pub fn nodata_to_alpha(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
-    // JSON.stringify turns non-finite numbers into null. Refuse them before the
-    // round trip so an explicit override can never become the default silently.
+    // JSON.stringify keeps null: refuse it so an explicit override never becomes the default.
     if options.is_object() {
         let raw = js_sys::Reflect::get(&options, &JsValue::from_str("nodata")).map_err(|_| invalid("invalid nodata option"))?;
-        let invalid_number = |value: &JsValue| value.is_null() || value.as_f64().is_some_and(|v| !v.is_finite());
-        if invalid_number(&raw) || js_sys::Array::is_array(&raw) && js_sys::Array::from(&raw).iter().any(|v| invalid_number(&v)) {
-            return Err(invalid("nodata cannot be null or a non-finite number: use the strings 'nan', 'inf' or '-inf'"));
+        if raw.is_null() || js_sys::Array::is_array(&raw) && js_sys::Array::from(&raw).iter().any(|v| v.is_null()) {
+            return Err(invalid("nodata cannot be null: give a number or 'nan', 'inf', '-inf'"));
         }
     }
     let a: NodataToAlphaArgs = parse_options(&options)?;

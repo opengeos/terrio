@@ -64,6 +64,7 @@ struct JsGridOptions {
     window_size: usize,
     bin_mode: bool,
     bounds: Option<[f64; 4]>,
+    #[serde(deserialize_with = "crate::pixel::nodata_field::one")]
     nodata: f64,
 }
 

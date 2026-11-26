@@ -246,7 +246,9 @@ struct XyzArgs {
     skip: Vec<usize>,
     srcwin: Option<[usize; 4]>,
     skip_nodata: bool,
+    #[serde(deserialize_with = "crate::pixel::nodata_field::list")]
     src_nodata: Vec<f64>,
+    #[serde(deserialize_with = "crate::pixel::nodata_field::list")]
     dst_nodata: Vec<f64>,
     delimiter: String,
 }

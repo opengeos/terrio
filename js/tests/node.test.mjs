@@ -2668,13 +2668,13 @@ test("unscale, nodataToAlpha, reclassify and asFeatures", () => {
   assert.deepEqual([...alpha.readBand(2)], [255, 255, 0, 255]);
   assert.deepEqual([...terrio.nodataToAlpha(src, null).readBand(2)], [255, 255, 0, 255]);
   assert.deepEqual([...terrio.nodataToAlpha(src, { nodata: 1 }).readBand(2)], [0, 255, 255, 255]);
-  assert.throws(() => terrio.nodataToAlpha(src, { nodata: NaN }), /strings/);
-  assert.throws(() => terrio.nodataToAlpha(src, { nodata: Infinity }), /strings/);
   assert.throws(() => terrio.nodataToAlpha(src, { nodata: null }), /null/);
-  assert.throws(() => terrio.nodataToAlpha(src, { nodata: [NaN] }), /strings/);
+  assert.throws(() => terrio.nodataToAlpha(src, { nodata: [null] }), /null/);
   const special = terrio.rasterFromArray(new Float64Array([NaN, Infinity, -Infinity, 3]), 2, 2, gt);
-  for (const [nodata, expected] of [["nan", [0, 255, 255, 255]], ["inf", [255, 0, 255, 255]], ["-inf", [255, 255, 0, 255]]]) {
-    assert.deepEqual([...terrio.nodataToAlpha(special, { nodata }).readBand(2)], expected);
+  // Raw non-finite numbers and their strings select the same pixels.
+  for (const [nodata, expected] of [["nan", [0, 255, 255, 255]], ["inf", [255, 0, 255, 255]], ["-inf", [255, 255, 0, 255]],
+    [NaN, [0, 255, 255, 255]], [Infinity, [255, 0, 255, 255]], [-Infinity, [255, 255, 0, 255]], [[NaN], [0, 255, 255, 255]]]) {
+    assert.deepEqual([...terrio.nodataToAlpha(special, { nodata }).readBand(2)], expected, String(nodata));
   }
   const fractional = terrio.rasterFromArray(new Float32Array([0.1, 0.2]), 2, 1, gt, "EPSG:32611", 0.1);
   assert.equal(terrio.asFeatures(fractional, { skipNodata: true }).toGeoJSON().features.length, 1);
@@ -4892,6 +4892,49 @@ test("pipeline definition saves and unused aliases do not decode inputs", () => 
   assert.throws(()=>terrio.pipeline("read unused",{unused:invalid}),/invalid|supported|recogniz|format/i);
 });
 
+test("non-finite nodata options are kept, as numbers or strings, by every operation", () => {
+  const gt = [0, 1, 0, 2, 0, -1];
+  const src = terrio.rasterFromArray(new Float32Array([1, 2, 3, 4]), 2, 2, gt, "EPSG:4326");
+  const index = { type: "FeatureCollection", features: [{ type: "Feature", properties: { location: "a" },
+    geometry: { type: "Polygon", coordinates: [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]] } }] };
+  const pan = terrio.rasterFromArray(new Float32Array(16).fill(80), 4, 4, [0, 1, 0, 4, 0, -1], "EPSG:32611");
+  const spectral = terrio.rasterFromArray(new Float32Array(4).fill(20), 2, 2, [0, 2, 0, 4, 0, -2], "EPSG:32611");
+  const bytes = src.toBytes("src.tif");
+  const target = terrio.rasterFromArray(new Float32Array([1, 0, 0, 0]), 2, 2, gt, "EPSG:4326");
+  const ops = {
+    warp: (nodata) => terrio.warp(src, { dstNodata: nodata }),
+    warpList: (nodata) => terrio.warp(src, { dstNodata: [nodata] }),
+    translate: (nodata) => terrio.translate(src, { aNodata: nodata }),
+    rasterize: (nodata) => terrio.rasterize(SQUARES, { burn: 7, tr: [1, 1], te: [0, 0, 30, 10], ot: "Float32", nodata }),
+    calc: (nodata) => terrio.calc("A", { A: src }, { type: "Float32", nodata }),
+    // Proximity writes nodata beyond maxdist without declaring it: read it from that pixel.
+    proximity: (nodata) => ({ nodata: terrio.proximity(target, { nodata, maxdist: 1 }).readBand(1)[3] }),
+    mosaic: (nodata) => terrio.mosaic([src], { dstNodata: nodata }),
+    createRaster: (nodata) => terrio.createRaster(null, { size: [2, 2], ot: "Float32", crs: "EPSG:4326", bbox: [0, 0, 2, 2], nodata }),
+    editRaster: (nodata) => terrio.open(terrio.editRaster(bytes, { nodata }), "edited.tif"),
+    openCatalog: (nodata) => terrio.openCatalog(index, { a: src }, { tr: [1, 1], te: [0, 0, 2, 2], nodata }),
+    pansharpen: (nodata) => terrio.pansharpen(pan, spectral, { ot: "Float32", nodata }),
+  };
+  const same = (a, b) => Object.is(a, b) || (Number.isNaN(a) && Number.isNaN(b));
+  for (const [name, op] of Object.entries(ops)) {
+    for (const [nodata, expected] of [[NaN, NaN], ["nan", NaN], [Infinity, Infinity], ["inf", Infinity], [-Infinity, -Infinity], ["-INF", -Infinity]]) {
+      if (name === "pansharpen") {
+        // The value reaches pansharpening, which refuses it instead of reading it as unset.
+        assert.throws(() => op(nodata), /must be finite/, `${name} ${String(nodata)}`);
+        continue;
+      }
+      const out = op(nodata);
+      assert.ok(same(out.nodata, expected), `${name} ${String(nodata)}: ${out.nodata}`);
+    }
+    assert.throws(() => op("abc"), /nodata|number|variant/, name);
+  }
+  // Uncovered pixels take the NaN nodata.
+  assert.ok(Number.isNaN(ops.rasterize(NaN).readBand(1)[15]));
+  // A non-finite value of a field that is not nodata is refused, not read as unset.
+  assert.throws(() => terrio.proximity(src, { maxdist: NaN }), /invalid type/);
+  assert.throws(() => terrio.translate(src, { tr: [Infinity, 1] }), /invalid type/);
+});
+
 test("contour exposes band selection, elevation fields and 3D vertices", () => {
   const source=terrio.rasterFromArray(new Float32Array([0,10,0,10,0,20,0,20]),2,2,[0,1,0,2,0,-1],"EPSG:4326");
   const result=terrio.contour(source,{band:2,levels:[10],withZ:true,fieldName:"height",layerName:"lines"}).toGeoJSON();
@@ -4901,10 +4944,8 @@ test("contour exposes band selection, elevation fields and 3D vertices", () => {
   assert.deepEqual([Math.min(...line.geometry.coordinates.map(p=>p[1])),Math.max(...line.geometry.coordinates.map(p=>p[1]))],[0,2]);
   assert.throws(()=>terrio.contour(source,{}),/interval or/);
   assert.throws(()=>terrio.contour(source,{interval:10,nodata:-9999,ignoreNodata:true}),/cannot be used together/);
-  for (const nodata of [NaN,Infinity,-Infinity,null]) {
-    assert.throws(()=>terrio.contour(source,{levels:[10],nodata}),/non-finite number/);
-  }
-  for (const nodata of ["nan","inf","-inf"]) {
+  assert.throws(()=>terrio.contour(source,{levels:[10],nodata:null}),/cannot be null/);
+  for (const nodata of ["nan","inf","-inf",NaN,Infinity,-Infinity]) {
     assert.equal(terrio.contour(source,{levels:[10],nodata}).toGeoJSON().features.length,1);
     assert.throws(()=>terrio.contour(source,{levels:[10],nodata,ignoreNodata:true}),/cannot be used together/);
   }

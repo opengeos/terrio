@@ -23,8 +23,10 @@ struct CreateArgs {
     ot: Option<String>,
     crs: Option<String>,
     bbox: Option<[f64; 4]>,
+    #[serde(deserialize_with = "crate::pixel::nodata_field::option")]
     nodata: Option<f64>,
     unset_nodata: bool,
+    #[serde(deserialize_with = "crate::pixel::nodata_field::list")]
     burn: Vec<f64>,
     metadata: std::collections::BTreeMap<String, String>,
     copy_metadata: bool,
@@ -173,6 +175,7 @@ struct EditArgs {
     geotransform: Option<[f64; 6]>,
     bbox: Option<[f64; 4]>,
     gcps: Vec<[f64; 5]>,
+    #[serde(deserialize_with = "crate::pixel::nodata_field::option")]
     nodata: Option<f64>,
     unset_nodata: bool,
     metadata: std::collections::BTreeMap<String, String>,

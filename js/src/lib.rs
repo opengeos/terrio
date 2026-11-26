@@ -129,12 +129,26 @@ fn crs_string(crs: &SpatialRef) -> Option<String> {
     crs.authority_code().or_else(|| crs.to_wkt())
 }
 
-/// Parses an options object (`undefined` or `null` for the defaults).
+#[wasm_bindgen(inline_js = "export function stringifyOptions(value) {
+  return JSON.stringify(value, (_, v) =>
+    typeof v === 'number' && !Number.isFinite(v) ? (Number.isNaN(v) ? 'nan' : v > 0 ? 'inf' : '-inf') : v);
+}")]
+extern "C" {
+    /// `JSON.stringify` with non-finite numbers written as the strings `"nan"`, `"inf"` and
+    /// `"-inf"`, which JSON cannot hold and `JSON.stringify` would turn into `null`.
+    #[wasm_bindgen(catch, js_name = stringifyOptions)]
+    fn stringify_options(value: &JsValue) -> Result<JsValue, JsValue>;
+}
+
+/// Parses an options object (`undefined` or `null` for the defaults). Non-finite numbers
+/// (`NaN`, `Infinity`, `-Infinity`) reach the options as the strings `"nan"`, `"inf"` and
+/// `"-inf"`: a field taking a nodata value accepts them (see [`pixel::NodataValue`]), any other
+/// numeric field refuses them rather than reading them as unset.
 pub(crate) fn parse_options<T: serde::de::DeserializeOwned + Default>(options: &JsValue) -> Result<T, JsError> {
     if options.is_undefined() || options.is_null() {
         return Ok(T::default());
     }
-    let text: String = js_sys::JSON::stringify(options).map_err(|_| JsError::new("invalid options"))?.into();
+    let text = stringify_options(options).ok().and_then(|v| v.as_string()).ok_or_else(|| JsError::new("invalid options"))?;
     serde_json::from_str(&text).map_err(|e| JsError::new(&format!("options: {e}")))
 }
 

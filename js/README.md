@@ -340,6 +340,20 @@ mosaics preserve their stored pyramids. The output grid is planned at full
 resolution before source levels are selected. `toBytes` also accepts `overviews`
 (decimation factors) and `overviewResampling` when writing GeoTIFF pyramids.
 
+### Non-finite nodata values
+
+Nodata options (`warp` and `mosaic` `srcNodata`/`dstNodata`, `translate` `aNodata`,
+`rasterize`, `calc`, `proximity`, `createRaster`, `editRaster`, `openCatalog`, `pansharpen`,
+`vectorGrid`, `xyz`, `nodataToAlpha`, `contour` and the others) keep `NaN`, `Infinity` and
+`-Infinity`, given as numbers or as the strings `"nan"`, `"inf"` and `"-inf"`:
+
+```js
+const nanFilled = warp(dataset, { dstNodata: NaN });   // the same as { dstNodata: "nan" }
+```
+
+A non-finite value of any other numeric option is refused rather than read as unset.
+An operation whose engine needs a finite value (`pansharpen`) reports so.
+
 ### Fill nodata
 
 ```js
@@ -425,8 +439,8 @@ const groups = terrio.dissolve(buffered, {fields: ["region"]});
 
 Results are vector `Dataset` objects. Raster inputs accept uploaded bytes or
 shared datasets; contour/footprint hold full input pixels in memory. Contour
-also supports `band`, `levels`, `offset`, `nodata`, `ignoreNodata` and `layerName`. Nonfinite nodata overrides use strings `"nan"`,
-`"inf"` or `"-inf"`; raw nonfinite numbers and null are rejected.
+also supports `band`, `levels`, `offset`, `nodata`, `ignoreNodata` and `layerName`. Nonfinite nodata overrides are `NaN`, `Infinity`, `-Infinity` or the strings
+`"nan"`, `"inf"` or `"-inf"`; null is rejected.
 Footprint supports `intersection`, a same-grid `mask` dataset/upload and explicit
 text `attributes`; no source-path field is added automatically.
 

@@ -41,14 +41,16 @@ impl Default for ContourOptions {
 /// The source raster and generated lines are held in memory.
 #[wasm_bindgen]
 pub fn contour(src: &JsValue, options: JsValue) -> Result<Dataset, JsError> {
-    // JSON.stringify otherwise turns explicit NaN/Infinity overrides into None.
+    // An explicit null nodata or interval is refused rather than read as unset. Non-finite
+    // nodata (NaN, Infinity or 'nan', 'inf', '-inf') is kept; a non-finite interval is refused.
     if options.is_object() {
         for name in ["nodata", "interval"] {
             let raw = js_sys::Reflect::get(&options, &JsValue::from_str(name)).map_err(|_| JsError::new("invalid contour option"))?;
-            if raw.is_null() || raw.as_f64().is_some_and(|value| !value.is_finite()) {
-                return Err(JsError::new(
-                    "interval/nodata cannot be null or a non-finite number; use strings 'nan', 'inf' or '-inf' for nodata",
-                ));
+            if raw.is_null() {
+                return Err(JsError::new(&format!("{name} cannot be null")));
+            }
+            if name == "interval" && raw.as_f64().is_some_and(|value| !value.is_finite()) {
+                return Err(JsError::new("interval cannot be a non-finite number"));
             }
         }
     }
