@@ -1301,7 +1301,7 @@ impl LazyRaster {
     /// else one block in every `nSampleRate`. Only that metadata, that overview or those blocks
     /// are read: a large raster is never in memory whole. Valid pixels are those that are not
     /// nodata or NaN and, where GDAL reads the band's `GetMaskBand()` (a per-dataset mask of the
-    /// level read, on a band without nodata or a Float32 band), those the mask marks valid. `band`
+    /// level read; see `gdal_min_max_reads_mask` for which bands), those the mask marks valid. `band`
     /// is numbered from 1, over components, two per complex band, as in `band_count()`. `None`
     /// when the band has no valid pixel. Reference: GDAL 3.13.3; the mask fixtures were compared
     /// with GDAL 3.12.1, whose mask rule matches the 3.13.3 source.
@@ -1336,7 +1336,9 @@ impl LazyRaster {
             (Some((lo, hi)), Some((lo2, hi2))) => Some((lo.min(lo2), hi.max(hi2))),
             (a, b) => a.or(b),
         };
-        let reads_mask = |nodata: Option<f64>| gdal_min_max_reads_mask(nodata, t);
+        // GDAL picks the mask rule from the band's own type, which a source may declare per band.
+        let band_type = self.band_data_type(band);
+        let reads_mask = |nodata: Option<f64>| gdal_min_max_reads_mask(nodata, band_type);
         let masked_min_max = |values: Vec<f64>, mask: Option<Vec<u8>>, nodata: Option<f64>| -> Result<Option<(f64, f64)>> {
             Ok(match mask {
                 Some(mask) if mask.len() != values.len() => {
@@ -2015,10 +2017,14 @@ impl LazyRaster {
 /// double nodata. That is a band without nodata, one whose nodata is NaN, or a Float32 (or
 /// Float16) band whose nodata is within the float range, infinities included, which
 /// `ComputeFloatNoDataValue` moves to the float nodata; such a band is then filtered by both
-/// nodata and mask. Reference: GDAL 3.13.3 `gcore/gdalrasterband.cpp` (source); the GDAL 3.12.1
-/// runs behind the unit test are recorded in `tests/data/approx_min_max_mask.provenance.md`.
+/// nodata and mask. A nodata within `1e-10 * f32::MAX` of `±f32::MAX` counts as `±f32::MAX`
+/// (`GDALAdjustNoDataCloseToFloatMax`). `t` is the band's own type. Reference: GDAL 3.13.3
+/// `gcore/gdalrasterband.cpp` and `gcore/gdal_misc.cpp` (source); the GDAL 3.12.1 runs behind
+/// the unit test are recorded in `tests/data/approx_min_max_mask.provenance.md`.
 fn gdal_min_max_reads_mask(nodata: Option<f64>, t: DataType) -> bool {
-    nodata.is_none_or(|v| v.is_nan() || (t == DataType::F32 && (v.is_infinite() || v.abs() <= f32::MAX as f64)))
+    let max = f32::MAX as f64;
+    let fits_float = |v: f64| v.is_infinite() || v.abs() <= max || (v.abs() - max).abs() < 1e-10 * max;
+    nodata.is_none_or(|v| v.is_nan() || (t == DataType::F32 && fits_float(v)))
 }
 
 impl LazyRaster {
@@ -4700,8 +4706,8 @@ mod tests {
     }
 
     /// The mask rule for nodata, unit-level: a Float32 band with nodata -inf, +inf or NaN reads the
-    /// mask, one with nodata 1e39 outside the float range does not, nor does a Float64 band with
-    /// nodata. The Float32 cases are the GDAL 3.12.1 run in the third script of
+    /// mask, one with nodata 1e39 outside the float range does not (nor 1e-9 above `f32::MAX`,
+    /// while 5e-11 above it does), nor does a Float64 band with nodata. The Float32 cases are the GDAL 3.12.1 run in the third script of
     /// `tests/data/approx_min_max_mask.provenance.md` ((50, 50) when the mask is read, (50, 1000)
     /// when not); the Float64 case is the `approx_min_max_mask_nodata_f64` fixture.
     #[test]
@@ -4710,6 +4716,11 @@ mod tests {
             assert!(gdal_min_max_reads_mask(Some(v), DataType::F32), "{v}");
         }
         assert!(!gdal_min_max_reads_mask(Some(1e39), DataType::F32));
+        // Within 1e-10 * f32::MAX of the float maximum, GDAL clamps the nodata into the range.
+        let max = f32::MAX as f64;
+        assert!(gdal_min_max_reads_mask(Some(max * (1.0 + 5e-11)), DataType::F32));
+        assert!(gdal_min_max_reads_mask(Some(-max * (1.0 + 5e-11)), DataType::F32));
+        assert!(!gdal_min_max_reads_mask(Some(max * (1.0 + 1e-9)), DataType::F32));
         assert!(gdal_min_max_reads_mask(None, DataType::F64));
         assert!(gdal_min_max_reads_mask(Some(f64::NAN), DataType::F64));
         assert!(!gdal_min_max_reads_mask(Some(-5.0), DataType::F64));
