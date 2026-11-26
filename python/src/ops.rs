@@ -930,18 +930,16 @@ fn rasterize(
     };
     let write =
         dst.map(|_| crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)).transpose()?;
-    let out = py
-        .detach_result(|| -> terrio::Result<RasterDataset> {
-            let out = match &background {
-                Some(raster) => terrio::ops::rasterize::rasterize_on(raster, &to_burn, &options)?,
-                None => terrio::ops::rasterize::rasterize(&to_burn, &options)?,
-            };
-            if let (Some(path), Some(o)) = (dst, &write) {
-                terrio::write_raster_dataset(&out, path, o)?;
-            }
-            Ok(out)
-        })
-        .py()?;
+    let out = crate::with_warnings(py, || -> terrio::Result<RasterDataset> {
+        let out = match &background {
+            Some(raster) => terrio::ops::rasterize::rasterize_on(raster, &to_burn, &options)?,
+            None => terrio::ops::rasterize::rasterize(&to_burn, &options)?,
+        };
+        if let (Some(path), Some(o)) = (dst, &write) {
+            terrio::write_raster_dataset(&out, path, o)?;
+        }
+        Ok(out)
+    })?;
     Ok(PyRaster::from_dataset(out))
 }
 
