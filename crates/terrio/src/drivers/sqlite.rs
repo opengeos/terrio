@@ -449,8 +449,12 @@ impl Db {
     /// walked first, then the leaf pages are decoded in parallel.
     fn scan(&self, root: u32, out: &mut Vec<(i64, Vec<u8>)>, depth: usize) -> Result<()> {
         let mut leaves = Vec::new();
-        let failure = self.leaves(root, &mut leaves, &mut PageSet::new(self.pages() as u64), depth).err();
-        let rows = crate::par::map_range(leaves.len(), |i| self.leaf_rows(leaves[i]));
+        let mut visited = PageSet::new(self.pages() as u64);
+        let failure = self.leaves(root, &mut leaves, &mut visited, depth).err();
+        let visited = std::sync::Mutex::new(visited);
+        let rows = crate::par::map_range(leaves.len(), |i| {
+            self.leaf_rows_with(leaves[i], |p| visited.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(p))
+        });
         // The first error in page order, as a sequential scan would meet it.
         for r in rows {
             out.extend(r?);
@@ -556,18 +560,23 @@ impl Db {
 
     /// The rows of a leaf page, as `(rowid, payload)`.
     fn leaf_rows(&self, n: u32) -> Result<Vec<(i64, Vec<u8>)>> {
+        let mut seen_overflow = std::collections::HashSet::new();
+        self.leaf_rows_with(n, |p| {
+            if p == n || !seen_overflow.insert(p) {
+                return Err(bad("overflow page reached twice"));
+            }
+            Ok(())
+        })
+    }
+
+    /// The rows of leaf page `n`, checking each visited overflow page with `visit_overflow`.
+    fn leaf_rows_with(&self, n: u32, mut visit_overflow: impl FnMut(u32) -> Result<()>) -> Result<Vec<(i64, Vec<u8>)>> {
         let page = self.page(n)?;
         let cells = table_leaf_cells(page, n, self.usable)?;
         let mut out = Vec::with_capacity(cells.len());
-        let mut seen_overflow = std::collections::HashSet::new();
         let x = self.usable - 35;
         for cell in cells {
-            let payload = self.payload_within_checked(page, cell.payload_start, cell.payload_size, x, |p| {
-                if p == n || !seen_overflow.insert(p) {
-                    return Err(bad("overflow page reached twice"));
-                }
-                Ok(())
-            })?;
+            let payload = self.payload_within_checked(page, cell.payload_start, cell.payload_size, x, &mut visit_overflow)?;
             out.push((cell.rowid, payload));
         }
         Ok(out)
@@ -625,7 +634,7 @@ impl Db {
             let take = (size - out.len()).min(u - 4);
             out.extend_from_slice(&p[4..4 + take]);
         }
-        if out.len() < size {
+        if out.len() < size || next != 0 {
             return Err(bad("payload"));
         }
         Ok(out)
@@ -744,14 +753,12 @@ impl Db {
         for _ in 0..64 {
             let page = self.page(n)?;
             let h = if n == 1 { 100 } else { 0 };
-            let kind = page[h];
-            let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
-            let header_len = if kind == 0x05 { 12 } else { 8 };
-            let cell = |c: usize| cell_pointer(page, h + header_len + 2 * c);
-            match kind {
+            match page[h] {
                 // Interior: (left child, key) cells by increasing key; a child holds the rowids up to
                 // its key, the right-most pointer the larger ones.
                 0x05 => {
+                    let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
+                    let cell = |c: usize| cell_pointer(page, h + 12 + 2 * c);
                     let (mut lo, mut hi) = (0, cells);
                     while lo < hi {
                         let mid = (lo + hi) / 2;
@@ -767,22 +774,10 @@ impl Db {
                     };
                 }
                 0x0d => {
-                    let (mut lo, mut hi) = (0, cells);
-                    while lo < hi {
-                        let mid = (lo + hi) / 2;
-                        let off = cell(mid)?;
-                        let (_, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
-                        let (key, _) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
-                        match key.cmp(&rowid) {
-                            std::cmp::Ordering::Less => lo = mid + 1,
-                            std::cmp::Ordering::Greater => hi = mid,
-                            std::cmp::Ordering::Equal => {
-                                let (size, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
-                                let (_, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
-                                let size = usize::try_from(size).map_err(|_| bad("cell"))?;
-                                return self.payload(n, page, off + n1 + n2, size).map(Some);
-                            }
-                        }
+                    let cells = table_leaf_cells(page, n, self.usable)?;
+                    if let Ok(i) = cells.binary_search_by_key(&rowid, |c| c.rowid) {
+                        let cell = &cells[i];
+                        return self.payload(n, page, cell.payload_start, cell.payload_size).map(Some);
                     }
                     return Ok(None);
                 }
@@ -1532,6 +1527,64 @@ pub(crate) mod fixtures {
         b[start2 + 92..start2 + 96].copy_from_slice(&2u32.to_be_bytes());
         b
     }
+
+    /// A 2-page database whose page-1 leaf cell needs exactly 1 overflow page (page 2), but
+    /// page 2's next-overflow pointer loops back to itself (`2 -> 2`) instead of ending with 0.
+    pub(crate) fn cyclic_overflow_single_page() -> Vec<u8> {
+        let mut b = database(2);
+        b[100] = 0x0d;
+        b[103..105].copy_from_slice(&1u16.to_be_bytes());
+        b[108..110].copy_from_slice(&200u16.to_be_bytes());
+        let start = write_leaf_cell(&mut b, 1, 200, 1, 92 + 508);
+        b[start + 92..start + 96].copy_from_slice(&2u32.to_be_bytes());
+        b[512..516].copy_from_slice(&2u32.to_be_bytes());
+        b
+    }
+
+    /// A 4-page database with interior page 1 pointing to two distinct leaves (pages 2 and 3)
+    /// whose cells both reference the same overflow page 4.
+    pub(crate) fn shared_overflow_leaves() -> Vec<u8> {
+        let mut b = database(4);
+        b[100] = 0x05;
+        b[103..105].copy_from_slice(&1u16.to_be_bytes());
+        b[108..112].copy_from_slice(&3u32.to_be_bytes());
+        b[112..114].copy_from_slice(&400u16.to_be_bytes());
+        b[400..404].copy_from_slice(&2u32.to_be_bytes());
+        b[404] = 1;
+        for (page, rowid) in [(2usize, 1u64), (3usize, 2u64)] {
+            let p = (page - 1) * 512;
+            b[p] = 0x0d;
+            b[p + 3..p + 5].copy_from_slice(&1u16.to_be_bytes());
+            b[p + 8..p + 10].copy_from_slice(&200u16.to_be_bytes());
+            let start = write_leaf_cell(&mut b, page, 200, rowid, 92 + 508);
+            b[start + 92..start + 96].copy_from_slice(&4u32.to_be_bytes());
+        }
+        b
+    }
+
+    /// A 5-page database with interior page 1 pointing to two distinct leaves (pages 2 and 3)
+    /// whose cells reference disjoint overflow pages (4 and 5) with valid 1-column BLOB records.
+    pub(crate) fn disjoint_overflow_leaves() -> Vec<u8> {
+        let mut b = database(5);
+        b[100] = 0x05;
+        b[103..105].copy_from_slice(&1u16.to_be_bytes());
+        b[108..112].copy_from_slice(&3u32.to_be_bytes());
+        b[112..114].copy_from_slice(&400u16.to_be_bytes());
+        b[400..404].copy_from_slice(&2u32.to_be_bytes());
+        b[404] = 1;
+        for (page, rowid, overflow) in [(2usize, 1u64, 4u32), (3usize, 2u64, 5u32)] {
+            let p = (page - 1) * 512;
+            b[p] = 0x0d;
+            b[p + 3..p + 5].copy_from_slice(&1u16.to_be_bytes());
+            b[p + 8..p + 10].copy_from_slice(&200u16.to_be_bytes());
+            let start = write_leaf_cell(&mut b, page, 200, rowid, 92 + 508);
+            // 3-byte record header + 597-byte BLOB (serial type 12 + 2*597 = 1206 -> [0x89, 0x36]).
+            b[start..start + 3].copy_from_slice(&[3, 0x89, 0x36]);
+            b[start + 3] = rowid as u8;
+            b[start + 92..start + 96].copy_from_slice(&overflow.to_be_bytes());
+        }
+        b
+    }
 }
 
 #[cfg(test)]
@@ -1700,10 +1753,11 @@ mod tests {
     /// the declared payload size fits within the file's page count.
     #[test]
     fn cyclic_overflow_chains_are_errors() {
-        for bytes in [fixtures::cyclic_overflow_self(), fixtures::cyclic_overflow_pair()] {
+        for bytes in [fixtures::cyclic_overflow_self(), fixtures::cyclic_overflow_pair(), fixtures::cyclic_overflow_single_page()] {
             let db = Db::new(bytes).unwrap();
             assert!(db.leaf_rows(1).is_err());
             assert!(db.lookup(1, 1).is_err());
+            assert!(db.rows(1).is_err());
             let mut visit = |_, _, _: &[u8]| Ok(true);
             let mut scan = TableScan { skip: 0, remaining: None, ordinal: 0, visited: PageSet::new(db.pages() as u64), visit: &mut visit };
             assert!(db.walk_table(1, &mut scan, 0).is_err());
@@ -1721,12 +1775,38 @@ mod tests {
         assert!(db.leaf_rows(2).is_err());
         assert!(db.lookup(2, 1).is_err());
 
-        // Two disjoint cells on the same leaf pointing to the same overflow page.
-        let db = Db::new(fixtures::shared_overflow_cells()).unwrap();
-        assert!(db.leaf_rows(1).is_err());
-        let mut visit = |_, _, _: &[u8]| Ok(true);
+        // Two disjoint cells on the same leaf pointing to the same overflow page, and two
+        // distinct leaves sharing an overflow page across parallel Db::scan decoding.
+        for bytes in [fixtures::shared_overflow_cells(), fixtures::shared_overflow_leaves()] {
+            let db = Db::new(bytes).unwrap();
+            assert!(db.rows(1).is_err());
+            let mut visit = |_, _, _: &[u8]| Ok(true);
+            let mut scan = TableScan { skip: 0, remaining: None, ordinal: 0, visited: PageSet::new(db.pages() as u64), visit: &mut visit };
+            assert!(db.walk_table(1, &mut scan, 0).is_err());
+            assert!(db.scan_columns(1, &[0], &mut |_, _| {}).is_err());
+        }
+
+        // Two distinct leaves with disjoint overflow chains must succeed across full scan,
+        // streamed table walk, column projection, and key lookup.
+        let db = Db::new(fixtures::disjoint_overflow_leaves()).unwrap();
+        let rows = db.rows(1).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(matches!(&rows[0], (1, vals) if matches!(vals.as_slice(), [Value::Blob(b)] if b.len() == 597 && b[0] == 1)));
+        assert!(matches!(&rows[1], (2, vals) if matches!(vals.as_slice(), [Value::Blob(b)] if b.len() == 597 && b[0] == 2)));
+        let mut seen = Vec::new();
+        let mut visit = |_, rowid, payload: &[u8]| {
+            seen.push((rowid, payload[3]));
+            Ok(true)
+        };
         let mut scan = TableScan { skip: 0, remaining: None, ordinal: 0, visited: PageSet::new(db.pages() as u64), visit: &mut visit };
-        assert!(db.walk_table(1, &mut scan, 0).is_err());
+        db.walk_table(1, &mut scan, 0).unwrap();
+        assert_eq!(seen, vec![(1, 1), (2, 2)]);
+        let mut col_rowids = Vec::new();
+        db.scan_columns(1, &[0], &mut |rowid, vals| col_rowids.push((rowid, vals.len()))).unwrap();
+        assert_eq!(col_rowids, vec![(1, 1), (2, 1)]);
+        assert_eq!(db.lookup(1, 1).unwrap().unwrap()[3], 1);
+        assert_eq!(db.lookup(1, 2).unwrap().unwrap()[3], 2);
+        assert!(db.lookup(1, 3).unwrap().is_none());
     }
 
     /// Leaf cell pointers that alias, overlap another cell's on-page bytes, or overlap the page
@@ -1737,6 +1817,7 @@ mod tests {
         for bytes in [fixtures::aliased_leaf_cells(), fixtures::overlapping_leaf_cells()] {
             let db = Db::new(bytes).unwrap();
             assert!(db.leaf_rows(1).is_err());
+            assert!(db.lookup(1, 1).is_err());
             let mut visit = |_, _, _: &[u8]| Ok(true);
             let mut scan = TableScan { skip: 0, remaining: None, ordinal: 0, visited: PageSet::new(db.pages() as u64), visit: &mut visit };
             assert!(db.walk_table(1, &mut scan, 0).is_err());
@@ -1748,7 +1829,9 @@ mod tests {
         b[100] = 0x0d;
         b[103..105].copy_from_slice(&1u16.to_be_bytes());
         b[108..110].copy_from_slice(&104u16.to_be_bytes());
-        assert!(Db::new(b).unwrap().leaf_rows(1).is_err());
+        let db = Db::new(b).unwrap();
+        assert!(db.leaf_rows(1).is_err());
+        assert!(db.lookup(1, 1).is_err());
 
         // Two adjacent non-overlapping cells stored in reverse physical offset order still read in
         // cell-pointer order.

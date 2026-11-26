@@ -111,7 +111,7 @@ impl FileDb {
             let take = (size - out.len()).min(u - 4);
             out.extend_from_slice(&p[4..4 + take]);
         }
-        if out.len() < size {
+        if out.len() < size || next != 0 {
             return Err(bad("payload"));
         }
         Ok(out)
@@ -225,12 +225,10 @@ impl Tables for FileDb {
         for _ in 0..64 {
             let page = self.page(n)?;
             let h = if n == 1 { 100 } else { 0 };
-            let kind = page[h];
-            let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
-            let header_len = if kind == 0x05 { 12 } else { 8 };
-            let cell = |c: usize| cell_pointer(&page, h + header_len + 2 * c);
-            match kind {
+            match page[h] {
                 0x05 => {
+                    let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
+                    let cell = |c: usize| cell_pointer(&page, h + 12 + 2 * c);
                     let (mut lo, mut hi) = (0, cells);
                     while lo < hi {
                         let mid = (lo + hi) / 2;
@@ -245,20 +243,10 @@ impl Tables for FileDb {
                     };
                 }
                 0x0d => {
-                    let (mut lo, mut hi) = (0, cells);
-                    while lo < hi {
-                        let mid = (lo + hi) / 2;
-                        let off = cell(mid)?;
-                        let (size, n1) = varint(&page, off).ok_or_else(|| bad("cell"))?;
-                        let (key, n2) = varint(&page, off + n1).ok_or_else(|| bad("cell"))?;
-                        match key.cmp(&rowid) {
-                            std::cmp::Ordering::Less => lo = mid + 1,
-                            std::cmp::Ordering::Greater => hi = mid,
-                            std::cmp::Ordering::Equal => {
-                                let size = usize::try_from(size).map_err(|_| bad("cell"))?;
-                                return self.payload(n, &page, off + n1 + n2, size).map(Some);
-                            }
-                        }
+                    let cells = sqlite::table_leaf_cells(&page, n, self.usable)?;
+                    if let Ok(i) = cells.binary_search_by_key(&rowid, |c| c.rowid) {
+                        let cell = &cells[i];
+                        return self.payload(n, &page, cell.payload_start, cell.payload_size).map(Some);
                     }
                     return Ok(None);
                 }
@@ -305,6 +293,7 @@ mod tests {
         for (name, bytes) in [
             ("self.gpkg", fixtures::cyclic_overflow_self()),
             ("pair.gpkg", fixtures::cyclic_overflow_pair()),
+            ("single.gpkg", fixtures::cyclic_overflow_single_page()),
             ("shared.gpkg", fixtures::shared_overflow_cells()),
         ] {
             let path = dir.path().join(name);
@@ -312,7 +301,32 @@ mod tests {
             let db = open_raw_without_schema(&path);
             let mut cursor = db.cursor(1);
             assert!(cursor.next_leaf(&db).is_err(), "{name}: cursor should reject cyclic/shared overflow");
+            if name != "shared.gpkg" {
+                assert!(db.lookup(1, 1).is_err(), "{name}: lookup should reject cyclic overflow");
+            }
         }
+
+        // Cross-leaf shared overflow page across cursor leaf steps.
+        let shared_leaves_path = dir.path().join("shared_leaves.gpkg");
+        std::fs::write(&shared_leaves_path, fixtures::shared_overflow_leaves()).unwrap();
+        let db = open_raw_without_schema(&shared_leaves_path);
+        let mut cursor = db.cursor(1);
+        assert!(cursor.next_leaf(&db).unwrap().is_some());
+        assert!(cursor.next_leaf(&db).is_err());
+
+        // Cross-leaf disjoint overflow chains succeed across cursor leaf steps and lookup.
+        let disjoint_leaves_path = dir.path().join("disjoint_leaves.gpkg");
+        std::fs::write(&disjoint_leaves_path, fixtures::disjoint_overflow_leaves()).unwrap();
+        let db = open_raw_without_schema(&disjoint_leaves_path);
+        let mut cursor = db.cursor(1);
+        let leaf1 = cursor.next_leaf(&db).unwrap().unwrap();
+        let leaf2 = cursor.next_leaf(&db).unwrap().unwrap();
+        assert!(cursor.next_leaf(&db).unwrap().is_none());
+        assert_eq!((leaf1.len(), leaf1[0].0, leaf1[0].1[3]), (1, 1, 1));
+        assert_eq!((leaf2.len(), leaf2[0].0, leaf2[0].1[3]), (1, 2, 2));
+        assert_eq!(db.lookup(1, 1).unwrap().unwrap()[3], 1);
+        assert_eq!(db.lookup(1, 2).unwrap().unwrap()[3], 2);
+        assert!(db.lookup(1, 3).unwrap().is_none());
 
         // Also test FileDb::lookup directly on a valid empty-schema DB with a cyclic overflow
         // leaf on page 2 (`3 -> 3`).
@@ -340,7 +354,18 @@ mod tests {
             let db = open_raw_without_schema(&path);
             let mut cursor = db.cursor(1);
             assert!(cursor.next_leaf(&db).is_err(), "{name}: cursor should reject aliased/overlapping cells");
+            assert!(db.lookup(1, 1).is_err(), "{name}: lookup should reject aliased/overlapping cells");
         }
+
+        // Cell pointer falling inside the page header / cell pointer array (`104 < 110`).
+        let mut b = fixtures::database(2);
+        b[100] = 0x0d;
+        b[103..105].copy_from_slice(&1u16.to_be_bytes());
+        b[108..110].copy_from_slice(&104u16.to_be_bytes());
+        let header_path = dir.path().join("header_overlap.gpkg");
+        std::fs::write(&header_path, b).unwrap();
+        let db = open_raw_without_schema(&header_path);
+        assert!(db.lookup(1, 1).is_err());
     }
 
     /// Opens a synthetic 512-byte-page `FileDb` without decoding `sqlite_master` records, so tests
