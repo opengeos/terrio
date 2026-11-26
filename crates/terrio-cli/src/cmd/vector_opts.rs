@@ -17,7 +17,7 @@ pub struct VectorArgs {
     #[arg(long = "where", value_name = "EXPR", help_heading = "Vector options")]
     where_clause: Option<String>,
     /// Keep the features intersecting this rectangle.
-    #[arg(long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true, help_heading = "Vector options")]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true, help_heading = "Vector options")]
     spat: Option<Vec<f64>>,
     /// The CRS of the --spat rectangle. By default, that of the layer.
     #[arg(long = "spat-srs", value_name = "CRS", help_heading = "Vector options")]

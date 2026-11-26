@@ -12,10 +12,10 @@ use terrio::pointcloud::{self, ConvertOptions, PlyEncoding, PointFilter, PointFo
 #[derive(clap::Args)]
 pub struct PointArgs {
     /// Keep the points in these bounds, in the input's CRS.
-    #[arg(long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true, help_heading = "Point cloud options")]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true, help_heading = "Point cloud options")]
     bounds: Option<Vec<f64>>,
     /// Keep the points with z in this range.
-    #[arg(long = "z-range", num_args = 2, value_names = ["MIN", "MAX"], allow_negative_numbers = true, help_heading = "Point cloud options")]
+    #[arg(action = clap::ArgAction::Set, long = "z-range", num_args = 2, value_names = ["MIN", "MAX"], allow_negative_numbers = true, help_heading = "Point cloud options")]
     z_range: Option<Vec<f64>>,
     /// Keep the points of these classifications (comma-separated, such as 2,6).
     #[arg(long = "class", value_name = "CLASSES", value_delimiter = ',', help_heading = "Point cloud options")]
@@ -63,10 +63,10 @@ pub struct PointWriteArgs {
     #[arg(long = "las-version", value_name = "1.N", help_heading = "Point cloud options")]
     las_version: Option<String>,
     /// The scale of the stored X, Y and Z.
-    #[arg(long, num_args = 3, value_names = ["X", "Y", "Z"], help_heading = "Point cloud options")]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 3, value_names = ["X", "Y", "Z"], help_heading = "Point cloud options")]
     scale: Option<Vec<f64>>,
     /// The offset of the stored X, Y and Z.
-    #[arg(long, num_args = 3, value_names = ["X", "Y", "Z"], allow_negative_numbers = true, help_heading = "Point cloud options")]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 3, value_names = ["X", "Y", "Z"], allow_negative_numbers = true, help_heading = "Point cloud options")]
     offset: Option<Vec<f64>>,
     /// For vector, PLY and E57 outputs, the dimensions written (comma-separated). All by default.
     #[arg(long, value_name = "DIMS", value_delimiter = ',', help_heading = "Point cloud options")]
@@ -85,7 +85,7 @@ pub struct PointWriteArgs {
     /// EPT outputs: build the octree's cube around these bounds rather than the points' (as
     /// Entwine's --bounds), so that points of other files within them can be appended later
     /// (--append).
-    #[arg(long = "ept-bounds", num_args = 6, value_names = ["XMIN", "YMIN", "ZMIN", "XMAX", "YMAX", "ZMAX"], allow_negative_numbers = true, help_heading = "Point cloud options")]
+    #[arg(action = clap::ArgAction::Set, long = "ept-bounds", num_args = 6, value_names = ["XMIN", "YMIN", "ZMIN", "XMAX", "YMAX", "ZMAX"], allow_negative_numbers = true, help_heading = "Point cloud options")]
     ept_bounds: Option<Vec<f64>>,
     /// The points read and written at a time: point clouds are converted in chunks, in bounded
     /// memory, whatever their size (about a million points by default).

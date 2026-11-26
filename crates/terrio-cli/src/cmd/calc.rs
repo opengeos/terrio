@@ -44,7 +44,7 @@ pub struct Args {
     #[arg(long, conflicts_with = "projwin")]
     extent: Option<String>,
     /// Compute over this window, aligned on the first input's pixels.
-    #[arg(long, num_args = 4, value_names = ["ULX", "ULY", "LRX", "LRY"], allow_negative_numbers = true)]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 4, value_names = ["ULX", "ULY", "LRX", "LRY"], allow_negative_numbers = true)]
     projwin: Option<Vec<f64>>,
     /// Process every band of this input, giving one output band each.
     #[arg(long = "allBands", alias = "all-bands", value_name = "NAME")]

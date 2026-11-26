@@ -40,16 +40,16 @@ pub struct Args {
     #[arg(long = "where", value_name = "EXPR")]
     where_clause: Option<String>,
     /// Only grid the points strictly inside this rectangle (gdal_grid's -clipsrc).
-    #[arg(long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true)]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true)]
     bbox: Option<Vec<f64>>,
     /// The extent of the grid. By default, that of the layer.
-    #[arg(long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true)]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true)]
     extent: Option<Vec<f64>>,
     /// The size in pixels (256 x 256 by default).
-    #[arg(long, num_args = 2, value_names = ["WIDTH", "HEIGHT"], conflicts_with = "resolution")]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 2, value_names = ["WIDTH", "HEIGHT"], conflicts_with = "resolution")]
     size: Option<Vec<usize>>,
     /// The pixel size, with --extent: (|max - min| + res / 2) / res pixels each way.
-    #[arg(long, num_args = 2, value_names = ["XRES", "YRES"], requires = "extent")]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 2, value_names = ["XRES", "YRES"], requires = "extent")]
     resolution: Option<Vec<f64>>,
     /// The output data type: Byte, Int8, UInt16, Int16, UInt32, Int32, UInt64, Int64, Float32
     /// or Float64 (the default).

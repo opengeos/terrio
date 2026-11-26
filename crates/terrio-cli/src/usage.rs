@@ -60,7 +60,7 @@ pub(crate) fn requested(args: &[OsString]) -> Option<Value> {
         return None;
     }
     Some(json!({
-        "schema_version": "0.1.15",
+        "schema_version": "0.1.16",
         "unstable": true,
         "program": "terrio",
         "version": env!("CARGO_PKG_VERSION"),
@@ -372,10 +372,13 @@ mod tests {
     fn repeatable_follows_clap_occurrence_rules() {
         let result = usage(&["terrio", "warp", "--json-usage"]).unwrap();
         let args = result["command"]["arguments"].as_array().unwrap();
-        // `--tr` is Append with two values per occurrence: clap keeps every occurrence.
-        assert_eq!(catalog_argument(args, "tr")["action"], "append");
+        // `--tr` takes two values in one occurrence (Set), so it is not repeatable.
+        assert_eq!(catalog_argument(args, "tr")["action"], "set");
         assert_eq!(catalog_argument(args, "tr")["num_args"], json!({"min":2,"max":2}));
-        assert_eq!(catalog_argument(args, "tr")["repeatable"], true);
+        assert_eq!(catalog_argument(args, "tr")["repeatable"], false);
+        // `--wo KEY=VALUE` is a genuinely repeatable Append option.
+        assert_eq!(catalog_argument(args, "warp_options")["action"], "append");
+        assert_eq!(catalog_argument(args, "warp_options")["repeatable"], true);
         // Positional `paths` (Vec<String>) also uses Append action in clap, indicating
         // that multiple trailing positional operands are accepted into the collection.
         assert_eq!(catalog_argument(args, "paths")["action"], "append");
@@ -387,26 +390,76 @@ mod tests {
         assert_eq!(catalog_argument(args, "tap")["repeatable"], false);
 
         // Verify that clap's parser rejects repeated Set/SetTrue options with an ArgumentConflict.
-        let parse_err = std::thread::Builder::new()
-            .stack_size(crate::STACK_SIZE)
-            .spawn(|| root().try_get_matches_from(["terrio", "warp", "a.tif", "b.tif", "--srcnodata", "0", "--srcnodata", "1"]))
-            .unwrap()
-            .join()
-            .unwrap()
-            .unwrap_err();
+        let parse_err = parse(&["terrio", "warp", "a.tif", "b.tif", "--srcnodata", "0", "--srcnodata", "1"]).unwrap_err();
         assert_eq!(parse_err.kind(), clap::error::ErrorKind::ArgumentConflict);
-        let appended = std::thread::Builder::new()
+        let appended = parse(&["terrio", "warp", "a.tif", "b.tif", "--wo", "A=1", "--wo", "B=2"]).unwrap();
+        let values: Vec<_> = appended.subcommand_matches("warp").unwrap().get_many::<String>("warp_options").unwrap().cloned().collect();
+        assert_eq!(values, ["A=1", "B=2"]);
+    }
+
+    /// Parses `args` with the root command on a thread with the CLI's standard stack size.
+    fn parse(args: &'static [&'static str]) -> Result<clap::ArgMatches, clap::Error> {
+        std::thread::Builder::new().stack_size(crate::STACK_SIZE).spawn(move || root().try_get_matches_from(args)).unwrap().join().unwrap()
+    }
+
+    /// A repeated single-occurrence multi-value option is rejected instead of concatenating
+    /// its occurrences into one longer list that the command then misreads (#1314).
+    #[test]
+    fn repeated_multi_value_options_are_rejected() {
+        let cases: [&'static [&'static str]; 7] = [
+            &["terrio", "vector-clip", "a.gpkg", "b.gpkg", "--bbox", "0,0,1,1", "--bbox", "2,2,3,3"],
+            &["terrio", "convert", "a.tif", "b.tif", "--srcwin", "0", "0", "2", "2", "--srcwin", "1", "1", "2", "2"],
+            &["terrio", "translate", "a.tif", "b.tif", "--scale", "0", "100", "--scale", "0", "200"],
+            &["terrio", "warp", "a.tif", "b.tif", "--tr", "1", "1", "--tr", "2", "2"],
+            &["terrio", "warp", "a.tif", "b.tif", "--te", "0", "0", "1", "1", "--te", "0", "0", "2", "2"],
+            &["terrio", "mosaic", "a.tif", "b.tif", "c.tif", "--tr", "1", "1", "--tr", "2", "2"],
+            &["terrio", "rasterize", "a.gpkg", "b.tif", "--burn", "1", "--ts", "4", "4", "--ts", "8", "8"],
+        ];
+        for args in cases {
+            let err = parse(args).unwrap_err();
+            assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict, "{args:?}");
+            assert!(err.to_string().contains("cannot be used multiple times"), "{args:?}: {err}");
+        }
+        let single = parse(&["terrio", "convert", "a.tif", "b.tif", "--srcwin", "0", "0", "2", "2"]).unwrap();
+        let srcwin: Vec<_> = single.subcommand_matches("convert").unwrap().get_many::<usize>("srcwin").unwrap().copied().collect();
+        assert_eq!(srcwin, [0, 0, 2, 2]);
+    }
+
+    /// Every option whose `num_args` allows more than one value per occurrence is a
+    /// single-occurrence Set, so repeating it fails instead of appending (#1314). Options that
+    /// take one value per occurrence (`--co`, `--band`) stay repeatable Append options.
+    /// Delimiter-only lists (`value_delimiter` without `num_args`, such as `xyz --srcnodata`)
+    /// are not checked here: most are open-ended lists where repeating the flag extends the
+    /// list, but `vector-clip --bbox` is a fixed 4-tuple and is `Set` (see its own test case).
+    #[test]
+    fn multi_value_options_take_one_occurrence() {
+        /// Collects the options of `command` and its subcommands that take several values per
+        /// occurrence but are not `ArgAction::Set`.
+        fn visit(command: &Command, path: &str, offenders: &mut Vec<String>) {
+            for arg in command.get_arguments() {
+                if arg.is_positional() || !arg.get_action().takes_values() {
+                    continue;
+                }
+                let max = arg.get_num_args().map_or(1, |range| range.max_values());
+                if max > 1 && !matches!(arg.get_action(), ArgAction::Set) {
+                    offenders.push(format!("{path} {}", arg.get_id()));
+                }
+            }
+            for sub in command.get_subcommands() {
+                visit(sub, &format!("{path} {}", sub.get_name()), offenders);
+            }
+        }
+        let offenders = std::thread::Builder::new()
             .stack_size(crate::STACK_SIZE)
             .spawn(|| {
-                let parsed = root()
-                    .try_get_matches_from(["terrio", "warp", "a.tif", "b.tif", "--tr", "0.02", "0.02", "--tr", "0.05", "0.05"])
-                    .unwrap();
-                parsed.subcommand_matches("warp").unwrap().get_many::<f64>("tr").unwrap().copied().collect::<Vec<_>>()
+                let mut offenders = Vec::new();
+                visit(&root(), "terrio", &mut offenders);
+                offenders
             })
             .unwrap()
             .join()
             .unwrap();
-        assert_eq!(appended, [0.02, 0.02, 0.05, 0.05]);
+        assert!(offenders.is_empty(), "multi-value options without ArgAction::Set: {offenders:?}");
     }
 
     /// Verifies that both sides of declared argument conflicts and exclusive group members are listed.

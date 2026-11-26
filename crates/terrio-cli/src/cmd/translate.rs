@@ -117,19 +117,19 @@ pub struct Args {
     #[arg(long)]
     ot: Option<String>,
     /// A window in pixels.
-    #[arg(long, num_args = 4, value_names = ["XOFF", "YOFF", "XSIZE", "YSIZE"], allow_negative_numbers = true)]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 4, value_names = ["XOFF", "YOFF", "XSIZE", "YSIZE"], allow_negative_numbers = true)]
     srcwin: Option<Vec<f64>>,
     /// A window in georeferenced coordinates (or `--projwin-srs`).
-    #[arg(long, num_args = 4, value_names = ["ULX", "ULY", "LRX", "LRY"], allow_negative_numbers = true)]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 4, value_names = ["ULX", "ULY", "LRX", "LRY"], allow_negative_numbers = true)]
     projwin: Option<Vec<f64>>,
     /// The CRS of `--projwin`.
     #[arg(long = "projwin-srs", value_name = "CRS")]
     projwin_srs: Option<String>,
     /// The output size, in pixels or as a percentage (`50%`); 0 keeps the aspect ratio.
-    #[arg(long, num_args = 2, value_names = ["WIDTH", "HEIGHT"])]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 2, value_names = ["WIDTH", "HEIGHT"])]
     outsize: Option<Vec<String>>,
     /// The output resolution.
-    #[arg(long, num_args = 2, value_names = ["XRES", "YRES"])]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 2, value_names = ["XRES", "YRES"])]
     tr: Option<Vec<f64>>,
     /// Resampling when resizing: near, bilinear, cubic, cubicspline, lanczos, average, rms, mode.
     #[arg(short = 'r', long = "resampling")]
@@ -140,7 +140,7 @@ pub struct Args {
     overview: String,
     /// Rescale values: `--scale` (band min/max to the type's range), `--scale SRC_MIN SRC_MAX`, or
     /// `--scale SRC_MIN SRC_MAX DST_MIN DST_MAX`.
-    #[arg(long, num_args = 0..=4, allow_negative_numbers = true)]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 0..=4, allow_negative_numbers = true)]
     scale: Option<Vec<f64>>,
     /// Apply a power function when rescaling.
     #[arg(long)]
@@ -152,7 +152,7 @@ pub struct Args {
     #[arg(long = "a-srs", value_name = "CRS")]
     a_srs: Option<String>,
     /// Assign the bounds.
-    #[arg(long = "a-ullr", num_args = 4, value_names = ["ULX", "ULY", "LRX", "LRY"], allow_negative_numbers = true)]
+    #[arg(action = clap::ArgAction::Set, long = "a-ullr", num_args = 4, value_names = ["ULX", "ULY", "LRX", "LRY"], allow_negative_numbers = true)]
     a_ullr: Option<Vec<f64>>,
     #[command(flatten)]
     out: OutputArgs,

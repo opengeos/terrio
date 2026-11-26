@@ -10,7 +10,7 @@ pub struct Args {
     #[arg(short = 'o', long, visible_alias = "target-dir")]
     output: std::path::PathBuf,
     /// Output tile width and height in pixels.
-    #[arg(long,num_args=2,value_names=["WIDTH","HEIGHT"],default_values=["256","256"])]
+    #[arg(action = clap::ArgAction::Set, long,num_args=2,value_names=["WIDTH","HEIGHT"],default_values=["256","256"])]
     tile_size: Vec<usize>,
     #[arg(long, default_value_t = 0)]
     overlap: usize,
