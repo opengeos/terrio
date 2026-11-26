@@ -87,6 +87,17 @@ def test_south_up_array_comes_back_south_up(files):
     np.testing.assert_array_equal(hillshade.y.values, flipped.y.values)
 
 
+def test_flipped_array_runs_without_affine_matmul(files, monkeypatch):
+    # affine 2, which the requirement allows, has no `@` for transforms.
+    da = txr.open_rasterio(files["dem"], masked=True).squeeze("band", drop=True)
+    expected = da.terrio.dem("hillshade").values
+    monkeypatch.delattr(Affine, "__matmul__", raising=False)
+    monkeypatch.delattr(Affine, "__rmatmul__", raising=False)
+    flipped = da.isel(y=slice(None, None, -1), x=slice(None, None, -1))
+    hillshade = flipped.terrio.dem("hillshade")
+    np.testing.assert_array_equal(hillshade.values[::-1, ::-1], expected)
+
+
 def test_bands_one_by_one(files):
     da = txr.open_rasterio(files["classes"])
     sieved = da.terrio.sieve(threshold=4)

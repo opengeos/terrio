@@ -28,6 +28,9 @@ pixel. Needs terrio's Python module (a release build: `maturin develop --release
 GDAL's Python bindings, pyogrio and PyArrow (GeoParquet, FlatGeobuf, GeoPackage) and zarr-python 3
 (Zarr fixtures) in one environment. Fixtures and results stay in --dir, out of the repository.
 docs/benchmarks.md describes the method.
+
+geotiff-real and geoparquet-real read public files, downloaded once and pinned by size and
+SHA-256, as the fixtures of their format are read.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import errno
+import functools
 import itertools
 import json
 import math
@@ -358,28 +362,35 @@ class GeoTiff:
 
         gdal.UseExceptions()
         ds = gdal.Open(str(path))
-        size = ds.RasterXSize
+        # The windows lie in the square of the shorter side; whole and decimated reads cover the raster.
+        xsize, ysize = ds.RasterXSize, ds.RasterYSize
+        size = min(xsize, ysize)
         if access == "overview" and ds.GetRasterBand(1).GetOverviewCount() == 0:
             return None
         level = None
         if access == "overview":  # the overview GDAL reads a decimation by 8 from
-            level = min(range(ds.GetRasterBand(1).GetOverviewCount()), key=lambda i: abs(ds.GetRasterBand(1).GetOverview(i).XSize - size // 8))
-        wins = {"window": windows(size, 1), "windows16": windows(size, 16), "threads4": windows(size, 16)}.get(access, [(0, 0, size, size)])
+            level = min(range(ds.GetRasterBand(1).GetOverviewCount()), key=lambda i: abs(ds.GetRasterBand(1).GetOverview(i).XSize - xsize // 8))
+        wins = {"window": windows(size, 1), "windows16": windows(size, 16), "threads4": windows(size, 16)}.get(access, [(0, 0, xsize, ysize)])
         # The bytes of the chunks the read touches, each counted once, from the TIFF block tables.
         need, seen = 0, set()
         for b in range(1, ds.RasterCount + 1):
             band = ds.GetRasterBand(b) if level is None else ds.GetRasterBand(b).GetOverview(level)
+            if access == "masks":  # geotiff-real's: a mask band's blocks, a nodata mask's pixels, or none
+                if band.GetMaskFlags() & gdal.GMF_ALL_VALID:
+                    continue
+                if (band.GetMaskFlags() & (gdal.GMF_PER_DATASET | gdal.GMF_NODATA)) == gdal.GMF_PER_DATASET:  # a mask band
+                    band = band.GetMaskBand()
             bw, bh = band.GetBlockSize()
-            f = size / band.XSize
+            fx, fy = xsize / band.XSize, ysize / band.YSize
             for x, y, w, h in wins:
-                x, y, w, h = int(x / f), int(y / f), math.ceil(w / f), math.ceil(h / f)
+                x, y, w, h = int(x / fx), int(y / fy), math.ceil(w / fx), math.ceil(h / fy)
                 for by in range(y // bh, (y + h - 1) // bh + 1):
                     for bx in range(x // bw, (x + w - 1) // bw + 1):
                         off = band.GetMetadataItem(f"BLOCK_OFFSET_{bx}_{by}", "TIFF")
                         if off is not None and off not in seen:
                             seen.add(off)
                             need += int(band.GetMetadataItem(f"BLOCK_SIZE_{bx}_{by}", "TIFF") or 0)
-        return {"size": size, "need_bytes": need}
+        return {"size": size, "xsize": xsize, "ysize": ysize, "need_bytes": need}
 
     @staticmethod
     def reader(tool: str, access: str, meta: dict):
@@ -396,6 +407,7 @@ class GeoTiff:
             open and read of the warm-up file.
         """
         size = meta["size"]
+        xsize, ysize = meta["xsize"], meta["ysize"]
         if tool == "terrio":
             import terrio.rio as rio
             from terrio.rio.windows import Window
@@ -410,7 +422,7 @@ class GeoTiff:
                 return ds.read()
 
             def decimated(ds):
-                return ds.read(out_shape=(ds.count, size // 8, size // 8))
+                return ds.read(out_shape=(ds.count, ysize // 8, xsize // 8))
         else:
             from osgeo import gdal
 
@@ -426,7 +438,7 @@ class GeoTiff:
                 return ds.ReadAsArray()
 
             def decimated(ds):
-                return ds.ReadAsArray(buf_xsize=size // 8, buf_ysize=size // 8)
+                return ds.ReadAsArray(buf_xsize=xsize // 8, buf_ysize=ysize // 8)
 
         n = {"window": 1, "windows16": 16, "threads4": 16}.get(access)
         if n:
@@ -792,8 +804,8 @@ class GeoParquet:
             print(f"{path.name}: {path.stat().st_size >> 20} MB", flush=True)
         publish(out / "_warmup.parquet", lambda tmp: gdal.VectorTranslate(str(tmp), str(sources["point"]), format="Parquet", limit=100))
 
-    @staticmethod
-    def bboxes(n: int) -> list[tuple[float, float, float, float]]:
+    @classmethod
+    def bboxes(cls, n: int) -> list[tuple[float, float, float, float]]:
         """The n boxes of 1/10 x 1/10 of the extent (1% of its area), spread over it.
 
         Args:
@@ -802,16 +814,19 @@ class GeoParquet:
         Returns:
             `(min_x, min_y, max_x, max_y)` of each box.
         """
-        x0, y0, x1, y1 = GeoParquet.EXTENT
+        x0, y0, x1, y1 = cls.EXTENT
         w, h = (x1 - x0) / 10, (y1 - y0) / 10
         corners = [(x0 + (x1 - x0 - w) * ((i * 0.37 + 0.45) % 1), y0 + (y1 - y0 - h) * ((i * 0.61 + 0.45) % 1)) for i in range(n)]
         return [(bx, by, bx + w, by + h) for bx, by in corners]
 
     COLUMNS = ["value", "class"]
-    WHERE = "id < 4000"  # 1% of the polygons or lines, 0.2% of the points
+    # 1% of the polygons or lines, 0.2% of the points: `WHERE_COLUMN < WHERE_BELOW`, which the
+    # column's row group statistics prune
+    WHERE_COLUMN, WHERE_BELOW = "id", 4000
+    WHERE = f"{WHERE_COLUMN} < {WHERE_BELOW}"
 
-    @staticmethod
-    def meta(path: Path, access: str) -> dict | None:
+    @classmethod
+    def meta(cls, path: Path, access: str) -> dict | None:
         """What a read of a fixture needs, from the fixture's own chunk tables.
 
         Args:
@@ -830,7 +845,7 @@ class GeoParquet:
         names = [md.schema.column(i).path for i in range(md.num_columns)]
         # The covering bbox columns, as the file's metadata names them (GDAL: `<geometry>_bbox`).
         cover = geo["columns"][gcol].get("covering", {}).get("bbox")
-        boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
+        boxes = cls.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
         need = md.serialized_size + 8  # the footer
         for g in range(md.num_row_groups):
             rg = md.row_group(g)
@@ -843,15 +858,15 @@ class GeoParquet:
                     if not hits:
                         continue
             if access == "where":
-                st = cols["id"].statistics
-                if st is not None and st.has_min_max and st.min >= 4000:
+                st = cols[cls.WHERE_COLUMN].statistics
+                if st is not None and st.has_min_max and st.min >= cls.WHERE_BELOW:
                     continue
-            keep = [n for n in names if n.split(".")[0] in (gcol, *GeoParquet.COLUMNS)] if access == "columns" else names
+            keep = [n for n in names if n.split(".")[0] in (gcol, *cls.COLUMNS)] if access == "columns" else names
             need += sum(cols[n].total_compressed_size for n in keep)
         return {"need_bytes": need}
 
-    @staticmethod
-    def reader(tool: str, access: str, meta: dict):
+    @classmethod
+    def reader(cls, tool: str, access: str, meta: dict):
         """How a tool reads a fixture in an access pattern.
 
         Args:
@@ -878,22 +893,22 @@ class GeoParquet:
         def read(p, **kw):
             return po.read_arrow(p, **kw)
 
-        boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
+        boxes = cls.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
         if boxes:
             items = [lambda p, b=b: read(p, bbox=b) for b in boxes]
         elif access == "columns":
-            items = [lambda p: read(p, columns=GeoParquet.COLUMNS)]
+            items = [lambda p: read(p, columns=cls.COLUMNS)]
         elif access == "where" and tool == "terrio":  # terrio.pyogrio has no `where`: terrio's SQL
             import pyarrow as pa
             import terrio
 
             def where(p):
                 layer = p.rsplit("/", 1)[-1].removesuffix(".parquet")
-                return pa.table(terrio.sql(p, f"SELECT * FROM {layer} WHERE {GeoParquet.WHERE}"))
+                return pa.table(terrio.sql(p, f"SELECT * FROM {layer} WHERE {cls.WHERE}"))
 
             items = [where]
         elif access == "where":
-            items = [lambda p: read(p, where=GeoParquet.WHERE)]
+            items = [lambda p: read(p, where=cls.WHERE)]
         else:
             items = [lambda p: read(p)]
         warm = (open_, lambda p: read(p))
@@ -1743,8 +1758,10 @@ class GeoTiffWrite:
         "u8_rgb_deflate_p2_t512": ("u8_rgb_deflate_band", "DEFLATE", 2, 512, "PIXEL", None),
         "u8_rgb_jpeg_rgb_t512": ("u8_rgb_deflate_band", "JPEG", 1, 512, "PIXEL", "RGB"),  # GTiff only
         "u8_rgb_jpeg_ycbcr_t512": ("u8_rgb_deflate_band", "JPEG", 1, 512, "PIXEL", "YCBCR"),
+        "u8_rgb_jxl_t512": ("u8_rgb_deflate_band", "JXL", 1, 512, "PIXEL", None),
         "u16_deflate_p2_t512": ("u16_deflate_p2", "DEFLATE", 2, 512, "BAND", None),
         "u16_deflate_p2_t256": ("u16_deflate_p2", "DEFLATE", 2, 256, "BAND", None),
+        "u16_jxl_t256": ("u16_deflate_p2", "JXL", 1, 256, "BAND", None),
         "u16_lzw_p2_t512": ("u16_deflate_p2", "LZW", 2, 512, "BAND", None),
         "u16_zstd_p2_t512": ("u16_deflate_p2", "ZSTD", 2, 512, "BAND", None),
         "u16_12b_zstd_p2_band_t256": ("u16_12b_zstd_band", "ZSTD", 2, 256, "BAND", None),
@@ -2032,6 +2049,7 @@ FORMATS["geotiff-write"] = GeoTiffWrite
 PATHS["geotiff-write"] = [
     "crates/terrio/src/drivers/gtiff_write.rs",
     "crates/terrio/src/drivers/tiff_lzw.rs",
+    "crates/terrio/src/drivers/jxl_encoder/*",
     "crates/terrio/src/cog.rs",
     "crates/terrio/src/tiff_*",
     "crates/terrio/src/deflate_compress.rs",
@@ -2275,6 +2293,223 @@ PATHS["terrain"] = [
 
 
 # =============================================================================================
+# Real data: public files, downloaded once into the fixture directory, read as the fixtures of
+# their format are.
+
+
+def fetch(path: Path, url: str, size: int, sha256: str) -> None:
+    """Downloads a public file once, refusing one that is not the pinned file.
+
+    Args:
+        path: The fixture's path: a file already there is checked, not downloaded again.
+        url: Where the file is downloaded from.
+        size: The file's size in bytes.
+        sha256: The SHA-256 of its bytes, in hexadecimal.
+
+    Raises:
+        ValueError: If the download's size or SHA-256 is not the pinned one (nothing is kept), or
+            the file already there is not the pinned one (delete it to download it again).
+    """
+    import hashlib
+    import urllib.request
+
+    def check(file):
+        h = hashlib.sha256()
+        with open(file, "rb") as f:
+            while piece := f.read(1 << 20):
+                h.update(piece)
+        got = (file.stat().st_size, h.hexdigest())
+        if got != (size, sha256):
+            raise ValueError(f"{url}: {got[0]} bytes with SHA-256 {got[1]} in {file}, not the pinned {size} bytes with {sha256}")
+
+    def write(tmp):
+        with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as f:
+            while piece := r.read(1 << 20):
+                f.write(piece)
+                if f.tell() > size:  # stop: not the pinned file
+                    raise ValueError(f"{url}: more than the pinned {size} bytes")
+        check(tmp)
+
+    if path.exists():
+        check(path)
+        return
+    print(f"{path.name}: downloading {size >> 20} MB from {url}", flush=True)
+    publish(path, write)
+
+
+class GeoTiffReal(GeoTiff):
+    """Public GeoTIFFs, read as the GeoTIFF fixtures are, and also each band's mask (`masks`).
+
+    A Sentinel-2 L2A red band (B04) of a tile the satellite's swath covers by 40%, nodata 0
+    elsewhere; two COGs GDAL makes from it: a sparse one, which leaves the blocks holding only
+    nodata out of the file, and one whose nodata becomes an internal mask band; and a USGS 30 m DEM
+    stored big-endian, in strips, not square, without nodata (its mask is all valid). Reference:
+    GDAL 3.13.3.
+    """
+
+    # name: (URL, size in bytes, SHA-256)
+    DOWNLOADS = {
+        "s2_b04_nodata": (
+            "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/31/U/ER/2024/7/S2B_31UER_20240730_0_L2A/B04.tif",
+            87_106_242, "9c6c2381b3340f65f08e1e6f8dfe4784a3b08581bf04e091fa05efbe60a01d9b"),
+        "dem_i16_big_endian": (
+            "https://download.osgeo.org/geotiff/samples/usgs/m30dem.tif",
+            5_526_132, "b97f296164c39c4aab362a128eff05dea639341d9d6fce515b7bb20396a6ff6f"),
+    }
+    # name: (the download GDAL's COG driver translates, `gdal.Translate`'s options)
+    DERIVED = {
+        "s2_b04_sparse": ("s2_b04_nodata", {"creationOptions": ["COMPRESS=DEFLATE", "PREDICTOR=2", "BLOCKSIZE=512", "SPARSE_OK=TRUE",
+                                                                "OVERVIEW_RESAMPLING=AVERAGE"]}),
+        # band 1's nodata mask written as an internal mask band, without nodata
+        "s2_b04_mask": ("s2_b04_nodata", {"maskBand": "mask,1", "noData": "none", "creationOptions": [
+            "COMPRESS=DEFLATE", "PREDICTOR=2", "BLOCKSIZE=512", "OVERVIEW_RESAMPLING=AVERAGE"]}),
+    }
+    # name: (codec, dtype, layout)
+    FIXTURES = {
+        "s2_b04_nodata": ("DEFLATE+p2", "uint16", "cog 1024/nodata 0/10980"),
+        "s2_b04_sparse": ("DEFLATE+p2", "uint16", "cog 512/sparse/10980"),
+        "s2_b04_mask": ("DEFLATE+p2", "uint16", "cog 512/mask band/10980"),
+        "dem_i16_big_endian": ("NONE", "int16", "strip/big-endian/1479x1863"),
+    }
+    ACCESS = [*GeoTiff.ACCESS, "masks"]
+
+    @staticmethod
+    def axes(name: str) -> dict:
+        """The values of the matrix's axes for a fixture.
+
+        Args:
+            name: The fixture's name.
+
+        Returns:
+            Its `codec`, `dtype` and `layout`.
+        """
+        return dict(zip(("codec", "dtype", "layout"), GeoTiffReal.FIXTURES[name], strict=True))
+
+    @staticmethod
+    def make(out: Path) -> None:
+        """Downloads the files that are not there yet, makes the derived ones and the warm-up file.
+
+        Args:
+            out: The directory of the format's fixtures.
+        """
+        from osgeo import gdal
+
+        gdal.UseExceptions()
+        for name, spec in GeoTiffReal.DOWNLOADS.items():
+            fetch(out / f"{name}.tif", *spec)
+        for name, (src, opts) in GeoTiffReal.DERIVED.items():
+            publish(out / f"{name}.tif", lambda tmp, src=src, opts=opts: gdal.Translate(str(tmp), str(out / f"{src}.tif"), format="COG", **opts))
+        publish(out / "_warmup.tif", lambda tmp: gdal.Translate(str(tmp), str(out / "s2_b04_nodata.tif"), srcWin=[0, 0, 256, 256], creationOptions=["COMPRESS=DEFLATE", "TILED=YES"]))
+
+    @staticmethod
+    def reader(tool: str, access: str, meta: dict):
+        """How a tool reads a fixture: as a GeoTIFF fixture, or every band's mask for `masks`.
+
+        terrio reads the masks with `read_masks`, GDAL with each band's `GetMaskBand`: 255 valid, 0 not.
+
+        Args:
+            tool: `terrio` or `gdal`.
+            access: The access pattern.
+            meta: What `meta` returned for the fixture.
+
+        Returns:
+            As `GeoTiff.reader`.
+        """
+        if access != "masks":
+            return GeoTiff.reader(tool, access, meta)
+        open_, _, check, _ = GeoTiff.reader(tool, "full", meta)
+        if tool == "terrio":
+
+            def masks(ds):
+                return ds.read_masks()
+        else:
+            import numpy as np
+
+            def masks(ds):
+                return np.stack([ds.GetRasterBand(b).GetMaskBand().ReadAsArray() for b in range(1, ds.RasterCount + 1)])
+
+        return open_, [masks], check, (open_, masks)  # the mask code's first use counts as `init`
+
+
+FORMATS["geotiff-real"] = GeoTiffReal
+PATHS["geotiff-real"] = PATHS["geotiff"]
+
+
+class GeoParquetReal(GeoParquet):
+    """A public GeoParquet file, read as the GeoParquet fixtures are.
+
+    Estonia's building footprints of the Google-Microsoft Open Buildings by VIDA (Source
+    Cooperative): 737,334 polygons in WGS 84, each with `bf_source` "microsoft" (the column has no
+    other value), GeoParquet 1.1 with a covering bbox column, rows clustered in space, Snappy, row
+    groups of 5,000 rows. Reference: GDAL 3.13.3.
+    """
+
+    # name: (URL, size in bytes, SHA-256)
+    DOWNLOADS = {
+        "buildings_est": (
+            "https://data.source.coop/vida/google-microsoft-open-buildings/geoparquet/by_country/country_iso=EST/EST.parquet",
+            100_824_895, "f1da47d6fc2fcc207339c508232c50ae11caf4fa6742caeb381109c30df025f6"),
+    }
+    # name: (codec, dtype, layout)
+    FIXTURES = {"buildings_est": ("WKB/SNAPPY", "polygon", "rg 5000/bbox/clustered")}
+    EXTENT = (21.811368210735864, 57.52128950216659, 28.20660017454815, 59.6279495684748)  # the file's `geo` bbox
+    COLUMNS = ["area_in_meters", "bf_source"]
+    # 1% of the buildings; every row group holds smaller ones, so statistics prune none
+    WHERE_COLUMN, WHERE_BELOW = "area_in_meters", 5.2
+    WHERE = f"{WHERE_COLUMN} < {WHERE_BELOW}"
+
+    @staticmethod
+    def axes(name: str) -> dict:
+        """The values of the matrix's axes for a fixture.
+
+        Args:
+            name: The fixture's name.
+
+        Returns:
+            Its `codec`, `dtype` and `layout`.
+        """
+        return dict(zip(("codec", "dtype", "layout"), GeoParquetReal.FIXTURES[name], strict=True))
+
+    @staticmethod
+    def make(out: Path) -> None:
+        """Downloads the files that are not there yet, and makes the warm-up file.
+
+        Args:
+            out: The directory of the format's fixtures.
+        """
+        from osgeo import gdal
+
+        gdal.UseExceptions()
+        for name, spec in GeoParquetReal.DOWNLOADS.items():
+            fetch(out / f"{name}.parquet", *spec)
+        publish(out / "_warmup.parquet", lambda tmp: gdal.VectorTranslate(str(tmp), str(out / "buildings_est.parquet"), format="Parquet", limit=100))
+
+    @classmethod
+    def reader(cls, tool: str, access: str, meta: dict):
+        """How a tool reads a fixture, as a GeoParquet fixture; the check sums `area_in_meters`.
+
+        Args:
+            tool: `terrio` or `gdal`.
+            access: The access pattern.
+            meta: What `meta` returned for the fixture.
+
+        Returns:
+            As `GeoParquet.reader`.
+        """
+        open_, items, _, warm = super().reader(tool, access, meta)
+
+        def check(res):
+            table = res[1] if isinstance(res, tuple) else res
+            return float(table.column("area_in_meters").to_numpy().sum(dtype="float64")), table.num_rows
+
+        return open_, items, check, warm
+
+
+FORMATS["geoparquet-real"] = GeoParquetReal
+PATHS["geoparquet-real"] = PATHS["geoparquet"]
+
+
+# =============================================================================================
 # HTTP server with a simulated round-trip time, logging every request.
 
 _lock = threading.Condition()
@@ -2453,8 +2688,115 @@ def _rchar(local: bool) -> int:
     """
     if not local:  # over HTTP the runner counts the bytes the server sent
         return 0
-    d = dict(line.split(": ") for line in PROC_IO.read_text().splitlines())
-    return int(d["rchar"])
+    return _proc_io()["rchar"]
+
+
+def _proc_io() -> dict[str, int]:
+    """This process's I/O counters (Linux).
+
+    Returns:
+        The counters by name: `rchar` counts the bytes the process read, `read_bytes` those it
+        read from a block device.
+    """
+    return {k: int(v) for k, v in (line.split(": ") for line in PROC_IO.read_text().splitlines())}
+
+
+def _files(path: Path) -> list[Path]:
+    """A fixture's files.
+
+    Args:
+        path: The fixture: a file or a directory store such as Zarr's.
+
+    Returns:
+        The fixture itself, or every file under the directory.
+    """
+    return [path] if path.is_file() else sorted(f for f in path.rglob("*") if f.is_file())
+
+
+@functools.cache
+def _libc():
+    """The C library, with the argument types of the calls `_resident_pages` makes.
+
+    Returns:
+        The library, loaded and configured once per process.
+    """
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.mmap.restype = ctypes.c_void_p
+    libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
+    libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+    return libc
+
+
+def _resident_pages(fd: int, size: int) -> int:
+    """How many pages of an open file are in the OS page cache (Linux's `mincore`).
+
+    Args:
+        fd: The file's descriptor.
+        size: The file's size in bytes, more than 0.
+
+    Returns:
+        The number of its pages in the page cache.
+    """
+    import ctypes
+
+    libc = _libc()
+    # Mapping a file reads none of it; mincore then tells which of its pages are cached.
+    addr = libc.mmap(None, size, 1, 1, fd, 0)  # PROT_READ, MAP_SHARED
+    if addr in (None, ctypes.c_void_p(-1).value):
+        raise OSError(ctypes.get_errno(), "mmap failed")
+    try:
+        vec = (ctypes.c_ubyte * -(-size // resource.getpagesize()))()
+        if libc.mincore(ctypes.c_void_p(addr), size, vec):
+            raise OSError(ctypes.get_errno(), "mincore failed")
+        return sum(v & 1 for v in vec)
+    finally:
+        libc.munmap(ctypes.c_void_p(addr), size)
+
+
+def evict(path: Path) -> dict:
+    """Drops a fixture's files from the OS page cache, without root, and counts what stayed.
+
+    Each file is flushed first, because `POSIX_FADV_DONTNEED` does not drop dirty pages, which a
+    file just written has. Nor does it drop pages that another process maps: `resident_after`
+    counts those.
+
+    Args:
+        path: The fixture: a file or a directory store.
+
+    Returns:
+        `cache_pages`, the files' pages, and `resident_before` and `resident_after`, those of them
+        in the page cache before and after the eviction.
+    """
+    pages = before = after = 0
+    for f in _files(path):
+        fd = os.open(f, os.O_RDONLY)
+        try:
+            size = os.fstat(fd).st_size
+            if not size:
+                continue
+            os.fsync(fd)
+            pages += -(-size // resource.getpagesize())
+            before += _resident_pages(fd, size)
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            after += _resident_pages(fd, size)
+        finally:
+            os.close(fd)
+    return {"cache_pages": pages, "resident_before": before, "resident_after": after}
+
+
+def rewarm(path: Path) -> None:
+    """Reads a fixture's files through, into the page cache: a warm read in a run with cold ones.
+
+    Args:
+        path: The fixture: a file or a directory store.
+    """
+    for f in _files(path):
+        with open(f, "rb") as h:
+            while h.read(1 << 24):
+                pass
 
 
 def worker(spec: dict) -> dict:
@@ -2464,15 +2806,20 @@ def worker(spec: dict) -> dict:
         spec: The format, tool, source, access pattern and fixture metadata of the case.
 
     Returns:
-        The sample: init, open and read times, bytes, peak memory, and the values' sum and count.
+        The sample: init, open and read times, bytes, peak memory, and the values' sum and count;
+        for a cold read, also the fixture's pages in the page cache before and after the
+        eviction, and `disk_bytes`: what this process read from block devices during the open
+        and read. It counts any file read then (a library or data file loaded on first use), so
+        it is an upper bound on the fixture's storage reads, not a measure of them alone.
     """
     from concurrent.futures import ThreadPoolExecutor
 
     fmt = FORMATS[spec["format"]]
     src, access = spec["src"], spec["access"]
     local = src.startswith("/")
-    # `base` is another terrio build, found first on PYTHONPATH
-    tool = "terrio" if spec["tool"] == "base" else spec["tool"]
+    # `base` is another terrio build, found first on PYTHONPATH; `gdal_allcpus` is GDAL in its
+    # second configuration, set by its environment
+    tool = {"base": "terrio", "gdal_allcpus": "gdal"}.get(spec["tool"], spec["tool"])
     n_threads = threads(access)
     ti = time.perf_counter()
     # A format reads its 16 parts for `threads4`; any thread count reads the same parts.
@@ -2480,6 +2827,9 @@ def worker(spec: dict) -> dict:
     # A process's first open and read pays one-time costs (library initialization, thread pools):
     # measured on a tiny file apart from the case, as `init`.
     warm_read(warm_open(src.rsplit("/", 1)[0] + "/_warmup" + fmt.EXT))
+    # A cold read: the fixture leaves the page cache after the warm-up, so the read starts from storage.
+    te = time.perf_counter()  # the eviction is neither `init` nor the read
+    cold = {**evict(Path(src)), "disk_bytes": -_proc_io()["read_bytes"]} if spec.get("cold") else {}
     r0 = _rchar(local)
     t0 = time.perf_counter()
     if n_threads:  # a handle per thread, opened in the threads and timed as the read
@@ -2502,12 +2852,15 @@ def worker(spec: dict) -> dict:
         out = [item(ds) for item in items]
     t2 = time.perf_counter()
     r2 = _rchar(local)
+    if cold:  # block-device bytes of the whole process over the open and read, not only the fixture's
+        cold["disk_bytes"] += _proc_io()["read_bytes"]
     rss = peak_rss_mb()
     sums = [check(x) for x in out]  # after the timed read and its peak memory, as the digest
     compares = [s[2] for s in sums if len(s) > 2]  # (sum, n, compare): an output compared with GDAL's
     return {
         **({"compare": max(compares, key=_badness)} if compares else {}),
-        "init_s": t0 - ti,
+        **cold,
+        "init_s": te - ti,
         "open_s": t1 - t0,
         "read_s": t2 - t1,
         "open_bytes": r1 - r0,
@@ -2605,8 +2958,10 @@ def run(args: argparse.Namespace) -> None:
         samples = 1 if args.quick else args.samples
         results = args.out or data / f"results-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
         sources = args.source or getattr(fmt, "SOURCES", ["local", "http"])
-        if "local" in sources and not PROC_IO.exists():
+        if {"local", "cold"} & set(sources) and not PROC_IO.exists():
             sys.exit(f"local byte counts need {PROC_IO} (Linux): use --source http")
+        if "cold" in sources and not hasattr(os, "posix_fadvise"):
+            sys.exit("cold reads need posix_fadvise and mincore (Linux)")
         head = machine()
         tools = ["terrio", "gdal"]
         envs = {"terrio": env, "gdal": env}
@@ -2619,6 +2974,10 @@ def run(args: argparse.Namespace) -> None:
             if not Path(module_file).resolve().is_relative_to(base_dir):
                 sys.exit(f"--base {base_dir}: terrio is imported from {version.stdout.strip()}, not from it")
             head["machine"]["base"] = f"{module_file} {module_version}"
+        if getattr(args, "gdal_allcpus", False):  # GDAL's second configuration: its own cache size, every CPU
+            envs["gdal_allcpus"] = {k: v for k, v in env.items() if k != "GDAL_CACHEMAX"} | {"GDAL_NUM_THREADS": "ALL_CPUS"}
+            tools.append("gdal_allcpus")
+            head["machine"]["gdal_allcpus"] = True
         if head["machine"]["on_ac"] is False and not args.allow_battery:
             sys.exit("on battery, timings are slower and vary: plug in, or pass --allow-battery")
         try:
@@ -2631,7 +2990,7 @@ def run(args: argparse.Namespace) -> None:
         rows = []
         for case_index, (name, access, source) in enumerate(itertools.product(names, args.access or accesses(fmt), sources)):
             path = data / f"{name}{fmt.EXT}"
-            label = "where/sql-vs-filter" if args.format in ("geoparquet", "geopackage") and access == "where" else access
+            label = "where/sql-vs-filter" if args.format in ("geoparquet", "geopackage", "geoparquet-real") and access == "where" else access
             try:
                 meta = fmt.meta(path, "threads4" if threads(access) else access)
             except Exception as exc:
@@ -2644,7 +3003,9 @@ def run(args: argparse.Namespace) -> None:
                 continue
             if meta is None:
                 continue
-            src = str(path) if source == "local" else base + path.name
+            src = base + path.name if source == "http" else str(path)
+            if source != "cold" and "cold" in sources:  # a warm read after a cold one, or first: cache it
+                rewarm(path)
             row = {"format": args.format, "fixture": name, "access": label, "source": source, "need_bytes": meta["need_bytes"], **fmt.axes(name)}
             for k in range(samples):
                 start = (case_index + k) % len(tools)
@@ -2655,7 +3016,7 @@ def run(args: argparse.Namespace) -> None:
                         _settled_log()  # a killed worker's requests end before the log is cleared
                         with _lock:
                             _log.clear()
-                        spec = {"format": args.format, "tool": tool, "src": src, "access": access, "meta": meta}
+                        spec = {"format": args.format, "tool": tool, "src": src, "access": access, "meta": meta, "cold": source == "cold"}
                         cmd = [sys.executable, __file__, "_worker", json.dumps(spec)]
                         p = subprocess.run(cmd, env=envs[tool], capture_output=True, text=True, timeout=args.timeout)
                         if p.returncode:
@@ -2663,6 +3024,14 @@ def run(args: argparse.Namespace) -> None:
                             row[f"{tool}_error"] = err[-1][:300] if err else f"exit {p.returncode}"
                             continue
                         r = json.loads(p.stdout.strip().splitlines()[-1])
+                        if r.get("resident_after"):  # still cached: not a cold read
+                            row[f"{tool}_error"] = f"not evicted: {r['resident_after']} of {r['cache_pages']} pages stayed in the page cache"
+                            continue
+                        # NFS, FUSE: no block device. Any block-device read counts, so this catches
+                        # a read served entirely from another cache, not one that also loaded a library.
+                        if source == "cold" and not r["disk_bytes"]:
+                            row[f"{tool}_error"] = "not cold: the read took no bytes from a block device"
+                            continue
                         # this case's requests, not the warm-up's
                         log = [x for x in _settled_log() if x[3].split("?")[0].startswith("/" + path.name)]
                         if source == "http":
@@ -2688,7 +3057,12 @@ def summarize(row: dict) -> dict:
 
     A time ratio only when every sample of terrio and GDAL succeeded (a tool
     stops at its first failure), and a ratio to the base only when the base's did too: a base that
-    failed where this build succeeds is listed as such. `values` is `exact` when every sample's
+    failed where this build succeeds is listed as such. Likewise `gdal_allcpus_ratio`, the ratio to
+    GDAL in its second configuration (`--gdal-allcpus`), when its samples' values equal GDAL's
+    (`gdal_allcpus_values_match`, by digest, else by sum and count): a reference, it does not change
+    `values`. That check covers reads only: an operation's GDAL samples carry no digest and a zero
+    sum, so it compares their pixel count alone; a write's count is its source's and always agrees.
+    `values` is `exact` when every sample's
     digest equals GDAL's first, else `checksum_match` when every sample's sum and count do, else the
     first that differs.
 
@@ -2699,7 +3073,7 @@ def summarize(row: dict) -> dict:
         The row with each tool's medians in place of its samples, the ratios and `values`.
     """
     out = {k: v for k, v in row.items() if not isinstance(v, list)}
-    tools = [t for t in ("terrio", "gdal", "base") if t in row]
+    tools = [t for t in ("terrio", "gdal", "base", "gdal_allcpus") if t in row]
     for tool in tools:
         rs = row.get(tool)
         if not rs:
@@ -2714,13 +3088,24 @@ def summarize(row: dict) -> dict:
             r["n"] == ref["n"] and math.isclose(r["sum"], ref["sum"], rel_tol=1e-6)
             for tool in ("base", "gdal") for r in row[tool]
         )
-    if "terrio" in out and "gdal" in out and not [e for e in _errors(row) if not e.startswith("base ")]:
+    # The base and GDAL's second configuration are optional: their failure drops only their ratio.
+    if "terrio" in out and "gdal" in out and not [e for e in _errors(row) if not e.startswith(("base ", "gdal_allcpus "))]:
         out["time_ratio"] = out["terrio"]["total_s"] / out["gdal"]["total_s"]
         ref = row["gdal"][0]
         if base_ok:
             out["base_ratio"] = out["terrio"]["total_s"] / out["base"]["total_s"]
         else:
             tools = [t for t in tools if t != "base"]
+        if "gdal_allcpus" in out and "gdal_allcpus_error" not in row:
+            # Equal digests first, as for `values`: a NaN read sums to NaN, which no sum check accepts.
+            out["gdal_allcpus_values_match"] = all(
+                (ref.get("digest") is not None and r.get("digest") == ref["digest"])
+                or (r["n"] == ref["n"] and math.isclose(r["sum"], ref["sum"], rel_tol=1e-6))
+                for r in row["gdal_allcpus"]
+            )
+            if out["gdal_allcpus_values_match"]:
+                out["gdal_allcpus_ratio"] = out["terrio"]["total_s"] / out["gdal_allcpus"]["total_s"]
+        tools = [t for t in tools if t != "gdal_allcpus"]
         differ = next(((t, r) for t in tools for r in row[t] if r["n"] != ref["n"] or not math.isclose(r["sum"], ref["sum"], rel_tol=1e-6)), None)
         exact = ref.get("digest") is not None and all(r.get("digest") == ref["digest"] for t in tools for r in row[t])
         # Equal digests are exact first: a NaN read sums to NaN, which no sum check accepts.
@@ -2782,6 +3167,33 @@ def _bytes(t: dict) -> int:
     return int(t["open_bytes"] + t["read_bytes"])
 
 
+def _cold_section(ok: list[dict], run_of: dict[int, int]) -> list[str]:
+    """The report's section comparing cold reads with warm local ones, when a run has both.
+
+    Args:
+        ok: The ranked cases.
+        run_of: The results file of each row, by the row's `id`: a cold case pairs within its run.
+
+    Returns:
+        The section's lines, none without a pair.
+    """
+    by_case: dict[tuple, dict[str, dict]] = {}
+    for r in ok:
+        if r["source"] in ("local", "cold"):
+            by_case.setdefault((r["format"], r["fixture"], r["access"], run_of.get(id(r))), {})[r["source"]] = r
+    pairs = [(c["local"], c["cold"]) for c in by_case.values() if len(c) == 2]
+    if not pairs:
+        return []
+    gm = statistics.geometric_mean
+    lines = ["\n## Cold page cache (geometric means over the cases read both ways; cases in brackets)\n"]
+    for fmt in sorted({warm["format"] for warm, _ in pairs}):
+        ps = [(w, c) for w, c in pairs if w["format"] == fmt]
+        slow = {t: gm(c[t]["total_s"] / w[t]["total_s"] for w, c in ps) for t in ("terrio", "gdal")}
+        lines.append(f"{fmt} cold time / warm time: terrio x{slow['terrio']:.2f}  gdal x{slow['gdal']:.2f}  "
+                     f"terrio/gdal time warm x{gm(w['time_ratio'] for w, _ in ps):.2f} cold x{gm(c['time_ratio'] for _, c in ps):.2f}  ({len(ps)})")
+    return lines
+
+
 def fmt_row(r: dict) -> str:
     """One line of the report for a case.
 
@@ -2799,13 +3211,51 @@ def fmt_row(r: dict) -> str:
     s += f" | KiB {_bytes(t) >> 10:7} vs {_bytes(g) >> 10:7} need {r['need_bytes'] >> 10:7}"
     if "requests" in t:
         s += f" | req {t['requests']:4.0f}/{g['requests']:4.0f} rounds {t['rounds']:3.0f}/{g['rounds']:3.0f}"
+    if "disk_bytes" in t:
+        s += f" | disk KiB {int(t['disk_bytes']) >> 10:7} vs {int(g['disk_bytes']) >> 10:7}"
     label = r["values"] if r["values"] in MATCH else "DIFFER"
     if "out_bytes" in r.get("compare", {}):
         s += f" | out KiB {r['compare']['out_bytes'] >> 10:7} vs {r['compare']['gdal_out_bytes'] >> 10:7}"
     s += f" | init {t['init_s'] * 1000:3.0f}/{g['init_s'] * 1000:3.0f} ms rss {t['rss_mb']:4.0f}/{g['rss_mb']:4.0f} MB {label}"
     if "base_ratio" in r:
         s += f" | base {r['base']['total_s'] * 1000:8.1f} ms x{r['base_ratio']:5.2f}"
+    if "gdal_allcpus_ratio" in r:
+        s += f" | gdal ALL_CPUS {r['gdal_allcpus']['total_s'] * 1000:8.1f} ms x{r['gdal_allcpus_ratio']:5.2f}"
+    elif "gdal_allcpus_error" in r or r.get("gdal_allcpus_values_match") is False:
+        s += f" | gdal ALL_CPUS {r.get('gdal_allcpus_error') or 'values differ from the first configuration'}"
     return s
+
+
+def _gdal_allcpus_section(ok: list[dict], computed: list[dict]) -> list[str]:
+    """The report's section on GDAL's second configuration: both ratios side by side.
+
+    Args:
+        ok: The ranked cases, for the ratios.
+        computed: Every case with a time ratio, ranked or not, for the second configuration's
+            failures: a case whose terrio values differ from GDAL's lists its failure here too.
+
+    Returns:
+        The section's lines.
+    """
+    both = [r for r in ok if "gdal_allcpus_ratio" in r]
+    lines = ["\n## GDAL with its default GDAL_CACHEMAX and GDAL_NUM_THREADS=ALL_CPUS (geometric means of terrio time / GDAL time, "
+             "GDAL's first configuration, then this one; cases in brackets)\n"]
+    if both:
+        gm = statistics.geometric_mean
+        lines.append(f"all     x{gm(r['time_ratio'] for r in both):.2f} / x{gm(r['gdal_allcpus_ratio'] for r in both):.2f}({len(both)})")
+        for axis in ("source", "access"):
+            groups: dict[str, list[dict]] = {}
+            for r in both:
+                groups.setdefault(r[axis], []).append(r)
+            lines.append(f"{axis:7} " + "  ".join(
+                f"{k} x{gm(r['time_ratio'] for r in rs):.2f} / x{gm(r['gdal_allcpus_ratio'] for r in rs):.2f}({len(rs)})" for k, rs in sorted(groups.items())))
+    flips = sorted((r for r in both if (r["time_ratio"] < 1) != (r["gdal_allcpus_ratio"] < 1)), key=lambda r: -r["gdal_allcpus_ratio"])
+    lines.append(f"terrio faster than GDAL in one configuration only: {len(flips)}")
+    lines += ["  " + fmt_row(r) for r in flips[:20]]
+    failed = [r for r in computed if "gdal_allcpus_error" in r or r.get("gdal_allcpus_values_match") is False]
+    lines.append(f"GDAL failed or read other values in this configuration only (no second ratio): {len(failed)}")
+    lines += ["  " + fmt_row(r) for r in failed]
+    return lines
 
 
 def report(rows: list[dict]) -> str:
@@ -2855,6 +3305,8 @@ def report(rows: list[dict]) -> str:
         lines += [f"  {fmt_row(r)} | base {r['base_error']}" for r in fixed]
         lines.append(f"this build fails, the base succeeded: {len(broken)}")
         lines += ["  " + fmt_row(r) for r in broken]
+    if any(h.get("gdal_allcpus") for h in heads) or any("gdal_allcpus_error" in r for r in rows):
+        lines += _gdal_allcpus_section(ok, computed)
     lines.append("\n## Worst cases (terrio time / GDAL time)\n")
     lines += [fmt_row(r) for r in sorted(ok, key=lambda r: -r["time_ratio"])[:20]]
     lines.append("\n## Geometric mean of the time ratios by axis (>1: terrio slower; cases in brackets)\n")
@@ -2879,6 +3331,7 @@ def report(rows: list[dict]) -> str:
     if scaling and len(pools) <= 1:
         lines.append("\n## Thread scaling (time with 1 reading thread / time with N; geometric means, cases in brackets)\n")
         lines += scaling
+    lines += _cold_section(ok, run_of)
     http = [r for r in ok if r["source"] == "http"]
     more_rounds = [r for r in http if r["terrio"]["rounds"] > r["gdal"]["rounds"]]
     more_bytes = [r for r in ok if _bytes(r["terrio"]) > 1.25 * _bytes(r["gdal"]) + 65536]
@@ -2916,14 +3369,17 @@ def main() -> None:
     r = sub.choices["run"]
     r.add_argument("--only", nargs="*", help="fixture name substrings")
     r.add_argument("--access", nargs="*", help="access patterns (default: all of the format's)")
-    r.add_argument("--source", nargs="*", choices=["local", "http"])
-    r.add_argument("--threads", type=int, default=4, help="RAYON_NUM_THREADS and GDAL_NUM_THREADS, for every access")
+    r.add_argument("--source", nargs="*", choices=["local", "http", "cold"],
+                   help="local (from the page cache after the first read), http, or cold: the local file dropped from the page cache before each sample (Linux)")
+    r.add_argument("--threads", type=int, default=4, help="RAYON_NUM_THREADS and GDAL_NUM_THREADS, for every access (GDAL's second configuration takes ALL_CPUS)")
     r.add_argument("--latency-ms", type=float, default=20, help="simulated round-trip time of the HTTP source")
     r.add_argument("--samples", type=int, default=3, help="samples per tool, in alternating order; the median")
     r.add_argument("--quick", action="store_true", help="one sample per tool")
     r.add_argument("--timeout", type=float, default=120, help="seconds a read may take before it is reported as a timeout")
     r.add_argument("--out", type=Path, help="results JSONL, a new file (default: DIR/FORMAT/results-<time>.jsonl)")
     r.add_argument("--base", type=Path, help="another terrio build to time too: a directory with its terrio package")
+    r.add_argument("--gdal-allcpus", action="store_true",
+                   help="also time GDAL with its default GDAL_CACHEMAX and GDAL_NUM_THREADS=ALL_CPUS, a second reference configuration")
     r.add_argument("--allow-battery", action="store_true", help="run on battery power (timings slower and noisier)")
     sub.add_parser("touched", help="the formats whose files the paths on standard input change, one a line")
     rep = sub.add_parser("report")
@@ -2942,7 +3398,7 @@ def main() -> None:
         return
     if a.cmd == "run" and a.access and (bad := set(a.access) - set(accesses(FORMATS[a.format]))):
         p.error(f"--access {' '.join(sorted(bad))}: {a.format} reads are {' '.join(accesses(FORMATS[a.format]))}")
-    sources = getattr(FORMATS[a.format], "SOURCES", ["local", "http"])
+    sources = getattr(FORMATS[a.format], "SOURCES", ["local", "http", "cold"])  # cold on request only
     if a.cmd == "run" and a.source and (bad := set(a.source) - set(sources)):
         p.error(f"--source {' '.join(sorted(bad))}: {a.format} runs from {' '.join(sources)}")
     # absolute: the readers take a relative path as a URL

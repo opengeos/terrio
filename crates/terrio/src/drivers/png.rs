@@ -154,8 +154,9 @@ pub(crate) fn write_jpeg(r: &Raster, path: &Path, quality: Option<&str>, georefe
 /// 2 x 2 block's chroma averaged, as libjpeg's `h2v2_downsample` averages it), the quantization
 /// tables of the `QUALITY` creation option (1 to 100, default 75) scaled as libjpeg scales them,
 /// and optimized Huffman tables (GDAL sets `optimize_coding`). Grayscale files hold only the
-/// luminance table, as libjpeg's do. Other data types are rounded and saturated to Byte. GDAL also
-/// writes 4 bands (as CMYK) and 12-bit samples; terrio does not.
+/// luminance table, as libjpeg's do. Other data types are rounded and saturated to Byte, with a
+/// warning (see [`crate::warnings`]). GDAL also writes 4 bands (as CMYK) and 12-bit samples; terrio
+/// does not.
 pub(crate) fn encode_jpeg(r: &Raster, quality: Option<&str>) -> Result<Vec<u8>> {
     let quality = quality.map(common::jpeg_quality).transpose()?.unwrap_or(75);
     let color = match r.bands {
@@ -174,7 +175,7 @@ pub(crate) fn encode_jpeg(r: &Raster, quality: Option<&str>) -> Result<Vec<u8>> 
     let r = if r.data_type == DataType::U8 {
         r
     } else {
-        converted = common::convert(r, DataType::U8);
+        converted = convert_with_warning(r, DataType::U8, "JPEG");
         &converted
     };
     let RasterData::U8(v) = &r.data else { unreachable!("converted above") };
@@ -197,6 +198,21 @@ pub(crate) fn encode_jpeg(r: &Raster, quality: Option<&str>) -> Result<Vec<u8>> 
         drop_chroma_table(&mut out);
     }
     Ok(out)
+}
+
+/// `r` converted to `to` (rounded and saturated, see [`common::convert`]), with a warning that
+/// names the type `driver` cannot hold and the type written. GDAL 3.13.3's PNG and JPEG drivers
+/// warn before they convert a type they cannot write. They differ from terrio in the type written:
+/// GDAL writes those PNG types as Byte where terrio writes UInt16, and writes Int16 and UInt16
+/// JPEGs as 12-bit (UInt16 with no type warning) where terrio writes Byte.
+fn convert_with_warning(r: &Raster, to: DataType, driver: &str) -> Raster {
+    let name = crate::info::gdal_type_name;
+    crate::warnings::warn(format!(
+        "{driver} driver doesn't support data type {}: written as {}, rounded and saturated to its range",
+        name(r.data_type),
+        name(to)
+    ));
+    common::convert(r, to)
 }
 
 /// Removes the chroma quantization table that jpeg-encoder writes for a grayscale image too, in a
@@ -257,9 +273,11 @@ pub(crate) fn write_world_file(r: &Raster, path: &Path, georeferenced: bool) -> 
     Ok(())
 }
 
-/// Writes a PNG (Byte or UInt16, 1 to 4 bands), its world file and its CRS sidecar. `zlevel` is the
-/// `ZLEVEL` creation option: the Deflate level of the image data, from 1 (the least effort) to 9
-/// (the most), 6 when it is not given; another value is refused.
+/// Writes a PNG (Byte or UInt16, 1 to 4 bands), its world file and its CRS sidecar. Int8 bands are
+/// written as Byte and other types as UInt16, rounded and saturated, with a warning (see
+/// [`crate::warnings`]). `zlevel` is the `ZLEVEL` creation option: the Deflate level of the image
+/// data, from 1 (the least effort) to 9 (the most), 6 when it is not given; another value is
+/// refused.
 pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, zlevel: Option<&str>, georeferenced: bool) -> Result<()> {
     let level = match zlevel {
         None => 6,
@@ -277,16 +295,14 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, zlevel: Option
         4 => png::ColorType::Rgba,
         n => return Err(Error::Unsupported(format!("PNG holds 1 to 4 bands, not {n}"))),
     };
-    let sixteen = !matches!(r.data_type, DataType::U8 | DataType::I8);
+    let target = if matches!(r.data_type, DataType::U8 | DataType::I8) { DataType::U8 } else { DataType::U16 };
+    let sixteen = target == DataType::U16;
     let converted;
-    let r = if sixteen && r.data_type != DataType::U16 {
-        converted = common::convert(r, DataType::U16);
-        &converted
-    } else if r.data_type == DataType::I8 {
-        converted = common::convert(r, DataType::U8);
-        &converted
-    } else {
+    let r = if r.data_type == target {
         r
+    } else {
+        converted = convert_with_warning(r, target, "PNG");
+        &converted
     };
     let n = r.cols * r.rows;
     let mut bytes = Vec::with_capacity(n * r.bands * if sixteen { 2 } else { 1 });
@@ -552,6 +568,59 @@ mod tests {
             let RasterData::U8(got) = &back.raster.data else { panic!("Byte bands") };
             let mse = got.iter().zip(&v).map(|(a, b)| (*a as f64 - *b as f64).powi(2)).sum::<f64>() / v.len() as f64;
             assert!(10.0 * (255.0f64.powi(2) / mse.max(1e-9)).log10() > 30.0, "QUALITY={quality}: MSE {mse}");
+        }
+    }
+
+    /// A band type the driver cannot hold is written as the type terrio converts it to, and a
+    /// warning names both, as GDAL 3.13.3's PNG and JPEG drivers warn (`CPLE_NotSupported`)
+    /// before converting. Byte and UInt16 PNGs and Byte JPEGs are written without one.
+    #[test]
+    fn png_and_jpeg_warn_of_a_type_they_convert() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            (RasterDriver::PNG, DataType::F32, Some(DataType::U16)),
+            (RasterDriver::PNG, DataType::F64, Some(DataType::U16)),
+            (RasterDriver::PNG, DataType::I16, Some(DataType::U16)),
+            (RasterDriver::PNG, DataType::I32, Some(DataType::U16)),
+            (RasterDriver::PNG, DataType::U32, Some(DataType::U16)),
+            (RasterDriver::PNG, DataType::I8, Some(DataType::U8)),
+            (RasterDriver::PNG, DataType::U8, None),
+            (RasterDriver::PNG, DataType::U16, None),
+            (RasterDriver::JPEG, DataType::F32, Some(DataType::U8)),
+            (RasterDriver::JPEG, DataType::U16, Some(DataType::U8)),
+            (RasterDriver::JPEG, DataType::I8, Some(DataType::U8)),
+            (RasterDriver::JPEG, DataType::U8, None),
+        ];
+        for (driver, from, to) in cases {
+            let values = vec![7.0; 16 * 16];
+            let r =
+                common::make_raster(16, 16, 1, RasterData::from_f64_vec(from, values), common::NO_GEOTRANSFORM, Default::default(), None)
+                    .unwrap();
+            let ds = RasterDataset::with_driver(r, RasterDriver::GTiff, false);
+            let p = dir.path().join(format!("out.{}", if driver == RasterDriver::PNG { "png" } else { "jpg" }));
+            let options = crate::RasterWriteOptions { driver: Some(driver), ..Default::default() };
+            let _ = crate::warnings::take();
+            crate::write_raster_dataset(&ds, p.to_str().unwrap(), &options).unwrap();
+            let warned = crate::warnings::take();
+            let back = if driver == RasterDriver::PNG { read(&p) } else { read_jpeg(&p) }.unwrap();
+            let name = crate::info::gdal_type_name;
+            match to {
+                Some(to) => {
+                    assert_eq!(back.raster.data_type, to, "{driver:?} {from:?}");
+                    let expected = format!(
+                        "{} driver doesn't support data type {}: written as {}, rounded and saturated to its range",
+                        driver.name(),
+                        name(from),
+                        name(to)
+                    );
+                    assert_eq!(warned, [expected]);
+                }
+                None => {
+                    assert_eq!(back.raster.data_type, from, "{driver:?} {from:?}");
+                    assert!(warned.is_empty(), "{driver:?} {from:?}: {warned:?}");
+                }
+            }
+            assert_eq!(back.raster.data.to_f64_vec()[0], 7.0, "{driver:?} {from:?}");
         }
     }
 

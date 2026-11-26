@@ -10,6 +10,10 @@ The corrected private VP8 encoder adapts the MIT-licensed lossy encoder from
 [webp-rust 0.3.2](https://github.com/mith-mmk/webp-rust) by MITH@mmk. The existing
 dependency supplies its decoder tables; see `NOTICE` for the adapted files.
 
+The corrected private JPEG XL encoder adapts the lossless encoder of
+[zune-jpegxl 0.5.2](https://crates.io/crates/zune-jpegxl) by the zune-image developers, under
+the MIT option of its license; see `NOTICE` for the adapted files.
+
 terrio is released under the MIT License, except its point cloud eigensolver
 (`pointcloud/filters/selfadjoint.rs`), a port of Eigen under MPL-2.0, and its
 coverage-weighted median (`ops/zonal_weighted_median.rs`), adapted from exactextract

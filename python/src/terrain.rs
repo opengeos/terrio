@@ -694,7 +694,7 @@ fn pansharpen(
         }
         if let Some(dst) = dst {
             let options = crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)?;
-            py.detach_result(|| terrio::ops::pansharpen::vrt::pansharpen_to_path(&pan_path, &sources, &o, dst, &options)).py()?;
+            crate::with_warnings(py, || terrio::ops::pansharpen::vrt::pansharpen_to_path(&pan_path, &sources, &o, dst, &options))?;
             return Ok(PyRaster { inner: py.detach_result(|| terrio::open_raster_lazy(dst)).py()? });
         }
         let out = py

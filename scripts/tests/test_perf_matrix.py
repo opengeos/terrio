@@ -713,16 +713,16 @@ def test_changed_files_choose_the_formats_to_measure():
     """A format's own file picks it; a shared one picks every format; others pick none."""
     # GeoPackage's `where` read goes through `terrio.sql` and the eager vector read.
     assert all("geopackage" in perf_matrix.touched([f]) for f in ("python/src/ops.rs", "crates/terrio/src/drivers/vector/mod.rs"))
-    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet"]
+    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet", "geoparquet-real"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
     assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "flatgeobuf", "geopackage", "geotiff-write",
-                                                   "geoparquet-write", "warp", "terrain"]
-    assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
-    assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
+                                                   "geoparquet-write", "warp", "terrain", "geotiff-real", "geoparquet-real"]
+    assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "flatgeobuf", "geopackage", "geoparquet-real"]
+    assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf", "geopackage", "geoparquet-real"]
     assert perf_matrix.touched(["crates/terrio/src/ops/sql/select.rs"]) == ["geopackage"]
-    assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr", "geotiff-write"]
+    assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr", "geotiff-write", "geotiff-real"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/gtiff_write.rs"]) == ["geotiff-write"]
-    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet.rs"]) == ["geoparquet", "geoparquet-write"]
+    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet.rs"]) == ["geoparquet", "geoparquet-write", "geoparquet-real"]
     assert perf_matrix.touched(["python/src/vector.rs"]) == ["flatgeobuf", "geoparquet-write"]
     assert perf_matrix.touched(["crates/terrio/src/ops/warp/window.rs"]) == ["warp"]
     assert perf_matrix.touched(["crates/terrio/src/ops/dem.rs", "crates/terrio/src/ops/calc/eval.rs"]) == ["terrain"]
@@ -1198,6 +1198,168 @@ def test_report_gives_each_tools_speedup_over_one_thread():
     assert "geotiff local threads8  terrio x4.00  gdal x4.00  terrio/gdal time x2.00  (1)" in two_runs
 
 
+def _fs_type(path):
+    """The file system type of a path.
+
+    Args:
+        path: The path.
+
+    Returns:
+        The type of the longest mount point above it, such as `ext4` or `tmpfs`.
+    """
+    path = str(Path(path).resolve()) + "/"  # a mount point is above itself
+    mounts = [line.split()[1:3] for line in Path("/proc/mounts").read_text().splitlines()]
+    return max(((m, k) for m, k in mounts if path.startswith(m.rstrip("/") + "/")), key=lambda x: len(x[0]))[1]
+
+
+# File systems whose files `POSIX_FADV_DONTNEED` drops from the page cache: the eviction must work there.
+EVICTING = ("ext4", "xfs", "btrfs")
+
+
+@pytest.mark.skipif(not hasattr(os, "posix_fadvise") or not Path("/proc/mounts").exists(), reason="Linux page cache")
+def test_eviction_drops_every_file_of_a_fixture_from_the_page_cache(tmp_path):
+    """Evict a fixture's files, a directory store's nested ones too, and count the pages before and after.
+
+    Args:
+        tmp_path: A directory for the fixture.
+    """
+    store = tmp_path / "f.zarr"
+    (store / "c" / "0").mkdir(parents=True)
+    (store / "zarr.json").write_bytes(b"{}")
+    (store / "c" / "0" / "0").write_bytes(os.urandom(1 << 20))  # just written: dirty pages until flushed
+    (store / "empty").write_bytes(b"")
+    page = perf_matrix.resource.getpagesize()
+    first = perf_matrix.evict(store)
+    fs = _fs_type(tmp_path)
+    if first["resident_after"] and fs not in EVICTING:  # tmpfs, or overlayfs in some containers
+        pytest.skip(f"{fs} keeps pages that POSIX_FADV_DONTNEED drops elsewhere")
+    assert first["cache_pages"] == 1 + (1 << 20) // page and first["resident_after"] == 0
+    perf_matrix.rewarm(store)
+    again = perf_matrix.evict(store)
+    if not again["resident_before"]:
+        pytest.skip("reads do not fill the page cache here (ZFS keeps its own cache)")
+    assert again["cache_pages"] == first["cache_pages"] and again["resident_before"] > 0 and again["resident_after"] == 0
+    one = store / "c" / "0" / "0"
+    assert perf_matrix.evict(one)["cache_pages"] == (1 << 20) // page
+
+
+def test_cold_reads_evict_before_each_sample_and_refuse_a_cached_fixture(tmp_path, monkeypatch):
+    """Read a cold case from the local path with eviction, fail a sample whose fixture stayed cached,
+    and read the fixture into the page cache before the warm case.
+
+    Args:
+        tmp_path: Isolated fixture and results directory.
+        monkeypatch: Scoped dependency replacements.
+    """
+    fake = SimpleNamespace(FIXTURES={"a": None}, ACCESS=["full"], EXT=".tif", meta=lambda *_: {"need_bytes": 1},
+                           axes=lambda _: {"codec": "none", "dtype": "uint8", "layout": "cog"})
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
+    monkeypatch.setattr(perf_matrix, "machine", lambda: {"machine": {"on_ac": True}})
+    monkeypatch.setattr(perf_matrix, "report", lambda _: "recorded")
+    monkeypatch.setattr(perf_matrix, "_settled_log", lambda: [])
+    rewarmed, specs = [], []
+    monkeypatch.setattr(perf_matrix, "rewarm", rewarmed.append)
+
+    def worker(cmd, **_kwargs):
+        spec = json.loads(cmd[-1])
+        specs.append(spec)
+        stayed = 3 if spec["tool"] == "gdal" and spec["cold"] else 0
+        cold = {"cache_pages": 8, "resident_before": 8, "resident_after": stayed, "disk_bytes": 4096}
+        sample = {**_sample(1), **cold} if spec["cold"] else _sample(1)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(sample), stderr="")
+
+    monkeypatch.setattr(perf_matrix.subprocess, "run", worker)
+    args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=1, only=None, quick=True, samples=1,
+                           base=None, out=tmp_path / "results.jsonl", source=["local", "cold"], allow_battery=False,
+                           access=None, timeout=1)
+    perf_matrix.run(args)
+    assert {(s["src"], s["cold"]) for s in specs} == {(str(tmp_path / "a.tif"), False), (str(tmp_path / "a.tif"), True)}
+    assert rewarmed == [tmp_path / "a.tif"]  # before the warm case only
+    rows = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()[1:]]
+    assert [r["source"] for r in rows] == ["local", "cold"]
+    assert "gdal_error" not in rows[0] and rows[1]["gdal_error"] == "not evicted: 3 of 8 pages stayed in the page cache"
+
+
+@pytest.mark.parametrize("fmt,ok", [("geotiff", True), ("zarr", True), ("warp", False), ("geotiff-write", False)])
+def test_cold_reads_are_a_source_of_the_read_formats_on_request(tmp_path, monkeypatch, fmt, ok):
+    """Accept `--source cold` for the reads, not for operations and writes.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped argument and runner replacements.
+        fmt: The format.
+        ok: Whether the command line is accepted.
+    """
+    ran = []
+    monkeypatch.setattr(perf_matrix, "run", ran.append)
+    monkeypatch.setattr(sys, "argv", ["perf_matrix.py", "run", "--dir", str(tmp_path), "--format", fmt, "--source", "cold"])
+    if ok:
+        perf_matrix.main()
+        assert ran[0].source == ["cold"]
+    else:
+        with pytest.raises(SystemExit) as exc:
+            perf_matrix.main()
+        assert exc.value.code == 2 and not ran
+
+
+def test_report_compares_cold_reads_with_warm_ones():
+    """Give each tool's cold time over its warm time, and both ratios, over the cases read both ways."""
+    def case(source, t, g):
+        return summarize({**_row(terrio=[_sample(t)], gdal=[_sample(g)]), "source": source})
+
+    text = report([{"machine": _MACHINE}, case("local", 1.0, 2.0), case("cold", 4.0, 4.0)])
+    assert "geotiff cold time / warm time: terrio x4.00  gdal x2.00  terrio/gdal time warm x0.50 cold x1.00  (1)" in text
+    assert "## Cold page cache" not in report([case("local", 1.0, 2.0)])
+
+
+def test_a_cold_read_that_took_nothing_from_storage_is_refused(tmp_path, monkeypatch):
+    """Refuse a cold sample that read no bytes from a block device: a cache `mincore` does not see served it.
+
+    Args:
+        tmp_path: Isolated fixture and results directory.
+        monkeypatch: Scoped dependency replacements.
+    """
+    fake = SimpleNamespace(FIXTURES={"a": None}, ACCESS=["full"], EXT=".tif", meta=lambda *_: {"need_bytes": 1},
+                           axes=lambda _: {"codec": "none", "dtype": "uint8", "layout": "cog"})
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
+    monkeypatch.setattr(perf_matrix, "machine", lambda: {"machine": {"on_ac": True}})
+    monkeypatch.setattr(perf_matrix, "report", lambda _: "recorded")
+    monkeypatch.setattr(perf_matrix, "_settled_log", lambda: [])
+    monkeypatch.setattr(perf_matrix, "rewarm", lambda _: None)
+    sample = {**_sample(1), "cache_pages": 8, "resident_before": 0, "resident_after": 0, "disk_bytes": 0}
+    monkeypatch.setattr(perf_matrix.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0, stdout=json.dumps(sample), stderr=""))
+    args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=1, only=None, quick=True, samples=1,
+                           base=None, out=tmp_path / "results.jsonl", source=["cold"], allow_battery=False, access=None, timeout=1)
+    perf_matrix.run(args)
+    row = json.loads((tmp_path / "results.jsonl").read_text().splitlines()[1])
+    assert row["terrio_error"] == row["gdal_error"] == "not cold: the read took no bytes from a block device"
+
+
+def test_a_cold_worker_evicts_after_the_warm_up_and_counts_storage_bytes_over_the_read(monkeypatch):
+    """Evict after the warm-up and outside `init`, and count the block-device bytes of the timed read only.
+
+    Args:
+        monkeypatch: Scoped format and counter replacements.
+    """
+    events = []
+
+    def reader(_tool, _access, _meta):
+        return (lambda p: events.append("open") or p), [lambda _d: events.append("read") or [1]], perf_matrix.checksum, (
+            lambda p: p, lambda _d: events.append("warm-up"))
+
+    def evict(path):
+        events.append("evict")
+        return {"cache_pages": 2, "resident_before": 2, "resident_after": 0}
+
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", SimpleNamespace(EXT=".tif", reader=reader))
+    monkeypatch.setattr(perf_matrix, "evict", evict)
+    # The block device gives 4096 bytes to the read, none to the warm-up or the eviction.
+    monkeypatch.setattr(perf_matrix, "_proc_io", lambda: {"rchar": 0, "read_bytes": 1000 + 4096 * ("read" in events)})
+    out = perf_matrix.worker({"format": "fake", "tool": "terrio", "src": "/d/f.tif", "access": "full", "meta": {}, "cold": True})
+    assert events == ["warm-up", "evict", "open", "read"]
+    assert out["disk_bytes"] == 4096 and out["resident_after"] == 0 and out["cache_pages"] == 2
+
+
 def test_flatgeobuf_index_levels_end_at_one_root_and_refuse_no_features():
     """Lay out a packed R-tree's levels down to one root, and refuse an index of no features."""
     assert perf_matrix.FlatGeobuf.levels(1) == [(1, 2), (0, 1)]
@@ -1306,3 +1468,222 @@ def test_geopackage_gdal_read_names_the_geometry_as_terrio(tmp_path):
     lyr = ds = None
     open_, items, _, _ = perf_matrix.GeoPackage.reader("gdal", "full", {})
     assert items[0](open_(str(path))).column_names == ["id", "geometry"]
+
+
+def test_a_download_is_kept_only_when_it_is_the_pinned_file(tmp_path):
+    """Publish a download whose size and SHA-256 are the pinned ones; refuse any other; reuse a kept one."""
+    import hashlib
+
+    src = tmp_path / "source.bin"
+    src.write_bytes(b"real data" * 1000)
+    size, sha = src.stat().st_size, hashlib.sha256(src.read_bytes()).hexdigest()
+    out = tmp_path / "out"
+    out.mkdir()
+    with pytest.raises(ValueError, match="not the pinned"):
+        perf_matrix.fetch(out / "a.tif", src.as_uri(), size, "0" * 64)
+    with pytest.raises(ValueError, match="not the pinned"):
+        perf_matrix.fetch(out / "a.tif", src.as_uri(), size + 1, sha)
+    big = tmp_path / "big.bin"
+    big.write_bytes(bytes(3 << 20))
+    with pytest.raises(ValueError, match="more than the pinned 1 bytes"):  # stopped at the first piece past the pinned size
+        perf_matrix.fetch(out / "a.tif", big.as_uri(), 1, sha)
+    assert list(out.iterdir()) == []  # neither the file nor its staging directory is left
+    perf_matrix.fetch(out / "a.tif", src.as_uri(), size, sha)
+    assert (out / "a.tif").read_bytes() == src.read_bytes()
+    perf_matrix.fetch(out / "a.tif", (tmp_path / "gone.bin").as_uri(), size, sha)  # kept: not downloaded again
+    (out / "a.tif").write_bytes(b"edited")
+    with pytest.raises(ValueError, match="not the pinned"):  # a kept file is checked too
+        perf_matrix.fetch(out / "a.tif", (tmp_path / "gone.bin").as_uri(), size, sha)
+
+
+def test_real_data_formats_are_registered_and_pinned():
+    """Each real-data fixture is a pinned download or made from one, and its format is measured like its parent's."""
+    for name, parent in (("geotiff-real", "geotiff"), ("geoparquet-real", "geoparquet")):
+        fmt = perf_matrix.FORMATS[name]
+        assert perf_matrix.PATHS[name] == perf_matrix.PATHS[parent]
+        made = {**fmt.DOWNLOADS, **getattr(fmt, "DERIVED", {})}
+        assert set(fmt.FIXTURES) == set(made)
+        for fixture in fmt.FIXTURES:
+            assert set(fmt.axes(fixture)) == {"codec", "dtype", "layout"}
+            assert fixture.isidentifier()  # the `where` read names the layer after the file
+        for url, size, sha in fmt.DOWNLOADS.values():
+            assert url.startswith("https://") and size > 0 and len(sha) == 64 and set(sha) <= set("0123456789abcdef")
+        assert all(src in fmt.DOWNLOADS for src, _ in getattr(fmt, "DERIVED", {}).values())
+    assert perf_matrix.accesses(perf_matrix.GeoTiffReal)[-1] == "masks"
+    assert "masks" not in perf_matrix.accesses(perf_matrix.GeoTiff)
+
+
+def test_geoparquet_real_reads_its_own_extent_columns_and_filter(tmp_path):
+    """Boxes lie in the file's extent, and the filter's own column prunes row groups by their statistics."""
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    pytest.importorskip("pyogrio")  # the GDAL reader
+    real = perf_matrix.GeoParquetReal
+    x0, y0, x1, y1 = real.EXTENT
+    assert all(x0 <= a < c <= x1 and y0 <= b < d <= y1 for a, b, c, d in real.bboxes(16))
+    assert perf_matrix.GeoParquet.bboxes(1) != real.bboxes(1)
+    table = pa.table({"area_in_meters": [1.0, 2.0, 50.0, 60.0], "bf_source": ["a"] * 4, "geometry": [b"x"] * 4})
+    geo = {"primary_column": "geometry", "columns": {"geometry": {}}}
+    path = tmp_path / "buildings.parquet"
+    pq.write_table(table.replace_schema_metadata({b"geo": json.dumps(geo).encode()}), path, row_group_size=2)
+    md = pq.ParquetFile(path).metadata
+    first = sum(md.row_group(0).column(c).total_compressed_size for c in range(md.num_columns))
+    assert real.meta(path, "where")["need_bytes"] == md.serialized_size + 8 + first
+    check = real.reader("gdal", "columns", {})[2]
+    assert check(table) == (113.0, 4)
+
+
+def test_geotiff_reads_of_a_raster_that_is_not_square_cover_it_whole(tmp_path):
+    """The whole and decimated reads cover both sides; the windows stay inside; an all-valid mask needs no block."""
+    np = pytest.importorskip("numpy")
+    gdal = pytest.importorskip("osgeo.gdal")
+    gdal.UseExceptions()
+    path = tmp_path / "tall.tif"
+    gdal.Translate(str(path), _mem(np, gdal, np.arange(600 * 1100, dtype="float32").reshape(1100, 600)), format="GTiff",
+                   creationOptions=["TILED=YES", "BLOCKXSIZE=256", "BLOCKYSIZE=256", "COMPRESS=DEFLATE"])
+    ds = gdal.Open(str(path))
+    band = ds.GetRasterBand(1)
+    every = sum(int(band.GetMetadataItem(f"BLOCK_SIZE_{x}_{y}", "TIFF")) for y in range(5) for x in range(3))
+    ds = band = None
+    meta = perf_matrix.GeoTiff.meta(path, "full")
+    assert (meta["size"], meta["xsize"], meta["ysize"], meta["need_bytes"]) == (600, 600, 1100, every)
+    assert perf_matrix.GeoTiffReal.meta(path, "masks")["need_bytes"] == 0  # all valid: no pixel is read
+    assert all(x + w <= 600 and y + h <= 600 for x, y, w, h in windows(meta["size"], 16))
+    open_, items, _, _ = perf_matrix.GeoTiff.reader("gdal", "overview", meta)
+    assert items[0](open_(str(path))).shape == (1100 // 8, 600 // 8)
+
+
+@pytest.mark.parametrize("mask_band", [False, True])
+def test_masks_are_read_by_both_tools_and_need_their_own_blocks(tmp_path, mask_band):
+    """terrio's `read_masks` and GDAL's mask bands hash the same: 0 where nodata or masked, 255 elsewhere.
+
+    A mask from nodata needs the pixel blocks; a mask band needs its own blocks only.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        mask_band: Whether the file has an internal mask band in place of nodata.
+    """
+    np = pytest.importorskip("numpy")
+    gdal = pytest.importorskip("osgeo.gdal")
+    pytest.importorskip("terrio.rio")
+    gdal.UseExceptions()
+    a = np.ones((64, 64), "uint8")
+    a[:20] = 0
+    path = tmp_path / "masked.tif"
+    opts = {"maskBand": "mask,1", "noData": "none"} if mask_band else {}
+    gdal.Translate(str(path), _mem(np, gdal, a, nodata=0), format="GTiff", creationOptions=["TILED=YES", "BLOCKXSIZE=32", "BLOCKYSIZE=32"], **opts)
+    gdal.Translate(str(tmp_path / "_warmup.tif"), _mem(np, gdal, a), format="GTiff")
+    meta = perf_matrix.GeoTiffReal.meta(path, "masks")
+    ds = gdal.Open(str(path))
+    band = ds.GetRasterBand(1).GetMaskBand() if mask_band else ds.GetRasterBand(1)
+    assert meta["need_bytes"] == sum(int(band.GetMetadataItem(f"BLOCK_SIZE_{x}_{y}", "TIFF")) for y in range(2) for x in range(2))
+    ds = band = None
+    samples = {tool: perf_matrix.worker({"format": "geotiff-real", "tool": tool, "src": str(path),
+                                         "access": "masks", "meta": meta}) for tool in ("gdal", "terrio")}
+    assert samples["gdal"]["sum"] == 255 * 44 * 64 and samples["gdal"]["n"] == 64 * 64
+    assert samples["terrio"]["digest"] == samples["gdal"]["digest"]
+
+
+@pytest.mark.parametrize("fmt", ["geoparquet", "geoparquet-real", "geopackage"])
+def test_sql_filter_reads_are_labelled_against_gdals_attribute_filter(tmp_path, monkeypatch, fmt):
+    """terrio's `where` is `terrio.sql` and GDAL's `read_arrow(where=...)`: the row says so for each vector format.
+
+    Args:
+        tmp_path: Isolated results directory.
+        monkeypatch: Scoped dependency replacements.
+        fmt: A format whose `where` read is terrio's SQL.
+    """
+    fake = SimpleNamespace(FIXTURES={"a": None}, ACCESS=["where"], EXT=".parquet", meta=lambda *_: {"need_bytes": 1},
+                           axes=lambda _: {"codec": "none", "dtype": "polygon", "layout": "x"})
+    monkeypatch.setitem(perf_matrix.FORMATS, fmt, fake)
+    monkeypatch.setattr(perf_matrix, "machine", lambda: {"machine": {"on_ac": True}})
+    monkeypatch.setattr(perf_matrix, "report", lambda _: "recorded")
+    monkeypatch.setattr(perf_matrix, "_settled_log", lambda: [])
+    monkeypatch.setattr(perf_matrix.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0, stdout=json.dumps(_sample(1)), stderr=""))
+    args = SimpleNamespace(format=fmt, dir=tmp_path, latency_ms=0, threads=1, only=None, quick=True, samples=1, base=None,
+                           out=tmp_path / "results.jsonl", source=["local"], allow_battery=False, access=None, timeout=1)
+    perf_matrix.run(args)
+    rows = [json.loads(line) for line in (tmp_path / "results.jsonl").read_text().splitlines()[1:]]
+    assert [r["access"] for r in rows] == ["where/sql-vs-filter"]
+
+
+def test_gdals_second_configuration_gets_its_own_ratio_and_its_failure_drops_only_that_ratio():
+    """Report terrio against GDAL in both configurations; a failure in the second keeps the others."""
+    both = summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)], gdal_allcpus=[_sample(4)], base=[_sample(4)]))
+    assert (both["time_ratio"], both["gdal_allcpus_ratio"], both["base_ratio"], both["values"]) == (2, 0.5, 0.5, "checksum_match")
+    failed = summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)], gdal_allcpus=[], base=[_sample(4)],
+                            gdal_allcpus_error="timeout: over 120 s"))
+    assert (failed["time_ratio"], failed["base_ratio"], failed["values"]) == (2, 0.5, "checksum_match")
+    assert "gdal_allcpus_ratio" not in failed
+    # Values unlike GDAL's drop its ratio too, and leave the case's `values` to terrio's.
+    differ = summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)], gdal_allcpus=[_sample(4, n=5)]))
+    assert differ["values"] == "checksum_match" and "gdal_allcpus_ratio" not in differ
+    # Equal digests match although a NaN read's sums do not.
+    nan = summarize(_row(**{t: [{**_sample(k, s=float("nan")), "digest": "a"}] for t, k in (("terrio", 2), ("gdal", 1), ("gdal_allcpus", 4))}))
+    assert (nan["values"], nan["gdal_allcpus_ratio"], nan["gdal_allcpus_values_match"]) == ("exact", 0.5, True)
+    # Both GDAL configurations failed: the case is an error, not a failure of the second only.
+    both_failed = summarize(_row(terrio=[_sample(2)], gdal=[], gdal_allcpus=[], gdal_error="exit 1", gdal_allcpus_error="exit 1"))
+    text = report([{"machine": {**_MACHINE, "gdal_allcpus": True}}, both, {**failed, "fixture": "f32_none"},
+                   {**differ, "fixture": "f64_deflate_p3"}, {**both_failed, "fixture": "i16_lzw_strip"}])
+    assert "all     x2.00 / x0.50(1)" in text and "source  local x2.00 / x0.50(1)" in text
+    assert "terrio faster than GDAL in one configuration only: 1\n  u8_none" in text
+    section = text.split("this configuration only (no second ratio): ")[1].split("\n\n")[0]
+    assert section.startswith("2\n") and "i16_lzw_strip" not in section
+    assert "f32_none" in section and "gdal ALL_CPUS timeout: over 120 s" in section
+    assert "f64_deflate_p3" in section and "gdal ALL_CPUS values differ from the first configuration" in section
+    assert "ALL_CPUS" not in report([{"machine": _MACHINE}, summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)]))])
+    # A second-configuration failure is listed when terrio's own values differ from GDAL's too.
+    unranked = summarize(_row(terrio=[_sample(2, s=11.0)], gdal=[_sample(1)], gdal_allcpus=[], gdal_allcpus_error="timeout: over 120 s"))
+    text = report([{"machine": {**_MACHINE, "gdal_allcpus": True}}, both, {**unranked, "fixture": "u16_zstd"}])
+    section = text.split("this configuration only (no second ratio): ")[1].split("\n\n")[0]
+    assert section.startswith("1\n") and "u16_zstd" in section and "gdal ALL_CPUS timeout: over 120 s" in section
+
+
+def test_gdals_second_configuration_runs_with_its_default_cache_and_every_cpu(tmp_path, monkeypatch):
+    """Time GDAL a second time with GDAL_CACHEMAX unset and GDAL_NUM_THREADS=ALL_CPUS, in turn with the others.
+
+    Args:
+        tmp_path: Isolated results directory.
+        monkeypatch: Scoped dependency replacements.
+    """
+    fake = SimpleNamespace(FIXTURES={"a": None}, ACCESS=["full"], EXT=".tif", meta=lambda *_: {"need_bytes": 1},
+                           axes=lambda _: {"codec": "none", "dtype": "uint8", "layout": "cog"})
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
+    monkeypatch.setattr(perf_matrix, "machine", lambda: {"machine": {"on_ac": True}})
+    monkeypatch.setattr(perf_matrix, "report", lambda _: "recorded")
+    monkeypatch.setattr(perf_matrix, "_settled_log", lambda: [])
+    monkeypatch.setenv("GDAL_CACHEMAX", "64")  # a shell's value is not the default either
+    envs = {}
+
+    def worker(cmd, env, **_kwargs):
+        envs.setdefault(json.loads(cmd[-1])["tool"], []).append(env)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(_sample(1)), stderr="")
+
+    monkeypatch.setattr(perf_matrix.subprocess, "run", worker)
+    args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=4, only=None, quick=False, samples=2,
+                           base=None, out=tmp_path / "results.jsonl", source=["local"], allow_battery=False,
+                           access=None, timeout=1, gdal_allcpus=True)
+    perf_matrix.run(args)
+    assert {t: len(e) for t, e in envs.items()} == {"terrio": 2, "gdal": 2, "gdal_allcpus": 2}
+    second = envs["gdal_allcpus"][0]
+    assert "GDAL_CACHEMAX" not in second and second["GDAL_NUM_THREADS"] == "ALL_CPUS"
+    assert envs["gdal"][0]["GDAL_CACHEMAX"] == "512" and envs["gdal"][0]["GDAL_NUM_THREADS"] == "4"
+    head = json.loads((tmp_path / "results.jsonl").read_text().splitlines()[0])
+    assert head["machine"]["gdal_allcpus"] is True
+
+
+def test_gdals_second_configuration_reads_with_gdal(monkeypatch):
+    """Read with GDAL's reader in a `gdal_allcpus` worker.
+
+    Args:
+        monkeypatch: Scoped format replacement.
+    """
+    tools = []
+
+    def reader(tool, _access, _meta):
+        tools.append(tool)
+        return (lambda p: p), [lambda _d: [1]], perf_matrix.checksum, (lambda p: p, lambda _d: None)
+
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", SimpleNamespace(EXT=".tif", reader=reader))
+    perf_matrix.worker({"format": "fake", "tool": "gdal_allcpus", "src": "http://localhost/f.tif", "access": "full", "meta": {}})
+    assert tools == ["gdal"]

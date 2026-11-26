@@ -18,8 +18,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
-
 from terrio.rio.crs import CRS, _child, _parse_wkt
 
 # Datum names as PROJ reads them from WKT1 (GDAL's names, with underscores).
@@ -48,8 +46,6 @@ def crs_from_user_input(crs_input: Any) -> CRS:
     """
     if isinstance(crs_input, CRS):
         return crs_input
-    if isinstance(crs_input, np.integer):  # an EPSG code as netCDF attributes decode it
-        crs_input = int(crs_input)
     if not isinstance(crs_input, (str, int, dict)) and hasattr(crs_input, "to_wkt"):
         crs_input = crs_input.to_wkt()
     return CRS.from_user_input(crs_input)

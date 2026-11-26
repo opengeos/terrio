@@ -44,7 +44,7 @@ pub use eval::DType;
 pub use expr::Expr;
 
 use super::mosaic::{MosaicOptions, MosaicSource, mosaic_allow_empty};
-use super::{Grid, build_raster};
+use super::{Grid, build_raster_data};
 use crate::{Error, RasterDataset, Result};
 use eval::{Arr, Data, Evaluator, Val};
 use std::borrow::Cow;
@@ -232,41 +232,41 @@ fn to_output(a: &Arr, out: DataType, n: usize) -> Vec<f64> {
     let int_out = !matches!(out, DataType::F32 | DataType::F64);
     let (lo, hi) = super::type_range(out);
     let unsigned = matches!(out, DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64);
-    let conv = |i: usize| -> f64 {
-        let i = if a.len() == 1 { 0 } else { i };
-        match &a.data {
-            Data::B(v) => v[i] as u8 as f64,
-            Data::I(v) => {
-                let x = v[i];
-                if int_out {
-                    (x.clamp(lo as i128, hi as i128)) as f64
-                } else if out == DataType::F32 {
-                    x as f32 as f64
-                } else {
-                    x as f64
-                }
-            }
-            Data::F(v) => {
-                let x = v[i];
-                if !int_out {
-                    return if out == DataType::F32 { x as f32 as f64 } else { x };
-                }
-                if x.is_nan() {
-                    return 0.0;
-                }
-                let r = if a.dt == DType::F32 {
-                    let x = x as f32;
-                    (if unsigned || x > 0.0 { x + 0.5 } else { x - 0.5 }) as f64
-                } else if unsigned || x > 0.0 {
-                    x + 0.5
-                } else {
-                    x - 0.5
-                };
-                r.clamp(lo, hi).trunc()
-            }
+    let int = |x: i128| -> f64 {
+        if int_out {
+            (x.clamp(lo as i128, hi as i128)) as f64
+        } else if out == DataType::F32 {
+            x as f32 as f64
+        } else {
+            x as f64
         }
     };
-    (0..n).map(conv).collect()
+    let float = |x: f64| -> f64 {
+        if !int_out {
+            return if out == DataType::F32 { x as f32 as f64 } else { x };
+        }
+        if x.is_nan() {
+            return 0.0;
+        }
+        let r = if a.dt == DType::F32 {
+            let x = x as f32;
+            (if unsigned || x > 0.0 { x + 0.5 } else { x - 0.5 }) as f64
+        } else if unsigned || x > 0.0 {
+            x + 0.5
+        } else {
+            x - 0.5
+        };
+        r.clamp(lo, hi).trunc()
+    };
+    // A single value (a scalar result) fills the output.
+    fn each<T: Copy>(v: &[T], n: usize, f: impl Fn(T) -> f64) -> Vec<f64> {
+        if v.len() == 1 { vec![f(v[0]); n] } else { v[..n].iter().map(|x| f(*x)).collect() }
+    }
+    match &a.data {
+        Data::B(v) => each(v, n, |x| x as u8 as f64),
+        Data::I(v) => each(v, n, int),
+        Data::F(v) => each(v, n, float),
+    }
 }
 
 /// Python's `%` on floats.
@@ -476,8 +476,8 @@ pub fn calc(inputs: &[CalcInput], o: &CalcOptions) -> Result<RasterDataset> {
     // Evaluate in chunks of rows.
     let n = width * height;
     let chunk = (262_144 / width.max(1)).max(1) * width;
-    let nchunks = n.div_ceil(chunk.max(1));
-    let mut bands = Vec::with_capacity(band_count);
+    // Each chunk is written to the output as it is computed.
+    let mut data = RasterData::new_filled(out_type, n * band_count, 0.0);
     for b in 0..band_count {
         let expr = &exprs[if exprs.len() > 1 { b } else { 0 }];
         let run = |c: usize| -> Result<Vec<f64>> {
@@ -523,8 +523,28 @@ pub fn calc(inputs: &[CalcInput], o: &CalcOptions) -> Result<RasterDataset> {
             };
             Ok(to_output(&arr, out_type, len))
         };
-        let chunks = run_chunks(nchunks, &run)?;
-        bands.push(chunks.into_iter().flatten().collect::<Vec<f64>>());
+        macro_rules! fill {
+            ($v:expr) => {
+                run_chunks($v[b * n..(b + 1) * n].chunks_mut(chunk.max(1)).collect(), &|c, out| {
+                    for (o, x) in out.iter_mut().zip(run(c)?) {
+                        *o = x as _;
+                    }
+                    Ok(())
+                })?
+            };
+        }
+        match &mut data {
+            RasterData::U8(v) => fill!(v),
+            RasterData::I8(v) => fill!(v),
+            RasterData::U16(v) => fill!(v),
+            RasterData::I16(v) => fill!(v),
+            RasterData::U32(v) => fill!(v),
+            RasterData::I32(v) => fill!(v),
+            RasterData::U64(v) => fill!(v),
+            RasterData::I64(v) => fill!(v),
+            RasterData::F32(v) => fill!(v),
+            RasterData::F64(v) => fill!(v),
+        }
     }
     let grid = Grid { width, height, geo_transform: gt_check };
     let nodata = out_nodata.map(|v| match v {
@@ -534,42 +554,37 @@ pub fn calc(inputs: &[CalcInput], o: &CalcOptions) -> Result<RasterDataset> {
         Val::Float(f) => f,
         Val::Arr(_) => unreachable!("Python number"),
     });
-    build_raster(grid, bands, out_type, nodata, &first.crs(), |v, _| v)
+    build_raster_data(grid, data, band_count, nodata, &first.crs())
 }
 
-/// Runs `f` on chunks `0..n`, in parallel where threads are available.
-fn run_chunks(n: usize, f: &(dyn Fn(usize) -> Result<Vec<f64>> + Sync)) -> Result<Vec<Vec<f64>>> {
+/// Runs `f` on each part with its index, in parallel where threads are available, and returns
+/// the error of the first part (in order) that fails.
+fn run_chunks<T: Send>(parts: Vec<T>, f: &(dyn Fn(usize, T) -> Result<()> + Sync)) -> Result<()> {
     #[cfg(not(target_family = "wasm"))]
     {
         use std::sync::Mutex;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let threads = crate::par::threads().min(16).min(n.max(1));
+        let threads = crate::par::threads().min(16).min(parts.len().max(1));
         if threads > 1 {
-            let next = AtomicUsize::new(0);
-            let results: Mutex<Vec<Option<Result<Vec<f64>>>>> = Mutex::new((0..n).map(|_| None).collect());
+            let queue = Mutex::new(parts.into_iter().enumerate());
+            let errors = Mutex::new(Vec::new());
             std::thread::scope(|s| {
                 for _ in 0..threads {
                     s.spawn(|| {
                         loop {
-                            let c = next.fetch_add(1, Ordering::Relaxed);
-                            if c >= n {
-                                break;
+                            let next = queue.lock().expect("no panic while holding the lock").next();
+                            let Some((c, part)) = next else { break };
+                            if let Err(e) = f(c, part) {
+                                errors.lock().expect("no panic while holding the lock").push((c, e));
                             }
-                            let r = f(c);
-                            results.lock().expect("no panic while holding the lock")[c] = Some(r);
                         }
                     });
                 }
             });
-            return results
-                .into_inner()
-                .expect("no panic while holding the lock")
-                .into_iter()
-                .map(|r| r.expect("every chunk ran"))
-                .collect();
+            let first = errors.into_inner().expect("no panic while holding the lock").into_iter().min_by_key(|(c, _)| *c);
+            return first.map_or(Ok(()), |(_, e)| Err(e));
         }
     }
-    (0..n).map(f).collect()
+    parts.into_iter().enumerate().try_for_each(|(c, part)| f(c, part))
 }
 
 #[cfg(test)]
@@ -578,7 +593,7 @@ mod tests {
 
     fn ds(values: Vec<f64>, w: usize, h: usize, dt: DataType, nodata: Option<f64>, x0: f64) -> RasterDataset {
         let grid = Grid { width: w, height: h, geo_transform: [x0, 1.0, 0.0, h as f64, 0.0, -1.0] };
-        build_raster(grid, vec![values], dt, nodata, &crate::crs::SpatialRef::default(), super::super::convert_value).unwrap()
+        super::super::build_raster(grid, vec![values], dt, nodata, &crate::crs::SpatialRef::default(), super::super::convert_value).unwrap()
     }
 
     fn input<'a>(name: &str, ds: &'a RasterDataset) -> CalcInput<'a> {
@@ -647,6 +662,46 @@ mod tests {
             let expected = if nodata.is_some() { vec![out.nodata().unwrap(); 9] } else { vec![1., 1., 0., 1., 1., 0., 0., 0., 0.] };
             assert_eq!(out.raster.data.to_f64_vec(), expected);
         }
+    }
+
+    /// The perf matrix's expression, over two chunks, gives the float32 arithmetic NumPy applies to
+    /// a float32 input for every pixel (`scripts/perf_matrix.py` compares this expression with
+    /// GDAL 3.13.3's `gdal_calc.py`); each output band holds its own pixels; and nodata pixels in
+    /// both chunks are blended.
+    #[test]
+    fn chunked_output_matches_float32_bands_and_nodata() {
+        let (w, h) = (600, 500); // 300,000 pixels: two chunks of rows
+        let edge = [0.0, -0.0, 1.0, -1.0, f32::INFINITY, f32::NEG_INFINITY, f32::NAN, 1e-45, -1e-45, 3.4e38, -3.4e38, 2.5, -7.25];
+        let values: Vec<f32> = (0..w * h).map(|i| edge.get(i).copied().unwrap_or(((i * 7919) % 20011) as f32 * 0.37 - 3700.0)).collect();
+        let a = ds(values.iter().map(|v| *v as f64).collect(), w, h, DataType::F32, None, 0.0);
+        let o = CalcOptions { calc: vec!["sqrt(abs(A)) * 2 + A / 3".into()], ..Default::default() };
+        let out = calc(&[input("A", &a)], &o).unwrap();
+        let RasterData::F32(got) = &out.raster.data else { panic!("a float32 output") };
+        assert_eq!(got.len(), w * h);
+        for (x, g) in values.iter().zip(got) {
+            let want = x.abs().sqrt() * 2.0 + x / 3.0;
+            assert!(g.to_bits() == want.to_bits() || g.is_nan() && want.is_nan(), "{x}: {g} != {want}");
+        }
+
+        // Two output bands, each over both chunks.
+        let o = CalcOptions { calc: vec!["A".into(), "-A".into()], ..Default::default() };
+        let out = calc(&[input("A", &a)], &o).unwrap();
+        let RasterData::F32(got) = &out.raster.data else { panic!("a float32 output") };
+        assert_eq!(got.len(), 2 * w * h);
+        for (i, x) in values.iter().enumerate() {
+            assert_eq!(got[i].to_bits(), x.to_bits());
+            assert_eq!(got[w * h + i].to_bits(), (-x).to_bits());
+        }
+
+        let mut values: Vec<f64> = values.iter().map(|v| *v as f64).collect();
+        values[w * h - 1] = -7.25;
+        let a = ds(values, w, h, DataType::F32, Some(-7.25), 0.0);
+        let o = CalcOptions { calc: vec!["2.5".into()], output_type: Some(DataType::I16), ..Default::default() };
+        let out = calc(&[input("A", &a)], &o).unwrap();
+        let RasterData::I16(got) = &out.raster.data else { panic!("an int16 output") };
+        let masked: Vec<usize> = (0..w * h).filter(|i| got[*i] != 3).collect();
+        assert_eq!(masked, [12, w * h - 1]);
+        assert!(masked.iter().all(|i| got[*i] == -32768));
     }
 
     #[test]

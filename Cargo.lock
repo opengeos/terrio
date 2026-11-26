@@ -2730,7 +2730,6 @@ dependencies = [
  "zrip",
  "zstd 0.14.4",
  "zune-core",
- "zune-jpegxl",
 ]
 
 [[package]]
