@@ -2095,9 +2095,10 @@ pub fn can_convert_stream(src: &str, dst: &str, options: &ConvertOptions) -> boo
         && (input.is_some_and(can_read_stream) || pbf())
         && (location.is_local() || {
             // Remote files these drivers read in place. A GeoPackage only for outputs written
-            // without a profile (GeoParquet needs one for integer and date fields): those that
-            // need one read the stream twice, the file twice over the network, where the whole
-            // conversion downloads it once.
+            // without a profile: those that need one read the stream twice, the file twice over
+            // the network, where the whole conversion downloads it once. GeoParquet needs one for
+            // integer and date fields, which are not known before the file is opened, so every
+            // GeoParquet output is converted whole.
             #[cfg(remote)]
             {
                 ((cfg!(feature = "parquet") && input == Some(VectorDriver::Parquet))
