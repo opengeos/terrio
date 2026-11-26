@@ -138,51 +138,7 @@ pub fn clean_coverage(layer: &Layer, options: &CoverageCleanOptions) -> Result<L
         .collect();
     let (points, edges, elevations) = node(original_rings, distance);
     let faces = polygonize(&points, &edges);
-    let mut assigned: Vec<Vec<usize>> = vec![vec![]; sources.len()];
-    let mut overlaps = Vec::new();
-    let mut gaps = Vec::new();
-    for (i, face) in faces.iter().enumerate() {
-        let Some(p) = face.interior_point() else { continue };
-        let parents: Vec<_> = sources.iter().enumerate().filter_map(|(i, g)| g.contains(&p).then_some(i)).collect();
-        match parents.as_slice() {
-            [] => gaps.push(i),
-            [parent] => assigned[*parent].push(i),
-            _ => overlaps.push((i, parents)),
-        }
-    }
-    for (i, parents) in overlaps {
-        let target = parents
-            .into_iter()
-            .reduce(|a, b| {
-                let score = |j: usize| match options.merge_strategy {
-                    CoverageMergeStrategy::LongestBorder => assigned[j].iter().map(|&f| common_border(&faces[i], &faces[f])).sum(),
-                    CoverageMergeStrategy::MaxArea => assigned[j].iter().map(|&f| faces[f].unsigned_area()).sum(),
-                    CoverageMergeStrategy::MinArea => -assigned[j].iter().map(|&f| faces[f].unsigned_area()).sum::<f64>(),
-                    CoverageMergeStrategy::MinIndex => -(j as f64),
-                };
-                if score(b) > score(a) { b } else { a }
-            })
-            .expect("overlap has parents");
-        assigned[target].push(i);
-    }
-    if options.maximum_gap_width > 0. {
-        for i in gaps {
-            if !radius_within(&faces[i], options.maximum_gap_width / 2.) {
-                continue;
-            }
-            let target = assigned
-                .iter()
-                .enumerate()
-                .filter_map(|(j, fs)| {
-                    let border = fs.iter().map(|&f| common_border(&faces[i], &faces[f])).sum::<f64>();
-                    (border > 0.).then_some((j, border))
-                })
-                .reduce(|a, b| if b.1 > a.1 { b } else { a });
-            if let Some((target, _)) = target {
-                assigned[target].push(i);
-            }
-        }
-    }
+    let assigned = assign_faces(&faces, &sources, options);
     let mut out = super::geometry::header(layer, None);
     for (f, fs) in layer.features.iter().zip(assigned) {
         let polygons = dissolve_faces(fs.iter().map(|&i| &faces[i]));
@@ -220,6 +176,187 @@ pub fn clean_coverage_layers(layers: &[Layer], active_layer: Option<&str>, optio
         return Err(Error::InvalidArgument(format!("active layer {name:?} not found")));
     }
     layers.iter().map(|l| if active_layer.is_none_or(|name| l.name == name) { clean_coverage(l, options) } else { Ok(l.clone()) }).collect()
+}
+
+/// Bulk-loads an R-tree of the bounding rectangles of `geometries`, keyed by
+/// their position. Empty geometries have no rectangle and are left out.
+fn envelope_index<G: BoundingRect<f64>>(geometries: &[G]) -> RTree<GeomWithData<Rectangle<[f64; 2]>, usize>>
+where
+    G::Output: Into<Option<geo::Rect<f64>>>,
+{
+    RTree::bulk_load(
+        geometries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, g)| {
+                let r = g.bounding_rect().into()?;
+                Some(GeomWithData::new(Rectangle::from_corners([r.min().x, r.min().y], [r.max().x, r.max().y]), i))
+            })
+            .collect(),
+    )
+}
+
+/// Returns, in ascending order, the positions of the indexed rectangles that
+/// contain `p` (boundary included). Ascending order keeps the first-wins
+/// tie-breaking of a scan over all geometries.
+fn candidates_at(index: &RTree<GeomWithData<Rectangle<[f64; 2]>, usize>>, p: geo::Point<f64>) -> Vec<usize> {
+    let mut found: Vec<usize> = index.locate_in_envelope_intersecting(AABB::from_point([p.x(), p.y()])).map(|g| g.data).collect();
+    found.sort_unstable();
+    found
+}
+
+/// Undirected edges of every face, indexed by edge key, so the faces sharing a
+/// border with a given face are found without comparing it to every face.
+struct FaceBorders {
+    /// Each face's segments (exterior, then interiors) as key and length.
+    segments: Vec<Vec<([Key; 2], f64)>>,
+    /// Edge key to the (face, segment position) pairs that use it.
+    index: HashMap<[Key; 2], Vec<(usize, usize)>>,
+}
+impl FaceBorders {
+    /// Indexes the segments of `faces`.
+    ///
+    /// Args:
+    ///     faces: Polygonized faces.
+    ///
+    /// Returns:
+    ///     The edge index over all faces.
+    fn new(faces: &[P]) -> Self {
+        let segments: Vec<Vec<_>> = faces
+            .iter()
+            .map(|f| {
+                std::iter::once(f.exterior())
+                    .chain(f.interiors())
+                    .flat_map(|r| r.0.windows(2))
+                    .map(|p| {
+                        let mut e = [key(p[0]), key(p[1])];
+                        e.sort_unstable();
+                        (e, dist(p[0], p[1]))
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut index: HashMap<[Key; 2], Vec<(usize, usize)>> = HashMap::new();
+        for (f, ss) in segments.iter().enumerate() {
+            for (s, (e, _)) in ss.iter().enumerate() {
+                index.entry(*e).or_default().push((f, s));
+            }
+        }
+        Self { segments, index }
+    }
+
+    /// Returns `common_border(faces[i], faces[f])` for every other face `f`
+    /// sharing an edge with face `i`, ordered by `f`. Lengths are summed in
+    /// `f`'s segment order, so each value is bit-identical to `common_border`.
+    ///
+    /// Args:
+    ///     i: The face whose neighbors are wanted.
+    ///
+    /// Returns:
+    ///     (face, shared border length) pairs.
+    fn neighbors(&self, i: usize) -> Vec<(usize, f64)> {
+        let keys: HashSet<[Key; 2]> = self.segments[i].iter().map(|(e, _)| *e).collect();
+        let mut hits: Vec<(usize, usize)> = keys.iter().flat_map(|e| self.index[e].iter().copied()).filter(|&(f, _)| f != i).collect();
+        hits.sort_unstable();
+        let mut out: Vec<(usize, f64)> = Vec::new();
+        for (f, s) in hits {
+            let length = self.segments[f][s].1;
+            match out.last_mut() {
+                Some((g, sum)) if *g == f => *sum += length,
+                _ => out.push((f, 0. + length)),
+            }
+        }
+        out
+    }
+}
+
+/// Sums each owner's shared border with a face, adding the owner's faces in
+/// assignment order as a sum over that owner's assigned faces does. Faces that
+/// share no edge contribute exactly zero, so they are skipped.
+///
+/// Args:
+///     neighbors: (face, border) pairs from [`FaceBorders::neighbors`].
+///     owner: The owner and position in its assigned list of each face.
+///
+/// Returns:
+///     (owner, total border) pairs ordered by owner.
+fn borders_by_owner(neighbors: &[(usize, f64)], owner: &[Option<(usize, usize)>]) -> Vec<(usize, f64)> {
+    let mut owned: Vec<(usize, usize, f64)> = neighbors.iter().filter_map(|&(f, b)| owner[f].map(|(j, pos)| (j, pos, b))).collect();
+    owned.sort_unstable_by_key(|&(j, pos, _)| (j, pos));
+    let mut out: Vec<(usize, f64)> = Vec::new();
+    for (j, _, b) in owned {
+        match out.last_mut() {
+            Some((k, sum)) if *k == j => *sum += b,
+            _ => out.push((j, b)),
+        }
+    }
+    out
+}
+
+/// Assigns each polygonized face to the source features: faces inside one
+/// source go to it, overlaps go to the parent chosen by the merge strategy,
+/// and narrow enclosed gaps go to the neighbor with the longest border.
+///
+/// Args:
+///     faces: Polygonized faces of the noded linework.
+///     sources: Source polygons, one per input feature.
+///     options: Cleaning options.
+///
+/// Returns:
+///     The faces assigned to each source, in assignment order.
+fn assign_faces(faces: &[P], sources: &[geo::MultiPolygon<f64>], options: &CoverageCleanOptions) -> Vec<Vec<usize>> {
+    let source_index = envelope_index(sources);
+    let mut assigned: Vec<Vec<usize>> = vec![vec![]; sources.len()];
+    let mut owner: Vec<Option<(usize, usize)>> = vec![None; faces.len()];
+    // Records the owner and assignment position of each face for border sums.
+    fn assign(assigned: &mut [Vec<usize>], owner: &mut [Option<(usize, usize)>], j: usize, f: usize) {
+        owner[f] = Some((j, assigned[j].len()));
+        assigned[j].push(f);
+    }
+    let mut overlaps = Vec::new();
+    let mut gaps = Vec::new();
+    for (i, face) in faces.iter().enumerate() {
+        let Some(p) = face.interior_point() else { continue };
+        let parents: Vec<_> = candidates_at(&source_index, p).into_iter().filter(|&j| sources[j].contains(&p)).collect();
+        match parents.as_slice() {
+            [] => gaps.push(i),
+            [parent] => assign(&mut assigned, &mut owner, *parent, i),
+            _ => overlaps.push((i, parents)),
+        }
+    }
+    let needs_borders =
+        options.maximum_gap_width > 0. || (options.merge_strategy == CoverageMergeStrategy::LongestBorder && !overlaps.is_empty());
+    let borders = needs_borders.then(|| FaceBorders::new(faces));
+    let areas: Vec<f64> = faces.iter().map(|f| f.unsigned_area()).collect();
+    for (i, parents) in overlaps {
+        let scores: Vec<f64> = match options.merge_strategy {
+            CoverageMergeStrategy::LongestBorder => {
+                let by_owner = borders_by_owner(&borders.as_ref().expect("borders indexed").neighbors(i), &owner);
+                parents.iter().map(|j| by_owner.binary_search_by_key(j, |&(k, _)| k).map_or(0., |k| by_owner[k].1)).collect()
+            }
+            CoverageMergeStrategy::MaxArea => parents.iter().map(|&j| assigned[j].iter().map(|&f| areas[f]).sum()).collect(),
+            CoverageMergeStrategy::MinArea => parents.iter().map(|&j| -assigned[j].iter().map(|&f| areas[f]).sum::<f64>()).collect(),
+            CoverageMergeStrategy::MinIndex => parents.iter().map(|&j| -(j as f64)).collect(),
+        };
+        // The first parent wins ties, as in a left fold keeping the incumbent.
+        let best = (1..parents.len()).fold(0, |best, k| if scores[k] > scores[best] { k } else { best });
+        assign(&mut assigned, &mut owner, parents[best], i);
+    }
+    if let Some(borders) = borders.filter(|_| options.maximum_gap_width > 0.) {
+        for i in gaps {
+            if !radius_within(&faces[i], options.maximum_gap_width / 2.) {
+                continue;
+            }
+            let target = borders_by_owner(&borders.neighbors(i), &owner)
+                .into_iter()
+                .filter(|&(_, border)| border > 0.)
+                .reduce(|a, b| if b.1 > a.1 { b } else { a });
+            if let Some((target, _)) = target {
+                assign(&mut assigned, &mut owner, target, i);
+            }
+        }
+    }
+    assigned
 }
 
 fn key(p: C) -> Key {
@@ -454,18 +591,20 @@ fn polygons_from_rings(rings: Vec<geo::LineString<f64>>) -> Vec<P> {
             .collect()
     };
     let boundaries: Vec<_> = shells.iter().map(boundary).collect();
+    let areas: Vec<f64> = shells.iter().map(|p| p.unsigned_area()).collect();
+    let index = envelope_index(&shells);
     let mut assigned: Vec<Vec<geo::LineString<f64>>> = vec![vec![]; shells.len()];
     for h in holes {
         let Some(point) = h.interior_point() else { continue };
         let edges = boundary(&h);
+        let area = h.unsigned_area();
         // A reversed cycle bounds the same face. Area equality is insufficient:
         // cyclic starts change floating summation, especially on large coordinates.
-        let target = shells
-            .iter()
-            .enumerate()
-            .filter(|(i, p)| boundaries[*i] != edges && p.unsigned_area() > h.unsigned_area() && p.contains(&point))
-            .min_by(|(_, a), (_, b)| a.unsigned_area().total_cmp(&b.unsigned_area()))
-            .map(|(i, _)| i);
+        // Candidates come in shell order, so the first smallest shell still wins.
+        let target = candidates_at(&index, point)
+            .into_iter()
+            .filter(|&i| boundaries[i] != edges && areas[i] > area && shells[i].contains(&point))
+            .min_by(|&a, &b| areas[a].total_cmp(&areas[b]));
         if let Some(i) = target {
             assigned[i].push(h.exterior().clone());
         }
@@ -582,28 +721,6 @@ fn dissolve_faces<'a>(faces: impl IntoIterator<Item = &'a P>) -> Vec<P> {
     edges.sort_unstable();
     polygons_from_rings(trace(&points, edges))
 }
-fn common_border(a: &P, b: &P) -> f64 {
-    let mut es = HashSet::new();
-    for r in std::iter::once(a.exterior()).chain(a.interiors()) {
-        for p in r.0.windows(2) {
-            let mut e = [key(p[0]), key(p[1])];
-            e.sort_unstable();
-            es.insert(e);
-        }
-    }
-    let mut length = 0.;
-    for r in std::iter::once(b.exterior()).chain(b.interiors()) {
-        for p in r.0.windows(2) {
-            let mut e = [key(p[0]), key(p[1])];
-            e.sort_unstable();
-            if es.contains(&e) {
-                length += dist(p[0], p[1]);
-            }
-        }
-    }
-    length
-}
-
 #[derive(Clone, Copy, Debug)]
 struct Cell {
     p: C,
@@ -743,6 +860,28 @@ fn exact_radius(poly: &P) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Reference shared border length used by the unindexed assignment.
+    fn common_border(a: &P, b: &P) -> f64 {
+        let mut es = HashSet::new();
+        for r in std::iter::once(a.exterior()).chain(a.interiors()) {
+            for p in r.0.windows(2) {
+                let mut e = [key(p[0]), key(p[1])];
+                e.sort_unstable();
+                es.insert(e);
+            }
+        }
+        let mut length = 0.;
+        for r in std::iter::once(b.exterior()).chain(b.interiors()) {
+            for p in r.0.windows(2) {
+                let mut e = [key(p[0]), key(p[1])];
+                e.sort_unstable();
+                if es.contains(&e) {
+                    length += dist(p[0], p[1]);
+                }
+            }
+        }
+        length
+    }
     fn rectangle(x: f64, y: f64, w: f64, h: f64) -> Geometry {
         Geometry::Polygon {
             exterior: Ring(vec![Coord::xy(x, y), Coord::xy(x + w, y), Coord::xy(x + w, y + h), Coord::xy(x, y + h), Coord::xy(x, y)]),
@@ -846,6 +985,235 @@ mod tests {
         assert!(clean_coverage(&point, &Default::default()).unwrap_err().to_string().contains("polygonal geometry"));
         point.features[0].geometry = None;
         assert!(clean_coverage(&point, &Default::default()).unwrap_err().to_string().contains("not null"));
+    }
+    /// The face assignment before indexing: a scan over every source per face,
+    /// scores recomputed per comparison, and a scan over every assigned face
+    /// per gap. Kept as the reference for the indexed [`assign_faces`].
+    fn assign_faces_unindexed(faces: &[P], sources: &[geo::MultiPolygon<f64>], options: &CoverageCleanOptions) -> Vec<Vec<usize>> {
+        let mut assigned: Vec<Vec<usize>> = vec![vec![]; sources.len()];
+        let mut overlaps = Vec::new();
+        let mut gaps = Vec::new();
+        for (i, face) in faces.iter().enumerate() {
+            let Some(p) = face.interior_point() else { continue };
+            let parents: Vec<_> = sources.iter().enumerate().filter_map(|(i, g)| g.contains(&p).then_some(i)).collect();
+            match parents.as_slice() {
+                [] => gaps.push(i),
+                [parent] => assigned[*parent].push(i),
+                _ => overlaps.push((i, parents)),
+            }
+        }
+        for (i, parents) in overlaps {
+            let target = parents
+                .into_iter()
+                .reduce(|a, b| {
+                    let score = |j: usize| match options.merge_strategy {
+                        CoverageMergeStrategy::LongestBorder => assigned[j].iter().map(|&f| common_border(&faces[i], &faces[f])).sum(),
+                        CoverageMergeStrategy::MaxArea => assigned[j].iter().map(|&f| faces[f].unsigned_area()).sum(),
+                        CoverageMergeStrategy::MinArea => -assigned[j].iter().map(|&f| faces[f].unsigned_area()).sum::<f64>(),
+                        CoverageMergeStrategy::MinIndex => -(j as f64),
+                    };
+                    if score(b) > score(a) { b } else { a }
+                })
+                .expect("overlap has parents");
+            assigned[target].push(i);
+        }
+        if options.maximum_gap_width > 0. {
+            for i in gaps {
+                if !radius_within(&faces[i], options.maximum_gap_width / 2.) {
+                    continue;
+                }
+                let target = assigned
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(j, fs)| {
+                        let border = fs.iter().map(|&f| common_border(&faces[i], &faces[f])).sum::<f64>();
+                        (border > 0.).then_some((j, border))
+                    })
+                    .reduce(|a, b| if b.1 > a.1 { b } else { a });
+                if let Some((target, _)) = target {
+                    assigned[target].push(i);
+                }
+            }
+        }
+        assigned
+    }
+    /// Hole-to-shell matching before indexing: every shell is tested per hole.
+    fn polygons_from_rings_unindexed(rings: Vec<geo::LineString<f64>>) -> Vec<P> {
+        let mut shells = Vec::new();
+        let mut holes = Vec::new();
+        for r in rings {
+            let p = P::new(r, vec![]);
+            match p.signed_area().partial_cmp(&0.) {
+                Some(Ordering::Greater) => shells.push(p),
+                Some(Ordering::Less) => holes.push(p),
+                _ => {}
+            }
+        }
+        let boundary = |p: &P| -> BTreeSet<_> {
+            p.exterior()
+                .0
+                .windows(2)
+                .map(|pair| {
+                    let mut e = [key(pair[0]), key(pair[1])];
+                    e.sort_unstable();
+                    e
+                })
+                .collect()
+        };
+        let boundaries: Vec<_> = shells.iter().map(boundary).collect();
+        let mut assigned: Vec<Vec<geo::LineString<f64>>> = vec![vec![]; shells.len()];
+        for h in holes {
+            let Some(point) = h.interior_point() else { continue };
+            let edges = boundary(&h);
+            let target = shells
+                .iter()
+                .enumerate()
+                .filter(|(i, p)| boundaries[*i] != edges && p.unsigned_area() > h.unsigned_area() && p.contains(&point))
+                .min_by(|(_, a), (_, b)| a.unsigned_area().total_cmp(&b.unsigned_area()))
+                .map(|(i, _)| i);
+            if let Some(i) = target {
+                assigned[i].push(h.exterior().clone());
+            }
+        }
+        for (p, holes) in shells.iter_mut().zip(assigned) {
+            for h in holes {
+                p.interiors_push(h);
+            }
+        }
+        shells
+    }
+    /// Sources, noded points and edges of a layer, as `clean_coverage` builds them.
+    fn noded(l: &Layer) -> (Vec<geo::MultiPolygon<f64>>, Vec<C>, Vec<Edge>) {
+        let sources: Vec<_> =
+            l.features.iter().map(|f| super::super::topology::polygons(f.geometry.as_ref().unwrap(), f.fid).unwrap()).collect();
+        let rings: Vec<Vec<Coord>> = l
+            .features
+            .iter()
+            .flat_map(|f| match f.geometry.as_ref().unwrap() {
+                Geometry::Polygon { exterior, interiors } => {
+                    std::iter::once(exterior.0.clone()).chain(interiors.iter().map(|r| r.0.clone())).collect::<Vec<_>>()
+                }
+                _ => unreachable!("test layers hold polygons"),
+            })
+            .collect();
+        let (points, edges, _) = node(rings, 1e-7);
+        (sources, points, edges)
+    }
+    #[test]
+    fn indexed_assignment_matches_unindexed_scan() {
+        let mut overlap_faces = 0;
+        for seed in 1..5 {
+            let (sources, points, edges) = noded(&jittered_grid(9, seed));
+            let faces = polygonize(&points, &edges);
+            overlap_faces +=
+                faces.iter().filter(|f| f.interior_point().is_some_and(|p| sources.iter().filter(|s| s.contains(&p)).count() > 1)).count();
+            for strategy in [
+                CoverageMergeStrategy::LongestBorder,
+                CoverageMergeStrategy::MaxArea,
+                CoverageMergeStrategy::MinArea,
+                CoverageMergeStrategy::MinIndex,
+            ] {
+                for maximum_gap_width in [0., 0.1] {
+                    let options = CoverageCleanOptions { merge_strategy: strategy, maximum_gap_width, ..Default::default() };
+                    assert_eq!(
+                        assign_faces(&faces, &sources, &options),
+                        assign_faces_unindexed(&faces, &sources, &options),
+                        "seed {seed} {strategy:?} gap {maximum_gap_width}"
+                    );
+                }
+            }
+        }
+        assert!(overlap_faces > 0);
+    }
+    #[test]
+    fn indexed_hole_matching_matches_unindexed_scan() {
+        // Nested and side-by-side squares give holes with several candidate shells.
+        let square = |x: f64, y: f64, w: f64, ccw: bool| {
+            let mut r = vec![C { x, y }, C { x: x + w, y }, C { x: x + w, y: y + w }, C { x, y: y + w }, C { x, y }];
+            if !ccw {
+                r.reverse();
+            }
+            geo::LineString(r)
+        };
+        let mut rings = Vec::new();
+        for (x, y) in [(0., 0.), (20., 0.), (0., 20.)] {
+            for (inset, w) in [(0., 16.), (2., 12.), (4., 8.), (6., 4.)] {
+                rings.push(square(x + inset, y + inset, w, true));
+                rings.push(square(x + inset, y + inset, w, false));
+            }
+        }
+        assert_eq!(polygons_from_rings(rings.clone()), polygons_from_rings_unindexed(rings));
+        for seed in 1..5 {
+            let (_, points, edges) = noded(&jittered_grid(7, seed));
+            let lines = dissolve_lines(&points, &edges);
+            let rings = trace(&points, lines.iter().flat_map(|line| line.windows(2).flat_map(|p| [[p[1], p[0]], [p[0], p[1]]])));
+            assert_eq!(polygons_from_rings(rings.clone()), polygons_from_rings_unindexed(rings), "seed {seed}");
+        }
+    }
+    #[test]
+    fn tied_overlap_and_gap_go_to_the_earlier_feature() {
+        // The overlap [1, 2] borders each parent's face for length 1, and both
+        // parents have assigned area 1: every strategy ties or prefers the first.
+        for strategy in [
+            CoverageMergeStrategy::LongestBorder,
+            CoverageMergeStrategy::MaxArea,
+            CoverageMergeStrategy::MinArea,
+            CoverageMergeStrategy::MinIndex,
+        ] {
+            let options = CoverageCleanOptions { merge_strategy: strategy, ..Default::default() };
+            let out = clean_coverage(&layer(vec![rectangle(0., 0., 2., 1.), rectangle(1., 0., 2., 1.)]), &options).unwrap();
+            assert_eq!(areas(&out), vec![2., 1.], "{strategy:?}");
+            let out = clean_coverage(&layer(vec![rectangle(1., 0., 2., 1.), rectangle(0., 0., 2., 1.)]), &options).unwrap();
+            assert_eq!(areas(&out), vec![2., 1.], "{strategy:?} swapped");
+        }
+        // The enclosed gap borders the two tall blocks for 3.6 each.
+        let l = layer(vec![
+            rectangle(0., 0., 1.9, 4.),
+            rectangle(2.1, 0., 1.9, 4.),
+            rectangle(1.9, 0., 0.2, 0.2),
+            rectangle(1.9, 3.8, 0.2, 0.2),
+        ]);
+        let out = clean_coverage(&l, &CoverageCleanOptions { maximum_gap_width: 0.25, ..Default::default() }).unwrap();
+        let a = areas(&out);
+        assert!((a[0] - (7.6 + 0.2 * 3.6)).abs() < 1e-12 && (a[1] - 7.6).abs() < 1e-12, "{a:?}");
+    }
+    /// Builds an `n` by `n` grid of unit cells whose sides move by -1/32, 0 or
+    /// 1/32, so neighbors overlap, leave narrow gaps or share exact edges. The
+    /// offsets are exact binary fractions, which produces exact score ties.
+    fn jittered_grid(n: usize, seed: u64) -> Layer {
+        let mut state = seed;
+        let mut jitter = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((state >> 33) % 3) as f64 / 32. - 1. / 32.
+        };
+        let mut gs = Vec::with_capacity(n * n);
+        for row in 0..n {
+            for col in 0..n {
+                let (left, right, bottom, top) = (jitter(), jitter(), jitter(), jitter());
+                gs.push(rectangle(col as f64 - left, row as f64 - bottom, 1. + left + right, 1. + bottom + top));
+            }
+        }
+        layer(gs)
+    }
+    /// Times cleaning a coverage of many polygons. Run with
+    /// `cargo test --release -p terrio --lib coverage_clean::tests::many_polygon_coverage_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing measurement"]
+    fn many_polygon_coverage_timing() {
+        for n in [20, 40, 60] {
+            let l = jittered_grid(n, 7);
+            for strategy in [CoverageMergeStrategy::LongestBorder, CoverageMergeStrategy::MaxArea] {
+                let options = CoverageCleanOptions { merge_strategy: strategy, maximum_gap_width: 0.1, ..Default::default() };
+                let start = std::time::Instant::now();
+                let out = clean_coverage(&l, &options).unwrap();
+                let digest = out
+                    .features
+                    .iter()
+                    .flat_map(|f| f.geometry.as_ref().unwrap().all_coords())
+                    .fold(0u64, |h, c| h.rotate_left(5) ^ c.x.to_bits() ^ c.y.to_bits().rotate_left(17));
+                println!("{n}x{n} {strategy:?}: {:.3} s digest {digest:016x}", start.elapsed().as_secs_f64());
+            }
+        }
     }
     #[test]
     fn reversed_cycles_do_not_become_holes_of_their_own_face() {
