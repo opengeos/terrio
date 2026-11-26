@@ -5,7 +5,7 @@ name: perf matrix
 # request's time against the base and against GDAL, measured on the same machine. Started by a
 # maintainer's comment on a pull request:
 #
-#   /perf-matrix                                   every format but geoparquet-write, one sample per tool (--quick)
+#   /perf-matrix                                   every format but geoparquet-write and the real data, one sample per tool (--quick)
 #   /perf-matrix geoparquet --only geoarrow        one format; options of `perf_matrix.py run`
 #   /perf-matrix zarr --access window band --quick
 #
@@ -90,12 +90,12 @@ jobs:
           [[ "$args" =~ ^[A-Za-z0-9_.\ -]*$ ]] || { echo "Arguments may hold letters, digits, _ . - and spaces"; exit 1; }
           read -ra words <<< "$args"
           case "${words[0]:-}" in
-            geotiff|zarr|geoparquet|flatgeobuf|geopackage|geotiff-write|geoparquet-write|warp|terrain) formats=${words[0]}; rest=("${words[@]:1}") ;;
+            geotiff|zarr|geoparquet|flatgeobuf|geopackage|geotiff-write|geoparquet-write|warp|terrain|geotiff-real|geoparquet-real) formats=${words[0]}; rest=("${words[@]:1}") ;;
             "" ) formats="geotiff zarr geoparquet flatgeobuf geopackage geotiff-write warp terrain"; rest=(--quick) ;;
             # Options alone go to the read formats, whose options they are; a write format or an
             # operation is named.
             -*) formats="geotiff zarr geoparquet flatgeobuf geopackage"; rest=("${words[@]}") ;;
-            *) echo "The first word is a format: geotiff, zarr, geoparquet, flatgeobuf, geopackage, geotiff-write, geoparquet-write, warp or terrain"; exit 1 ;;
+            *) echo "The first word is a format: geotiff, zarr, geoparquet, flatgeobuf, geopackage, geotiff-write, geoparquet-write, warp, terrain, geotiff-real or geoparquet-real"; exit 1 ;;
           esac
           for w in "${rest[@]}"; do
             case "$w" in --out|--dir|--base|--format|--allow-battery) echo "$w is set by the workflow"; exit 1 ;; esac
