@@ -840,6 +840,23 @@ def test_warp_merge_mask(dem, tmp_path):
         assert masked.shape[0] == 2 and transform.c == 500300
 
 
+def test_reproject_of_a_band_window_runs_without_affine_matmul(dem, monkeypatch):
+    # affine 2, which the requirement allows, has no `@` for transforms.
+    path, data = dem
+    with rio.open(path) as ds:
+        # A destination over a part of the source, so that only a window of it is read.
+        t = Affine(T.a, 0.0, T.c + 40 * T.a, 0.0, T.e, T.f + 30 * T.e)
+        expected = np.zeros((20, 25), "int16")
+        warp.reproject(ds.read(1), expected, src_transform=ds.transform, src_crs=ds.crs,
+                       dst_transform=t, dst_crs=ds.crs)  # fmt: skip
+        monkeypatch.delattr(Affine, "__matmul__", raising=False)
+        monkeypatch.delattr(Affine, "__rmatmul__", raising=False)
+        dst = np.zeros((20, 25), "int16")
+        warp.reproject(rio.band(ds, 1), dst, dst_transform=t, dst_crs=ds.crs)
+    np.testing.assert_array_equal(dst, expected)
+    assert (dst != 0).any()
+
+
 def test_rotated_destination_grids(dem):
     """A rotated output transform is warped, not dropped: by reproject and WarpedVRT alike."""
     path, data = dem
