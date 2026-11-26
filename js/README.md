@@ -343,16 +343,19 @@ resolution before source levels are selected. `toBytes` also accepts `overviews`
 ### Non-finite nodata values
 
 Nodata options (`warp` and `mosaic` `srcNodata`/`dstNodata`, `translate` `aNodata`,
-`rasterize`, `calc`, `proximity`, `createRaster`, `editRaster`, `openCatalog`, `pansharpen`,
-`vectorGrid`, `xyz`, `nodataToAlpha`, `contour` and the others) keep `NaN`, `Infinity` and
-`-Infinity`, given as numbers or as the strings `"nan"`, `"inf"` and `"-inf"`:
+`rasterize`, `calc`, `proximity`, `createRaster`, `editRaster`, `openCatalog`,
+`vectorGrid`, `xyz`, `PointCloud.grid`, `nodataToAlpha`, `contour` and the others) keep
+`NaN`, `Infinity` and `-Infinity`, given as numbers or as the strings `"nan"`, `"inf"` and
+`"-inf"`. Burn and initial values (`rasterize` `burn` and `init`, `createRaster` `burn`)
+accept them too. Strings may hold any number (`"5"`, `"1e3"`, `"infinity"`).
 
 ```js
 const nanFilled = warp(dataset, { dstNodata: NaN });   // the same as { dstNodata: "nan" }
 ```
 
 A non-finite value of any other numeric option is refused rather than read as unset.
-An operation whose engine needs a finite value (`pansharpen`) reports so.
+`pansharpen` takes its nodata the same way, but refuses a non-finite value because its
+engine needs a finite one.
 
 ### Fill nodata
 
@@ -439,8 +442,9 @@ const groups = terrio.dissolve(buffered, {fields: ["region"]});
 
 Results are vector `Dataset` objects. Raster inputs accept uploaded bytes or
 shared datasets; contour/footprint hold full input pixels in memory. Contour
-also supports `band`, `levels`, `offset`, `nodata`, `ignoreNodata` and `layerName`. Nonfinite nodata overrides are `NaN`, `Infinity`, `-Infinity` or the strings
-`"nan"`, `"inf"` or `"-inf"`; null is rejected.
+also supports `band`, `levels`, `offset`, `nodata`, `ignoreNodata` and `layerName`.
+Non-finite nodata overrides are `NaN`, `Infinity`, `-Infinity` or the strings `"nan"`,
+`"inf"` or `"-inf"`; null is rejected.
 Footprint supports `intersection`, a same-grid `mask` dataset/upload and explicit
 text `attributes`; no source-path field is added automatically.
 

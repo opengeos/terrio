@@ -27,8 +27,10 @@ pub fn unscale(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     Ok(Dataset::from_raster(terrio::ops::pixel::unscale(&ds, &o).map_err(js_err)?))
 }
 
-/// A nodata value: a number, or a string for the non-finite values JSON cannot hold (`"nan"`,
-/// `"inf"`, `"-inf"`, as [`crate::parse_options`] writes raw `NaN`, `Infinity` and `-Infinity`).
+/// A nodata value: a number, or a string holding one. Strings carry the non-finite values JSON
+/// cannot hold (`"nan"`, `"inf"`, `"-inf"`, as [`crate::parse_options`] writes raw `NaN`,
+/// `Infinity` and `-Infinity`); any spelling Rust's `f64` parser reads is accepted, case
+/// insensitively (`"5"`, `"1e3"`, `"infinity"`, `"+inf"`).
 #[derive(Deserialize)]
 #[serde(untagged)]
 pub(crate) enum NodataValue {
@@ -57,6 +59,11 @@ impl NodataValue {
     pub(crate) fn parse(text: &str) -> Result<f64, JsError> {
         Self::Text(text.to_owned()).number()
     }
+
+    /// Parses a nodata word: `None` for `"none"`, otherwise the value of [`Self::parse`].
+    pub(crate) fn parse_or_none(text: &str) -> Result<Option<f64>, JsError> {
+        if text.trim().eq_ignore_ascii_case("none") { Ok(None) } else { Self::parse(text).map(Some) }
+    }
 }
 
 /// Serde helpers reading nodata fields as [`NodataValue`]s, so that they accept `"nan"`, `"inf"`
@@ -75,8 +82,18 @@ pub(crate) mod nodata_field {
         Option::<NodataValue>::deserialize(d)?.map(NodataValue::value).transpose().map_err(D::Error::custom)
     }
 
-    /// A list of nodata values.
+    /// A list of nodata values, or one value as a list of one.
     pub(crate) fn list<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<f64>, D::Error> {
+        let values = match super::Numbers::deserialize(d)? {
+            super::Numbers::One(v) => vec![v],
+            super::Numbers::Many(v) => v,
+        };
+        values.into_iter().map(NodataValue::value).collect::<Result<_, _>>().map_err(D::Error::custom)
+    }
+
+    /// A JSON array of nodata values (one value is refused, for untagged enums that read it
+    /// as another variant).
+    pub(crate) fn array<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<f64>, D::Error> {
         Vec::<NodataValue>::deserialize(d)?.into_iter().map(NodataValue::value).collect::<Result<_, _>>().map_err(D::Error::custom)
     }
 }

@@ -4931,8 +4931,34 @@ test("non-finite nodata options are kept, as numbers or strings, by every operat
   // Uncovered pixels take the NaN nodata.
   assert.ok(Number.isNaN(ops.rasterize(NaN).readBand(1)[15]));
   // A non-finite value of a field that is not nodata is refused, not read as unset.
-  assert.throws(() => terrio.proximity(src, { maxdist: NaN }), /invalid type/);
-  assert.throws(() => terrio.translate(src, { tr: [Infinity, 1] }), /invalid type/);
+  assert.throws(() => terrio.proximity(src, { maxdist: NaN }), /non-finite number .* only by nodata options/);
+  assert.throws(() => terrio.translate(src, { tr: [Infinity, 1] }), /non-finite number .* only by nodata options/);
+  // Burn values take non-finite numbers like nodata.
+  for (const burn of [NaN, "nan", [NaN]]) {
+    assert.ok(Number.isNaN(terrio.rasterize(SQUARES, { burn, tr: [1, 1], te: [0, 0, 30, 10], ot: "Float32", init: 0 }).readBand(1)[0]));
+  }
+  assert.ok(Number.isNaN(terrio.createRaster(null, { size: [1, 1], ot: "Float32", crs: "EPSG:4326", bbox: [0, 0, 1, 1], burn: [NaN] }).readBand(1)[0]));
+  // "none" is trimmed in every word form.
+  assert.equal(terrio.pansharpen(pan, spectral, { ot: "Float32", nodata: " none " }).count, 1);
+  // vectorGrid, xyz and point-cloud gridding.
+  const points = { type: "FeatureCollection", features: [{ type: "Feature", properties: { v: 1 }, geometry: { type: "Point", coordinates: [0.5, 0.5] } }] };
+  for (const nodata of [NaN, "nan"]) {
+    const grid = terrio.vectorGrid(points, { algorithm: "average:radius1=0.1:radius2=0.1", zfield: "v", extent: [0, 0, 2, 2], size: [2, 2], nodata });
+    assert.ok(Number.isNaN(grid.nodata), String(nodata));
+    assert.equal(grid.readBand(1).filter(Number.isNaN).length, 3);
+  }
+  const holes = terrio.rasterFromArray(new Float32Array([NaN, 2]), 2, 1, [0, 1, 0, 1, 0, -1], "EPSG:4326");
+  assert.equal(terrio.xyz(holes, { skipNodata: true }).trim().split("\n").length, 2);
+  for (const srcNodata of [NaN, "nan", [NaN]]) {
+    assert.equal(terrio.xyz(holes, { skipNodata: true, srcNodata }).trim().split("\n").length, 1, String(srcNodata));
+  }
+  if (!needs("pointcloud")) {
+    const pc = terrio.pointsFromArrays({ x: new Float64Array([0.5, 3.5]), y: new Float64Array([0.5, 3.5]), z: new Float64Array([1, 2]) }, "EPSG:32610");
+    for (const nodata of [NaN, "nan", -Infinity, "-inf"]) {
+      const dem = pc.grid(1, { nodata });
+      assert.ok(same(dem.nodata, Number(nodata === "nan" ? NaN : nodata === "-inf" ? -Infinity : nodata)), String(nodata));
+    }
+  }
 });
 
 test("contour exposes band selection, elevation fields and 3D vertices", () => {

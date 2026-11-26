@@ -84,13 +84,10 @@ impl Default for JsGridOptions {
     }
 }
 
-/// Parses an options object, or the defaults when it is undefined.
+/// Parses an options object, or the defaults when it is undefined, as [`crate::parse_options`]
+/// does (non-finite nodata kept).
 fn parse<T: for<'de> Deserialize<'de> + Default>(options: JsValue) -> Result<T, JsError> {
-    if options.is_undefined() || options.is_null() {
-        return Ok(T::default());
-    }
-    let text: String = js_sys::JSON::stringify(&options).map_err(|_| JsError::new("invalid options"))?.into();
-    serde_json::from_str(&text).map_err(|e| JsError::new(&format!("options: {e}")))
+    crate::parse_options(&options)
 }
 
 /// Options of `PointCloud.hexbin`, as a JavaScript object (PDAL's `filters.hexbin` options).

@@ -149,7 +149,16 @@ pub(crate) fn parse_options<T: serde::de::DeserializeOwned + Default>(options: &
         return Ok(T::default());
     }
     let text = stringify_options(options).ok().and_then(|v| v.as_string()).ok_or_else(|| JsError::new("invalid options"))?;
-    serde_json::from_str(&text).map_err(|e| JsError::new(&format!("options: {e}")))
+    serde_json::from_str(&text).map_err(|e| {
+        let e = e.to_string();
+        // A non-finite number reached a field that is not a nodata value: say so rather than
+        // only show the string it was encoded as.
+        if ["\"nan\"", "\"inf\"", "\"-inf\""].iter().any(|v| e.starts_with(&format!("invalid type: string {v}"))) {
+            JsError::new(&format!("options: a non-finite number (NaN, Infinity) is accepted only by nodata options ({e})"))
+        } else {
+            JsError::new(&format!("options: {e}"))
+        }
+    })
 }
 
 /// The `overview` option of a resampled read: an overview number or `"AUTO"`, `"AUTO-n"`,

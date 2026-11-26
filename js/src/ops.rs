@@ -150,7 +150,7 @@ pub(crate) fn srs(s: Option<&str>) -> Result<Option<SpatialRef>, JsError> {
 #[serde(untagged)]
 enum NumberOrList {
     Number(f64),
-    List(#[serde(deserialize_with = "crate::pixel::nodata_field::list")] Vec<f64>),
+    List(#[serde(deserialize_with = "crate::pixel::nodata_field::array")] Vec<f64>),
     Word(String),
 }
 
@@ -482,9 +482,8 @@ pub fn translate(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     let assign_nodata = match a.a_nodata {
         None => None,
         Some(NumberOrList::Number(x)) => Some(Some(x)),
-        Some(NumberOrList::Word(s)) if s.trim().eq_ignore_ascii_case("none") => Some(None),
         Some(NumberOrList::Word(s)) => {
-            Some(Some(NodataValue::parse(&s).map_err(|_| invalid("aNodata is a number, 'nan', 'inf', '-inf' or 'none'"))?))
+            Some(NodataValue::parse_or_none(&s).map_err(|_| invalid("aNodata is a number, 'nan', 'inf', '-inf' or 'none'"))?)
         }
         Some(_) => return Err(invalid("aNodata is a number, 'nan', 'inf', '-inf' or 'none'")),
     };
@@ -838,9 +837,11 @@ pub fn calc(expression: JsValue, inputs: JsValue, options: JsValue) -> Result<Da
     let nodata = match a.nodata {
         None => CalcNodata::Default,
         Some(NumberOrList::Number(x)) => CalcNodata::Value(x),
-        Some(NumberOrList::Word(s)) if s.trim().eq_ignore_ascii_case("none") => CalcNodata::None,
         Some(NumberOrList::Word(s)) => {
-            CalcNodata::Value(NodataValue::parse(&s).map_err(|_| invalid("nodata is a number, 'nan', 'inf', '-inf' or 'none'"))?)
+            match NodataValue::parse_or_none(&s).map_err(|_| invalid("nodata is a number, 'nan', 'inf', '-inf' or 'none'"))? {
+                Some(x) => CalcNodata::Value(x),
+                None => CalcNodata::None,
+            }
         }
         Some(_) => return Err(invalid("nodata is a number, 'nan', 'inf', '-inf' or 'none'")),
     };
@@ -1244,10 +1245,12 @@ fn pansharpen_options(options: JsValue) -> Result<terrio::ops::pansharpen::Pansh
     let a: PansharpenArgs = parse_options(&options)?;
     let nodata = match a.nodata {
         None | Some(serde_json::Value::Null) => PansharpenNodata::Auto,
-        Some(serde_json::Value::String(s)) if s.eq_ignore_ascii_case("none") => PansharpenNodata::None,
         Some(serde_json::Value::Number(n)) => PansharpenNodata::Value(n.as_f64().ok_or_else(|| invalid("nodata must be a finite number"))?),
         Some(serde_json::Value::String(s)) => {
-            PansharpenNodata::Value(NodataValue::parse(&s).map_err(|_| invalid("nodata must be a number, 'nan', 'inf', '-inf' or 'none'"))?)
+            match NodataValue::parse_or_none(&s).map_err(|_| invalid("nodata must be a number, 'nan', 'inf', '-inf' or 'none'"))? {
+                Some(x) => PansharpenNodata::Value(x),
+                None => PansharpenNodata::None,
+            }
         }
         _ => return Err(invalid("nodata must be a number, 'nan', 'inf', '-inf' or 'none'")),
     };
