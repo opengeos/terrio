@@ -129,7 +129,7 @@ fn require_whole_read(overview: OverviewSelection, name: &str, cause: Option<&Er
     Ok(())
 }
 
-fn open_path(path: &str, overview: OverviewSelection) -> Result<OpenedRaster> {
+pub(crate) fn open_path(path: &str, overview: OverviewSelection) -> Result<OpenedRaster> {
     let cause = if path.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("gdal:")) {
         None
     } else {
