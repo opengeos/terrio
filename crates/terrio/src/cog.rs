@@ -1299,7 +1299,9 @@ impl LazyRaster {
     /// dataset, which it reads with `GetMinimum()`/`GetMaximum()` (PAM or format metadata, no
     /// pixels read), else the pixels of the overview GDAL samples (`GetRasterSampleOverview(2500)`),
     /// else one block in every `nSampleRate`. Only that metadata, that overview or those blocks
-    /// are read: a large raster is never in memory whole. `band` is numbered from 1, over
+    /// are read: a large raster is never in memory whole. Valid pixels are those that are not
+    /// nodata or NaN; for a band without nodata on a raster with a per-dataset mask, also those
+    /// the mask of the level read marks valid (GDAL's `GetMaskBand()`). `band` is numbered from 1, over
     /// components, two per complex band, as in `band_count()`. `None` when the band has no valid
     /// pixel. Reference: GDAL 3.13.3.
     pub fn approx_min_max(&mut self, band: usize) -> Result<Option<(f64, f64)>> {
@@ -1333,6 +1335,14 @@ impl LazyRaster {
             (Some((lo, hi)), Some((lo2, hi2))) => Some((lo.min(lo2), hi.max(hi2))),
             (a, b) => a.or(b),
         };
+        // A band without nodata leaves out the pixels its per-dataset mask (internal mask or
+        // `.msk` sidecar) marks invalid: GDAL reads `GetMaskBand()` with the pixels when the mask
+        // flags are not `GMF_ALL_VALID`.
+        let masked = self.has_mask();
+        let masked_min_max = |values: Vec<f64>, mask: Option<&[u8]>, nodata: Option<f64>, t: DataType| match mask {
+            Some(mask) => crate::histogram::min_max(values.into_iter().zip(mask).filter(|(_, m)| **m != 0).map(|(v, _)| v), nodata, t),
+            None => crate::histogram::min_max(values.into_iter(), nodata, t),
+        };
         // The smallest overview of more than 2500 pixels, when there is one: all of its pixels,
         // filtered with the overview level's own nodata.
         let overviews = self.overviews();
@@ -1344,7 +1354,11 @@ impl LazyRaster {
                 for x in (0..ow).step_by(SAMPLE_TILE) {
                     let window = Window::new(x, y, SAMPLE_TILE.min(ow - x), SAMPLE_TILE.min(oh - y));
                     let read = self.read_window(window, &options)?;
-                    acc = fold(acc, crate::histogram::min_max(crate::ops::band_f64(&read.raster, 0).into_iter(), read.band_nodata(1), t));
+                    let nodata = read.band_nodata(1);
+                    // Without nodata, the overview band's own mask (`GetMaskBand()` of GDAL's
+                    // overview band) leaves its masked-out pixels out.
+                    let mask = if nodata.is_none() && masked { self.read_level_mask(window, Some(i))? } else { None };
+                    acc = fold(acc, masked_min_max(crate::ops::band_f64(&read.raster, 0), mask.as_deref(), nodata, t));
                 }
             }
             return Ok(acc);
@@ -1365,8 +1379,10 @@ impl LazyRaster {
         let mut acc: Option<(f64, f64)> = None;
         for (x, y, bw, bh) in crate::histogram::sampled_blocks(w, h, block) {
             let options = WindowOptions { bands: vec![band], overview: None };
-            let read = self.read_window(Window::new(x, y, bw, bh), &options)?;
-            acc = fold(acc, crate::histogram::min_max(crate::ops::band_f64(&read.raster, 0).into_iter(), nodata, t));
+            let window = Window::new(x, y, bw, bh);
+            let read = self.read_window(window, &options)?;
+            let mask = if nodata.is_none() && masked { self.read_mask(window, None)? } else { None };
+            acc = fold(acc, masked_min_max(crate::ops::band_f64(&read.raster, 0), mask.as_deref(), nodata, t));
         }
         Ok(acc)
     }
@@ -4622,6 +4638,32 @@ mod tests {
         // The 64 x 64 overview holds 12.5, 500 and its own nodata -32768 (the base's is -9999):
         // the range covers the valid overview pixels only, as `gdalinfo -approx_stats` reports.
         assert_eq!(r.approx_min_max(1).unwrap(), Some((12.5, 500.0)));
+    }
+
+    /// A band without nodata whose dataset has a mask leaves the masked-out pixels of the sampled
+    /// blocks out of its range, as GDAL's `ComputeRasterMinMax(bApproxOK=TRUE)` does through
+    /// `GetMaskBand()`. Fixture `tests/data/approx_min_max_mask_blocks.tif`: 128 x 128 Float32,
+    /// 16 x 16 tiles, an internal mask hiding -1000 and 1000 in block 0. Reference: GDAL 3.12.1
+    /// reports (20, 80).
+    #[test]
+    fn approx_min_max_leaves_masked_pixels_of_sampled_blocks_out() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/approx_min_max_mask_blocks.tif");
+        let mut r = LazyRaster::open(path.to_str().unwrap()).unwrap();
+        assert!(r.has_mask());
+        assert_eq!(r.band_nodata(1), None);
+        assert_eq!(r.approx_min_max(1).unwrap(), Some((20.0, 80.0)));
+    }
+
+    /// The sample overview's pixels are filtered with that overview's own mask (GDAL's overview
+    /// band `GetMaskBand()`). Fixture `tests/data/approx_min_max_mask_overview.tif`: 256 x 256
+    /// Float32 of 50 with an internal 128 x 128 overview holding 30, 90 and, masked out by the
+    /// overview's internal mask, -1000 and 1000. Reference: GDAL 3.12.1 reports (30, 90).
+    #[test]
+    fn approx_min_max_filters_overview_pixels_with_the_overview_mask() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/approx_min_max_mask_overview.tif");
+        let mut r = LazyRaster::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(r.overviews(), vec![(128, 128)]);
+        assert_eq!(r.approx_min_max(1).unwrap(), Some((30.0, 90.0)));
     }
 
     /// The sample overview is read in windows of at most 512 x 512 whose ranges are folded, not in
