@@ -2677,7 +2677,8 @@ def summarize(row: dict) -> dict:
     failed where this build succeeds is listed as such. Likewise `gdal_allcpus_ratio`, the ratio to
     GDAL in its second configuration (`--gdal-allcpus`), when its samples' values equal GDAL's
     (`gdal_allcpus_values_match`, by digest, else by sum and count): a reference, it does not change
-    `values`. `values` is `exact` when every sample's
+    `values`. That check covers reads only: an operation's or write's GDAL samples carry no digest and
+    a zero sum, so it compares their pixel count alone. `values` is `exact` when every sample's
     digest equals GDAL's first, else `checksum_match` when every sample's sum and count do, else the
     first that differs.
 

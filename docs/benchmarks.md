@@ -471,15 +471,14 @@ base and GDAL: the report then lists the cases 10% or more slower or faster than
 the base's wheel with `pip install --no-deps --target DIR terrio-*.whl`.
 
 `--gdal-allcpus` times GDAL a second time in each case, with its default `GDAL_CACHEMAX` and
-`GDAL_NUM_THREADS=ALL_CPUS`, so the comparison does not rest on one GDAL tuning; the other
-settings above stay. Each case then
-also gives terrio's time over GDAL's in that configuration, and the report gives the geometric
-means of both ratios by source and access pattern, and the cases where terrio is faster than GDAL
-in one configuration only. A failure in that configuration, or read values that differ from
-GDAL's first configuration, drops only its ratio; GDAL's outputs of operations and writes are
-not compared between configurations. The operations and writes that run with one thread
-(`_t1`, `cog_threads1`) set `GDAL_NUM_THREADS=1` in both configurations, so only the cache size
-differs there; the `threads1` reads keep `ALL_CPUS`.
+`GDAL_NUM_THREADS=ALL_CPUS`, so the comparison does not rest on one GDAL tuning; the other settings
+above stay. Each case then also gives terrio's time over GDAL's in that configuration, and the
+report gives the geometric means of both ratios by source and access pattern, and the cases where
+terrio is faster than GDAL in one configuration only. A failure in that configuration, or read
+values that differ from GDAL's first configuration, drops only its ratio; GDAL's outputs of
+operations and writes are not compared between configurations. The operations and writes that run
+with one thread (`_t1`, `cog_threads1`) set `GDAL_NUM_THREADS=1` in both configurations, so only the
+cache size differs there; the `threads1` reads keep `ALL_CPUS`.
 
 On a pull request, a maintainer's comment `/perf-matrix` runs the matrix on a GitHub runner
 (`.github/workflows/perf-matrix.yml`): the pull request's terrio, its base branch's and GDAL
