@@ -1866,7 +1866,7 @@ fn vertical_crs_name(def: &Def, s: &SpatialRef) -> Option<String> {
     node.name().map(str::to_string)
 }
 
-/// PROJ's name of its ballpark between geographic CRSs `s` and `t`, of prime meridians `from` and
+/// PROJ 9.9.0's name of its ballpark between geographic CRSs `s` and `t`, of prime meridians `from` and
 /// `to` (radians).
 fn geographic_ballpark(s: &str, t: &str, from: f64, to: f64) -> String {
     if (from - to).abs() < 1e-12 {
@@ -1880,7 +1880,8 @@ fn geographic_ballpark(s: &str, t: &str, from: f64, to: f64) -> String {
     }
 }
 
-/// The name of the inverse of a chain of operations, as PROJ gives it: its steps the other way.
+/// The name of the inverse of a chain of operations, as PROJ 9.9.0 gives it: its steps the other
+/// way, each inverted.
 fn inverse(chain: &str) -> String {
     let mut steps: Vec<&str> = chain.split(" + ").collect();
     steps.reverse();
@@ -2598,7 +2599,8 @@ pub struct CoordinateOperation {
     ///   height correction)`. Into a CRS with a vertical CRS from one without, PROJ names the
     ///   operation the other way, inverted (`Inverse of Transformation from EGM96 height to WGS
     ///   84 (...) + Inverse of Ballpark geographic offset from Beijing 1954 to WGS 84`).
-    ///   `Ballpark vertical transformation` when a vertical CRS has no name (`+geoidgrids`).
+    ///   `Ballpark vertical transformation` when a vertical CRS (`+geoidgrids`) or the geographic
+    ///   CRS on the other side has no name.
     pub name: String,
     /// The accuracy in metres: the sum of the transformations' accuracies, as PROJ adds them;
     /// `None` when one of them has none (a ballpark, a `+towgs84` definition).
@@ -3222,8 +3224,8 @@ impl Transformer {
     ///   PROJ alters the source to the target's prime meridian, or the target to the source's when
     ///   the source's is Greenwich;
     /// - a vertical ballpark, from the vertical CRSs: `Transformation from EGM96 height to NAVD88
-    ///   height (ballpark vertical transformation)`; from a vertical CRS to a CRS without one (a
-    ///   geographic 3D CRS), to its geographic CRS: `Transformation from EGM96 height to WGS 84
+    ///   height (ballpark vertical transformation)`; from a vertical CRS to a CRS with ellipsoidal
+    ///   heights (geographic 3D, geocentric), to its geographic CRS: `Transformation from EGM96 height to WGS 84
     ///   (ballpark vertical transformation, without ellipsoid height to vertical height
     ///   correction)`, after the horizontal operations, as PROJ runs it.
     ///

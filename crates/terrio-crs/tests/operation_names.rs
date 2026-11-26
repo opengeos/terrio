@@ -33,8 +33,7 @@ fn registered_concatenations_are_named_as_proj_names_them() {
 
 /// A ballpark that is a transformation's only datum operation is named as PROJ 9.9.0 names it,
 /// from the geographic CRSs' names, both ways; between CRSs of different prime meridians, with
-/// the transformation that alters one of them to the other's; beside a vertical transformation
-/// too (#1012 item 54).
+/// the transformation that alters one of them to the other's (#1012 item 54).
 #[test]
 fn ballparks_are_named_as_proj_names_them() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
