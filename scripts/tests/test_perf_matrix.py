@@ -994,7 +994,7 @@ def test_an_operation_runs_in_a_worker_and_matches_gdal(tmp_path, monkeypatch, f
     c = samples["terrio"]["compare"]
     assert c["n"] == samples["gdal"]["n"] > 0 and c["beyond_tol"] == 0 and not c["mismatch"], c
     row = summarize({**_row(terrio=[samples["terrio"]], gdal=[samples["gdal"]]), "format": fmt, "access": access})
-    assert row["values"] == "exact" if fmt == "vectorize" else row["values"] in ("exact", "within_tol")
+    assert (row["values"] == "exact") if fmt == "vectorize" else (row["values"] in ("exact", "within_tol"))
 
 
 def _compared(beyond=0, differing=0, max_diff=0.0, mismatch=None):
