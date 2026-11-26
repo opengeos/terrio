@@ -91,8 +91,8 @@ pub(crate) mod nodata_field {
         values.into_iter().map(NodataValue::value).collect::<Result<_, _>>().map_err(D::Error::custom)
     }
 
-    /// A JSON array of nodata values (one value is refused, for untagged enums that read it
-    /// as another variant).
+    /// A JSON array of nodata values, and nothing else: `NumberOrList` tries its `Number` and
+    /// `Word` variants for a single value.
     pub(crate) fn array<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<f64>, D::Error> {
         Vec::<NodataValue>::deserialize(d)?.into_iter().map(NodataValue::value).collect::<Result<_, _>>().map_err(D::Error::custom)
     }

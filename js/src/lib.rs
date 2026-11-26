@@ -143,7 +143,8 @@ extern "C" {
 /// Parses an options object (`undefined` or `null` for the defaults). Non-finite numbers
 /// (`NaN`, `Infinity`, `-Infinity`) reach the options as the strings `"nan"`, `"inf"` and
 /// `"-inf"`: a field taking a nodata value accepts them (see [`pixel::NodataValue`]), any other
-/// numeric field refuses them rather than reading them as unset.
+/// numeric field refuses them rather than reading them as unset. A string field receives the
+/// string itself (`layerName: NaN` names a layer `nan`), as `String(NaN)` would.
 pub(crate) fn parse_options<T: serde::de::DeserializeOwned + Default>(options: &JsValue) -> Result<T, JsError> {
     if options.is_undefined() || options.is_null() {
         return Ok(T::default());
@@ -152,7 +153,9 @@ pub(crate) fn parse_options<T: serde::de::DeserializeOwned + Default>(options: &
     serde_json::from_str(&text).map_err(|e| {
         let e = e.to_string();
         // A non-finite number reached a field that is not a nodata value: say so rather than
-        // only show the string it was encoded as.
+        // only show the string it was encoded as. This matches serde's `invalid type` wording
+        // (serde::de::Unexpected::Str); should it change, the plain message below is shown,
+        // and the "only by nodata options" assertions in js/tests/node.test.mjs fail.
         if ["\"nan\"", "\"inf\"", "\"-inf\""].iter().any(|v| e.starts_with(&format!("invalid type: string {v}"))) {
             JsError::new(&format!("options: a non-finite number (NaN, Infinity) is accepted only by nodata options ({e})"))
         } else {

@@ -32,12 +32,7 @@ pub(crate) struct ReadOptions {
 
 impl ReadOptions {
     pub(crate) fn parse(options: JsValue) -> Result<PointReadOptions, JsError> {
-        let o: ReadOptions = if options.is_undefined() || options.is_null() {
-            ReadOptions::default()
-        } else {
-            let text: String = js_sys::JSON::stringify(&options).map_err(|_| JsError::new("invalid options"))?.into();
-            serde_json::from_str(&text).map_err(|e| JsError::new(&format!("options: {e}")))?
-        };
+        let o: ReadOptions = crate::parse_options(&options)?;
         Ok(PointReadOptions {
             filter: PointFilter {
                 bounds: o.bounds,

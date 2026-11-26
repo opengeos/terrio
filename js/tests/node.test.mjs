@@ -4926,7 +4926,8 @@ test("non-finite nodata options are kept, as numbers or strings, by every operat
       const out = op(nodata);
       assert.ok(same(out.nodata, expected), `${name} ${String(nodata)}: ${out.nodata}`);
     }
-    assert.throws(() => op("abc"), /nodata|number|variant/, name);
+    // A list's bad entry surfaces through the untagged enum that reads warp's option.
+    assert.throws(() => op("abc"), name === "warpList" ? /untagged enum NumberOrList/ : /nodata (must be|is) a number|invalid nodata value/i, name);
   }
   // Uncovered pixels take the NaN nodata.
   assert.ok(Number.isNaN(ops.rasterize(NaN).readBand(1)[15]));
@@ -4957,6 +4958,9 @@ test("non-finite nodata options are kept, as numbers or strings, by every operat
     for (const nodata of [NaN, "nan", -Infinity, "-inf"]) {
       const dem = pc.grid(1, { nodata });
       assert.ok(same(dem.nodata, Number(nodata === "nan" ? NaN : nodata === "-inf" ? -Infinity : nodata)), String(nodata));
+    }
+    for (const key of ["resolution", "maxPoints", "maxLevel"]) {
+      assert.throws(() => terrio.readPoints(pc.toBytes("a.laz"), "a.laz", { [key]: NaN }), /only by nodata options/, key);
     }
   }
 });

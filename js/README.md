@@ -353,7 +353,9 @@ accept them too. Strings may hold any number (`"5"`, `"1e3"`, `"infinity"`).
 const nanFilled = warp(dataset, { dstNodata: NaN });   // the same as { dstNodata: "nan" }
 ```
 
-A non-finite value of any other numeric option is refused rather than read as unset.
+A non-finite value of any other numeric option is refused rather than read as unset. A
+string option given one receives its text (`layerName: NaN` names a layer `nan`).
+`PointCloud.read` options (`resolution`, `maxPoints`, `maxLevel`) refuse them too.
 `pansharpen` takes its nodata the same way, but refuses a non-finite value because its
 engine needs a finite one.
 
