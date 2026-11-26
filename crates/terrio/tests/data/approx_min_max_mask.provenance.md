@@ -20,3 +20,19 @@ ds.CreateMaskBand(GMF_PER_DATASET); ds.GetRasterBand(1).GetMaskBand().WriteArray
 # overview fixture: ds.BuildOverviews('NEAREST', [2]); overview band and its GetMaskBand()
 # rewritten with the pixels and mask above.
 ```
+
+Second set, same layout as `approx_min_max_mask_blocks.tif` plus an unmasked -5 at (1,1):
+
+- `approx_min_max_mask_nodata_f32.tif`: Float32, nodata -5, internal mask.
+  `ComputeRasterMinMax(True)` = (20, 80): a Float32 band with nodata is filtered by both nodata
+  and mask, because `ComputeFloatNoDataValue` moves the nodata to the float nodata and clears
+  `bGotNoDataValue`, so `ComputeRasterMinMax` reads `GetMaskBand()`.
+- `approx_min_max_mask_nodata_f64.tif`: Float64, nodata -5, internal mask.
+  `ComputeRasterMinMax(True)` = (-1000, 1000): filtered by nodata only.
+- `approx_min_max_mask_sidecar.tif` + `.tif.msk`: Float32, no nodata, mask written with
+  `GDAL_TIFF_INTERNAL_MASK=NO` (a `.msk` sidecar). `ComputeRasterMinMax(True)` = (-5, 80).
+- `approx_min_max_mask_ovr_unmasked.tif` + `.tif.ovr`: 256x256 Float32 of 50 with 1000 at
+  rows/columns 0..2, masked out by an internal mask; external overview built read-only with
+  `BuildOverviews('NEAREST', [2])` and `COMPRESS_OVERVIEW=DEFLATE` (GDAL warns that the mask
+  band gets no overview). The overview band reports `GMF_ALL_VALID`;
+  `ComputeRasterMinMax(True)` = (50, 1000).
