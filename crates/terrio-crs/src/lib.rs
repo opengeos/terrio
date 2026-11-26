@@ -3233,6 +3233,9 @@ impl Transformer {
     /// inverted: `Inverse of Transformation from EGM96 height to WGS 84 (...) + Inverse of
     /// Ballpark geographic offset from Beijing 1954 to WGS 84`.
     fn name_ballparks(&self, used: &mut Vec<route::Used>) {
+        if !used.iter().any(|u| u.name == route::GEOGRAPHIC_BALLPARK || u.name == route::VERTICAL_BALLPARK) {
+            return;
+        }
         let geographic = |s: &SpatialRef| s.geographic_wkt().and_then(|w| SpatialRef::from_wkt(&w).name()).or_else(|| geodetic_crs_name(s));
         let (src, dst) = (geographic(&self.src_ref), geographic(&self.dst_ref));
         let (src_vertical, dst_vertical) = (vertical_crs_name(&self.src, &self.src_ref), vertical_crs_name(&self.dst, &self.dst_ref));
