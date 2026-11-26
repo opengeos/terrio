@@ -185,9 +185,11 @@ print(json.dumps([window.nbytes, borrowed, peak() - base]))
 @needs_proc
 def test_a_warped_vrt_holds_its_source_window_once(tmp_path):
     # 8192 x 4096 uint16 (64 MiB) without overviews, warped by a WarpedVRT into 256 x 128 pixels:
-    # its one region reads the whole source. The read's peak RSS grows by what reading that window
-    # alone adds (the window and the reader's own buffers, in another process), and by less than
-    # half the window more, where a copy of the window for the warp added all of it.
+    # its one region reads the source window (16, 16, 8161, 4065), nearly the whole source. The
+    # read's peak RSS grows by what reading that same window alone adds (the window, the chunks the
+    # block cache keeps of a read that is not of the whole image, and the reader's own buffers, in
+    # another process), and by less than half the window more, where a copy of the window for the
+    # warp added all of it.
     n = (8192, 4096)
     path = str(tmp_path / "u16.tif")
     v = (np.arange(n[0] * n[1], dtype="uint32") % 1009).astype("uint16").reshape(n[1], n[0])
@@ -202,7 +204,7 @@ import terrio.rio
 
 with terrio.rio.open(sys.argv[1]) as src:
     base = peak()
-    window = src._read_level([1], (0, 0, 8192, 4096), None)
+    window = src._read_level([1], (16, 16, 8161, 4065), None)
     print(json.dumps(peak() - base))
 """,
         path,
@@ -226,7 +228,7 @@ with terrio.rio.open(sys.argv[1]) as src:
         path,
     )
     assert warped[0] == int(v[5 * 32 + 16, 7 * 32 + 16])
-    window = n[0] * n[1] * 2
+    window = 8161 * 4065 * 2
     assert read >= window, read
     assert warped[1] < read + window / 2, (read, warped)
 
