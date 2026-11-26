@@ -437,7 +437,10 @@ fn cubic_spline(v: f64) -> f64 {
 
 impl Dem {
     fn open(path: &str, o: &RpcOptions, rpc: &Rpc) -> Result<Self> {
-        Self::from_lazy(crate::open_raster_lazy(path)?, o, rpc)
+        match super::translate::open_path(path, super::overview::OverviewSelection::None)? {
+            super::translate::OpenedRaster::Lazy(raster) => Self::from_lazy(raster, o, rpc),
+            super::translate::OpenedRaster::Whole(raster) => Self::from_dataset(&raster, o, rpc),
+        }
     }
 
     fn from_dataset(ds: &crate::RasterDataset, o: &RpcOptions, rpc: &Rpc) -> Result<Self> {
@@ -477,9 +480,9 @@ impl Dem {
         // corrupt tile) fails here rather than silently per point at transform time.
         if width > 0 && height > 0 {
             let options = crate::WindowOptions { bands: vec![1], overview: None };
-            raster
-                .read_window(crate::Window::new(0, 0, 1, 1), &options)
-                .map_err(|e| Error::InvalidData(format!("the RPC DEM could not be read: {e}")))?;
+            raster.read_window(crate::Window::new(0, 0, 1, 1), &options).map_err(|e| {
+                Error::InvalidData(format!("the RPC DEM could not be read: {}", crate::vsi::redact_diagnostic_location(&e.to_string())))
+            })?;
         }
         Ok(Self {
             width,
@@ -507,11 +510,10 @@ impl Dem {
             Error::InvalidData("the RPC DEM's raster lock is poisoned".into())
         })?;
         let options = crate::WindowOptions { bands: vec![1], overview: None };
-        let read = raster.read_window(crate::Window::new(cx0 as usize, cy0 as usize, w, h), &options).inspect_err(|e| {
-            crate::warnings::warn(format!(
-                "the RPC DEM could not be read at ({cx0}, {cy0}): {}; the point fails",
-                crate::vsi::redact_diagnostic_location(&e.to_string())
-            ));
+        let read = raster.read_window(crate::Window::new(cx0 as usize, cy0 as usize, w, h), &options).map_err(|e| {
+            let detail = crate::vsi::redact_diagnostic_location(&e.to_string()).into_owned();
+            crate::warnings::warn(format!("the RPC DEM could not be read at ({cx0}, {cy0}): {detail}; the point fails"));
+            Error::InvalidData(detail)
         })?;
         Ok((super::band_f64(&read.raster, 0), cx0, cy0, w))
     }
@@ -1421,7 +1423,7 @@ pub(crate) mod tests {
     }
 
     /// A lazy DEM whose read after `successful_reads` successes fails once, then recovers.
-    fn dem_failing_after_reads(successful_reads: usize, options: &RpcOptions, rpc: &Rpc) -> Dem {
+    fn dem_failing_after_reads(successful_reads: usize, options: &RpcOptions, rpc: &Rpc) -> Result<Dem> {
         struct Flaky {
             reads: usize,
             successful_reads: usize,
@@ -1434,7 +1436,9 @@ pub(crate) mod tests {
                 let fails = self.reads == self.successful_reads;
                 self.reads += 1;
                 if fails {
-                    return Err(Error::InvalidData("simulated read failure".into()));
+                    return Err(Error::InvalidData(
+                        "simulated read failure for https://test-user:test-password@example.com/dem.tif?token=test-secret".into(),
+                    ));
                 }
                 Ok(wbraster::raster::RasterData::F32(vec![100.0; window.width * window.height * bands.len()]))
             }
@@ -1442,7 +1446,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let header = crate::open_raster_lazy(dem(dir.path()).to_str().unwrap()).unwrap().header();
         let source = Flaky { reads: 0, successful_reads };
-        Dem::from_lazy(crate::LazyRaster::from_source(header, Box::new(source)), options, rpc).unwrap()
+        Dem::from_lazy(crate::LazyRaster::from_source(header, Box::new(source)), options, rpc)
     }
 
     /// A failed reference read after the initial one-cell check refuses construction, even with
@@ -1451,7 +1455,7 @@ pub(crate) mod tests {
     fn lazy_dem_reference_read_error_refuses_the_transformer() {
         let r = rpc();
         let o = RpcOptions { dem_missing_value: Some(0.0), ..Default::default() };
-        let dem = dem_failing_after_reads(1, &o, &r);
+        let dem = dem_failing_after_reads(1, &o, &r).unwrap();
         crate::warnings::take();
         let error = RpcTransformer::with_dem(&r, &o, Some(dem)).unwrap_err();
         assert!(error.to_string().contains("simulated read failure"), "{error}");
@@ -1464,7 +1468,7 @@ pub(crate) mod tests {
     fn lazy_dem_read_error_fails_the_point_without_the_missing_value() {
         let r = rpc();
         let o = RpcOptions { dem_missing_value: Some(0.0), ..Default::default() };
-        let dem = dem_failing_after_reads(2, &o, &r);
+        let dem = dem_failing_after_reads(2, &o, &r).unwrap();
         let t = RpcTransformer::with_dem(&r, &o, Some(dem)).unwrap();
         crate::warnings::take();
         assert!(t.to_pixel(10.0, 45.0, 0.0).is_none(), "a read error fails the point, not the missing value");
@@ -1476,13 +1480,63 @@ pub(crate) mod tests {
     fn lazy_dem_inverse_read_error_fails_without_retrying_as_nodata() {
         let r = rpc();
         let o = RpcOptions { dem_missing_value: Some(0.0), ..Default::default() };
-        let dem = dem_failing_after_reads(2, &o, &r);
+        let dem = dem_failing_after_reads(2, &o, &r).unwrap();
         let t = RpcTransformer::with_dem(&r, &o, Some(dem)).unwrap();
         let (pixel, line) = r.evaluate(10.0, 45.0, 100.0);
         crate::warnings::take();
         assert!(t.to_geo(pixel, line, 0.0).is_none(), "the read error fails the inverse point");
         assert!(crate::warnings::take().iter().any(|w| w.contains("could not be read")), "a warning is recorded");
         assert!(t.to_geo(pixel, line, 0.0).is_some(), "a subsequent call can recover");
+    }
+
+    /// Diagnostics from the initial cell and the reference observation redact source-provided
+    /// signed URLs in returned errors and warnings, including their debug representations.
+    #[test]
+    fn lazy_dem_read_errors_do_not_expose_url_credentials() {
+        let r = rpc();
+        let o = RpcOptions::default();
+        for successful_reads in [0, 1] {
+            crate::warnings::take();
+            let error = match dem_failing_after_reads(successful_reads, &o, &r) {
+                Ok(dem) => RpcTransformer::with_dem(&r, &o, Some(dem)).unwrap_err(),
+                Err(error) => error,
+            };
+            let diagnostics = format!("{error} {error:?} {:?}", crate::warnings::take());
+            assert!(diagnostics.contains("simulated read failure"), "{diagnostics}");
+            assert!(diagnostics.contains("example.com/dem.tif"), "{diagnostics}");
+            for secret in ["test-user", "test-password", "test-secret"] {
+                assert!(!diagnostics.contains(secret), "{diagnostics}");
+            }
+        }
+    }
+
+    /// An explicit GDAL VRT name keeps using GDAL's whole reader, as before lazy DEM sampling.
+    #[test]
+    #[cfg(feature = "gdal")]
+    fn lazy_dem_preserves_explicit_gdal_vrt_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dem(dir.path());
+        let ds = crate::open_raster(source.to_str().unwrap()).unwrap();
+        let vrt = dir.path().join("dem.vrt");
+        let transform = ds.geo_transform().map(|v| v.to_string()).join(",");
+        std::fs::write(
+            &vrt,
+            format!(
+                "<VRTDataset rasterXSize=\"300\" rasterYSize=\"260\"><SRS>EPSG:4326</SRS><GeoTransform>{transform}</GeoTransform>\
+                 <VRTRasterBand dataType=\"Float32\" band=\"1\"><SimpleSource><SourceFilename relativeToVRT=\"0\">{}</SourceFilename>\
+                 <SourceBand>1</SourceBand><SrcRect xOff=\"0\" yOff=\"0\" xSize=\"300\" ySize=\"260\"/>\
+                 <DstRect xOff=\"0\" yOff=\"0\" xSize=\"300\" ySize=\"260\"/></SimpleSource></VRTRasterBand></VRTDataset>",
+                source.display()
+            ),
+        )
+        .unwrap();
+        let r = rpc();
+        let forced = format!("gdal:{}", vrt.display());
+        let o = RpcOptions { dem: Some(forced), ..Default::default() };
+        let actual = RpcTransformer::new(&r, &o).unwrap();
+        let expected = RpcTransformer::with_dem_dataset(&r, &o, &ds).unwrap();
+        assert_eq!(actual.to_pixel(10.0, 45.0, 0.0), expected.to_pixel(10.0, 45.0, 0.0));
+        assert!(actual.to_pixel(10.0, 45.0, 0.0).is_some());
     }
 
     /// The ±180° wrap retry still works with a lazy DEM: a DEM spanning [-180, 180] answers a
