@@ -205,7 +205,35 @@ pub(crate) struct PageSet {
     pages: u64,
 }
 
+/// A [`PageSet`] that parallel leaf decoders share: each insert is one atomic `fetch_or`, so
+/// claiming overflow pages from many threads neither locks nor serializes the decoders.
+pub(crate) struct SharedPageSet {
+    bits: Vec<std::sync::atomic::AtomicU64>,
+    pages: u64,
+}
+
+impl SharedPageSet {
+    /// Adds page `n` (1-based). An error when it was there already, or is not a page of the file.
+    pub(crate) fn insert(&self, n: u32) -> Result<()> {
+        if n == 0 || u64::from(n) > self.pages {
+            return Err(bad("page out of range"));
+        }
+        let i = n as usize - 1;
+        let word = self.bits.get(i / 64).ok_or_else(|| bad("page out of range"))?;
+        let bit = 1u64 << (i % 64);
+        if word.fetch_or(bit, std::sync::atomic::Ordering::Relaxed) & bit != 0 {
+            return Err(bad("overflow page reached twice"));
+        }
+        Ok(())
+    }
+}
+
 impl PageSet {
+    /// The set as one that parallel decoders can add to.
+    pub(crate) fn into_shared(self) -> SharedPageSet {
+        SharedPageSet { bits: self.bits.into_iter().map(std::sync::atomic::AtomicU64::new).collect(), pages: self.pages }
+    }
+
     /// An empty set for a file of `pages` pages.
     pub(crate) fn new(pages: u64) -> Self {
         // `pages` is bounded by a file's length or a `u32`, so its words fit in memory.
@@ -354,9 +382,9 @@ fn table_leaf_header(page: &[u8], page_num: u32, usable: usize) -> Result<(usize
 }
 
 /// Parses the `c`-th cell of a table leaf page, rejecting a cell that starts inside the page
-/// header or cell pointer array or runs past `usable`. Returns the cell and the end of its
-/// on-page bytes.
-fn table_leaf_cell(page: &[u8], h: usize, header_end: usize, usable: usize, c: usize) -> Result<(TableLeafCell, usize)> {
+/// header or cell pointer array or runs past `usable`. Returns the cell, its offset and the end
+/// of its on-page bytes.
+fn table_leaf_cell(page: &[u8], h: usize, header_end: usize, usable: usize, c: usize) -> Result<(TableLeafCell, usize, usize)> {
     let off = cell_pointer(page, h + 8 + 2 * c)?;
     if off < header_end {
         return Err(bad("cell overlaps page header"));
@@ -372,7 +400,7 @@ fn table_leaf_cell(page: &[u8], h: usize, header_end: usize, usable: usize, c: u
     if cell_end > usable {
         return Err(bad("cell runs past page"));
     }
-    Ok((TableLeafCell { rowid, payload_start, payload_size: size }, cell_end))
+    Ok((TableLeafCell { rowid, payload_start, payload_size: size }, off, cell_end))
 }
 
 /// Parses and validates all cells on a table b-tree leaf page (`0x0d`), returning them in cell
@@ -383,12 +411,16 @@ pub(crate) fn table_leaf_cells(page: &[u8], page_num: u32, usable: usize) -> Res
     let mut out = Vec::with_capacity(cells);
     let mut spans = Vec::with_capacity(cells);
     for c in 0..cells {
-        let off = cell_pointer(page, h + 8 + 2 * c)?;
-        let (cell, cell_end) = table_leaf_cell(page, h, header_end, usable, c)?;
+        let (cell, off, cell_end) = table_leaf_cell(page, h, header_end, usable, c)?;
         spans.push((off, cell_end));
         out.push(cell);
     }
-    spans.sort_unstable_by_key(|&(start, _)| start);
+    // SQLite fills a page from its end, so cell pointers usually run in decreasing offset order.
+    if spans.windows(2).all(|w| w[0].0 > w[1].0) {
+        spans.reverse();
+    } else {
+        spans.sort_unstable_by_key(|&(start, _)| start);
+    }
     for pair in spans.windows(2) {
         if pair[0].1 > pair[1].0 {
             return Err(bad("overlapping leaf cells"));
@@ -406,7 +438,7 @@ pub(crate) fn table_leaf_find(page: &[u8], page_num: u32, usable: usize, rowid: 
     let (mut lo, mut hi) = (0, cells);
     while lo < hi {
         let mid = (lo + hi) / 2;
-        let (cell, _) = table_leaf_cell(page, h, header_end, usable, mid)?;
+        let (cell, _, _) = table_leaf_cell(page, h, header_end, usable, mid)?;
         match cell.rowid.cmp(&rowid) {
             std::cmp::Ordering::Less => lo = mid + 1,
             std::cmp::Ordering::Greater => hi = mid,
@@ -486,10 +518,10 @@ impl Db {
         let mut leaves = Vec::new();
         let mut visited = PageSet::new(self.pages() as u64);
         let failure = self.leaves(root, &mut leaves, &mut visited, depth).err();
-        let visited = std::sync::Mutex::new(visited);
-        let rows = crate::par::map_range(leaves.len(), |i| {
-            self.leaf_rows_with(leaves[i], |p| visited.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(p))
-        });
+        // Overflow pages are claimed in the walk's set, so a chain shared between leaves (or with
+        // a b-tree page) is an error, without a lock between the parallel decoders.
+        let visited = visited.into_shared();
+        let rows = crate::par::map_range(leaves.len(), |i| self.leaf_rows_with(leaves[i], |p| visited.insert(p)));
         // The first error in page order, as a sequential scan would meet it.
         for r in rows {
             out.extend(r?);
