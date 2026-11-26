@@ -1,6 +1,7 @@
 // Written to match the behavior of:
 //   GDAL v3.13.3:
 //     gcore/gdalrasterblock.cpp (GDAL_CACHEMAX, GDALSetCacheMax64, GDALGetCacheMax64)
+//     frmts/gtiff/gtiffdataset_read.cpp (MultiThreadedRead's bSkipBlockCache)
 // No code is translated from these sources.
 
 //! A process-wide cache of the decoded chunks (tiles or strips) of GeoTIFFs and COGs read lazily
@@ -14,15 +15,23 @@
 //! GeoTIFF reads, whether the TIFF is a local file, bytes in memory, a member of a zip archive or a
 //! remote object (HTTP, S3), and of the images of external `.ovr` overviews, and the bands of lazy
 //! GRIB reads, whole or, larger than a read's share of the cache, the rows the read needed and
-//! those nearest them; a read that needed no row of a band keeps none. An open Zarr array (each
+//! those nearest them; a read that needed no row of a band keeps none. Rasters read whole (other
+//! formats, [`crate::open_raster`]) and the other lazy drivers are not cached. Nor are the chunks
+//! of a GeoTIFF read of more than one chunk of a whole image (the full resolution or an overview)
+//! in all its samples in order, or in any of them when each is stored in its own plane, as GDAL
+//! 3.13.3's multi-threaded read of a whole image skips its block cache (`GDAL_NUM_THREADS` above 1,
+//! for the codecs it decodes in threads; a single-threaded GDAL read keeps them, terrio keeps none
+//! whatever its thread count and codec): its output holds every chunk, and keeping them too would
+//! double the read's memory. An 8-bit CMYK image, which GDAL reads through its RGBA bands, keeps
+//! them.
+//!
+//! An open Zarr array (each
 //! level of a multiscale store is one) keeps at most 16 MiB of decoded chunks, whatever the cache's
 //! size, its least recently used dropped first: the chunks (or inner chunks of a shard) a window
 //! read covers only in part (along its edges, which an adjacent tile of a grid shares, or along a
 //! band dimension), and none of those it covers whole, even when a later window overlapping it
 //! reads them again. A read whose decoded values take more than a quarter of those 16 MiB (or of
 //! the cache, when smaller) keeps none (a decimated read: the values of the window it samples).
-//! Rasters read whole (other formats, [`crate::open_raster`]) and the other lazy drivers are not
-//! cached.
 //!
 //! The cache holds at most [`max_bytes`] bytes of decoded samples (and a small fixed overhead per
 //! chunk), dropping the least recently used chunks first. A chunk larger than the cache is not

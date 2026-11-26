@@ -3110,9 +3110,11 @@ impl TiffRaster {
             return ovr.read(i, w, bands);
         }
         if !self.cmyk {
-            return self.read_samples(level, w, bands);
+            return self.read_samples(level, w, bands, true);
         }
-        let RasterData::U8(cmyk) = self.read_samples(level, w, &[1, 2, 3, 4])? else {
+        // GDAL reads 8-bit CMYK through its RGBA bands, never by its multi-threaded read: it keeps
+        // the chunks of any read.
+        let RasterData::U8(cmyk) = self.read_samples(level, w, &[1, 2, 3, 4], false)? else {
             return Err(Error::InvalidData("CMYK samples that are not bytes".into()));
         };
         cmyk_to_rgba(&cmyk, w.width * w.height, bands)
@@ -3235,7 +3237,9 @@ impl TiffRaster {
     }
 
     /// Reads a window of some samples (numbered from 1) of a level, band-major, as stored.
-    fn read_samples(&mut self, level: usize, w: Window, bands: &[usize]) -> Result<RasterData> {
+    /// `whole_uncached`: whether a whole read keeps its chunks out of the cache, as GDAL's
+    /// multi-threaded read does (not for CMYK, which GDAL never reads that way).
+    fn read_samples(&mut self, level: usize, w: Window, bands: &[usize], whole_uncached: bool) -> Result<RasterData> {
         // A window too large for any allocation is refused before its chunks are listed or fetched,
         // and so is one the process cannot hold: allocated beyond the usable memory, it would kill
         // the process as its pages are written.
@@ -3295,6 +3299,9 @@ impl TiffRaster {
         // A chunk can fill several output bands (a band asked for twice in a planar image).
         let mut targets: std::collections::HashMap<u32, Vec<ChunkTarget>> = std::collections::HashMap::new();
         targets.try_reserve(chunks.len()).map_err(|_| crate::dataset::fallible::out_of_memory(None, what))?;
+        // GDAL's count of a read's blocks: those of the window, in each plane read; a chunk listed
+        // twice (a band asked twice) counts once.
+        let blocks_beyond_one = chunks.first().is_some_and(|f| chunks.iter().any(|c| c.0 != f.0));
         for (idx, x0, y0, map) in chunks {
             if tables.counts.get(idx).copied().unwrap_or(0) == 0 {
                 continue;
@@ -3308,6 +3315,13 @@ impl TiffRaster {
         // Chunks decoded by earlier reads are placed from the cache; only the others are fetched
         // and decoded.
         let (handle, caching) = (self.cache_handle, crate::block_cache::max_bytes() > 0);
+        // A read of more than one block of a whole image in all its samples in order (in any of
+        // them, each stored in its own plane) keeps none of the chunks it decodes, as GDAL 3.13.3's
+        // multi-threaded read of a whole image skips its block cache (`GDAL_NUM_THREADS` above 1,
+        // `GTiffDataset::IRasterIO` and `MultiThreadedRead`; terrio does so whatever its thread
+        // count and codec): the output holds them, and the cache would double the read's memory.
+        let whole = whole_uncached && blocks_beyond_one && w == Window::full(lw, lh) && (planar || bands.iter().copied().eq(1..=spp));
+        let keep = caching && !whole;
         let mut misses: Vec<u32> = Vec::new();
         crate::dataset::fallible::reserve(&mut misses, wanted.len(), what)?;
         for &idx in &wanted {
@@ -3457,7 +3471,7 @@ impl TiffRaster {
         let pool = Some(&self.workers);
         crate::geotiff::decode_chunks(dec, reopen, pool, ifd, &misses, codec, limits.chunk_bytes, &tiff_err, |(idx, chunk, dims)| {
             place_decoded(&mut out, &chunk, dims, &targets[&idx], w, spp)?;
-            if caching {
+            if keep {
                 crate::block_cache::insert(handle, ifd, idx, chunk, dims);
             }
             Ok(())
@@ -4471,6 +4485,49 @@ mod tests {
         assert_eq!(crate::block_cache::tests::take_lookups(), (3, 0));
     }
 
+    /// A read of a whole image's samples, all of them, leaves its chunks out of the cache, as
+    /// GDAL's multi-threaded read of a whole image skips its block cache: the output holds them.
+    /// A read of some samples of a pixel-interleaved image, as a window read, still fills it; a
+    /// whole read of one band stored in its own plane does not; a whole read of one chunk does.
+    #[test]
+    fn a_whole_image_read_leaves_its_chunks_out_of_the_cache() {
+        let _serial = crate::block_cache::tests::cache_test_guard(64 << 20);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiled.tif");
+        write_tiled_tiff(&path, (70, 50, 2), sequence(DataType::U16, 2 * 70 * 50, 1), &[("INTERLEAVE", "PIXEL")]);
+        let mut r = LazyRaster::open(path.to_str().unwrap()).unwrap();
+        let whole = Window::full(70, 50);
+        let first = read_f64(&mut r, whole, &[1, 2], None);
+        assert_eq!(crate::block_cache::tests::take_lookups(), (0, 5 * 4));
+        assert_eq!(read_f64(&mut r, whole, &[1, 2], None), first);
+        assert_eq!(crate::block_cache::tests::take_lookups(), (0, 5 * 4), "the second whole read decodes every tile again");
+        read_f64(&mut r, whole, &[2], None);
+        assert_eq!(crate::block_cache::tests::take_lookups(), (0, 5 * 4));
+        read_f64(&mut r, whole, &[2], None);
+        assert_eq!(crate::block_cache::tests::take_lookups(), (5 * 4, 0), "one sample of two is cached");
+        // Each band in its own plane: a whole read of one keeps none either.
+        let planar = dir.path().join("planar.tif");
+        write_tiled_tiff(&planar, (70, 50, 2), sequence(DataType::U16, 2 * 70 * 50, 1), &[("INTERLEAVE", "BAND")]);
+        let mut r = LazyRaster::open(planar.to_str().unwrap()).unwrap();
+        assert_eq!(read_f64(&mut r, whole, &[2], None), first[70 * 50..]);
+        read_f64(&mut r, whole, &[2], None);
+        assert_eq!(crate::block_cache::tests::take_lookups(), (0, 2 * 5 * 4));
+        // An image of one tile: GDAL reads one block through its cache, and so does terrio.
+        let small = dir.path().join("small.tif");
+        write_tiled_tiff(&small, (16, 16, 1), sequence(DataType::U16, 16 * 16, 1), &[]);
+        let mut r = LazyRaster::open(small.to_str().unwrap()).unwrap();
+        read_f64(&mut r, Window::full(16, 16), &[1], None);
+        read_f64(&mut r, Window::full(16, 16), &[1], None);
+        assert_eq!(crate::block_cache::tests::take_lookups(), (1, 1));
+        // One tile per plane, a band asked twice: still one chunk, kept.
+        let planar_small = dir.path().join("planar_small.tif");
+        write_tiled_tiff(&planar_small, (16, 16, 2), sequence(DataType::U16, 2 * 16 * 16, 1), &[("INTERLEAVE", "BAND")]);
+        let mut r = LazyRaster::open(planar_small.to_str().unwrap()).unwrap();
+        read_f64(&mut r, Window::full(16, 16), &[1, 1], None);
+        read_f64(&mut r, Window::full(16, 16), &[1, 1], None);
+        assert_eq!(crate::block_cache::tests::take_lookups(), (1, 1), "a one-chunk read of a band asked twice is cached");
+    }
+
     /// `approx_min_max` returns the range stored in a PAM sidecar without decoding a chunk.
     #[test]
     fn approx_min_max_returns_the_stored_range_without_reading_pixels() {
@@ -5434,7 +5491,8 @@ mod tests {
         let file = std::fs::File::open(&path).unwrap();
         let source = Source::File(crate::vfs::NearSeek::new(crate::geotiff::FileCursor::new(file)));
         let mut r = TiffRaster::new::<true>(source, None, TiffReadLimits::default()).unwrap();
-        r.read_samples(0, Window::full(64, 64), &[1]).unwrap();
+        // A window: a whole read would keep no chunk.
+        r.read_samples(0, Window::new(0, 0, 16, 16), &[1], true).unwrap();
         let handle = r.cache_handle;
         assert!(crate::block_cache::get(handle, 0, 0).is_some());
         drop(r);

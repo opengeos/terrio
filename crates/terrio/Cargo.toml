@@ -424,6 +424,10 @@ name = "wfs_service"
 path = "tests/wfs_service.rs"
 
 [[test]]
+name = "whole_read_memory"
+path = "tests/whole_read_memory.rs"
+
+[[test]]
 name = "zarr_input_limits"
 path = "tests/zarr_input_limits.rs"
 

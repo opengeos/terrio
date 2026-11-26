@@ -402,7 +402,14 @@ dropped rather than retained without its chunk tables being charged.
 The decoded tiles and strips of lazy GeoTIFF and COG reads, remote or local, are kept in memory
 process-wide, as GDAL's block cache keeps the blocks it decodes. A window read again decodes only
 the chunks no longer in the cache: the least recently used are dropped first when the cache is
-full, a chunk larger than the cache is never kept, and a size of 0 keeps none.
+full, a chunk larger than the cache is never kept, and a size of 0 keeps none. A read of a whole
+image of more than one chunk (the full resolution or an overview) in all its bands in order, or in
+any of them when each band is stored in its own plane, keeps none of its chunks, whatever the
+thread count and codec, as GDAL 3.13.3's multi-threaded read of a whole image
+(`GDAL_NUM_THREADS` above 1, for the codecs it decodes in threads) skips its block cache: the
+returned array already holds the pixels, and the cache would double the read's memory. A second
+whole read decodes the image again. 8-bit CMYK images, which GDAL reads through their RGBA bands,
+keep their chunks.
 
 Lazy Zarr reads keep, in the same cache, the decoded chunks (or inner chunks of a shard) that a
 window covers only in part: those along its edges, which an adjacent tile of a grid shares (and,
