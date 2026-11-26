@@ -2031,6 +2031,7 @@ FORMATS["geotiff-write"] = GeoTiffWrite
 PATHS["geotiff-write"] = [
     "crates/terrio/src/drivers/gtiff_write.rs",
     "crates/terrio/src/drivers/tiff_lzw.rs",
+    "crates/terrio/src/drivers/jxl_encoder/*",
     "crates/terrio/src/cog.rs",
     "crates/terrio/src/tiff_*",
     "crates/terrio/src/deflate_compress.rs",

@@ -73,7 +73,6 @@ openjp2 = { workspace = true, optional = true }
 lerc-reader = { workspace = true, optional = true }
 lerc-core = { workspace = true, optional = true }
 lerc-writer = { workspace = true, optional = true }
-zune-jpegxl.workspace = true
 zune-core.workspace = true
 jxl-oxide = { workspace = true, optional = true }
 # Data parallelism: natively, and in WebAssembly built with threads (`atomics`), where the host

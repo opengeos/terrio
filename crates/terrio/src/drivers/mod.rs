@@ -35,6 +35,7 @@ mod hfa;
 pub(crate) mod hgt;
 #[cfg(feature = "jp2")]
 pub(crate) mod jp2;
+mod jxl_encoder;
 #[cfg(feature = "netcdf-hdf5")]
 pub(crate) mod netcdf;
 #[cfg(feature = "netcdf-hdf5")]
