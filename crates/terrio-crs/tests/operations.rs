@@ -30,7 +30,16 @@ fn reports_the_transformation_used() {
 fn reports_ballparks_and_no_operation() {
     no_grids();
     let op = operation("EPSG:4610", "EPSG:4326", 110.0, 35.0, 0.0).unwrap();
-    assert_eq!(op, CoordinateOperation { name: "Ballpark geographic offset".into(), accuracy: None, grids: Vec::new(), ballpark: true });
+    // Named as PROJ 9.9.0 names it, from the geographic CRSs (#1012 item 54).
+    assert_eq!(
+        op,
+        CoordinateOperation {
+            name: "Ballpark geographic offset from Xian 1980 to WGS 84".into(),
+            accuracy: None,
+            grids: Vec::new(),
+            ballpark: true
+        }
+    );
     // EGM96's grid is missing: heights are kept.
     let op = operation("EPSG:4326+5773", "EPSG:4979", 153.0, -27.0, 0.0).unwrap();
     assert_eq!((op.name.as_str(), op.ballpark), ("Ballpark vertical transformation", true));

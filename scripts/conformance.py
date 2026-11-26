@@ -2857,13 +2857,17 @@ PROJ_CASES = {
     "geokeys_read_gdal": {
         "user_defined_geokeys_are_read_as_gdal_reads_them": (
             "GeoKeys as other writers write them: user-defined projected CRSs, a projected code alone or with its unit, "
-            "ellipsoids, datums and prime meridians by code (24 cases)", TOLERANCE,
+            "ellipsoids, datums and prime meridians by code (28 cases)", TOLERANCE,
             "GDAL 3.12.2 (libgeotiff GTIFFetchProjParms, GTIFGetDefn): within 1 mm",
         ),
     },
     "operation_names": {
         "registered_concatenations_are_named_as_proj_names_them": (
             "operation_at names of registered concatenations (NTF (Paris), Greek, MGI (Ferro)...)", IDENTICAL,
+            "PROJ 9.9.0 (pyproj 3.8.0, get_last_used_operation): the same names, both ways",
+        ),
+        "ballparks_are_named_as_proj_names_them": (
+            "operation_at names of ballparks, between CRSs of one or of different prime meridians", IDENTICAL,
             "PROJ 9.9.0 (pyproj 3.8.0, get_last_used_operation): the same names, both ways",
         ),
     },
@@ -2977,6 +2981,10 @@ PROJ_CASES = {
         ),
     },
     "south_orientated_offsets": {
+        "a_negative_transverse_mercator_scale_without_offsets_is_south_orientated": (
+            "ESRI's Lo zones and other negative Transverse Mercator scales without offsets, ESRI and GDAL WKT 1", TOLERANCE,
+            "PROJ 9.9.0 (pyproj 3.8.0): within 1 mm; refused with offsets or north-east axes, as PROJ refuses them",
+        ),
         "south_orientated_transverse_mercator_subtracts_its_offsets": (
             "South-orientated Transverse Mercator with a false easting and northing", NOT_COMPARED,
             (
