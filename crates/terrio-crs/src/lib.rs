@@ -2527,8 +2527,13 @@ fn run_model(ops: &[std::sync::Arc<datum::Op>], p: datum::Point, reverse: bool) 
 pub struct CoordinateOperation {
     /// The names of the transformations, in the order they run, joined by ` + ` as PROJ joins
     /// them (`Inverse of OSGB36 to WGS 84 (6)`). Conversions (projections, units, axes) are not
-    /// named. PROJ's ballpark transformations are `Ballpark geographic offset` and
-    /// `Ballpark vertical transformation`.
+    /// named. PROJ's ballpark transformations are `Ballpark vertical transformation` and, as PROJ
+    /// 9.9.0 names it, `Ballpark geographic offset from Beijing 1954 to WGS 84`, between the
+    /// geographic CRSs, with a transformation of the prime meridian between CRSs of different
+    /// ones (`Transformation from Monte Mario (Rome) to Monte Mario (Rome) altered to use prime
+    /// meridian of WGS 84 + Ballpark geographic offset from Monte Mario (Rome) altered to use
+    /// prime meridian of WGS 84 to WGS 84`); `Ballpark geographic offset` in a chain of other
+    /// transformations.
     pub name: String,
     /// The accuracy in metres: the sum of the transformations' accuracies, as PROJ adds them;
     /// `None` when one of them has none (a ballpark, a `+towgs84` definition).
@@ -3139,9 +3144,35 @@ impl Transformer {
     /// The point is transformed to find out, so this costs a transformation; the result is not
     /// kept, and the transformer is not changed (it can be shared between threads).
     pub fn operation_at(&self, x: f64, y: f64, z: f64) -> Result<Option<CoordinateOperation>> {
-        let (result, used) = route::recording(|| self.transform_at(x, y, z, self.time));
+        let (result, mut used) = route::recording(|| self.transform_at(x, y, z, self.time));
         result?;
+        self.name_ballpark(&mut used);
         Ok(CoordinateOperation::from_used(used))
+    }
+
+    /// Names a ballpark that is the only datum operation of a point's transformation as PROJ
+    /// 9.9.0 names it, from the geographic CRSs' names (#1012 item 54): `Ballpark geographic
+    /// offset from Beijing 1954 to WGS 84`. Between CRSs of different prime meridians, PROJ
+    /// alters the source to the target's prime meridian, or the target to the source's when the
+    /// source's is Greenwich.
+    fn name_ballpark(&self, used: &mut [route::Used]) {
+        let mut datum = used.iter_mut().filter(|u| u.datum);
+        let (Some(op), None) = (datum.next(), datum.next()) else { return };
+        if op.name != "Ballpark geographic offset" {
+            return;
+        }
+        let name = |s: &SpatialRef| s.geographic_wkt().and_then(|w| SpatialRef::from_wkt(&w).name());
+        let (Some(s), Some(t)) = (name(&self.src_ref), name(&self.dst_ref)) else { return };
+        let (from, to) = (self.src.prime_meridian_radians(), self.dst.prime_meridian_radians());
+        op.name = if (from - to).abs() < 1e-12 {
+            format!("Ballpark geographic offset from {s} to {t}")
+        } else if from != 0.0 {
+            let altered = format!("{s} altered to use prime meridian of {t}");
+            format!("Transformation from {s} to {altered} + Ballpark geographic offset from {altered} to {t}")
+        } else {
+            let altered = format!("{t} altered to use prime meridian of {s}");
+            format!("Ballpark geographic offset from {s} to {altered} + Transformation from {s} to {altered}")
+        };
     }
 
     /// The grids the transformation of a point needs, with where to get them, missing ones

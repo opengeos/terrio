@@ -30,3 +30,49 @@ fn registered_concatenations_are_named_as_proj_names_them() {
         assert_eq!(back.name, format!("Inverse of {name}"), "EPSG:{code}");
     }
 }
+
+/// A ballpark that is a transformation's only datum operation is named as PROJ 9.9.0 names it,
+/// from the geographic CRSs' names, both ways; between CRSs of different prime meridians, with
+/// the transformation that alters one of them to the other's (#1012 item 54).
+#[test]
+fn ballparks_are_named_as_proj_names_them() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    for (src, dst, x, y, name) in [
+        (4214, 4326, 116.0, 40.0, "Ballpark geographic offset from Beijing 1954 to WGS 84"),
+        (4326, 4214, 116.0, 40.0, "Ballpark geographic offset from WGS 84 to Beijing 1954"),
+        (4979, 4214, 116.0, 40.0, "Ballpark geographic offset from WGS 84 to Beijing 1954"),
+        (
+            4806,
+            4326,
+            0.0077,
+            40.93,
+            "Transformation from Monte Mario (Rome) to Monte Mario (Rome) altered to use prime meridian of WGS 84 + Ballpark geographic offset from Monte Mario (Rome) altered to use prime meridian of WGS 84 to WGS 84",
+        ),
+        (
+            4326,
+            4806,
+            12.46,
+            40.93,
+            "Ballpark geographic offset from WGS 84 to Monte Mario (Rome) altered to use prime meridian of WGS 84 + Transformation from WGS 84 to Monte Mario (Rome) altered to use prime meridian of WGS 84",
+        ),
+        (
+            4806,
+            4807,
+            0.0077,
+            40.93,
+            "Transformation from Monte Mario (Rome) to Monte Mario (Rome) altered to use prime meridian of NTF (Paris) + Ballpark geographic offset from Monte Mario (Rome) altered to use prime meridian of NTF (Paris) to NTF (Paris)",
+        ),
+        (
+            4214,
+            4807,
+            116.0,
+            40.0,
+            "Ballpark geographic offset from Beijing 1954 to NTF (Paris) altered to use prime meridian of Beijing 1954 + Transformation from Beijing 1954 to NTF (Paris) altered to use prime meridian of Beijing 1954",
+        ),
+    ] {
+        let t = Transformer::new(&SpatialRef::from_epsg(src).unwrap(), &SpatialRef::from_epsg(dst).unwrap()).unwrap();
+        let op = t.operation_at(x, y, 0.0).unwrap().unwrap();
+        assert_eq!((op.name.as_str(), op.ballpark, op.accuracy), (name, true, None), "EPSG:{src} to EPSG:{dst}");
+    }
+}

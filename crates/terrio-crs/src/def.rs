@@ -494,6 +494,11 @@ pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
 }
 
 impl Def {
+    /// The prime meridian, in radians east of Greenwich.
+    pub(crate) fn prime_meridian_radians(&self) -> f64 {
+        self.pm
+    }
+
     /// The definition of a CRS: from the EPSG (or ESRI) table when it has a code there, else
     /// from its PROJ string or WKT. A copy of the one kept for the CRS ([`Def::shared`]).
     pub fn new(s: &SpatialRef) -> Result<Self> {
