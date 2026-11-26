@@ -1215,8 +1215,8 @@ fn download(name: &str) -> Result<GridFile, bool> {
     let tmp = tempfile::Builder::new().prefix(&format!(".{name}.")).suffix(".part").tempfile_in(&dir).map_err(|_| true)?.into_temp_path();
     crate::network::download(&url, &tmp).map_err(|_| true)?;
     let file = verified_download(name, &tmp)?;
-    // Readable by others, as a file created with the usual umask would be (tempfile's are 0600),
-    // so that a cache shared between users works.
+    // A fixed 0644, readable by other users of a shared cache: tempfile creates scratch files
+    // 0600. Grids are public data.
     #[cfg(unix)]
     let _ = std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o644));
     // The verified grid is used even when it cannot be cached; a later process downloads it again.
