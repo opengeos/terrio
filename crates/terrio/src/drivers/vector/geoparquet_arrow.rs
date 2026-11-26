@@ -149,8 +149,11 @@ impl GroupWindows {
         let read =
             |rg: &parquet::file::metadata::RowGroupMetaData| (0..rg.num_columns()).filter(|&i| mask.leaf_included(i)).collect::<Vec<_>>();
         self.ranges = meta.row_groups().iter().map(|rg| read(rg).into_iter().map(|i| rg.column(i).byte_range()).collect()).collect();
-        self.decoded =
-            meta.row_groups().iter().map(|rg| read(rg).into_iter().map(|i| rg.column(i).uncompressed_size().max(0) as u64).sum()).collect();
+        self.decoded = meta
+            .row_groups()
+            .iter()
+            .map(|rg| read(rg).into_iter().fold(0u64, |t, i| t.saturating_add(rg.column(i).uncompressed_size().max(0) as u64)))
+            .collect();
         (self.announced, self.ahead) = (0, 0);
         true
     }
@@ -205,12 +208,15 @@ impl GroupWindows {
             let bytes = |g: usize| self.ranges[g].iter().fold(0u64, |t, r| t.saturating_add(r.1));
             let budget = self.prefetch.as_ref().map_or(u64::MAX, |p| p.1);
             // within the bytes the prefetcher takes at once and the decoded bytes a window holds
+            // (sums checked: a row group whose sum overflows goes to the next window).
             let (mut n, mut total, mut decoded) = (0, 0u64, 0u64);
-            while n < self.window.min(self.groups.len())
-                && (n == 0 || total + bytes(self.groups[n].0) <= budget && decoded + self.decoded[self.groups[n].0] <= DECODED_WINDOW_BYTES)
-            {
-                total += bytes(self.groups[n].0);
-                decoded += self.decoded[self.groups[n].0];
+            while n < self.window.min(self.groups.len()) {
+                let g = self.groups[n].0;
+                let (t, d) = (total.checked_add(bytes(g)), decoded.checked_add(self.decoded[g]));
+                if n > 0 && !(t.is_some_and(|t| t <= budget) && d.is_some_and(|d| d <= DECODED_WINDOW_BYTES)) {
+                    break;
+                }
+                (total, decoded) = (t.unwrap_or(u64::MAX), d.unwrap_or(u64::MAX));
                 n += 1;
             }
             if self.prefetch.is_some() && self.announced < n {
@@ -870,31 +876,36 @@ mod tests {
         assert!(requests <= 20, "{requests} requests");
     }
 
-    /// Column chunk lengths from a footer that overflow when summed saturate: the reader reads on
-    /// rather than panicking or wrapping.
+    /// Column chunk lengths and decoded sizes from a footer that overflow when summed saturate,
+    /// in one row group and across a window's: the reader reads on rather than panicking or
+    /// wrapping, a row group whose sum would overflow going to the next window.
     #[test]
     fn overflowing_chunk_lengths_saturate() {
         use super::GroupWindows;
         use arrow_array::{ArrayRef, Int32Array, RecordBatch};
         use std::sync::Arc;
-        let mut w = GroupWindows {
-            groups: (0..2).map(|g| (g, None)).collect(),
-            ready: Default::default(),
-            decode: Box::new(|g, _| {
-                Ok(vec![RecordBatch::try_from_iter([("g", Arc::new(Int32Array::from(vec![g as i32])) as ArrayRef)]).unwrap()])
-            }),
-            ranges: vec![vec![(0, u64::MAX), (0, u64::MAX)]; 2],
-            decoded: vec![1; 2],
-            prefetch: Some((Box::new(|_: &[(u64, u64)]| Ok(())), u64::MAX)),
-            announced: 0,
-            ahead: 0,
-            no_read_ahead: false,
-            context: crate::stac::AssetReadContext::capture(None),
-            window: 1,
-            failed: false,
-        };
-        assert!(w.next().unwrap().is_some() && w.next().unwrap().is_some());
-        assert!(w.next().unwrap().is_none());
+        for window in [1, 2, 3] {
+            let mut w = GroupWindows {
+                groups: (0..3).map(|g| (g, None)).collect(),
+                ready: Default::default(),
+                decode: Box::new(|g, _| {
+                    Ok(vec![RecordBatch::try_from_iter([("g", Arc::new(Int32Array::from(vec![g as i32])) as ArrayRef)]).unwrap()])
+                }),
+                ranges: vec![vec![(0, u64::MAX), (0, u64::MAX)]; 3],
+                decoded: vec![u64::MAX; 3],
+                prefetch: Some((Box::new(|_: &[(u64, u64)]| Ok(())), u64::MAX)),
+                announced: 0,
+                ahead: 0,
+                no_read_ahead: false,
+                context: crate::stac::AssetReadContext::capture(None),
+                window,
+                failed: false,
+            };
+            for _ in 0..3 {
+                assert!(w.next().unwrap().is_some(), "window {window}");
+            }
+            assert!(w.next().unwrap().is_none());
+        }
     }
 
     /// The row groups whose column chunks are announced to the prefetcher at each call: the
