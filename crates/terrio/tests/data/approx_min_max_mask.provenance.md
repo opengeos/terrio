@@ -136,3 +136,31 @@ for f in ["approx_min_max_mask_nodata_f32.tif", "approx_min_max_mask_nodata_f64.
     ovs = [(b.GetOverview(i).XSize, b.GetOverview(i).GetMaskFlags()) for i in range(b.GetOverviewCount())]
     print(f, ds.GetFileList(), b.GetMaskFlags(), ovs, "approx", b.ComputeRasterMinMax(True), "exact", b.ComputeRasterMinMax(False))
 ```
+
+## Third script: the nodata rule for Float32 (no fixture)
+
+`gdal_min_max_reads_mask` is unit-tested against this GDAL 3.12.1 run, which prints
+(50, 50) for nodata -inf, +inf and NaN (the mask is read) and (50, 1000) for nodata 1e39,
+outside the float range (it is not). GDAL 3.13.3's `gcore/gdalrasterband.cpp` has the same
+`ComputeRasterMinMax` gate and `ComputeFloatNoDataValue` (checked by reading the source).
+
+```python
+import numpy as np
+from osgeo import gdal
+
+gdal.UseExceptions()
+# Float32 MEM band of 50 with 1000 at (9,9) masked out by a per-dataset mask, for each nodata:
+# (50, 50) means GDAL read the mask, (50, 1000) means it did not.
+for nodata in [float("-inf"), float("inf"), float("nan"), 1e39]:
+    ds = gdal.GetDriverByName("MEM").Create("", 128, 128, 1, gdal.GDT_Float32)
+    a = np.full((128, 128), 50.0, np.float32)
+    a[9, 9] = 1000.0
+    b = ds.GetRasterBand(1)
+    b.SetNoDataValue(nodata)
+    b.WriteArray(a)
+    ds.CreateMaskBand(gdal.GMF_PER_DATASET)
+    m = np.full((128, 128), 255, np.uint8)
+    m[9, 9] = 0
+    b.GetMaskBand().WriteArray(m)
+    print(nodata, b.ComputeRasterMinMax(False))
+```

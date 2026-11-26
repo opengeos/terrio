@@ -1303,8 +1303,8 @@ impl LazyRaster {
     /// nodata or NaN and, where GDAL reads the band's `GetMaskBand()` (a per-dataset mask of the
     /// level read, on a band without nodata or a Float32 band), those the mask marks valid. `band`
     /// is numbered from 1, over components, two per complex band, as in `band_count()`. `None`
-    /// when the band has no valid pixel. Reference: GDAL 3.13.3 (whose mask rule matches the
-    /// GDAL 3.12.1 the mask fixtures were checked with).
+    /// when the band has no valid pixel. Reference: GDAL 3.13.3; the mask fixtures were compared
+    /// with GDAL 3.12.1, whose mask rule matches the 3.13.3 source.
     pub fn approx_min_max(&mut self, band: usize) -> Result<Option<(f64, f64)>> {
         let (w, h, bands) = (self.width(), self.height(), self.band_count());
         if band == 0 || band > bands {
@@ -2015,7 +2015,8 @@ impl LazyRaster {
 /// double nodata. That is a band without nodata, one whose nodata is NaN, or a Float32 (or
 /// Float16) band whose nodata is within the float range, infinities included, which
 /// `ComputeFloatNoDataValue` moves to the float nodata; such a band is then filtered by both
-/// nodata and mask. Reference: GDAL 3.13.3 (`gcore/gdalrasterband.cpp`), checked with GDAL 3.12.1.
+/// nodata and mask. Reference: GDAL 3.13.3 `gcore/gdalrasterband.cpp` (source); the GDAL 3.12.1
+/// runs behind the unit test are recorded in `tests/data/approx_min_max_mask.provenance.md`.
 fn gdal_min_max_reads_mask(nodata: Option<f64>, t: DataType) -> bool {
     nodata.is_none_or(|v| v.is_nan() || (t == DataType::F32 && (v.is_infinite() || v.abs() <= f32::MAX as f64)))
 }
@@ -4698,9 +4699,11 @@ mod tests {
         }
     }
 
-    /// GDAL 3.12.1 reads the mask of a Float32 band with nodata -inf, +inf or NaN (1000 masked
-    /// out: range (50, 50)), not with nodata 1e39 outside the float range (range (50, 1000)), nor
-    /// of a Float64 band with nodata.
+    /// The mask rule for nodata, unit-level: a Float32 band with nodata -inf, +inf or NaN reads the
+    /// mask, one with nodata 1e39 outside the float range does not, nor does a Float64 band with
+    /// nodata. The Float32 cases are the GDAL 3.12.1 run in the third script of
+    /// `tests/data/approx_min_max_mask.provenance.md` ((50, 50) when the mask is read, (50, 1000)
+    /// when not); the Float64 case is the `approx_min_max_mask_nodata_f64` fixture.
     #[test]
     fn gdal_min_max_reads_the_mask_of_float32_bands_with_nodata_in_the_float_range() {
         for v in [f64::NEG_INFINITY, f64::INFINITY, f64::NAN, -5.0, f32::MAX as f64] {
