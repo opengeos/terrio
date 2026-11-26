@@ -1229,12 +1229,10 @@ impl PyRaster {
         tile_size: Option<u32>,
     ) -> PyResult<Bound<'py, PyBytes>> {
         let mut options = write_options(driver, compress, tile_size, false)?;
-        let bytes = py
-            .detach_result(|| {
-                self.inner.prepare_output_mask(filename, &mut options, Window::full(self.inner.width(), self.inner.height()), None)?;
-                self.with_dataset(|ds| terrio::memory::write_raster_bytes(ds, filename, &options))
-            })
-            .py()?;
+        let bytes = with_warnings(py, || {
+            self.inner.prepare_output_mask(filename, &mut options, Window::full(self.inner.width(), self.inner.height()), None)?;
+            self.with_dataset(|ds| terrio::memory::write_raster_bytes(ds, filename, &options))
+        })?;
         Ok(PyBytes::new(py, &bytes))
     }
 

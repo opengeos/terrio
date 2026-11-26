@@ -34,7 +34,7 @@ impl PyPipelineResult {
     }
     /// Encode requested outputs without creating files.
     fn output_bytes<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let outputs = py.detach_result(|| self.inner.output_bytes()).py()?;
+        let outputs = crate::with_warnings(py, || self.inner.output_bytes())?;
         let result = PyDict::new(py);
         for (name, bytes) in outputs {
             result.set_item(name, PyBytes::new(py, &bytes))?;
@@ -43,7 +43,7 @@ impl PyPipelineResult {
     }
     /// Write all requested destinations after checking overwrite policy and aliases.
     fn write_outputs(&mut self, py: Python<'_>) -> PyResult<()> {
-        py.detach_result(|| self.inner.write_outputs()).py()
+        crate::with_warnings(py, || self.inner.write_outputs())
     }
 }
 
@@ -97,7 +97,7 @@ fn pipeline(
     }
     let mut inner = result.py()?;
     if write {
-        py.detach_result(|| inner.write_outputs()).py()?;
+        crate::with_warnings(py, || inner.write_outputs())?;
     }
     Ok(PyPipelineResult { inner })
 }
