@@ -2603,7 +2603,7 @@ geolocation arrays are unsupported. Standard vector output options apply.
 terrio footprint image.tif footprint.gpkg
 terrio footprint image.tif footprint.gpkg --band 1,2 --intersection
 terrio footprint image.tif footprint.gpkg --mask valid.tif
-terrio footprint image.tif footprint.shp --singlepart --attribute survey=2026 --attribute "label=North field"
+terrio footprint image.tif footprint.shp --singlepart --attribute survey=2026 --attribute "label=North block"
 ```
 
 Writes one multipolygon of all finite, non-nodata pixels, preserving holes, disconnected areas,
@@ -2728,7 +2728,7 @@ terrio zonal-stats counties.gpkg stats.gpkg --raster image.tif --band 1,2 --pref
   --stats count,min,max,mean,sum,stddev,median --all-touched
 terrio zonal-stats counties.gpkg stats.gpkg --raster dem.tif \
   --t-srs EPSG:3857 --decimal-places 2
-terrio zonal-stats fields.gpkg stats.fgb --inputs s2.csv \
+terrio zonal-stats zones.gpkg stats.fgb --inputs s2.csv \
   --stats count,mean,stddev,quantile_25,median,quantile_75,mode
 ```
 
@@ -2747,7 +2747,7 @@ a Zarr v3 store with one variable, named after the store (`ndvi.zarr` holds `ndv
 `(geometry, time, band, statistic)`:
 
 ```sh
-terrio zonal-stats fields.gpkg ndvi.zarr --inputs s2.csv --stats mean,median
+terrio zonal-stats zones.gpkg ndvi.zarr --inputs s2.csv --stats mean,median
 ```
 
 - `time` is present when the `--inputs` rows have times (then every row needs one), as CF times

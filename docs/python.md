@@ -157,7 +157,7 @@ Every operation that takes vector data (`zonal_stats` zones, `warp`'s `cutline`,
 takes it in any of these forms:
 
 ```python
-"fields.gpkg"; pathlib.Path("fields.gpkg")      # a file (a URL only as str: pathlib mangles //)
+"zones.gpkg"; pathlib.Path("zones.gpkg")        # a file (a URL only as str: pathlib mangles //)
 layer; dataset; [layer1, layer2]                # terrio Layers and VectorDatasets
 gdf; gdf.geometry; pyarrow_table                # GeoPandas objects, Arrow data (GeoArrow, WKB)
 shapely.box(0, 0, 1, 1); [geom1, geom2]         # Shapely geometries, alone or in a sequence
@@ -851,7 +851,7 @@ labelled inputs: dicts, or a pandas DataFrame, with `raster`, `time`, `label` an
 # items: pystac Items, e.g. from pystac_client's search(...).items()
 rows = [{"raster": item.assets[band].href, "time": item.datetime.date().isoformat(), "label": band}
         for item in items for band in ["red", "nir"]]
-stats = terrio.zonal_stats(fields, rows, stats=["mean", "quantile_25", "quantile_75", "mode"])
+stats = terrio.zonal_stats(zones, rows, stats=["mean", "quantile_25", "quantile_75", "mode"])
 # fields named 2024_07_01_red_mean, 2024_07_01_nir_mean, ...
 ```
 
@@ -875,12 +875,12 @@ streams one at a time to bound them. In a stream fed arrays of one 8- or 16-bit 
 of at least 256 or 65,536 pixels counts them in a histogram of 2 or 512 KiB instead.
 
 ```python
-reducer = terrio.ZonalReducer(fields, width, height, transform, "EPSG:32631", stats=["mean", "median"])
+reducer = terrio.ZonalReducer(zones, width, height, transform, "EPSG:32631", stats=["mean", "median"])
 stream = reducer.stream()
 for i, (x, y, w, h) in enumerate(reducer.windows()):
     red, nir = (a.astype("float64") for a in read_strip(x, y, w, h))  # shape (h, w); no uint16 wrap
     stream.add(i, (nir - red) / (nir + red))  # 0/0 is NaN, left out
-ndvi = stream.finish()  # {"mean": array, "median": array}, one value per field
+ndvi = stream.finish()  # {"mean": array, "median": array}, one value per zone
 ```
 
 `finish()` returns one array per statistic: `count` and `variety` are int64 (`count` is float64

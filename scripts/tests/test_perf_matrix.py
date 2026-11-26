@@ -1801,7 +1801,7 @@ def _polygons(ogr, osr, path, rings, points=False):
 
 
 @pytest.mark.parametrize("fmt,access", [("rasterize", "burn"), ("rasterize", "attribute_all_touched"), ("rasterize", "burn_t1"),
-                                        ("zonal", "fields"), ("zonal", "fields_all_touched")])
+                                        ("zonal", "polygons"), ("zonal", "polygons_all_touched")])
 def test_rasterize_and_zonal_run_in_a_worker_and_match_gdal(tmp_path, monkeypatch, fmt, access):
     """Run a rasterization or zonal statistics as the runner's worker does, on small files, against GDAL's output.
 
@@ -1834,7 +1834,7 @@ def test_rasterize_and_zonal_run_in_a_worker_and_match_gdal(tmp_path, monkeypatc
         warm = _mem(np, gdal, np.ones((64, 64), "float32"), gt=(500000, 10, 0, 4959680, 0, -10))
         gdal.Translate(str(tmp_path / "_zonal_warmup.tif"), warm, format="GTiff")
         gdal.Translate(str(tmp_path / "_warmup.tif"), warm, format="GTiff")
-        _polygons(ogr, osr, tmp_path / "_zones_fields.fgb", rings)
+        _polygons(ogr, osr, tmp_path / "_zones_polygons.fgb", rings)
         _polygons(ogr, osr, tmp_path / "_zones_warmup.fgb", [[(500000, 4959040), (500300, 4959040), (500300, 4959340)]])
     meta = op.meta(src, access)
     samples = {tool: perf_matrix.worker({"format": fmt, "tool": tool, "src": str(src), "access": access, "meta": meta})

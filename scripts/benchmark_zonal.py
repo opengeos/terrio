@@ -1,12 +1,12 @@
 """Zonal statistics benchmark: wall time, CPU time and peak memory against exactextract and
-terrio's previous engine, on Sentinel-2 L2A COGs and crop fields.
+terrio's previous engine, on Sentinel-2 L2A COGs and polygons.
 
 Data are cached under --data (never committed): the first N dates of one MGRS tile from
-Earth Search, 10 bands each, and seeded synthetic fields (or --fields-file). Every tool runs
+Earth Search, 10 bands each, and seeded synthetic polygons (or --polygons-file). Every tool runs
 in a fresh process, measured from its own resource usage, with the same thread count, three times
 interleaved; equivalence with terrio is checked before any speed ratio is reported.
 
-    python scripts/benchmark_zonal.py --data ~/zonal-bench --dates 10 --fields 10000 \\
+    python scripts/benchmark_zonal.py --data ~/zonal-bench --dates 10 --polygons 10000 \\
         --tools terrio,exactextract --json docs/benchmarks/zonal.json
 
 exactextract runs in --gdal-python (an environment with GDAL 3.12+ and exactextract). See
@@ -105,10 +105,10 @@ def repeat_path(data, path, r):
     return link
 
 
-def fields(data, n, reference, aoi_km=None, seed=20261104):
-    """`n` non-overlapping rotated rectangles (fields) over the raster `reference`, or over a
+def polygons(data, n, reference, aoi_km=None, seed=20261104):
+    """`n` non-overlapping rotated rectangles over the raster `reference`, or over a
     centered `aoi_km` square of it, 5% with a hole, in its CRS: a jittered grid of cells, each
-    field 20–80% of its cell."""
+    polygon 20–80% of its cell."""
     from osgeo import gdal, ogr
 
     ds = gdal.Open(str(reference))
@@ -116,7 +116,7 @@ def fields(data, n, reference, aoi_km=None, seed=20261104):
     # Keyed on the reference grid (CRS, origin, size) so another tile never reuses these zones.
     srs = ds.GetSpatialRef()
     grid = f"{srs.GetAuthorityName(None)}{srs.GetAuthorityCode(None)}_{gt[0]:.0f}_{gt[3]:.0f}_{w}x{h}"
-    path = data / (f"fields-{n}-{grid}.gpkg" if aoi_km is None else f"fields-{n}-aoi{aoi_km:g}km-{grid}.gpkg")
+    path = data / (f"polygons-{n}-{grid}.gpkg" if aoi_km is None else f"polygons-{n}-aoi{aoi_km:g}km-{grid}.gpkg")
     if path.exists():
         return path
     x0, y1 = gt[0], gt[3]
@@ -130,8 +130,8 @@ def fields(data, n, reference, aoi_km=None, seed=20261104):
     cw, ch = (x1 - x0) / side, (y1 - y0) / side
     rng = random.Random(seed)
     out = ogr.GetDriverByName("GPKG").CreateDataSource(str(path))
-    layer = out.CreateLayer("fields", ds.GetSpatialRef(), ogr.wkbPolygon)
-    layer.CreateField(ogr.FieldDefn("field_id", ogr.OFTInteger))
+    layer = out.CreateLayer("polygons", ds.GetSpatialRef(), ogr.wkbPolygon)
+    layer.CreateField(ogr.FieldDefn("polygon_id", ogr.OFTInteger))
     layer.StartTransaction()
     cells = rng.sample(range(side * side), n)
     for k, cell in enumerate(cells):
@@ -156,7 +156,7 @@ def fields(data, n, reference, aoi_km=None, seed=20261104):
         if rng.random() < 0.05:
             polygon.AddGeometry(ring(a / 3, b / 3))
         feature = ogr.Feature(layer.GetLayerDefn())
-        feature.SetField("field_id", k)
+        feature.SetField("polygon_id", k)
         feature.SetGeometry(polygon)
         layer.CreateFeature(feature)
     layer.CommitTransaction()
@@ -207,9 +207,9 @@ def terrio_columns(path, stats):
     out = {n: [] for n in names if n.split("_")[-1] in stats}
     features = list(layer)
     # FlatGeobuf rows are in spatial-index order; other tools keep the input order.
-    # Assumes a field_id in input order (generated fields); --fields-file needs one.
-    if "field_id" in names:
-        features.sort(key=lambda f: f.GetField("field_id"))
+    # Assumes a polygon_id in input order (generated polygons); --polygons-file needs one.
+    if "polygon_id" in names:
+        features.sort(key=lambda f: f.GetField("polygon_id"))
     for f in features:
         for n in out:
             out[n].append(f.GetField(n))
@@ -247,9 +247,9 @@ def main():
     p.add_argument("--repeat-dates", type=int, default=1,
                    help="list the cached dates this many times, each repeat a year later through its own "
                         "symlinked paths (simulates more dates; local files only)")
-    p.add_argument("--fields", default="10000")
-    p.add_argument("--aoi-km", type=float, help="generate the fields inside a centered square of this side")
-    p.add_argument("--fields-file", type=Path)
+    p.add_argument("--polygons", default="10000")
+    p.add_argument("--aoi-km", type=float, help="generate the polygons inside a centered square of this side")
+    p.add_argument("--polygons-file", type=Path)
     p.add_argument("--bands", help="comma-separated subset of the 10 bands")
     p.add_argument("--stats", default="mean,moments,distribution")
     p.add_argument("--method", choices=["center", "fractional"], default="center")
@@ -279,11 +279,11 @@ def main():
         # read among rows naming the same path, and repeats must cost what distinct dates cost.
         rows = [(repeat_path(args.data, path, r), f"{int(day[:4]) + r}{day[4:]}", band, url)
                 for r in range(args.repeat_dates) for path, day, band, url in rows]
-        for n in map(int, args.fields.split(",")):
-            zones = args.fields_file or fields(args.data, n, rows[0][0], args.aoi_km)
+        for n in map(int, args.polygons.split(",")):
+            zones = args.polygons_file or polygons(args.data, n, rows[0][0], args.aoi_km)
             for set_name in args.stats.split(","):
                 stats = STAT_SETS[set_name]
-                case = dict(dates=dates * args.repeat_dates, distinct_dates=dates, fields=n, aoi_km=args.aoi_km,
+                case = dict(dates=dates * args.repeat_dates, distinct_dates=dates, polygons=n, aoi_km=args.aoi_km,
                             stats=stats, method=args.method, rasters=len(rows), threads=args.threads,
                             remote=args.remote)
                 log(f"case {case}")

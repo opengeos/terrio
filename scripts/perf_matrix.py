@@ -721,7 +721,7 @@ class GeoParquet:
     def sources(out: Path) -> dict[str, Path]:
         """Writes the FlatGeobuf files the vector fixtures are translated from, if not there yet.
 
-        Clustered features (fields or buildings around 200 towns) with `id`, `value`, `class` and
+        Clustered features (parcels or buildings around 200 towns) with `id`, `value`, `class` and
         `year`, in `id` order, as many of each geometry as GeoParquet's largest fixture of it has.
 
         Args:
@@ -746,7 +746,7 @@ class GeoParquet:
                 continue
             with staged_fixture(src) as staged:
                 rng = np.random.default_rng(2)
-                # Clustered, like fields or buildings: centres drawn around 200 towns.
+                # Clustered, like parcels or buildings: centres drawn around 200 towns.
                 towns = rng.uniform((x0, y0), (x1, y1), (200, 2))
                 c = towns[rng.integers(0, 200, n)] + rng.normal(0, 2500, (n, 2))
                 c = np.clip(c, (x0, y0), (x1, y1))
@@ -757,7 +757,7 @@ class GeoParquet:
                     for fname, ftype in (("id", ogr.OFTInteger64), ("value", ogr.OFTReal), ("class", ogr.OFTString), ("year", ogr.OFTInteger)):
                         lyr.CreateField(ogr.FieldDefn(fname, ftype))
                     defn = lyr.GetLayerDefn()
-                    classes = ["cropland", "grassland", "forest", "urban", "water", "wetland", "bare"]
+                    classes = ["shrubland", "grassland", "forest", "urban", "water", "wetland", "bare"]
                     values, years, cls = rng.gamma(2, 50, n), rng.integers(2000, 2026, n), rng.integers(0, 7, n)
                     nv = rng.integers(5, 24, n)
                     radius = rng.uniform(10, 80, n)
@@ -2396,7 +2396,7 @@ def compare_zonal(out, ref, tol: float) -> dict:
 class Zonal(_Operation):
     """Statistics of the DEM per polygon zone, as `gdal raster zonal-stats`.
 
-    The zones, written beside the GeoTIFF fixtures: `fields`, 20,000 irregular polygons with
+    The zones, written beside the GeoTIFF fixtures: `polygons`, 20,000 irregular polygons with
     vertices 12 to 200 m from their centre (holding from no pixel centre to 909), clustered around
     50 points, some overlapping or reaching past the raster's edge, with vertices rounded to the
     centimetre as the vector fixtures' (a few fall on pixel edges); `blocks`, 16 squares of
@@ -2411,9 +2411,9 @@ class Zonal(_Operation):
     STATS = ["count", "sum", "mean", "min", "max"]
     # access: (zones, all touched, relative tolerance): sums in another order differ by ~1e-15
     CASES = {
-        "fields": ("fields", False, 1e-9),
-        "fields_all_touched": ("fields", True, 1e-9),
-        "fields_t1": ("fields", False, 1e-9),
+        "polygons": ("polygons", False, 1e-9),
+        "polygons_all_touched": ("polygons", True, 1e-9),
+        "polygons_t1": ("polygons", False, 1e-9),
         "blocks": ("blocks", False, 1e-9),
     }
     ACCESS = list(CASES)
@@ -2436,10 +2436,10 @@ class Zonal(_Operation):
         n = 20_000
         towns = rng.uniform((x0, y0), (x1, y1), (50, 2))
         centres = np.clip(towns[rng.integers(0, 50, n)] + rng.normal(0, 2500, (n, 2)), (x0, y0), (x1, y1))
-        fields = []
+        polygons = []
         for (cx, cy), k, radius in zip(centres, rng.integers(5, 24, n), rng.uniform(20, 200, n), strict=True):
             a, r = np.sort(rng.uniform(0, 2 * np.pi, k)), radius * rng.uniform(0.6, 1.0, k)
-            fields.append(list(zip(cx + r * np.cos(a), cy + r * np.sin(a), strict=True)))
+            polygons.append(list(zip(cx + r * np.cos(a), cy + r * np.sin(a), strict=True)))
         step = 10240
         blocks = [[(x, y), (x + step, y), (x + step, y + step), (x, y + step)]
                   for x in range(x0, x1, step) for y in range(y0, y1, step)]
@@ -2459,7 +2459,7 @@ class Zonal(_Operation):
             lyr = ds = None  # noqa: F841 - closes the file
 
         warmup = [[(x0, y0), (x0 + 300, y0), (x0 + 300, y0 + 300), (x0, y0 + 300)]]  # in the warm-up raster
-        for name, rings in (("fields", fields), ("blocks", blocks), ("warmup", warmup)):
+        for name, rings in (("polygons", polygons), ("blocks", blocks), ("warmup", warmup)):
             publish(out / f"_zones_{name}.fgb", lambda tmp, rings=rings: write_zones(tmp, rings))
         warm = gdal.GetDriverByName("MEM").Create("", 64, 64, 1, gdal.GDT_Float32)
         warm.SetGeoTransform((x0, 10, 0, y0 + 640, 0, -10))

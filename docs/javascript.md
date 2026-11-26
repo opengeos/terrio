@@ -653,13 +653,13 @@ reduces one band fed those strips in order, as typed arrays of `width * height` 
 row:
 
 ```js
-const reducer = new ZonalReducer(fields, width, height, transform, "EPSG:32631", { stats: ["mean", "median"] });
+const reducer = new ZonalReducer(zones, width, height, transform, "EPSG:32631", { stats: ["mean", "median"] });
 const stream = reducer.stream();
 reducer.windows().forEach(([x, y, w, h], i) => {
   const [red, nir] = readStrip(x, y, w, h); // Float64Arrays of w * h pixels
   stream.add(i, nir.map((n, j) => (n - red[j]) / (n + red[j]))); // 0/0 is NaN, left out
 });
-const ndvi = stream.finish(); // { mean: Float64Array, median: Float64Array }, one value per field
+const ndvi = stream.finish(); // { mean: Float64Array, median: Float64Array }, one value per zone
 ```
 
 `finish()` returns an object of one `Float64Array` per statistic, keyed by its name, NaN where a
