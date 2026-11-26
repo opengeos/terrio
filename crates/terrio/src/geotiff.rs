@@ -1404,16 +1404,31 @@ fn decode_in_threads<D: Read + Seek + Send + 'static>(
     let workers = reserved.0;
     // The next chunk to decode, and whether to stop.
     let (next, stop) = (AtomicUsize::new(0), AtomicBool::new(false));
+    // The workers' range requests (over HTTP, a block evicted since the prefetch) stop with the
+    // caller's.
+    #[cfg(remote)]
+    let cancellation = crate::http::ReadCancellation::current();
+    // The caller's scoped options and STAC asset read policy: a worker's HTTP reads check
+    // consent against them, as `par::map_waiting`'s threads do.
+    let context = crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current());
     std::thread::scope(|scope| -> crate::Result<()> {
         // A bounded queue: decoding never runs far ahead of placing.
         let (tx, rx) = std::sync::mpsc::sync_channel::<crate::Result<DecodedChunk>>(workers * 2);
         for _ in 0..workers {
             let (tx, next, stop) = (tx.clone(), &next, &stop);
+            #[cfg(remote)]
+            let cancellation = &cancellation;
+            let context = &context;
             // A thread that cannot be started (its stack not allocated) leaves the chunks to
             // the others, or to the caller.
             let _ = std::thread::Builder::new().spawn_scoped(scope, move || {
                 #[cfg(test)]
                 let _live = LiveWorker::enter();
+                #[cfg(remote)]
+                let _cancellation = cancellation.as_ref().map(crate::http::ReadCancellation::enter);
+                // A thread that cannot enter it (consent revoked since the read began) leaves the
+                // chunks to the others, or to the caller.
+                let Ok(_context) = context.enter() else { return };
                 // A decoder that an earlier read left, else a new one. A thread that cannot
                 // open the file leaves the chunks to the others.
                 let (at, mut d) = match pool.and_then(|p| p.take(ifd)) {
@@ -2872,6 +2887,42 @@ mod tests {
         pool.give_back(1, taken);
         drop(pool);
         assert_eq!(spares.bytes(), 0);
+    }
+
+    /// Decode workers open their decoders under the options the calling thread set for itself
+    /// (a credentialed STAC asset's consent read over HTTP among them), as `par::map_waiting`'s
+    /// threads do. Workers are reserved from a budget shared with tests running alongside, so
+    /// the read is retried until one gets them.
+    #[cfg(threads)]
+    #[test]
+    fn decode_workers_open_under_the_callers_thread_options() {
+        use std::sync::Mutex;
+        let key = "TERRIO_TEST_DECODE_WORKER_OPTION";
+        let seen: Mutex<Vec<Option<String>>> = Mutex::new(Vec::new());
+        // Records the option as a worker sees it, then opens nothing: the chunks are left to
+        // the caller.
+        let reopen = || -> crate::Result<tiff::decoder::Decoder<std::io::Cursor<Vec<u8>>>> {
+            seen.lock().unwrap().push(crate::config::get(key));
+            Err(crate::Error::InvalidData("not opened".into()))
+        };
+        let err = |e: tiff::TiffError| crate::Error::InvalidData(e.to_string());
+        // Up to 10 s: a loaded runner's tests can hold the budget for a while.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let decoded = crate::config::with_options(&[(key, "YES")], || {
+                decode_in_threads(&reopen, None, 0, &[0, 1, 2, 3], None, usize::MAX, &err, &mut |_| Ok(())).unwrap()
+            });
+            assert_eq!(decoded, 0, "no worker opened a decoder");
+            if !seen.lock().unwrap().is_empty() || crate::par::threads() < 2 || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let seen = seen.into_inner().unwrap();
+        if crate::par::threads() > 1 {
+            assert!(!seen.is_empty(), "no read got decode workers");
+        }
+        assert!(seen.iter().all(|v| v.as_deref() == Some("YES")), "a worker lost the caller's options: {seen:?}");
     }
 
     /// A decoder whose strip count overflows must not retain unaccounted chunk tables.

@@ -2769,6 +2769,9 @@ enum Reopened {
     /// Quiet ([`crate::sparse::SparseFile::quiet`]): a decoder that cannot be opened is done
     /// without.
     Sparse(crate::sparse::SparseFile),
+    /// A remote file read over HTTP: the chunks were prefetched before decoding.
+    #[cfg(remote)]
+    Http(crate::http::RangeReader),
 }
 
 fn tiff_err(e: tiff::TiffError) -> Error {
@@ -3355,7 +3358,7 @@ impl TiffRaster {
         ranges.extend(misses.iter().filter_map(|i| tables.get(*i as usize)));
         dec.inner().get_ref().prefetch(&ranges)?;
         drop(ranges);
-        // More decoders over the local file, or over the bytes in memory.
+        // More decoders over the file: local, in memory, in a zip archive or remote.
         let (tags, limits) = (&self.tags, self.limits);
         let source = match dec.inner().get_ref() {
             Source::File(f) => Some(Reopened::File(f.get_ref().clone())),
@@ -3364,6 +3367,12 @@ impl TiffRaster {
             // Without recording what they miss: a header the caller's cache dropped would be
             // fetched again for decoders the read does without.
             Source::Sparse(s) => Some(Reopened::Sparse(s.get_ref().file.quiet())),
+            // Clones share the prefetched blocks and the connections, each with its own position.
+            // A prefetch larger than the block cache is fetched in batches as reads reach them:
+            // reads from several threads at once would evict each other's blocks before they are
+            // read, so its chunks are decoded on this thread, in file order.
+            #[cfg(remote)]
+            Source::Http(r) if r.prefetched_whole() => Some(Reopened::Http(r.clone())),
             #[cfg(remote)]
             Source::Http(_) => None,
         };
@@ -3388,6 +3397,12 @@ impl TiffRaster {
                         let mut s = Source::sparse(file.clone());
                         s.seek(SeekFrom::Start(0))?;
                         (s, file.len())
+                    }
+                    #[cfg(remote)]
+                    Reopened::Http(r) => {
+                        let mut s = Source::Http(r.clone());
+                        s.seek(SeekFrom::Start(0))?;
+                        (s, r.len())
                     }
                 };
                 Ok(Decoder::new(PatchedReader::new(s, tags)).map_err(tiff_err)?.with_limits(limits.tiff_within(len)))
@@ -3731,12 +3746,29 @@ pub(crate) fn place<T: Copy>(out: &mut [T], vals: &[T], g: &ChunkGeom, w: Window
         }
         let first = (src_row + c0 - g.x0) * g.spp;
         let dst = dst_row + c0 - w.x;
+        let pixels = vals.get(first..first + (c1 - c0) * g.spp);
         for &(sample, band) in map {
-            let src = vals.get(first + sample..).unwrap_or_default().iter().step_by(g.spp);
-            for (o, v) in out[band * band_len + dst..][..c1 - c0].iter_mut().zip(src) {
-                *o = *v;
+            let out = &mut out[band * band_len + dst..][..c1 - c0];
+            // Whole pixels of 2 to 4 samples, as arrays: the copy is vectorized.
+            match (g.spp, pixels) {
+                (2, Some(p)) if sample < 2 => sample_of::<T, 2>(out, p, sample),
+                (3, Some(p)) if sample < 3 => sample_of::<T, 3>(out, p, sample),
+                (4, Some(p)) if sample < 4 => sample_of::<T, 4>(out, p, sample),
+                _ => {
+                    let src = vals.get(first + sample..).unwrap_or_default().iter().step_by(g.spp);
+                    for (o, v) in out.iter_mut().zip(src) {
+                        *o = *v;
+                    }
+                }
             }
         }
+    }
+}
+
+/// Sample `sample` of each pixel of `N` samples, into `out`.
+fn sample_of<T: Copy, const N: usize>(out: &mut [T], pixels: &[T], sample: usize) {
+    for (o, p) in out.iter_mut().zip(pixels.as_chunks::<N>().0) {
+        *o = p[sample];
     }
 }
 
@@ -4924,6 +4956,91 @@ mod tests {
         assert_eq!(header_fetches.get(), before, "worker reopening must not refetch the trimmed header");
     }
 
+    /// A GeoTIFF read over HTTP decodes its tiles on the workers, as a local file does, reading the
+    /// same values: the workers' decoders read the blocks the window's prefetch fetched, and send
+    /// no request of their own.
+    #[cfg(remote)]
+    #[test]
+    fn http_window_reads_decode_on_the_workers() {
+        let _serial = crate::block_cache::tests::cache_test_guard(0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiled.tif");
+        write_tiled_tiff(&path, (160, 144, 3), sequence(DataType::U8, 160 * 144 * 3, 5), &[]);
+        let (url, seen) = crate::http::test_server(std::fs::read(&path).unwrap());
+        let w = Window::new(20, 20, 120, 100);
+        let want = read_f64(&mut LazyRaster::open(path.to_str().unwrap()).unwrap(), w, &[1, 2, 3], None);
+        let opened = |r: &LazyRaster| match &r.inner {
+            Inner::Tiff(t) => t.workers.opened.load(std::sync::atomic::Ordering::Relaxed),
+            _ => panic!("a GeoTIFF reader"),
+        };
+        // Tests running alongside may hold the process's decode workers: a read then decodes on
+        // its own thread. Fresh readers (of a file new to the process-wide cache) until one gets
+        // workers, for up to 10 s.
+        let mut workers = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        for i in 0.. {
+            let mut r = LazyRaster::open(&format!("{url}/tiled.tif?reader={i}")).unwrap();
+            let before = seen.lock().unwrap().len();
+            assert_eq!(read_f64(&mut r, w, &[1, 2, 3], None), want);
+            let requests = seen.lock().unwrap().len() - before;
+            assert_eq!(requests, 1, "the window's tiles are fetched by its prefetch alone");
+            workers = opened(&r);
+            if crate::par::threads() < 2 || workers >= 1 || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if crate::par::threads() > 1 {
+            assert!(workers >= 1, "no read opened decoders for its workers over HTTP");
+        }
+    }
+
+    /// A read over HTTP of more tiles than the reader's block cache holds, under options set for
+    /// the reading thread only: its prefetch's batches are fetched as its reads reach them, each
+    /// byte once (no block is evicted before it is read), and the values are the file's.
+    #[cfg(remote)]
+    #[test]
+    fn http_reads_larger_than_the_block_cache_fetch_each_byte_once() {
+        let _serial = crate::block_cache::tests::cache_test_guard(0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiled.tif");
+        let (cols, rows) = (320, 288);
+        write_tiled_tiff(&path, (cols, rows, 3), sequence(DataType::U8, cols * rows * 3, 9), &[]);
+        let bytes = std::fs::read(&path).unwrap();
+        let (url, seen) = crate::http::test_server(bytes.clone());
+        let w = Window::full(cols, rows);
+        let want = read_f64(&mut LazyRaster::open(path.to_str().unwrap()).unwrap(), w, &[1, 2, 3], None);
+        // Blocks of 1 KiB, 16 of them cached: the tiles take several batches.
+        let options = [("TERRIO_HTTP_BLOCK_SIZE", "1024"), ("TERRIO_HTTP_CACHE_SIZE", "16384")];
+        assert!(bytes.len() > 4 * 16384, "the file must span several batches");
+        let got = crate::config::with_options(&options, || {
+            let mut r = LazyRaster::open(&format!("{url}/tiled.tif?over-cache")).unwrap();
+            read_f64(&mut r, w, &[1, 2, 3], None)
+        });
+        assert_eq!(got, want);
+        // Each read's requests apart: a block fetched again at any point of a read is caught.
+        let first = seen.lock().unwrap().len();
+        // A window within the cache, of a file new to the process-wide cache, decoded by workers.
+        let small = Window::new(150, 40, 40, 30);
+        let got = crate::config::with_options(&options, || {
+            let mut r = LazyRaster::open(&format!("{url}/tiled.tif?within-cache")).unwrap();
+            read_f64(&mut r, small, &[1, 2, 3], None)
+        });
+        assert_eq!(got, read_f64(&mut LazyRaster::open(path.to_str().unwrap()).unwrap(), small, &[1, 2, 3], None));
+        let seen = seen.lock().unwrap();
+        for part in [&seen[..first], &seen[first..]] {
+            let mut ranges: Vec<(usize, usize)> = part
+                .iter()
+                .map(|r| {
+                    let (a, b) = r.as_deref().unwrap().strip_prefix("bytes=").unwrap().split_once('-').unwrap();
+                    (a.parse().unwrap(), b.parse().unwrap())
+                })
+                .collect();
+            ranges.sort_unstable();
+            assert!(ranges.windows(2).all(|p| p[0].1 < p[1].0), "a byte was fetched twice: {ranges:?}");
+        }
+    }
+
     /// `place` matches a pixel-by-pixel copy of each sample of pixel-interleaved chunks, over:
     /// samples sent to any bands, chunks cropped by the window on every side, a chunk not reaching
     /// the window, and a truncated chunk, whose missing samples leave the output as it was.
@@ -4942,19 +5059,23 @@ mod tests {
                 }
             }
         }
-        let (dw, dh, spp) = (16, 12, 3);
-        let full: Vec<u16> = (0..(dw * dh * spp) as u16).collect();
-        let maps: [&[(usize, usize)]; 3] = [&[(0, 0), (1, 1), (2, 2)], &[(2, 0), (0, 1)], &[(1, 1)]];
+        let (dw, dh) = (16, 12);
+        let maps: [&[(usize, usize)]; 3] = [&[(0, 0), (1, 1)], &[(1, 0), (0, 1)], &[(1, 1)]];
         let windows = [Window::new(0, 0, 16, 12), Window::new(5, 3, 20, 20), Window::new(10, 7, 4, 3), Window::new(18, 0, 4, 4)];
-        let g = ChunkGeom { x0: 2, y0: 1, dw, dh, spp };
-        for vals in [&full[..], &full[..full.len() - 50]] {
-            for map in maps {
-                for w in windows {
-                    let mut want = vec![u16::MAX; w.width * w.height * 3];
-                    let mut got = want.clone();
-                    by_pixel(&mut want, vals, &g, w, map);
-                    place(&mut got, vals, &g, w, map);
-                    assert_eq!(got, want, "{w:?} {map:?} {} samples", vals.len());
+        // Pixels of 2 to 4 samples (copied as arrays) and of 5 (sample by sample).
+        for spp in 2..=5 {
+            let full: Vec<u16> = (0..(dw * dh * spp) as u16).collect();
+            let all: Vec<(usize, usize)> = (0..spp).map(|s| (s, s % 3)).collect();
+            let g = ChunkGeom { x0: 2, y0: 1, dw, dh, spp };
+            for vals in [&full[..], &full[..full.len() - 50], &full[..full.len() - 1]] {
+                for map in maps.iter().copied().chain([&all[..]]) {
+                    for w in windows {
+                        let mut want = vec![u16::MAX; w.width * w.height * 3];
+                        let mut got = want.clone();
+                        by_pixel(&mut want, vals, &g, w, map);
+                        place(&mut got, vals, &g, w, map);
+                        assert_eq!(got, want, "{w:?} {map:?} {} samples of {spp}", vals.len());
+                    }
                 }
             }
         }

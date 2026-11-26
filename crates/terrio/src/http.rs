@@ -1363,6 +1363,11 @@ impl ReadCancellation {
         Self(flags.into())
     }
 
+    /// The calling thread's cancellation, for work it hands to other threads; `None` outside any.
+    pub(crate) fn current() -> Option<Self> {
+        CANCEL_READS.with_borrow(|flags| (!flags.is_empty()).then(|| Self(flags.clone())))
+    }
+
     pub(crate) fn enter(&self) -> ReadCancellationScope {
         let stop = self.0.last().expect("capture_with pushes a flag").clone();
         ReadCancellationScope { previous: Some(CANCEL_READS.replace(self.0.clone())), stop }
@@ -2327,6 +2332,8 @@ struct Shared {
     /// ([`Shared::fetch_planned`]), the next batch when a read reaches one not cached. A deque, so
     /// that taking batches from its front does not shift the rest.
     plan: VecDeque<u64>,
+    /// Whether the last prefetch's blocks, fetched and already cached, fit in the cache together.
+    prefetch_fits: bool,
     response_origin: Option<String>,
     mixed_origins: bool,
 }
@@ -2369,6 +2376,7 @@ impl RangeReader {
             whole: None,
             prefix: None,
             plan: VecDeque::new(),
+            prefetch_fits: false,
             response_origin: None,
             mixed_origins: false,
         };
@@ -2459,12 +2467,25 @@ impl RangeReader {
         let wanted: Vec<u64> = planned.into_iter().collect();
         // A prefetch of cached blocks keeps the plan of an earlier one that is still being read.
         if wanted.is_empty() {
+            s.prefetch_fits = true;
             return Ok(());
         }
-        s.make_room(&wanted, ranges);
+        s.prefetch_fits = s.make_room(&wanted, ranges);
         s.plan = wanted.into();
         let budget = s.fit_budget();
         s.fetch_planned(0, budget)
+    }
+
+    /// Whether the last prefetch fetched all it planned in one batch, none left for reads to
+    /// reach, its blocks and the cached ones its ranges cover fitting in the cache together:
+    /// reads of its ranges, from any clone, then send no request while its blocks stay in
+    /// the process-wide block cache (a concurrent read of another file can evict some, which are
+    /// then fetched again). The state is shared by every clone, so another clone's prefetch
+    /// between a read's own prefetch and this call decides the answer; a read that then decodes
+    /// on the workers without its blocks fetches the missing ones itself, so only its request
+    /// count, not its values, depends on that.
+    pub(crate) fn prefetched_whole(&self) -> bool {
+        self.lock().is_ok_and(|s| s.plan.is_empty() && s.prefetch_fits)
     }
 
     fn lock(&self) -> io::Result<std::sync::MutexGuard<'_, Shared>> {
@@ -2612,12 +2633,13 @@ impl Shared {
     /// The plan counts as its requests' blocks, the cached gaps they fetch again included (at
     /// most `PLAN_GAP` a join): they are held while the responses are stored, and fetch_planned's
     /// budget counts them the same way, so the plan made room for is fetched in one batch.
-    fn make_room(&mut self, plan: &[u64], ranges: &[(u64, u64)]) {
+    /// Returns whether the plan fits.
+    fn make_room(&mut self, plan: &[u64], ranges: &[(u64, u64)]) -> bool {
         let bs = self.block_size;
         let covered = |b: u64| ranges.iter().any(|&(off, len)| len > 0 && b >= off / bs && b <= (off.saturating_add(len) - 1) / bs);
         let need = Self::fetched_blocks(plan) as usize;
         if need + self.blocks.keys().filter(|&&b| covered(b)).count() > self.max_blocks {
-            return;
+            return false;
         }
         let mut kept = Vec::new();
         while self.blocks.len() + need > self.max_blocks
@@ -2630,6 +2652,7 @@ impl Shared {
             }
         }
         self.order.extend(kept);
+        true
     }
 
     /// Drops the oldest blocks until the cache is within its size. Called before a read or a
@@ -3718,6 +3741,24 @@ mod tests {
         assert_eq!(gate.most(), 2, "the stalled request was in flight when the run failed");
     }
 
+    /// A read's cancellation, taken from the calling thread, stops another thread's range requests.
+    #[test]
+    fn a_read_cancellation_carries_to_another_thread() {
+        assert!(ReadCancellation::current().is_none());
+        let flag = Arc::new(AtomicBool::new(false));
+        let _scope = ReadCancellation::capture_with(flag.clone()).enter();
+        let cancellation = ReadCancellation::current().expect("inside a read's scope");
+        flag.store(true, Ordering::SeqCst);
+        std::thread::spawn(move || {
+            let client = Client::new(&Remote::Url("http://127.0.0.1/unused".into()), options());
+            assert!(client.check_cancelled().is_ok(), "a new thread has no cancellation of its own");
+            let _scope = cancellation.enter();
+            assert!(client.check_cancelled().is_err(), "the caller's cancellation must reach the thread");
+        })
+        .join()
+        .unwrap();
+    }
+
     #[test]
     fn nested_read_cancellation_restores_the_caller_after_unwinding() {
         let client = Client::new(&Remote::Url("http://127.0.0.1/unused".into()), options());
@@ -4135,7 +4176,12 @@ mod tests {
         let s = r.lock().unwrap();
         assert!((10..30).chain(40..50).all(|b| s.blocks.contains_key(&b)), "no block of the earlier read dropped, the new ones fetched");
         drop(s);
+        // Fetched in one batch, but not held together by the cache: reads on several threads
+        // would evict each other's blocks.
+        assert!(!r.prefetched_whole(), "a plan that does not fit beside its cached blocks is not whole");
         assert_eq!(read_range(&mut r, 40 * 4096, 10 * 4096), data[40 * 4096..50 * 4096]);
+        r.prefetch(&[(40 * 4096, 10 * 4096)]).unwrap();
+        assert!(r.prefetched_whole(), "blocks all cached are whole");
     }
 
     // A plan over the cache's room but under the cache, with room past half the cache, is

@@ -610,7 +610,7 @@ impl ChunkCodec {
             }
             Codec::CratePacked => unreachable!("decoded by `read_crate_packed`"),
         };
-        self.result(&bytes, w, dw, dh)
+        self.result_owned(bytes, w, dw, dh)
     }
 
     /// Decodes chunk `idx` of samples of 1 to 7 bits under a compression only the `tiff` crate
@@ -1169,6 +1169,28 @@ impl ChunkCodec {
         Ok(out)
     }
 
+    /// [`ChunkCodec::result`] of decoded bytes the result can take: Byte samples of rows as wide
+    /// as the chunk's image data are its first rows, without a copy.
+    fn result_owned(&self, mut bytes: Vec<u8>, w: usize, dw: usize, dh: usize) -> TiffResult<DecodingResult> {
+        if self.sample != Sample::U8 || w != dw {
+            return self.result(&bytes, w, dw, dh);
+        }
+        let what = "a TIFF chunk";
+        let row = dw * self.spp;
+        let total = fallible::len(&[dh, row], what)?;
+        // The rows the bytes hold whole, then zeros, as `result` gives them.
+        let whole = bytes.len().checked_div(row).map_or(0, |n| n * row);
+        bytes.truncate(whole.min(total));
+        let missing = total - bytes.len();
+        fallible::reserve(&mut bytes, missing, what)?;
+        bytes.resize(total, 0);
+        // The block cache weighs chunks by their capacity.
+        if bytes.capacity() > total {
+            bytes.shrink_to_fit();
+        }
+        Ok(DecodingResult::U8(bytes))
+    }
+
     /// The `dw` x `dh` image data of a chunk decoded `w` samples wide, typed in one pass over
     /// `bytes`: rows past their end are left out, and zeros fill the rest.
     fn result(&self, bytes: &[u8], w: usize, dw: usize, dh: usize) -> TiffResult<DecodingResult> {
@@ -1374,6 +1396,26 @@ mod tests {
         assert!(crate_misreads_samples(Some(2), 6, &[0]));
         assert!(crate_misreads_samples(Some(2), 5, &[]));
         assert!(crate_misreads_samples(Some(5), 5, &[0]));
+    }
+
+    /// Byte chunks taken without a copy are the chunks `result` copies: as wide as their image
+    /// data or wider (cropped), short of their rows (whole rows kept, then zeros) or longer.
+    #[test]
+    fn byte_chunks_taken_whole_are_the_chunks_copied() {
+        for spp in [1, 3] {
+            let codec = lzw(Sample::U8, spp, 1, false);
+            for (w, dw, dh) in [(4, 4, 3), (5, 3, 2), (4, 4, 0)] {
+                for len in [0, 1, w * spp, w * spp + 1, w * spp * dh, w * spp * dh + 5] {
+                    let bytes: Vec<u8> = (0..len).map(|i| i as u8 + 1).collect();
+                    let (DecodingResult::U8(owned), DecodingResult::U8(copied)) =
+                        (codec.result_owned(bytes.clone(), w, dw, dh).unwrap(), codec.result(&bytes, w, dw, dh).unwrap())
+                    else {
+                        panic!("not Byte")
+                    };
+                    assert_eq!(owned, copied, "{spp} samples, {w} wide, {dw} x {dh}, {len} bytes");
+                }
+            }
+        }
     }
 
     fn lzw_encode(bytes: &[u8]) -> Vec<u8> {
