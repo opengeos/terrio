@@ -46,6 +46,13 @@ pub(crate) trait Tables {
     }
     /// The payload of the row `rowid` of the table b-tree rooted at `root`.
     fn lookup(&self, root: u32, rowid: i64) -> Result<Option<Vec<u8>>>;
+    /// Fetches together the pages that lookups of `ids` (ascending rowids) in the table b-tree
+    /// rooted at `root` read, for a database read over the network. Returns how many of the
+    /// first ids it fetched the pages of: all of them for a database in memory or in a local
+    /// file, which is not prefetched. Lookups of the others fetch their own pages.
+    fn prefetch_rows(&self, _root: u32, ids: &[i64]) -> Result<usize> {
+        Ok(ids.len())
+    }
     /// The `CREATE TABLE` statement of a table.
     fn table_sql(&self, name: &str) -> Option<String> {
         self.schema().ok()?.into_iter().find(|(t, n, ..)| t == "table" && n.eq_ignore_ascii_case(name)).map(|r| r.4)
@@ -347,28 +354,50 @@ pub(crate) fn rtree_candidates(db: &impl Tables, rtree: &str, bbox: Rect) -> Res
         return Err(bad(format!("R-tree '{rtree}' depth {depth} exceeds limit")));
     }
     let mut visited = std::collections::HashSet::from([1i64]);
-    let mut stack: Vec<(Vec<u8>, usize)> = vec![(root_node, 0)];
-    while let Some((data, level)) = stack.pop() {
-        let count = data.get(2..4).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize).ok_or_else(|| bad("truncated R-tree node"))?;
-        for i in 0..count {
-            let c = 4 + i * 24;
-            let cell = data.get(c..c + 24).ok_or_else(|| bad("truncated R-tree node cells"))?;
-            let id = i64::from_be_bytes(cell[..8].try_into().unwrap_or_default());
-            let f = |k: usize| f64::from(f32::from_be_bytes(cell[8 + 4 * k..12 + 4 * k].try_into().unwrap_or_default()));
-            let (minx, maxx, miny, maxy) = (f(0), f(1), f(2), f(3));
-            if minx > x1 || maxx < x0 || miny > y1 || maxy < y0 {
-                continue;
-            }
-            if level == depth {
-                out.push(id);
-            } else {
-                if !visited.insert(id) {
-                    return Err(bad(format!("R-tree '{rtree}' contains a cycle or duplicate interior node {id}")));
+    // A level at a time from the root, so that a remote file's nodes of a level are fetched
+    // together: the nodes of the level, then the ids of the next.
+    let mut nodes = vec![root_node];
+    let mut ids: Vec<i64> = Vec::new();
+    for level in 0..=depth {
+        let mut next = Vec::new();
+        let mut rest = ids.as_slice();
+        loop {
+            for data in nodes.drain(..) {
+                let count =
+                    data.get(2..4).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize).ok_or_else(|| bad("truncated R-tree node"))?;
+                for i in 0..count {
+                    let c = 4 + i * 24;
+                    let cell = data.get(c..c + 24).ok_or_else(|| bad("truncated R-tree node cells"))?;
+                    let id = i64::from_be_bytes(cell[..8].try_into().unwrap_or_default());
+                    let f = |k: usize| f64::from(f32::from_be_bytes(cell[8 + 4 * k..12 + 4 * k].try_into().unwrap_or_default()));
+                    let (minx, maxx, miny, maxy) = (f(0), f(1), f(2), f(3));
+                    if minx > x1 || maxx < x0 || miny > y1 || maxy < y0 {
+                        continue;
+                    }
+                    if level == depth {
+                        out.push(id);
+                    } else {
+                        if !visited.insert(id) {
+                            return Err(bad(format!("R-tree '{rtree}' contains a cycle or duplicate interior node {id}")));
+                        }
+                        next.push(id);
+                    }
                 }
-                let child = node(id)?.ok_or_else(|| bad("missing R-tree child node"))?;
-                stack.push((child, level + 1));
             }
+            if rest.is_empty() {
+                break;
+            }
+            // The level's nodes a batch at a time (4096 nodes: 4.8 MiB of the 1,228-byte nodes
+            // of a two-dimensional SQLite R-tree), each batch's pages fetched together.
+            let batch = &rest[..rest.len().min(4096)];
+            let n = db.prefetch_rows(root, batch)?.clamp(1, batch.len());
+            for &id in &rest[..n] {
+                nodes.push(node(id)?.ok_or_else(|| bad("missing R-tree child node"))?);
+            }
+            rest = &rest[n..];
         }
+        next.sort_unstable();
+        ids = next;
     }
     out.sort_unstable();
     out.dedup();

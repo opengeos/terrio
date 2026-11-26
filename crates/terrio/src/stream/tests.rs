@@ -986,3 +986,105 @@ fn selected_fields_read_the_batches_asked_for() {
     assert_eq!(chunk.features[0].attributes, [FieldValue::Text("f0".into())]);
     assert_eq!(r.buffer.len(), 1);
 }
+
+/// A remote GeoPackage streams by range requests, with the features the local stream gives. A
+/// bbox read fetches a small part of the file in a few requests (the open, then each level of
+/// the R-tree and of the table a request at a time); a full read fetches the file once, in
+/// requests no larger than the block cache. The overflow pages of rows longer than a page are
+/// fetched with the pages holding the rows, not a request each. A URL with a query string is
+/// read the same way.
+#[cfg(all(remote, feature = "sqlite"))]
+#[test]
+fn remote_geopackages_stream_by_range() {
+    let mut layer = Layer::new("points");
+    layer.add_field(FieldDef::new("name", FieldType::Text));
+    for i in 0..20_000 {
+        // Every 97th row is longer than a page, to be read through its overflow pages.
+        let pad = if i % 97 == 0 { 6000 } else { 100 };
+        layer.push(Feature {
+            fid: i,
+            geometry: Some(Geometry::point(i as f64, 0.0)),
+            attributes: vec![FieldValue::Text(format!("row {i} {}", "x".repeat(pad)))],
+        });
+    }
+    let bytes = crate::drivers::vector::geopackage::to_bytes(&[layer]).unwrap();
+    let size = bytes.len();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("points.gpkg").to_string_lossy().into_owned();
+    std::fs::write(&local, &bytes).unwrap();
+    let db = sqlite::FileDb::open(&local).unwrap();
+    let (nodes, _) = db.table_root("rtree_points_geom_node").unwrap();
+    let root_node = db.decode_record(&gpkg_read::Tables::lookup(&db, nodes, 1).unwrap().unwrap()).unwrap().remove(1);
+    let crate::drivers::sqlite::Value::Blob(root_node) = root_node else { panic!("an R-tree node is a blob") };
+    assert!(u16::from_be_bytes([root_node[0], root_node[1]]) >= 2, "the R-tree has two levels under its root");
+    let (base, seen) = crate::http::test_server(bytes);
+    let url = format!("{base}/points.gpkg");
+    // (requests, bytes, largest request) since the last call.
+    let fetched = || {
+        let ranges: Vec<usize> = std::mem::take(&mut *seen.lock().unwrap())
+            .iter()
+            .map(|r| {
+                let (a, b) = r.as_deref().expect("a range request").strip_prefix("bytes=").unwrap().split_once('-').unwrap();
+                b.parse::<usize>().unwrap().min(size - 1) + 1 - a.parse::<usize>().unwrap()
+            })
+            .collect();
+        (ranges.len(), ranges.iter().sum::<usize>(), ranges.iter().copied().max().unwrap_or(0))
+    };
+    crate::config::with_options(&[("TERRIO_HTTP_CACHE_SIZE", "1048576")], || {
+        let signed = format!("{url}?token=1");
+        let bbox = Some((5000.0, -1.0, 6000.0, 1.0));
+        for (source, bbox, rows) in [(&url, bbox, 1001), (&signed, bbox, 1001), (&url, None, 20_000)] {
+            let options = VectorOpenOptions { spatial_filter: bbox, ..Default::default() };
+            let want = open_layers(&local, &options, 1000).unwrap().remove(0).read_all().unwrap();
+            let got = open_layers(source, &options, 1000).unwrap().remove(0).read_all().unwrap();
+            assert_eq!(got.features.len(), rows);
+            same_features(&want, &got);
+            let (requests, bytes, largest) = fetched();
+            if bbox.is_some() {
+                assert!(bytes * 10 < size, "a bbox read fetched {bytes} of {size} bytes");
+                assert!(requests <= 16, "a bbox read took {requests} requests");
+            } else {
+                assert!(bytes < size + size / 4, "a full read fetched {bytes} of {size} bytes");
+                assert!(requests <= 40, "a full read took {requests} requests");
+                assert!(largest <= 1 << 20, "a request of {largest} bytes, larger than the cache");
+            }
+        }
+        // A conversion streams the file the same way.
+        let (from_local, from_url) = (dir.path().join("local.geojson"), dir.path().join("url.geojson"));
+        assert!(can_convert_stream(&url, from_url.to_str().unwrap(), &Default::default()));
+        // Outputs that need a profile would read the file twice: converted whole, as before.
+        for out in ["out.gpkg", "out.csv", "out.shp", "out.parquet"] {
+            assert!(!can_convert_stream(&url, dir.path().join(out).to_str().unwrap(), &Default::default()), "{out}");
+        }
+        convert(&local, from_local.to_str().unwrap(), &Default::default()).unwrap();
+        convert(&url, from_url.to_str().unwrap(), &Default::default()).unwrap();
+        assert_eq!(std::fs::read(from_local).unwrap(), std::fs::read(from_url).unwrap());
+        let (_, bytes, largest) = fetched();
+        assert!(bytes < size + size / 4 && largest <= 1 << 20, "a conversion fetched {bytes} bytes, {largest} at most at once");
+    });
+    // Rows that all overflow, five pages each, after one of 245 pages, longer than a prefetch's
+    // budget (64 pages): each prefetch holds the leaves whose overflow pages fit with them, the
+    // leaves past them are fetched again with theirs, and the long row's read fetches the rest
+    // of its pages a budget at a time.
+    let mut big = Layer::new("big");
+    big.add_field(FieldDef::new("name", FieldType::Text));
+    for i in 0..400 {
+        big.push(Feature {
+            fid: i,
+            geometry: Some(Geometry::point(i as f64, 0.0)),
+            attributes: vec![FieldValue::Text(format!("row {i} {}", "x".repeat(if i == 0 { 1_000_000 } else { 20_000 })))],
+        });
+    }
+    let bytes = crate::drivers::vector::geopackage::to_bytes(&[big]).unwrap();
+    let size = bytes.len();
+    let big_local = dir.path().join("big.gpkg").to_string_lossy().into_owned();
+    std::fs::write(&big_local, &bytes).unwrap();
+    let (base, seen) = crate::http::test_server(bytes);
+    crate::config::with_options(&[("TERRIO_HTTP_CACHE_SIZE", "1048576")], || {
+        let want = open_layers(&big_local, &Default::default(), 100).unwrap().remove(0).read_all().unwrap();
+        let got = open_layers(&format!("{base}/big.gpkg"), &Default::default(), 100).unwrap().remove(0).read_all().unwrap();
+        same_features(&want, &got);
+    });
+    let requests = seen.lock().unwrap().len();
+    assert!(requests <= 150, "a full read of overflowing rows took {requests} requests for {size} bytes");
+}

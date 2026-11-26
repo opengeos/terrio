@@ -244,6 +244,48 @@ def test_a_remote_vector_is_read_by_range_and_a_server_without_ranges_is_refused
     assert ranged.bytes_sent() == size
 
 
+def test_a_remote_geopackage_streams_by_range(tmp_path, serve):
+    """`open_stream` reads a GeoPackage URL's pages by range requests, the features those of
+    the local file: a bbox read fetches a small part of the file, a whole read the file once."""
+    features = [
+        {
+            "type": "Feature",
+            "properties": {"i": i, "name": f"row {i} " + "x" * 100},
+            "geometry": {"type": "Point", "coordinates": [i / 100, 0]},
+        }
+        for i in range(20000)
+    ]
+    path = tmp_path / "points.gpkg"
+    terrio.Layer.from_geojson(
+        {"type": "FeatureCollection", "features": features}, name="points", crs="EPSG:4326"
+    ).write(str(path))
+    size = path.stat().st_size
+    server = serve()
+    url = f"{server.url}/points.gpkg"
+    for bbox, rows in [((50, -1, 60, 1), 1001), (None, 20000)]:
+        server.log.clear()
+        want = terrio.open_stream(str(path), bbox=bbox).read_all().__geo_interface__["features"]
+        got = terrio.open_stream(url, bbox=bbox).read_all().__geo_interface__["features"]
+        assert len(got) == rows
+        assert got == want
+        assert all(row[1] is not None for row in server.log), server.log
+        if bbox:
+            assert server.bytes_sent() * 10 < size, (server.bytes_sent(), size)
+        else:
+            assert server.bytes_sent() < size * 1.25, (server.bytes_sent(), size)
+    # A server that ignores ranges is accepted for a file up to ten times the first request (16
+    # KiB), as the download it replaces accepted it.
+    small = tmp_path / "small.gpkg"
+    terrio.Layer.from_geojson(
+        {"type": "FeatureCollection", "features": features[:200]}, name="points", crs="EPSG:4326"
+    ).write(str(small))
+    assert 4096 * 10 < small.stat().st_size <= 16384 * 10, small.stat().st_size
+    norange = serve(ranges=False)
+    want = terrio.open_stream(str(small)).read_all().__geo_interface__["features"]
+    got = terrio.open_stream(f"{norange.url}/small.gpkg").read_all().__geo_interface__["features"]
+    assert got == want
+
+
 def test_a_reopened_file_is_read_from_the_process_wide_cache(tmp_path, serve):
     """GDAL's requests for a 4 x 4 GeoTIFF opened four times after a transient error are
     ``[503, 200]``, not ``[503, 200, 200, 200, 200]``. The server ignores ``Range``,

@@ -2488,6 +2488,16 @@ impl RangeReader {
         self.lock().is_ok_and(|s| s.plan.is_empty() && s.prefetch_fits)
     }
 
+    /// Whether the byte at `offset` is in this reader's cache, so that reading it sends no
+    /// request.
+    pub(crate) fn is_cached(&self, offset: u64) -> bool {
+        self.lock().is_ok_and(|s| {
+            s.whole.is_some()
+                || s.prefix.as_ref().is_some_and(|p| offset < p.len() as u64)
+                || s.blocks.contains_key(&(offset / s.block_size))
+        })
+    }
+
     fn lock(&self) -> io::Result<std::sync::MutexGuard<'_, Shared>> {
         self.shared.lock().map_err(|_| io::Error::other("the HTTP block cache is poisoned"))
     }

@@ -1396,9 +1396,9 @@ def _varint(b: bytes, i: int) -> int:
 class GeoPackage:
     """GeoPackage feature tables (by geometry, R-tree and spatial order of the rows) and their reads.
 
-    terrio reads a local file a page at a time (`terrio.open_stream`) and downloads a URL whole
-    first, where GDAL reads pages by range requests. Its `where` is `terrio.sql`, which reads the
-    whole file through `terrio.open_vector`.
+    terrio reads a file a page at a time (`terrio.open_stream`), a URL's pages by range requests
+    as GDAL does. Its `where` is `terrio.sql`, which reads the whole file through
+    `terrio.open_vector`.
     """
 
     # name: (geometry, rows, R-tree, rows sorted along a Hilbert curve)
