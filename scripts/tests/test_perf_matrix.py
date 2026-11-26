@@ -3,6 +3,7 @@
 import json
 import os
 import struct
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -346,13 +347,14 @@ def test_bad_worker_samples_do_not_abort_remaining_cases(tmp_path, monkeypatch, 
     assert all("terrio_error" in row and "gdal_error" in row and "time_ratio" not in row for row in rows)
 
 
-@pytest.mark.parametrize("platform", ["linux", "darwin"])
-def test_worker_records_time_and_platform_rss_before_validation(monkeypatch, platform):
-    """Keep validation outside measurements and normalize both supported RSS units.
+@pytest.mark.parametrize("platform", ["linux", "darwin", "proc"])
+def test_worker_records_time_and_platform_rss_before_validation(monkeypatch, tmp_path, platform):
+    """Keep validation outside measurements, prefer `VmHWM` and normalize both `ru_maxrss` units.
 
     Args:
         monkeypatch: Scoped dependency replacements.
-        platform: Platform whose RSS units are returned.
+        tmp_path: Where the /proc status file is, or is absent.
+        platform: Platform whose `ru_maxrss` units are returned, or `proc`: Linux's `VmHWM`.
     """
     clock = [0]
 
@@ -412,9 +414,29 @@ def test_worker_records_time_and_platform_rss_before_validation(monkeypatch, pla
     monkeypatch.setattr(perf_matrix, "_rchar", lambda local: pytest.fail("HTTP must not use local counters") if local else 0)
     monkeypatch.setattr(perf_matrix.resource, "getrusage", lambda _: SimpleNamespace(ru_maxrss=clock[0] * (1024**2 if platform == "darwin" else 1024)))
     monkeypatch.setattr(perf_matrix.sys, "platform", platform)
+    status = tmp_path / "status"  # absent: the `ru_maxrss` fallback
+    if platform == "proc":
+        status.write_text("VmRSS:\t    2048 kB\nVmHWM:\t   30720 kB\n")  # not `ru_maxrss`'s 10 MiB
+    monkeypatch.setattr(perf_matrix, "PROC_STATUS", status)
     result = perf_matrix.worker({"format": "fake", "tool": "terrio", "src": "http://localhost/file.tif", "access": "full", "meta": {}})
-    assert (result["init_s"], result["open_s"], result["read_s"], result["rss_mb"]) == (7, 1, 2, 10)
+    assert (result["init_s"], result["open_s"], result["read_s"], result["rss_mb"]) == (7, 1, 2, 30 if platform == "proc" else 10)
     assert (result["open_bytes"], result["read_bytes"]) == (0, 0)
+
+
+@pytest.mark.skipif(not perf_matrix.PROC_STATUS.exists(), reason="VmHWM needs Linux's /proc")
+def test_peak_rss_is_the_workers_own_not_the_runners():
+    """A runner that allocated 400 MiB launches a worker as `run` does: the worker's `ru_maxrss`
+    carries the runner's peak, its `peak_rss_mb` does not."""
+    worker = "import resource, perf_matrix; print(perf_matrix.peak_rss_mb(), resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024)"
+    runner = (
+        "import subprocess, sys; held = b'x' * (400 << 20); "
+        f"print(subprocess.run([sys.executable, '-c', {worker!r}], capture_output=True, text=True, check=True).stdout)"
+    )
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(perf_matrix.__file__).parent), os.environ.get("PYTHONPATH")]))}
+    out = subprocess.run([sys.executable, "-c", runner], env=env, capture_output=True, text=True, check=True).stdout
+    peak, maxrss = map(float, out.split())
+    assert maxrss >= 400  # the runner's peak, which `ru_maxrss` reported as the worker's
+    assert peak < 100
 
 
 def test_unsettled_http_accounting_fails_instead_of_returning_a_partial_log(monkeypatch):
@@ -694,7 +716,7 @@ def test_changed_files_choose_the_formats_to_measure():
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet", "geoparquet-real"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
     assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "flatgeobuf", "geopackage", "geotiff-write",
-                                                   "geoparquet-write", "warp", "terrain", "vectorize", "geotiff-real", "geoparquet-real"]
+                                                   "geoparquet-write", "rasterize", "zonal", "warp", "terrain", "vectorize", "geotiff-real", "geoparquet-real"]
     assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "flatgeobuf", "geopackage", "geoparquet-real"]
     assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf", "geopackage", "geoparquet-real"]
     assert perf_matrix.touched(["crates/terrio/src/ops/sql/select.rs"]) == ["geopackage"]
@@ -704,7 +726,7 @@ def test_changed_files_choose_the_formats_to_measure():
     assert perf_matrix.touched(["python/src/vector.rs"]) == ["flatgeobuf", "geoparquet-write", "vectorize"]
     assert perf_matrix.touched(["crates/terrio/src/ops/warp/window.rs"]) == ["warp"]
     assert perf_matrix.touched(["crates/terrio/src/ops/dem.rs", "crates/terrio/src/ops/calc/eval.rs"]) == ["terrain"]
-    assert perf_matrix.touched(["crates/terrio/src/ops/contour.rs", "python/src/analysis.rs"]) == ["vectorize"]
+    assert perf_matrix.touched(["crates/terrio/src/ops/contour.rs", "python/src/analysis.rs"]) == ["zonal", "vectorize"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == ["flatgeobuf"]
     assert perf_matrix.touched(["docs/benchmarks.md"]) == []
 
@@ -1745,3 +1767,104 @@ def test_gdals_second_configuration_reads_with_gdal(monkeypatch):
     monkeypatch.setitem(perf_matrix.FORMATS, "fake", SimpleNamespace(EXT=".tif", reader=reader))
     perf_matrix.worker({"format": "fake", "tool": "gdal_allcpus", "src": "http://localhost/f.tif", "access": "full", "meta": {}})
     assert tools == ["gdal"]
+
+
+def test_rasterize_and_zonal_are_chosen_by_their_operations():
+    """The rasterizer picks both formats, as zonal statistics grid their zones with it."""
+    assert perf_matrix.touched(["crates/terrio/src/ops/rasterize.rs"]) == ["rasterize", "zonal"]
+    assert perf_matrix.touched(["crates/terrio/src/ops/zonal_reduce.rs", "python/src/analysis.rs"]) == ["zonal", "vectorize"]
+
+
+def _polygons(ogr, osr, path, rings, points=False):
+    """A FlatGeobuf file of polygons (or of their first vertices) with `id` and `value`, in UTM 31N.
+
+    Args:
+        ogr: OGR's module.
+        osr: OSR's module.
+        path: The file.
+        rings: Each polygon's vertices.
+        points: Write each ring's first vertex as a point instead.
+    """
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(32631)
+    ds = ogr.GetDriverByName("FlatGeobuf").CreateDataSource(str(path))
+    lyr = ds.CreateLayer("data", srs, ogr.wkbPoint if points else ogr.wkbPolygon)
+    for name, kind in (("id", ogr.OFTInteger64), ("value", ogr.OFTReal)):
+        lyr.CreateField(ogr.FieldDefn(name, kind))
+    for i, ring in enumerate(rings):
+        f = ogr.Feature(lyr.GetLayerDefn())
+        f["id"], f["value"] = i, 10.5 * (i + 1)
+        pts = ", ".join(f"{x} {y}" for x, y in [*ring, ring[0]])
+        f.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT ({ring[0][0]} {ring[0][1]})" if points else f"POLYGON (({pts}))"))
+        lyr.CreateFeature(f)
+    lyr = ds = None
+
+
+@pytest.mark.parametrize("fmt,access", [("rasterize", "burn"), ("rasterize", "attribute_all_touched"), ("rasterize", "burn_t1"),
+                                        ("zonal", "fields"), ("zonal", "fields_all_touched")])
+def test_rasterize_and_zonal_run_in_a_worker_and_match_gdal(tmp_path, monkeypatch, fmt, access):
+    """Run a rasterization or zonal statistics as the runner's worker does, on small files, against GDAL's output.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped environment and grid replacements.
+        fmt: The operation's format.
+        access: The operation.
+    """
+    np = pytest.importorskip("numpy")
+    gdal = pytest.importorskip("osgeo.gdal")
+    ogr, osr = pytest.importorskip("osgeo.ogr"), pytest.importorskip("osgeo.osr")
+    pytest.importorskip("terrio")
+    gdal.UseExceptions()
+    for name in ("RAYON_NUM_THREADS", "GDAL_NUM_THREADS"):
+        monkeypatch.setenv(name, "2")
+    # Off the pixel grid, overlapping, one reaching past the raster's edge.
+    rings = [[(x, y), (x + 431.3, y + 87.1), (x + 254.9, y + 503.7)]
+             for x, y in ((500113.7, 4998021.3), (500301.2, 4998219.9), (502401.1, 4999800.4))]
+    op = perf_matrix.FORMATS[fmt]
+    if fmt == "rasterize":
+        monkeypatch.setattr(op, "RES", 1000.0)  # 100 x 100 pixels over the fixtures' extent
+        rings = [[(x - 500000, y - 4900000) for x, y in r] for r in rings]
+        src = tmp_path / "poly_index.fgb"
+        _polygons(ogr, osr, src, rings)
+        _polygons(ogr, osr, tmp_path / "_warmup.fgb", rings, points=True)
+    else:
+        src = tmp_path / "f32_none.tif"
+        gdal.Translate(str(src), _mem(np, gdal, perf_matrix.terrain(np, 256, 1, "float32")[0]), format="GTiff")
+        warm = _mem(np, gdal, np.ones((64, 64), "float32"), gt=(500000, 10, 0, 4959680, 0, -10))
+        gdal.Translate(str(tmp_path / "_zonal_warmup.tif"), warm, format="GTiff")
+        gdal.Translate(str(tmp_path / "_warmup.tif"), warm, format="GTiff")
+        _polygons(ogr, osr, tmp_path / "_zones_fields.fgb", rings)
+        _polygons(ogr, osr, tmp_path / "_zones_warmup.fgb", [[(500000, 4959040), (500300, 4959040), (500300, 4959340)]])
+    meta = op.meta(src, access)
+    samples = {tool: perf_matrix.worker({"format": fmt, "tool": tool, "src": str(src), "access": access, "meta": meta})
+               for tool in ("gdal", "terrio")}
+    assert os.environ["RAYON_NUM_THREADS"] == ("1" if access.endswith("_t1") else "2")
+    c = samples["terrio"]["compare"]
+    assert c["n"] == samples["gdal"]["n"] == (10_000 if fmt == "rasterize" else 15) and c["beyond_tol"] == 0, c
+    assert not c["mismatch"], c
+    row = summarize({**_row(terrio=[samples["terrio"]], gdal=[samples["gdal"]]), "format": fmt, "access": access})
+    assert row["values"] in ("exact", "within_tol")
+
+
+def test_zonal_statistics_are_compared_zone_by_zone():
+    """Match zones by id; a value missing in both tools agrees, one missing in one tool differs."""
+    nan = float("nan")
+    stats = perf_matrix.Zonal.STATS
+
+    def ours(rows):
+        return SimpleNamespace(columns=lambda: {"id": [r[0] for r in rows],
+                                                **{f"raster1_b1_{s}": [r[k + 1] for r in rows] for k, s in enumerate(stats)}})
+
+    def theirs(rows):
+        return SimpleNamespace(GetLayer=lambda _: [{"id": r[0], **dict(zip(stats, r[1:], strict=True))} for r in rows])
+
+    gdal_rows = [(1, 4.0, 10.0, 2.5, 1.0, 4.0), (2, 0.0, 0.0, nan, None, None)]  # zone 2 is empty
+    same = perf_matrix.compare_zonal(ours([(2, 0, 0.0, None, None, None), (1, 4, 10.0 + 1e-12, 2.5, 1.0, 4.0)]), theirs(gdal_rows), 1e-9)
+    assert (same["n"], same["differing"], same["beyond_tol"], same["mismatch"]) == (10, 1, 0, "")
+    empty = perf_matrix.compare_zonal(ours([(1, 4, 10.0, 2.5, 1.0, 4.0), (2, 0, None, None, None, None)]), theirs(gdal_rows), 1e-9)
+    assert (empty["beyond_tol"], empty["max_diff"], empty["worst"]) == (1, 0.0, "zone 2 sum: None vs GDAL's 0.0")
+    off = perf_matrix.compare_zonal(ours([(1, 5, 12.0, 2.4, 1.0, 4.0), (2, 0, 0.0, None, None, None)]), theirs(gdal_rows), 1e-9)
+    assert (off["differing"], off["beyond_tol"], off["max_diff"]) == (3, 3, 0.25)  # count 1/4, sum 2/10, mean 0.1/2.5
+    other = perf_matrix.compare_zonal(ours([(1, 4, 10.0, 2.5, 1.0, 4.0)]), theirs(gdal_rows), 1e-9)
+    assert other["mismatch"] == "zones 1 vs 2, 1 ids in one only" and other["beyond_tol"] == 10

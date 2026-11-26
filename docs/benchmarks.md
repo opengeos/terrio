@@ -299,7 +299,9 @@ still ranked but listed apart as not byte-identical. Anything else is a mismatch
 one tool returns as WKB and the other as native GeoArrow (a bbox read of a GeoArrow file: terrio
 native, GDAL WKB) hashes differently, so these cases are `checksum_match` at best.
 Process peak RSS includes initialization, warm-up and retained read results, but excludes
-subsequent validation allocations. RSS units are normalized for Linux and macOS.
+subsequent validation allocations. On Linux it is the worker's own, `VmHWM` of
+`/proc/self/status`: `ru_maxrss` carries the parent's memory over fork and exec, so it would
+include the runner's. Without `VmHWM` it is `ru_maxrss`, its units normalized for Linux and macOS.
 
 Only cases where every sample of both tools succeeded and matched GDAL's values (`exact` or
 `checksum_match`) are ranked; the report lists failures, timeouts and value mismatches apart. Local byte counts need Linux's
@@ -473,6 +475,37 @@ summed from another start, can differ by more. A case is `exact` when every feat
 every total agrees, so `exact` means the same features, not the same start or direction. A total
 beyond its tolerance makes the case `DIFFER`.
 
+The `rasterize` and `zonal` formats time the two directions between features and pixels:
+
+| Format | Operation | terrio | GDAL | Tolerance |
+|---|---|---|---|---|
+| `rasterize` | `burn`, `burn_all_touched`, `burn_t1`: 1s into a Byte raster | `terrio.rasterize` | `gdal.Rasterize` | 0 |
+| `rasterize` | `attribute`, `attribute_all_touched`: the `value` field into a Float32 raster | | | 0 |
+| `zonal` | `fields`, `fields_all_touched`, `fields_t1`, `blocks`: count, sum, mean, min and max of `f32_none` per zone | `terrio.zonal_stats` | `gdal raster zonal-stats` (`gdal.Run`) | 1e-9, relative |
+
+`rasterize` burns each FlatGeobuf fixture with a spatial index, `poly_index` (400,000 polygons)
+and `line_index` (400,000 lines), on 25 m pixels over the fixtures' 100 km extent (4000 × 4000).
+Both tools start from 0 without nodata, and its pixels are compared as the other operations'.
+`fixtures --format rasterize` makes the FlatGeobuf fixtures.
+
+`zonal` summarizes `f32_none` over polygons that `fixtures --format zonal` writes beside the
+GeoTIFF fixtures. `fields` has 20,000 irregular polygons with vertices 12 to 200 m from their
+centre, clustered, some overlapping or crossing the raster's edge, with vertices rounded to the
+centimetre as the vector fixtures' (a few fall on pixel edges). `blocks` has 16 squares of
+1024 × 1024 pixels that tile the raster. GDAL's route is its zonal statistics command (GDAL 3.13.3) with
+its default strategy (zone by zone); the pixel counts are GDAL's `default` (pixel centre in the
+zone) and `all-touched`. Zones are matched by their `id`, and a statistic agrees when it is equal
+or missing in both tools (null, or NaN: GDAL gives an empty zone's mean as NaN and its min and
+max as null). Otherwise it differs by `|terrio - GDAL| / max(1, |GDAL|)`, infinite where one tool
+has no value; the tolerance allows sums in another order. The results file records the largest
+difference's zone, statistic and values (`worst`). The warm-up runs on its own small raster and
+zone in the DEM's CRS, because terrio refuses zones with a CRS over a raster without one. GDAL's
+rasterize and zonal statistics compute in one thread. The `fields` cases differ from GDAL in
+known ways: terrio gives the sum of a zone holding no pixel as null and GDAL as 0, and with all
+touched a few zones with a vertex on a pixel edge count one pixel more than GDAL's. Those cases
+are therefore labeled `DIFFER`, with the count of values beyond the tolerance, and are not
+ranked.
+
 ### Real data
 
 The `geotiff-real` and `geoparquet-real` formats read public files, and COGs GDAL makes from one
@@ -516,6 +549,11 @@ python scripts/perf_matrix.py run --format warp              # operations, on th
 python scripts/perf_matrix.py run --format terrain --access slope slope_t1
 python scripts/perf_matrix.py fixtures --format vectorize    # the GeoTIFF fixtures and the class map
 python scripts/perf_matrix.py run --format vectorize --access contour
+
+python scripts/perf_matrix.py fixtures --format rasterize    # the FlatGeobuf fixtures
+python scripts/perf_matrix.py run --format rasterize
+python scripts/perf_matrix.py fixtures --format zonal        # the GeoTIFF fixtures and the zones
+python scripts/perf_matrix.py run --format zonal
 python scripts/perf_matrix.py fixtures --format geotiff-real # 93 MB downloaded, 174 MB made from it
 python scripts/perf_matrix.py run --format geotiff-real --quick
 # `run` prints its results file path; report summarizes one again:
@@ -563,7 +601,8 @@ On a pull request, a maintainer's comment `/perf-matrix` runs the matrix on a Gi
 format but `geoparquet-write`, `geotiff-real` and `geoparquet-real` with one sample per tool;
 `/perf-matrix geoparquet --only geoarrow` runs one format with the options of `run`; options
 alone (`/perf-matrix --samples 5`) run the read formats except the real-data ones;
-`/perf-matrix warp`, `/perf-matrix terrain` and `/perf-matrix vectorize` time the operations.
+`/perf-matrix warp`, `/perf-matrix terrain`, `/perf-matrix rasterize`, `/perf-matrix zonal` and
+`/perf-matrix vectorize` time the operations.
 Runner timings vary more than a quiet desktop's, but each comparison is made within one run on
 one runner. The Actions tab runs the same workflow for a pull request
 number. Each format runs in its own job, in parallel.
