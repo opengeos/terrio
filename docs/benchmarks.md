@@ -267,6 +267,8 @@ one file at a time. Each format lists the ways its files vary and the ways they 
 | GeoPackage (vector) | geometry type, R-tree or none, rows in Hilbert order or not, 400,000 or 2,000,000 rows | as GeoParquet's |
 | GeoTIFF writes (`geotiff-write`) | codec and predictor (none, DEFLATE, LZW and ZSTD with predictor 2 or 3, RGB and YCbCr JPEG), data type, tile size, band or pixel interleave, 1–12 bands | a COG with average overviews, a COG without overviews, a tiled GeoTIFF, the COG with one thread |
 | GeoParquet writes (`geoparquet-write`) | geometry type (400,000 polygons or lines, 2,000,000 points) | WKB, a covering bbox column, Snappy, row groups of 65,536 rows |
+| GeoTIFF, real data (`geotiff-real`) | public files: a Sentinel-2 band with nodata, a sparse COG and a COG with a mask band made from it, a big-endian DEM in strips | as GeoTIFF's, and every band's mask |
+| GeoParquet, real data (`geoparquet-real`) | one public file: 737,334 building footprints | as GeoParquet's, on the file's own extent and columns |
 
 GDAL or zarr-python writes one fixture per file combination. terrio and GDAL each read every
 fixture in every way, from a local path and over HTTP from a local server that adds a 20 ms
@@ -297,7 +299,9 @@ still ranked but listed apart as not byte-identical. Anything else is a mismatch
 one tool returns as WKB and the other as native GeoArrow (a bbox read of a GeoArrow file: terrio
 native, GDAL WKB) hashes differently, so these cases are `checksum_match` at best.
 Process peak RSS includes initialization, warm-up and retained read results, but excludes
-subsequent validation allocations. RSS units are normalized for Linux and macOS.
+subsequent validation allocations. On Linux it is the worker's own, `VmHWM` of
+`/proc/self/status`: `ru_maxrss` carries the parent's memory over fork and exec, so it would
+include the runner's. Without `VmHWM` it is `ru_maxrss`, its units normalized for Linux and macOS.
 
 Only cases where every sample of both tools succeeded and matched GDAL's values (`exact` or
 `checksum_match`) are ranked; the report lists failures, timeouts and value mismatches apart. Local byte counts need Linux's
@@ -371,6 +375,23 @@ The worker environment sets `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` to avoid di
 `GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES` to enable GDAL range merging, and `GDAL_CACHEMAX=512`
 for its raster cache. These GDAL settings apply to GDAL; Terrio uses its own I/O and cache
 policies. HTTP request and round counts therefore compare these configured workflows.
+
+A local file is read from the OS page cache after its first read. `--source cold` adds a third
+source, on request: the local path, dropped from the page cache before each sample of each tool,
+without root. After its warm-up, the worker flushes each of the fixture's files (`fsync`) and
+calls `posix_fadvise(POSIX_FADV_DONTNEED)` on it. It counts the files' pages in the page cache
+with `mincore` before and after, and records them with the bytes the worker process read from
+block devices during the open and read (`read_bytes` of `/proc/self/io`, `disk KiB` in the
+report). That count includes any other file the process reads then, such as a library loaded on
+first use, so it is an upper bound on the fixture's storage reads. A sample whose pages did not
+all leave the page cache, for example pages another process maps, is reported as an error rather
+than timed as cold, as is a sample that read nothing from a block device (network and FUSE file
+systems). When `cold` is among the sources, the runner reads the
+fixture into the page cache before each warm case, so a warm case never follows a cold one
+uncached. The report compares each tool's cold time with its warm local time over
+the cases read both ways. Cold reads need Linux, fixtures on a local file system that caches
+in the page cache (ext4 or XFS, not tmpfs or ZFS, whose own cache `mincore` does not see), and
+fixtures the user owns or can write: `mincore` reports other files' pages as cached.
 
 The report ranks the worst cases, gives the geometric mean of the time ratios for each value of
 each axis (by codec, layout, access pattern and source), and lists matching-checksum cases with
@@ -460,6 +481,34 @@ touched a few zones with a vertex on a pixel edge count one pixel more than GDAL
 are therefore labeled `DIFFER`, with the count of values beyond the tolerance, and are not
 ranked.
 
+### Real data
+
+The `geotiff-real` and `geoparquet-real` formats read public files, and COGs GDAL makes from one
+of them, as the GeoTIFF and GeoParquet fixtures are read: from a local path and over the HTTP
+server, with the same access patterns and values check. `fixtures` downloads each file once into
+the format's fixture directory and keeps it only when its size and SHA-256 are the ones pinned in
+the script (`DOWNLOADS`), as it checks a file already there; a file that changed upstream stops
+the command. About 370 MB in all:
+
+| Fixture | File | What it exercises |
+|---|---|---|
+| `s2_b04_nodata` | Sentinel-2 L2A band B04 of tile 31UER, 30 July 2024 (`sentinel-cogs` on AWS Open Data), 87 MB | a 10980 × 10980 UInt16 COG, DEFLATE with predictor 2, 1024-pixel tiles, nodata 0 over the 60% of the tile outside the swath |
+| `s2_b04_sparse` | made from `s2_b04_nodata` by GDAL's COG driver with `SPARSE_OK=TRUE` and 512-pixel tiles | a sparse COG: the tiles holding only nodata are left out of the file (36 of the 64 tiles the 16 windows touch) |
+| `s2_b04_mask` | made from `s2_b04_nodata` by GDAL's COG driver with `-mask mask,1 -a_nodata none` and 512-pixel tiles | an internal mask band in place of nodata, with its overviews |
+| `dem_i16_big_endian` | USGS 30 m DEM `m30dem.tif` of the GeoTIFF samples on download.osgeo.org, 5.5 MB | big-endian Int16, uncompressed, one-row strips, 1479 × 1863 (not square), no nodata, no overviews |
+| `buildings_est` | Estonia's buildings of the Google-Microsoft Open Buildings by VIDA (Source Cooperative), 101 MB | GeoParquet 1.1, 737,334 WKB polygons in WGS 84, all with `bf_source` "microsoft", Snappy, row groups of 5,000 rows clustered in space, a covering bbox column |
+
+`s2_b04_sparse` and `s2_b04_mask` are derived, not downloaded: GDAL makes them in `fixtures`, so
+their bytes depend on the GDAL version. Their source is pinned. The `masks` access reads every
+band's mask: terrio's `read_masks` against GDAL's `GetMaskBand`, 255 for valid pixels and 0 for the
+others. Its `need` is the mask band's blocks, the pixel blocks of a mask derived from nodata, or
+nothing for an all-valid mask (the DEM). A non-square raster's windows lie in the square of its
+shorter side; its whole and decimated reads cover all of it. The GeoParquet boxes are 1% of the
+file's extent, the two columns are `area_in_meters` and `bf_source`, the filter is
+`area_in_meters < 5.2` (1% of the rows; every row group holds smaller buildings, so statistics prune none), and the
+sum checked is that of `area_in_meters`. `/perf-matrix` runs these formats only by name, so that a
+run with no format downloads nothing.
+
 ```sh
 # The same environment as above, with terrio's Python module built in release mode, pyogrio and
 # PyArrow (GeoParquet) and zarr-python 3 (Zarr fixtures).
@@ -477,6 +526,8 @@ python scripts/perf_matrix.py fixtures --format rasterize    # the FlatGeobuf fi
 python scripts/perf_matrix.py run --format rasterize
 python scripts/perf_matrix.py fixtures --format zonal        # the GeoTIFF fixtures and the zones
 python scripts/perf_matrix.py run --format zonal
+python scripts/perf_matrix.py fixtures --format geotiff-real # 93 MB downloaded, 174 MB made from it
+python scripts/perf_matrix.py run --format geotiff-real --quick
 # `run` prints its results file path; report summarizes one again:
 python scripts/perf_matrix.py report "$HOME/.cache/terrio-bench/matrix/geotiff/results-20261124-120000.jsonl"
 # Run the matrix's regression tests:
@@ -519,9 +570,10 @@ reads keep `ALL_CPUS`.
 On a pull request, a maintainer's comment `/perf-matrix` runs the matrix on a GitHub runner
 (`.github/workflows/perf-matrix.yml`): the pull request's terrio, its base branch's and GDAL
 3.13.3, with the base branch's harness, and posts the report. With no arguments it runs every
-format but `geoparquet-write` with one sample per tool; `/perf-matrix geoparquet --only geoarrow`
-runs one format with the options of `run`; options alone (`/perf-matrix --samples 5`) run the
-read formats; `/perf-matrix warp`, `/perf-matrix terrain`, `/perf-matrix rasterize` and
+format but `geoparquet-write`, `geotiff-real` and `geoparquet-real` with one sample per tool;
+`/perf-matrix geoparquet --only geoarrow` runs one format with the options of `run`; options
+alone (`/perf-matrix --samples 5`) run the read formats except the real-data ones;
+`/perf-matrix warp`, `/perf-matrix terrain`, `/perf-matrix rasterize` and
 `/perf-matrix zonal` time the operations.
 Runner timings vary more than a quiet desktop's, but each comparison is made within one run on
 one runner. The Actions tab runs the same workflow for a pull request
