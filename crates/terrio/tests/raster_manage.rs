@@ -759,3 +759,44 @@ fn odd_size_average_overviews_are_gdal_overviews() {
         }
     }
 }
+
+/// Issue #1260: a raster so wide (10300 x 520 Float32 in tiles of 256, with an internal mask)
+/// that GDAL 3.13.3 computes the levels of an uncompressed `.ovr` block by block
+/// (`GDALRegenerateOverviewsMultiBand`) in the order the `.ovr` lists them: after `2 8`,
+/// `2 4 8 16` computes the sidecar's `2 8` and the new `4 16`, each from the previous one only
+/// when that one is wider (4 from full resolution, after 8), then `2 8` again. The levels' values
+/// are GDAL's (`tests/data/ovr_rebuilds`, `scripts/make_ovr_rebuild_fixtures.py`).
+#[test]
+fn wide_masked_ovr_rebuilds_take_the_sidecar_order() {
+    let expected: serde_json::Value = serde_json::from_str(include_str!("data/ovr_rebuilds/expected.json")).expect("the fixture is JSON");
+    let wide = &expected["wide"];
+    let (cols, rows) = (10300usize, 520usize);
+    assert_eq!(wide["size"], serde_json::json!([cols, rows]));
+    let mut values = Vec::with_capacity(cols * rows);
+    let mut mask = Vec::with_capacity(cols * rows);
+    for y in 0..rows {
+        for x in 0..cols {
+            values.push(((x * 7 + y * 13) % 1000 + y) as f32);
+            mask.push(if (x / 37 + y / 23) % 11 == 0 || (x + y) % 101 == 0 { 0 } else { 255 });
+        }
+    }
+    let cfg = terrio::RasterConfig { cols, rows, bands: 1, data_type: DataType::F32, ..Default::default() };
+    let ds = RasterDataset::new(terrio::Raster::from_data_native(cfg, terrio::raster::RasterData::F32(values)).unwrap(), false);
+    let dir = tempfile::tempdir().unwrap();
+    let options = RasterWriteOptions { compression: Some("DEFLATE".into()), tile_size: Some(256), mask: Some(mask), ..Default::default() };
+    let path = write(dir.path(), "wide.tif", &ds, &options);
+    for levels in wide["steps"].as_array().unwrap() {
+        let levels = levels.as_array().unwrap().iter().map(|l| l.as_u64().unwrap() as usize).collect();
+        let o = OverviewOptions { levels, resampling: Resampling::Average, external: true, ..Default::default() };
+        add_overviews(&path, &o).unwrap();
+    }
+    let mut r = terrio::open_raster_lazy(&path).unwrap();
+    let levels = wide["levels"].as_array().unwrap();
+    assert_eq!(r.overviews().len(), levels.len());
+    for level in levels {
+        let size = (level["size"][0].as_u64().unwrap() as usize, level["size"][1].as_u64().unwrap() as usize);
+        let i = r.overviews().iter().position(|s| *s == size).unwrap_or_else(|| panic!("no {size:?} level"));
+        let data = r.read_window(Window::new(0, 0, size.0, size.1), &WindowOptions { bands: vec![1], overview: Some(i) }).unwrap();
+        assert_eq!(fnv1a64(&data.raster.data.to_f64_vec()), level["fnv1a64"].as_str().unwrap(), "{size:?} level");
+    }
+}

@@ -2644,15 +2644,39 @@ it, build the same levels from its GeoTIFF and `.msk` and compare masks and data
 exactly, and check that a cancelled rebuild keeps both sidecars. The
 `raster-manage` suite compares `gdaladdo -ro` and `terrio overviews --external`
 on a `.msk` raster, masks exactly. Known differences, outside the mask: GDAL
-tags small sidecars `LAYOUT=COG`; with a `.msk`, compressed levels of several
-factors (computed block by block, from the previous level) and requested
-levels an `.ovr` already had can take other data values in terrio; and GDAL
-appends a new level after the sidecar's, where terrio orders them largest first.
+tags small sidecars `LAYOUT=COG`, and GDAL appends a new level after the
+sidecar's, where terrio orders them largest first.
+
+External average overviews follow GDAL 3.13.3's two passes (issue #1260). The
+levels the `.ovr` does not have are built first: compressed and
+pixel-interleaved, or with an alpha band, block by block, each from the previous level, whose pixels
+GDAL weighs as masked (all valid in an `.ovr`) when the raster has an internal
+or `.msk` mask; else band by band, which recomputes every level of the `.ovr`
+with them (the levels it had keep their `RESAMPLING` item). Requested levels
+the `.ovr` already had are then recomputed band by band: from full resolution,
+or each from the previous one for averages of a raster without a mask or alpha
+band. Rasters so wide that GDAL computes a band's levels block by block take
+them in the order the `.ovr` lists them, each from the previous one only when
+it is wider. `tests/data/ovr_rebuilds`
+(`scripts/make_ovr_rebuild_fixtures.py`) holds the issue's 67 by 45 Byte
+sources (no mask, internal mask, `.msk`) with seven GDAL builds, and the
+digests of a 10,300 by 520 masked Float32 rebuild's data. At every level,
+compared by size, `external_average_rebuilds_are_gdal_levels` matches the
+builds' data and masks exactly and `wide_masked_ovr_rebuilds_take_the_sidecar_order`
+the rebuild's data digests. A build that both adds levels
+and requests existing ones reads the full-resolution image twice, as GDAL does.
+Known differences: an RGBA raster's requested existing levels, where GDAL
+cascades the alpha band on its own but not the colour bands, which terrio
+computes with one schedule; and, as terrio orders an `.ovr`'s levels largest
+first, a later build that recomputes them block by block in that order where
+GDAL's own sidecar lists them as appended.
 
 ```sh
 cargo test -p terrio --test external_overviews --test geotiff_nodata
+cargo test -p terrio --test merged raster_manage::wide_masked_ovr_rebuilds_take_the_sidecar_order
 python scripts/conformance.py ../terrio-data --only lazy-geotiff --strict
 python scripts/make_msk_overviews_fixtures.py   # GDAL's Python bindings
+python scripts/make_ovr_rebuild_fixtures.py     # GDAL's Python bindings, x86-64
 ```
 
 ### Reduced first-image masks

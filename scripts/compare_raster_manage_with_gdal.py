@@ -32,7 +32,10 @@ def same_number(a, b):
     )
 
 
-def compare(reference, actual):
+def compare(reference, actual, by_size=False):
+    """Compares two rasters and their overviews, in the order GDAL lists them, or by size
+    (`by_size`, largest first): GDAL appends new levels to an `.ovr`, which terrio orders
+    largest first."""
     a, b = gdal.Open(str(reference)), gdal.Open(str(actual))
     if (a.RasterXSize, a.RasterYSize, a.RasterCount) != (
         b.RasterXSize,
@@ -56,9 +59,10 @@ def compare(reference, actual):
             raise AssertionError("mask flags differ")
         if ba.GetOverviewCount() != bb.GetOverviewCount():
             raise AssertionError("overview count differs")
-        for aa, ab in [(ba, bb)] + [
-            (ba.GetOverview(i), bb.GetOverview(i)) for i in range(ba.GetOverviewCount())
-        ]:
+        levels = [[band.GetOverview(i) for i in range(band.GetOverviewCount())] for band in (ba, bb)]
+        if by_size:
+            levels = [sorted(o, key=lambda o: (-o.XSize, -o.YSize)) for o in levels]
+        for aa, ab in [(ba, bb)] + list(zip(*levels)):
             va, vb = aa.ReadAsArray(), ab.ReadAsArray()
             if va.shape != vb.shape or not np.array_equal(
                 aa.GetMaskBand().ReadAsArray(), ab.GetMaskBand().ReadAsArray()
@@ -74,9 +78,10 @@ def compare(reference, actual):
                     raise AssertionError(
                         f"pixels differ: max absolute difference {maximum}"
                     )
+    levels = "levels by size" if by_size else "levels"
     return (
         "identical" if exact else "tolerance"
-    ), f"values, masks, type, nodata, CRS, transform and levels; max abs {maximum:g}"
+    ), f"values, masks, type, nodata, CRS, transform and {levels}; max abs {maximum:g}"
 
 
 def main():
@@ -430,10 +435,11 @@ def main():
         # A `.msk` sidecar (GDAL_TIFF_INTERNAL_MASK=NO): external overviews of the read-only
         # GeoTIFF write the mask's overviews to `.msk.ovr`, which the `.ovr` levels take as
         # their masks. Band by band (uncompressed), GDAL cascades the mask's levels, each
-        # from the previous one, and adding a level recomputes the levels the sidecar had (a
-        # smaller one: GDAL appends levels, where terrio orders them largest first).
-        # Compressed levels of several factors are left out: GDAL computes their data from
-        # the previous level block by block, which terrio does not match with a `.msk`.
+        # from the previous one, and adding a level recomputes the levels the sidecar had.
+        # Compressed, it computes the data's levels block by block, each from the previous one,
+        # whose pixels it weighs as masked, all valid (issue #1260); and requested levels the
+        # sidecar had are recomputed from full resolution after the new ones. GDAL appends
+        # levels, where terrio orders them largest first: the levels are compared by size.
         sidecar = work / "sidecar.tif"
         gdal.Translate(str(sidecar), str(sample), srcWin=[0, 0, 128, 100], width=201, height=157)
         gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "NO")
@@ -452,6 +458,9 @@ def main():
             ("nearest 2 4", "nearest", "NONE", [[2, 4]]),
             ("average DEFLATE 3", "average", "DEFLATE", [[3]]),
             ("average 3, then 5", "average", "NONE", [[3], [5]]),
+            ("average DEFLATE 2 4 8", "average", "DEFLATE", [[2, 4, 8]]),
+            ("average 3 5, then 2 3", "average", "NONE", [[3, 5], [2, 3]]),
+            ("average DEFLATE 3 5, then 2 3", "average", "DEFLATE", [[3, 5], [2, 3]]),
         ]:
 
             def sidecar_overviews(name=name, method=method, compression=compression, steps=steps):
@@ -469,7 +478,7 @@ def main():
                     for levels in steps:
                         run(["gdaladdo", "-ro", "--config", "COMPRESS_OVERVIEW", compression, "-r", method, a, *levels])
                         run([args.terrio, "overviews", b, "--external", "--compress", compression, "-r", method, *levels])
-                    status, detail = compare(a, b)
+                    status, detail = compare(a, b, by_size=True)
                     if [Path(f"{b}{s}").read_bytes() for s in ("", ".msk")] != before:
                         raise AssertionError("the read-only GeoTIFF or its .msk changed")
                     layouts = []
@@ -478,8 +487,10 @@ def main():
                         band = mask.GetRasterBand(1)
                         # GDAL also tags small sidecars LAYOUT=COG, which terrio does not write.
                         structure = {k: v for k, v in mask.GetMetadata("IMAGE_STRUCTURE").items() if k != "LAYOUT"}
+                        # Every image's size: GDAL appends levels, which terrio orders largest first.
+                        images = [band] + [band.GetOverview(i) for i in range(band.GetOverviewCount())]
                         layouts.append((structure, mask.GetMetadata(), band.GetBlockSize(),
-                                        sorted((o.XSize, o.YSize) for o in map(band.GetOverview, range(band.GetOverviewCount())))))
+                                        sorted((o.XSize, o.YSize) for o in images)))
                     if layouts[0] != layouts[1]:
                         raise AssertionError(f".msk.ovr differs: GDAL {layouts[0]}, terrio {layouts[1]}")
                 finally:
@@ -489,6 +500,56 @@ def main():
                 return status, detail + "; .msk.ovr levels, blocks, compression and mask flags; GeoTIFF and .msk unchanged"
 
             case(f"external overviews with a .msk sidecar, {name}", sidecar_overviews)
+
+        # External average overviews (issue #1260), compared by size: compressed levels of
+        # several factors, computed block by block from the previous level; and levels requested
+        # again, which GDAL recomputes band by band after the new ones (uncompressed, those
+        # recompute every level of the sidecar). The sources: the internally masked DEM subset,
+        # the DEM subset whose only mask is its nodata value (NaN), a Byte copy without nodata
+        # (the issue's no-mask case), and the DEM tiled to 10300 x 520 with an internal mask,
+        # wide enough that GDAL computes its uncompressed levels block by block in the order the
+        # sidecar lists them, each from the previous one only when that one is wider.
+        plain = work / "plain-byte.tif"
+        gdal.Translate(str(plain), str(sample), outputType=gdal.GDT_Byte, scaleParams=[[]], noData="none")
+        wide = work / "wide.tif"
+        dem = gdal.Open(str(sample)).ReadAsArray().astype(np.float32)
+        rows, cols = np.indices((520, 10300))
+        gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
+        try:
+            ds = gdal.GetDriverByName("GTiff").Create(
+                str(wide), 10300, 520, 1, gdal.GDT_Float32,
+                ["TILED=YES", "BLOCKXSIZE=256", "BLOCKYSIZE=256", "COMPRESS=DEFLATE"],
+            )
+            ds.SetGeoTransform([0, 30, 0, 520 * 30, 0, -30])
+            ds.GetRasterBand(1).WriteArray(np.tile(dem, (5, 81))[:520, :10300])
+            ds.CreateMaskBand(gdal.GMF_PER_DATASET)
+            invalid = ((cols // 37 + rows // 23) % 11 == 0) | ((cols + rows) % 101 == 0)
+            ds.GetRasterBand(1).GetMaskBand().WriteArray(np.where(invalid, 0, 255).astype(np.uint8))
+            ds = None
+        finally:
+            gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", None)
+        for name, source, compression, steps in [
+            ("internal mask, DEFLATE 2 4 8", masked, "DEFLATE", [[2, 4, 8]]),
+            ("internal mask, DEFLATE 3 5, then 2 3", masked, "DEFLATE", [[3, 5], [2, 3]]),
+            ("internal mask, 3 5, then 2 3", masked, "NONE", [[3, 5], [2, 3]]),
+            ("nodata, DEFLATE 3 5, then 2 3", sample, "DEFLATE", [[3, 5], [2, 3]]),
+            ("nodata, 3 5, then 2 3", sample, "NONE", [[3, 5], [2, 3]]),
+            ("no mask, Byte, DEFLATE 3 5, then 2 3", plain, "DEFLATE", [[3, 5], [2, 3]]),
+            ("no mask, Byte, 3 5, then 2 3", plain, "NONE", [[3, 5], [2, 3]]),
+            ("wide, internal mask, 2 8, then 2 4 8 16", wide, "NONE", [[2, 8], [2, 4, 8, 16]]),
+        ]:
+
+            def rebuilt_overviews(name=name, source=source, compression=compression, steps=steps):
+                slug = name.replace(" ", "-").replace(",", "")
+                a, b = work / f"rebuilt-gdal-{slug}.tif", work / f"rebuilt-terrio-{slug}.tif"
+                shutil.copyfile(source, a)
+                shutil.copyfile(source, b)
+                for levels in steps:
+                    run(["gdaladdo", "-ro", "--config", "COMPRESS_OVERVIEW", compression, "-r", "average", a, *levels])
+                    run([args.terrio, "overviews", b, "--external", "--compress", compression, "-r", "average", *levels])
+                return compare(a, b, by_size=True)
+
+            case(f"external average overviews rebuilt, {name}", rebuilt_overviews)
 
         def metadata_edit():
             a, b = work / "edit-gdal.tif", work / "edit-terrio.tif"

@@ -741,7 +741,9 @@ def suite_raster_manage(ctx):
                   "external, exact; real and complex height-only levels check cascade scheduling, "
                   "exact Landsat Byte/UInt16/Float32 mode on uneven levels, "
                   "internal mask overviews added, refreshed (whole and over an extent) and added again over "
-                  "gdaladdo's, and real DEM subset updates: masks, mask blocks, type, nodata, CRS and "
+                  "gdaladdo's, external average overviews of masked rasters in several compressed levels and "
+                  "rebuilt over levels the .ovr had (levels compared by size, as GDAL appends them), "
+                  "and real DEM subset updates: masks, mask blocks, type, nodata, CRS and "
                   "geotransform exact; "
                   "pixel values exact or within 2e-7 relative and 1e-6 absolute tolerance. "
                   "EHdr external overview round trips with exact nodata and a 4e-6 Float32 value tolerance.")

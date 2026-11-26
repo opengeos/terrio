@@ -1567,7 +1567,9 @@ sampled blocks rather than every pixel, and `--hist` stores histograms.
 
 Overview methods are nearest, average, min, max and mode. Without factors or `--levels`, automatic
 levels stop at the first overview that fits in `--min-size` pixels (256). Existing unrequested
-levels are retained. `--external` manages the supplied filename's `.ovr` sidecar,
+levels are retained, except that `--external` levels added band by band (uncompressed or several
+bands, without an alpha band) recompute the `.ovr`'s other levels with the new method, keeping their `RESAMPLING` item,
+as GDAL does. `--external` manages the supplied filename's `.ovr` sidecar,
 including when that filename is a symlink, and reads that `.ovr` under
 `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` too, where other opens do not (the `.msk`, `.aux.xml`
 and `.ovr.msk` beside the GeoTIFF still follow the option). Explicit compression applies to
