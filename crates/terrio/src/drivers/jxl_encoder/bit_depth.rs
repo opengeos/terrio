@@ -195,7 +195,9 @@ impl JxlBitEncoder for MoreThan14Bits {
     }
 
     fn max_encoded_bits_per_sample(&self) -> usize {
-        24
+        // A residual of a YCoCg chroma channel (up to twice its 16-bit range) packs to under 2^18:
+        // 17 extra bits after a prefix code of up to 8 bits. zune-jpegxl 0.5.2 reserved 24 bits.
+        25
     }
     fn num_symbols(&self, _: bool) -> usize {
         19

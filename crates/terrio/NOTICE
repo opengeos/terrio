@@ -47,7 +47,8 @@ zune-jpegxl 0.5.2 (https://github.com/etemesi254/zune-image/tree/dev/crates/zune
 crates/terrio/src/drivers/jxl_encoder/{mod,bit_depth,bit_writer,color_convert,encoder,errors}.rs
 adapts src/{lib,bit_depth,bit_writer,color_convert,encoder,errors}.rs. The private
 snapshot builds a long LZ77 run's code in 64 bits, as zune-image commit 97557d0 does
-after 0.5.2. Its README records the scope and removal condition.
+after 0.5.2, and reserves room for the widest 16-bit codes. Its README records the
+scope and removal condition.
 Copyright (c) zune-image developers
 Licensed under the MIT License (see LICENSES/MIT.txt), one of the crate's MIT,
 Apache-2.0 and Zlib license options.

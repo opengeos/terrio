@@ -733,8 +733,17 @@ fn process_image_area<A, BitDepth>(
     }
 }
 
-fn prepare_dc_global_common(is_single_group: bool, width: usize, height: usize, codes: &[PrefixCode], output: &mut BitWriter) {
-    let length = if is_single_group { width * height * 16 } else { 0 };
+fn prepare_dc_global_common(
+    is_single_group: bool,
+    width: usize,
+    height: usize,
+    max_bits_per_sample: usize,
+    codes: &[PrefixCode],
+    output: &mut BitWriter,
+) {
+    // A single group's first channel is written after this header, into the same writer, so it
+    // needs room for every sample at its widest code (zune-jpegxl 0.5.2 reserved 16 bits).
+    let length = if is_single_group { width * height * max_bits_per_sample } else { 0 };
 
     output.allocate(100000 + length);
 
@@ -845,8 +854,16 @@ fn write_a_c_section<B: JxlBitEncoder>(
     process_image_area(pixels, x0, y0, xs, 0, ys, row_stride, channels, channel_row_processors);
 }
 
-fn prepare_dc_global(is_single_group: bool, width: usize, height: usize, channels: usize, code: &[PrefixCode], output: &mut BitWriter) {
-    prepare_dc_global_common(is_single_group, width, height, code, output);
+fn prepare_dc_global(
+    is_single_group: bool,
+    width: usize,
+    height: usize,
+    max_bits_per_sample: usize,
+    channels: usize,
+    code: &[PrefixCode],
+    output: &mut BitWriter,
+) {
+    prepare_dc_global_common(is_single_group, width, height, max_bits_per_sample, code, output);
 
     if channels > 2 {
         output.put_bits(2, 0b01); // 1 transform
@@ -1000,7 +1017,7 @@ impl<'a> JxlSimpleEncoder<'a> {
 
             {
                 let writer = &mut group_data[0][0];
-                prepare_dc_global(one_group, width, height, num_components, &codes, writer);
+                prepare_dc_global(one_group, width, height, encoder.max_encoded_bits_per_sample(), num_components, &codes, writer);
             }
             let pixels = self.data;
 

@@ -6288,14 +6288,50 @@ following conditions:
         assert!(failed.is_empty(), "{failed:#?}");
     }
 
+    /// UInt16 JPEG XL tiles whose residuals take the widest codes: a 512 x 512 RGB tile alternating
+    /// (65535, 0, 0) and (0, 0, 65535), whose chroma residuals need 17 extra bits after an 8-bit
+    /// prefix (25 bits a sample), and a 256 x 256 gray tile alternating 0 and 65535, a single
+    /// group whose first channel shares the header's writer. Each overran its writer and panicked.
+    fn jxl_uint16_widest_codes() -> Vec<(String, Raster, Vec<u8>)> {
+        [(512, 3), (256, 1)]
+            .into_iter()
+            .map(|(size, bands)| {
+                let data: Vec<u16> = (0..bands)
+                    .flat_map(|band| {
+                        (0..size * size).map(move |i| {
+                            let odd = (i / size + i % size) % 2 == 1;
+                            match bands {
+                                1 => u16::from(odd) * 65535,
+                                _ => u16::from((band == 0) != odd && band != 1) * 65535,
+                            }
+                        })
+                    })
+                    .collect();
+                let cfg = wbraster::RasterConfig { cols: size, rows: size, bands, data_type: DataType::U16, ..Default::default() };
+                let raster = Raster::from_data_native(cfg, RasterData::U16(data)).unwrap();
+                let options = TiffOptions { compression: Compression::Jxl, tile_size: Some(size as u32), ..Default::default() };
+                let bytes = encode(&raster, &options).unwrap();
+                (format!("checkerboard_{size}x{size}x{bands}_U16"), raster, bytes)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn jpeg_xl_uint16_tiles_of_the_widest_codes_read_back() {
+        for (name, raster, bytes) in jxl_uint16_widest_codes() {
+            let back = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap().read().unwrap();
+            assert!(back.raster.data.to_f64_vec() == raster.data.to_f64_vec(), "{name}");
+        }
+    }
+
     /// GDAL (reference: 3.13.3, libjxl through libtiff) decodes the tiles of
-    /// `jxl_noise_over_uniform_runs` to the written samples.
+    /// `jxl_noise_over_uniform_runs` and `jxl_uint16_widest_codes` to the written samples.
     #[cfg(not(target_family = "wasm"))]
     #[test]
     #[ignore = "requires GDAL 3.13.3's Python bindings as python3"]
     fn gdal_reads_jpeg_xl_tiles_of_noise_over_uniform_runs() {
         let dir = tempfile::tempdir().unwrap();
-        let cases = jxl_noise_over_uniform_runs();
+        let cases: Vec<_> = jxl_noise_over_uniform_runs().into_iter().chain(jxl_uint16_widest_codes()).collect();
         let paths: Vec<_> = cases
             .iter()
             .map(|(name, _, bytes)| {

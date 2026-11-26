@@ -4,7 +4,8 @@
 // SPDX-License-Identifier: MIT
 // Adapted from zune-jpegxl 0.5.2, src/lib.rs; see README.md in this directory.
 
-//! The lossless JPEG XL encoder of zune-jpegxl 0.5.2, with its long-run code built in 64 bits.
+//! The lossless JPEG XL encoder of zune-jpegxl 0.5.2, with its long-run code built in 64 bits and
+//! room for the widest 16-bit codes.
 
 #![forbid(unsafe_code)]
 // The snapshot keeps zune-jpegxl's code as written, which newer Clippy lints flag.

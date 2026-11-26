@@ -14,6 +14,13 @@ than its tile with zero padding, were written unreadable for terrio and GDAL ali
 (opengeos/terrio#1355). The snapshot builds the code in a `u64`, as zune-image's commit
 97557d0 (zune-image issue #511) does after 0.5.2.
 
+Two writer allocations are also larger for 16-bit samples, which panicked in
+`BitWriter::flush` when a tile's codes overran them (zune-image issue #502): each sample is
+given 25 bits, not 24, since a YCoCg chroma residual takes 17 extra bits after an 8-bit prefix
+code; and a single group's header writer, which also takes the group's first channel, is sized
+at that width rather than at 16 bits a sample, as zune-image's commit e06b44f does after 0.5.2.
+Only the reserved sizes change: the bytes written are the same.
+
 `encode_inner` keeps only the sequential group loop of the crate's `no_std` build. Before,
 terrio ran 0.5.2's `std` runner with the `threads` feature, which another dependency enables:
 a tile of several groups was encoded on up to two scoped threads. Each group writes to its own
@@ -24,6 +31,7 @@ they end without a newline. Each file's header keeps the source's copyright line
 holder named by the crate's LICENSE-MIT. The snapshot
 remains inside the published terrio crate so the correction survives Cargo packaging.
 
-`jpeg_xl_tiles_of_noise_over_uniform_runs_read_back` and, with GDAL 3.13.3,
-`gdal_reads_jpeg_xl_tiles_of_noise_over_uniform_runs` in `gtiff_write.rs` cover the correction.
-Remove this snapshot when a zune-jpegxl release includes the fix.
+`jpeg_xl_tiles_of_noise_over_uniform_runs_read_back`,
+`jpeg_xl_uint16_tiles_of_the_widest_codes_read_back` and, with GDAL 3.13.3,
+`gdal_reads_jpeg_xl_tiles_of_noise_over_uniform_runs` in `gtiff_write.rs` cover the corrections.
+Remove this snapshot when a zune-jpegxl release includes them.
