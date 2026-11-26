@@ -26,6 +26,10 @@ zrip.workspace = true
 # O_NONBLOCK, so that opening a grid replaced by a FIFO cannot block.
 libc.workspace = true
 
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+# Unique scratch files for downloaded grids, persisted into the cache by an atomic rename.
+tempfile = { workspace = true, optional = true }
+
 [features]
 default = []
 # Zstandard TIFF grids, with the zstd C library (off by default: the crate is otherwise pure Rust).
@@ -34,7 +38,7 @@ libzstd = ["tiff/zstd"]
 # Additional projection methods and legacy identification through wbprojection.
 wbprojection-fallback = ["dep:wbprojection"]
 # A transport supplied by an embedding application; no networking dependency.
-grid-transport = []
+grid-transport = ["dep:tempfile"]
 
 [build-dependencies]
 # Decompresses the EPSG table that native builds embed (build.rs).

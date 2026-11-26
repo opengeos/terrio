@@ -7,6 +7,12 @@ use std::io::{self, Read, Seek};
 use std::path::Path;
 use std::sync::{Arc, OnceLock, RwLock};
 
+/// The largest grid file the engine downloads or reads, larger than any grid on the PROJ CDN
+/// (the largest, `us_nga_egm08_25.tif`, is about 81 MB). A transport overriding
+/// [`GridTransport::download`] should stop writing past it; the engine checks the downloaded size
+/// again before the file enters the cache.
+pub const MAX_GRID_DOWNLOAD_BYTES: u64 = 2 << 30;
+
 /// A seekable grid stream. Native implementations may issue HTTP range requests.
 pub trait GridStream: Read + Seek + Send {}
 impl<T: Read + Seek + Send> GridStream for T {}
@@ -18,13 +24,24 @@ pub trait GridTransport: Send + Sync {
 
     /// Download a whole grid when explicitly requested or when range opening fails.
     /// The destination is a caller-owned scratch path and may contain partial bytes
-    /// on error. The engine removes it on failure and renames it only after success.
+    /// on error. The engine removes it on failure and renames it into the cache only after
+    /// success, once the file is no larger than [`MAX_GRID_DOWNLOAD_BYTES`] and reads as a grid.
+    /// The default implementation stops copying a resource larger than that, with an error.
     fn download(&self, url: &str, path: &Path) -> io::Result<()> {
-        let mut source = self.open(url)?;
+        let source = self.open(url)?;
         let mut output = std::fs::File::create(path)?;
-        io::copy(&mut source, &mut output)?;
-        Ok(())
+        copy_bounded(source, &mut output)
     }
+}
+
+/// Copies a resource to `output`, failing once it exceeds [`MAX_GRID_DOWNLOAD_BYTES`]: no more
+/// than one byte past the limit is read.
+fn copy_bounded(source: impl Read, output: &mut impl io::Write) -> io::Result<()> {
+    let copied = io::copy(&mut source.take(MAX_GRID_DOWNLOAD_BYTES + 1), output)?;
+    if copied > MAX_GRID_DOWNLOAD_BYTES {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("grid download is larger than {MAX_GRID_DOWNLOAD_BYTES} bytes")));
+    }
+    Ok(())
 }
 
 fn transport() -> &'static RwLock<Option<Arc<dyn GridTransport>>> {
@@ -78,6 +95,49 @@ pub(crate) fn open(url: &str) -> io::Result<Box<dyn GridStream>> {
 
 pub(crate) fn download(url: &str, path: &Path) -> io::Result<()> {
     current()?.download(url, path)
+}
+
+#[cfg(test)]
+mod copy_tests {
+    use super::{MAX_GRID_DOWNLOAD_BYTES, copy_bounded};
+    use std::io::{self, Read};
+
+    /// An endless stream of zeros that counts the bytes read from it.
+    struct Endless(u64);
+    impl Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            buf.fill(0);
+            self.0 += buf.len() as u64;
+            Ok(buf.len())
+        }
+    }
+
+    /// A writer that keeps only the count of the bytes written.
+    struct Count(u64);
+    impl io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0 += buf.len() as u64;
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The default download stops an endless response one byte past the limit, with an error,
+    /// and copies a response within the limit whole.
+    #[test]
+    fn grid_downloads_stop_past_the_size_limit() {
+        let mut source = Endless(0);
+        let mut output = Count(0);
+        let error = copy_bounded(&mut source, &mut output).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(output.0, MAX_GRID_DOWNLOAD_BYTES + 1);
+        assert!(source.0 <= MAX_GRID_DOWNLOAD_BYTES + 1 + (64 << 10), "{}", source.0);
+        let mut output = Count(0);
+        copy_bounded(&[7u8; 1000][..], &mut output).unwrap();
+        assert_eq!(output.0, 1000);
+    }
 }
 
 #[cfg(all(test, unix, not(target_family = "wasm")))]
