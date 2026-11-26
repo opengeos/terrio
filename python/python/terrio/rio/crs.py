@@ -371,7 +371,7 @@ class CRS(Mapping[str, Any]):
         # NumPy integers too, as file attributes such as NetCDF's are decoded. `np.bool_` is not
         # an `Integral`.
         if isinstance(value, numbers.Integral) and not isinstance(value, bool):
-            return cls.from_epsg(value)
+            return cls.from_epsg(int(value))
         if isinstance(value, Mapping):
             return cls.from_dict(value)
         if isinstance(value, str):
