@@ -322,10 +322,11 @@ pub struct RpcOptions {
     pub height: Option<f64>,
     /// A factor multiplying the DEM heights (`RPC_HEIGHT_SCALE`, 1 by default).
     pub height_scale: f64,
-    /// A DEM giving the ground height (`RPC_DEM`): a raster path, opened lazily — only the blocks
-    /// the transform reads are decoded, so a large or remote DEM (a COG, or a VRT over
-    /// `/vsicurl/`) is never read whole. A pixel read error at transform time counts as no value
-    /// there (see `dem_missing_value`).
+    /// A DEM giving the ground height (`RPC_DEM`): a raster path. GeoTIFF/COG, VRT, STAC and
+    /// catalog sources are read lazily, by window — only the blocks the transform reads are
+    /// decoded; other formats are read whole, as before. One cell is read at open, so an
+    /// unreadable DEM fails there. A pixel read error at transform time counts as no value there
+    /// (see `dem_missing_value`) and records a warning.
     pub dem: Option<String>,
     /// How the DEM is sampled (`RPC_DEMINTERPOLATION`).
     pub dem_interpolation: DemInterpolation,
@@ -401,7 +402,7 @@ impl RpcOptions {
 
 /// A DEM sampled for heights, band 1 read by window from a lazy raster (block-cached), never
 /// whole: a large or remote DEM (a COG or a VRT over `/vsicurl/`, say) costs only the blocks the
-/// transform touches.
+/// transform touches. Formats without a lazy reader are still read whole, as before.
 struct Dem {
     width: usize,
     height: usize,
@@ -438,10 +439,29 @@ impl Dem {
     }
 
     fn from_dataset(ds: &crate::RasterDataset, o: &RpcOptions, rpc: &Rpc) -> Result<Self> {
-        Self::from_lazy(crate::LazyRaster::from(ds.clone()), o, rpc)
+        // Only band 1 is ever sampled: keep just it, as f64, instead of every band of the dataset,
+        // with the raster's georeferencing and CRS carried over.
+        let mut single = ds.clone();
+        let cfg = wbraster::RasterConfig {
+            cols: ds.raster.cols,
+            rows: ds.raster.rows,
+            bands: 1,
+            data_type: crate::DataType::F64,
+            x_min: ds.raster.x_min,
+            y_min: ds.raster.y_min,
+            cell_size: ds.raster.cell_size_x,
+            cell_size_y: Some(ds.raster.cell_size_y),
+            nodata: ds.raster.nodata,
+            crs: ds.raster.crs.clone(),
+            metadata: ds.raster.metadata.clone(),
+        };
+        single.raster = wbraster::Raster::from_data_native(cfg, wbraster::raster::RasterData::F64(super::band_f64(&ds.raster, 0)))?;
+        single.band_nodata = vec![ds.band_nodata(1)];
+        single.complex = false;
+        Self::from_lazy(crate::LazyRaster::from(single), o, rpc)
     }
 
-    fn from_lazy(raster: crate::LazyRaster, o: &RpcOptions, rpc: &Rpc) -> Result<Self> {
+    fn from_lazy(mut raster: crate::LazyRaster, o: &RpcOptions, rpc: &Rpc) -> Result<Self> {
         let gt = raster.geo_transform();
         let inv = super::invert_gt(&gt).ok_or_else(|| Error::InvalidData("the DEM geotransform is not invertible".into()))?;
         let srs = match &o.dem_srs {
@@ -449,9 +469,18 @@ impl Dem {
             None => raster.crs(),
         };
         let ct = if srs.is_unknown() { None } else { Self::transformer(&srs, o.dem_apply_vdatum_shift, rpc)? };
+        let (width, height) = (raster.width(), raster.height());
+        // Read one cell at open, so a DEM whose first block cannot be read (a failed fetch, a
+        // corrupt tile) fails here rather than silently per point at transform time.
+        if width > 0 && height > 0 {
+            let options = crate::WindowOptions { bands: vec![1], overview: None };
+            raster
+                .read_window(crate::Window::new(0, 0, 1, 1), &options)
+                .map_err(|e| Error::InvalidData(format!("the RPC DEM could not be read: {e}")))?;
+        }
         Ok(Self {
-            width: raster.width(),
-            height: raster.height(),
+            width,
+            height,
             nodata: raster.band_nodata(1),
             raster: std::sync::Mutex::new(raster),
             gt,
@@ -469,9 +498,23 @@ impl Dem {
         let cy0 = y0.clamp(0, self.height as i64 - 1);
         let cy1 = y1.clamp(0, self.height as i64 - 1);
         let (w, h) = ((cx1 - cx0 + 1) as usize, (cy1 - cy0 + 1) as usize);
-        let mut raster = self.raster.lock().ok()?;
+        let mut raster = match self.raster.lock() {
+            Ok(raster) => raster,
+            Err(_) => {
+                crate::warnings::warn("the RPC DEM's raster lock is poisoned; the point is treated as having no DEM value".into());
+                return None;
+            }
+        };
         let options = crate::WindowOptions { bands: vec![1], overview: None };
-        let read = raster.read_window(crate::Window::new(cx0 as usize, cy0 as usize, w, h), &options).ok()?;
+        let read = match raster.read_window(crate::Window::new(cx0 as usize, cy0 as usize, w, h), &options) {
+            Ok(read) => read,
+            Err(e) => {
+                crate::warnings::warn(format!(
+                    "the RPC DEM could not be read at ({cx0}, {cy0}): {e}; the point is treated as having no DEM value"
+                ));
+                return None;
+            }
+        };
         Some((super::band_f64(&read.raster, 0), cx0, cy0, w))
     }
 
@@ -1286,6 +1329,64 @@ pub(crate) mod tests {
         let expect = (300.0 + (100.0f64 * 0.37).sin() * 200.0 + 120.0) as f32 as f64;
         assert!((v - expect).abs() < 1e-6, "{v} vs {expect}");
         assert!(d.sample(-1.0, 10.0).is_none(), "outside the DEM");
+    }
+
+    /// The lazy file DEM honors nodata cells exactly as the whole-read one, in all three
+    /// interpolation modes, and a nodata point takes `dem_missing_value` when set.
+    #[test]
+    fn lazy_dem_honors_nodata_like_the_whole_read_dem() {
+        let dir = tempfile::tempdir().unwrap();
+        let dem = dir.path().join("dem_nodata.tif");
+        let (cols, rows) = (300usize, 260usize);
+        let cfg = wbraster::RasterConfig {
+            cols,
+            rows,
+            bands: 1,
+            x_min: 9.85,
+            y_min: 44.88,
+            cell_size: 0.001,
+            cell_size_y: Some(0.001),
+            nodata: -9999.0,
+            data_type: crate::DataType::F32,
+            crs: wbraster::CrsInfo::from_epsg(4326),
+            metadata: vec![],
+        };
+        let mut data: Vec<f64> = (0..rows * cols).map(|i| 300.0 + ((i % cols) as f64 * 0.37).sin() * 200.0 + (i / cols) as f64).collect();
+        // A 4 x 4 nodata block inside the area the points below sample.
+        for y in 120..124 {
+            for x in 100..104 {
+                data[y * cols + x] = -9999.0;
+            }
+        }
+        let ds = crate::RasterDataset::new(wbraster::Raster::from_data(cfg, data).unwrap(), true);
+        crate::write_raster_dataset(&ds, dem.to_str().unwrap(), &Default::default()).unwrap();
+        let r = rpc();
+        let ds = crate::open_raster(dem.to_str().unwrap()).unwrap();
+        for interpolation in [DemInterpolation::Near, DemInterpolation::Bilinear, DemInterpolation::Cubic] {
+            let o = RpcOptions { dem: Some(dem.to_str().unwrap().into()), dem_interpolation: interpolation, ..Default::default() };
+            let t = RpcTransformer::new(&r, &o).unwrap();
+            let t_mem = RpcTransformer::with_dem_dataset(&r, &o, &ds).unwrap();
+            for i in 0..20 {
+                for j in 0..10 {
+                    let (lon, lat) = (9.9 + i as f64 * 0.01, 44.95 + j as f64 * 0.015);
+                    assert_eq!(t.to_pixel(lon, lat, 0.0), t_mem.to_pixel(lon, lat, 0.0), "{interpolation:?} {lon} {lat}");
+                }
+            }
+        }
+        // The nodata cell itself: no value without a missing value, the missing value with one.
+        let gt = ds.geo_transform();
+        let (lon, lat) = (gt[0] + 101.5 * gt[1] + 121.5 * gt[2], gt[3] + 101.5 * gt[4] + 121.5 * gt[5]);
+        let o = RpcOptions { dem: Some(dem.to_str().unwrap().into()), dem_interpolation: DemInterpolation::Near, ..Default::default() };
+        let t = RpcTransformer::new(&r, &o).unwrap();
+        assert!(t.to_pixel(lon, lat, 0.0).is_none(), "a nodata cell has no height");
+        let o = RpcOptions {
+            dem: Some(dem.to_str().unwrap().into()),
+            dem_interpolation: DemInterpolation::Near,
+            dem_missing_value: Some(0.0),
+            ..Default::default()
+        };
+        let t = RpcTransformer::new(&r, &o).unwrap();
+        assert!(t.to_pixel(lon, lat, 0.0).is_some(), "a nodata cell takes the missing value");
     }
 
     /// The ±180° wrap retry still works with a lazy DEM: a DEM spanning [-180, 180] answers a
