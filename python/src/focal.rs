@@ -166,7 +166,7 @@ fn collar(
     let path = dst.expect("mask output requires dst, checked before processing");
     let mut options = crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)?;
     options.mask = Some(mask);
-    py.detach_result(|| terrio::write_raster_dataset(&collar.dataset, path, &options)).py()?;
+    crate::with_warnings(py, || terrio::write_raster_dataset(&collar.dataset, path, &options))?;
     Ok(PyRaster { inner: py.detach_result(|| terrio::open_raster_lazy(path)).py()? })
 }
 

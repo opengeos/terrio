@@ -30,7 +30,7 @@ from terrio.rio.crs import CRS
 from terrio.rio.dtypes import _gdal_typename
 from terrio.rio.enums import Resampling
 from terrio.rio.errors import CRSError, RasterioDeprecationWarning, RPCError, TransformError
-from terrio.rio.transform import array_bounds, from_bounds
+from terrio.rio.transform import array_bounds, compose, from_bounds
 from terrio.rio.windows import Window
 
 SUPPORTED_RESAMPLING = [
@@ -880,7 +880,7 @@ def reproject(
         else:
             # Only the pixels the destination needs, as GDAL's warper reads its source window.
             arr = ds.read(bidx, window=Window(*win))
-            src_transform = src_transform @ Affine.translation(win[0], win[1])
+            src_transform = compose(src_transform, Affine.translation(win[0], win[1]))
         if rpcs:
             # The dataset's own RPCs, as GDAL warps a dataset with SRC_METHOD=RPC.
             rpcs = ds.rpcs or rpcs

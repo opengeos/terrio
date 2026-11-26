@@ -26,6 +26,7 @@ from affine import Affine
 
 from terrio.rio import features, warp, windows
 from terrio.rio.enums import Resampling
+from terrio.rio.transform import apply, compose
 from terrio.xarray.exceptions import MissingSpatialDimensionError
 
 if TYPE_CHECKING:
@@ -71,7 +72,9 @@ def index_variable(dims: Any, data: Any, attrs: Any = None, encoding: Any = None
 
 
 def matmul(a: Affine, b: Any) -> Any:
-    """Applies a transform to another, or to points (`@`, or `*` before affine 2.4).
+    """Applies a transform to another, or to points, as `@` does from affine 3.0.
+
+    From the coefficients, as affine 2 has no `@` and affine 3 warns on `*`.
 
     Args:
         a: The transform.
@@ -80,9 +83,9 @@ def matmul(a: Affine, b: Any) -> Any:
     Returns:
         Affine | tuple: The composed transform, or the transformed points.
     """
-    if hasattr(Affine, "__matmul__"):
-        return a @ b
-    return a * b  # pragma: no cover
+    if isinstance(b, Affine):
+        return compose(a, b)
+    return apply(a, *b)
 
 
 def affine_has_rotation(affine: Affine) -> bool:

@@ -65,6 +65,7 @@
     0.9996
    ],
    "gdal_proj4": "+proj=tmerc +lat_0=0 +lon_0=9 +k=0.9996 +x_0=500000 +y_0=100 +datum=WGS84 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     10.0,
     45.0
@@ -144,6 +145,7 @@
     0.0
    ],
    "gdal_proj4": "+proj=omerc +no_uoff +lat_0=40 +lonc=10 +alpha=30 +gamma=90 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     11.0,
     41.0
@@ -223,6 +225,7 @@
     2000.0
    ],
    "gdal_proj4": "+proj=omerc +lat_0=40 +lonc=10 +alpha=30 +gamma=90 +k=0.9999 +x_0=1000 +y_0=2000 +datum=WGS84 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     11.0,
     41.0
@@ -297,6 +300,7 @@
     0.0
    ],
    "gdal_proj4": "+proj=stere +lat_0=90 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     10.0,
     80.0
@@ -376,6 +380,7 @@
     2000000.0
    ],
    "gdal_proj4": "+proj=stere +lat_0=90 +lon_0=-45 +k=0.994 +x_0=2000000 +y_0=2000000 +datum=WGS84 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     10.0,
     80.0
@@ -459,6 +464,7 @@
     0.0
    ],
    "gdal_proj4": "+proj=omerc +no_uoff +lat_0=39.6 +lonc=9.9 +alpha=30 +gamma=81 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     11.0,
     41.0
@@ -542,6 +548,7 @@
     200000.0
    ],
    "gdal_proj4": "+proj=omerc +lat_0=46.7100000000001 +lonc=7.38000000000002 +alpha=90 +gamma=81 +k=1 +x_0=600000 +y_0=200000 +datum=WGS84 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     7.4,
     46.9
@@ -616,6 +623,7 @@
     0.0
    ],
    "gdal_proj4": "+proj=stere +lat_0=90 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     10.0,
     80.0
@@ -690,6 +698,7 @@
     0.0
    ],
    "gdal_proj4": "+proj=stere +lat_0=-90 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     10.0,
     -80.0
@@ -764,6 +773,7 @@
     0.0
    ],
    "gdal_proj4": "+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     10.0,
     -80.0
@@ -800,6 +810,7 @@
    ],
    "doubles": [],
    "gdal_proj4": "+proj=tmerc +lat_0=0 +lon_0=5.5 +k=1 +x_0=100000 +y_0=1000000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs",
+   "gdal_code": "4855",
    "point": [
     10.0,
     63.0
@@ -832,6 +843,7 @@
    ],
    "doubles": [],
    "gdal_proj4": "+proj=tmerc +lat_0=43.6666666666667 +lon_0=-68.5 +k=0.9999 +x_0=300000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     -69.0,
     45.0
@@ -868,6 +880,7 @@
    ],
    "doubles": [],
    "gdal_proj4": "+proj=tmerc +lat_0=0 +lon_0=15 +k=0.9996 +x_0=500000 +y_0=0 +datum=WGS84 +units=ft +no_defs",
+   "gdal_code": null,
    "point": [
     15.0,
     50.0
@@ -904,6 +917,7 @@
    ],
    "doubles": [],
    "gdal_proj4": "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +units=ft +no_defs",
+   "gdal_code": null,
    "point": [
     -1.5,
     52.5
@@ -912,6 +926,43 @@
    "gdal": [
     1424013.967473946,
     948947.7726137575
+   ]
+  },
+  {
+   "name": "geographic EPSG:4326 with ProjLinearUnitsGeoKey 9002, kept as EPSG:4326",
+   "directory": [
+    1,
+    1,
+    0,
+    4,
+    1024,
+    0,
+    1,
+    1,
+    1025,
+    0,
+    1,
+    1,
+    3072,
+    0,
+    1,
+    4326,
+    3076,
+    0,
+    1,
+    9002
+   ],
+   "doubles": [],
+   "gdal_proj4": "+proj=longlat +datum=WGS84 +no_defs",
+   "gdal_code": "4326",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "from": "wgs84",
+   "gdal": [
+    10.0,
+    50.0
    ]
   },
   {
@@ -996,6 +1047,7 @@
     0.0
    ],
    "gdal_proj4": "+proj=tmerc +lat_0=0 +lon_0=10 +k=0.9996 +x_0=500000 +y_0=0 +R=6371007 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     10.0,
     50.0
@@ -1078,6 +1130,7 @@
     0.0
    ],
    "gdal_proj4": "+proj=tmerc +lat_0=0 +lon_0=10 +k=0.9996 +x_0=500000 +y_0=0 +ellps=airy +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     10.0,
     50.0
@@ -1160,6 +1213,7 @@
     0.0
    ],
    "gdal_proj4": "+proj=tmerc +lat_0=0 +lon_0=10 +k=0.9996 +x_0=500000 +y_0=0 +R=6371007 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     10.0,
     50.0
@@ -1242,6 +1296,7 @@
     0.0
    ],
    "gdal_proj4": "+proj=tmerc +lat_0=0 +lon_0=10 +k=0.9996 +x_0=500000 +y_0=0 +R=6371000 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     10.0,
     50.0
@@ -1324,6 +1379,7 @@
     0.0
    ],
    "gdal_proj4": "+proj=tmerc +lat_0=0 +lon_0=10 +k=0.9996 +x_0=500000 +y_0=0 +ellps=sphere +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     10.0,
     50.0
@@ -1402,6 +1458,7 @@
     -100000.0
    ],
    "gdal_proj4": "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     -2.0,
     52.0
@@ -1438,6 +1495,7 @@
    ],
    "doubles": [],
    "gdal_proj4": "+proj=longlat +ellps=airy +no_defs",
+   "gdal_code": null,
    "point": [
     -2.0,
     52.0
@@ -1524,6 +1582,7 @@
     0.0
    ],
    "gdal_proj4": "+proj=tmerc +lat_0=0 +lon_0=0 +k=1 +x_0=0 +y_0=0 +ellps=intl +pm=paris +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     5.0,
     46.0
@@ -1588,6 +1647,7 @@
     10.0
    ],
    "gdal_proj4": "+proj=merc +lat_ts=0 +lon_0=10 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     12.0,
     40.0
@@ -1647,6 +1707,7 @@
     10.0
    ],
    "gdal_proj4": "+proj=merc +lat_ts=10 +lon_0=10 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     12.0,
     40.0
@@ -1706,6 +1767,7 @@
     10.0
    ],
    "gdal_proj4": "+proj=merc +lon_0=10 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     12.0,
     40.0
@@ -1785,6 +1847,7 @@
     800000.0
    ],
    "gdal_proj4": "+proj=labrd +lat_0=-18.9 +lon_0=46.4372291 +azi=18.9 +k=0.9995 +x_0=400000 +y_0=800000 +datum=WGS84 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     47.0,
     -19.0
@@ -1859,6 +1922,7 @@
     800000.0
    ],
    "gdal_proj4": "+proj=labrd +lat_0=-18.9 +lon_0=46.4372291 +azi=0 +k=0.9995 +x_0=400000 +y_0=800000 +datum=WGS84 +units=m +no_defs",
+   "gdal_code": null,
    "point": [
     47.0,
     -19.0

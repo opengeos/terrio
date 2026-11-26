@@ -975,7 +975,12 @@ impl Def {
                     #[cfg(feature = "wbprojection-fallback")]
                     {
                         // Fall back on wbprojection, which applies the origin and false easting itself.
-                        let crs = wbprojection::from_proj_string(s).map_err(|e| Error::Crs(format!("{e}")))?;
+                        // A method terrio does not implement is unsupported whatever wbprojection
+                        // refuses it for, as without the fallback.
+                        let crs = wbprojection::from_proj_string(s).map_err(|e| match format!("{e}") {
+                            m if m.starts_with("unsupported projection:") => Error::Crs(m),
+                            m => Error::Crs(format!("unsupported projection: +proj={name} (wbprojection: {m})")),
+                        })?;
                         setup.lam0 = 0.0;
                         setup.x0 = 0.0;
                         setup.y0 = 0.0;

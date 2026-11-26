@@ -996,10 +996,13 @@ fn same_conversion(a: &crate::ProjParams, b: &crate::ProjParams) -> bool {
 
 /// The registry's projected CRS `target` in the linear unit of GeoKeys stating `code` alone, when
 /// that is not its unit: ProjLinearUnitsGeoKey's, else `code`'s own, as GDAL 3.12 changes the
-/// unit of the CRS it imports (`SetLinearUnitsAndUpdateParameters`), its false easting and northing
-/// kept in metres, and drops its code. `None` in its own unit.
+/// unit of the CRS it imports (`SetLinearUnitsAndUpdateParameters`) and drops its code: its WKT 1
+/// with its false easting and northing converted to that unit (`rescaled_wkt`), else its PROJ
+/// string with them kept in metres, as PROJ strings give them. `None` in its own unit, and for a
+/// geographic code, which GDAL 3.12.2 keeps whatever the linear unit (EPSG:4326 with
+/// ProjLinearUnitsGeoKey 9002).
 fn in_keys_unit(k: &GeoKeys, code: u32, target: u32) -> Option<SpatialRef> {
-    let crs = SpatialRef::from_epsg(target).ok()?;
+    let crs = SpatialRef::from_epsg(target).ok().filter(|c| !c.is_geographic())?;
     let (unit, size) = if k.short(3076).is_some() {
         units(k)
     } else {
@@ -1067,7 +1070,9 @@ fn rescaled_wkt(k: &GeoKeys, code: u32, crs: &SpatialRef, size: f64, towgs84: Op
         let at = datum.args.iter().position(|a| matches!(a, Arg::Node(n) if n.key.eq_ignore_ascii_case("SPHEROID")))? + 1;
         datum.args.insert(at, Arg::Node(Node { key: "TOWGS84".into(), args: t.iter().map(|v| Arg::Num(*v)).collect() }));
     }
-    let rescaled = SpatialRef::from_wkt(&root.to_wkt());
+    // Without a code, as GDAL drops it: not one identified by the definition (EPSG:26847 in
+    // metres is deprecated EPSG:26814's).
+    let rescaled = SpatialRef { epsg: None, esri: None, ..SpatialRef::from_wkt(&root.to_wkt()) };
     (rescaled.projection_params().is_some() && (rescaled.metres_per_unit() / size - 1.0).abs() < 1e-9).then_some(rescaled)
 }
 

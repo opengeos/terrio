@@ -72,6 +72,7 @@ SEARCHED = [
     4816,
     5132,
 ]
+# Codes whose variants were pending once, still sampled.
 PENDING_CODES = [7373, 9309, 10831]
 # Searched variants also placed to and from other targets than WGS 84.
 SEARCHED_TO_TARGETS = {
@@ -97,7 +98,8 @@ CUSTOM_BASES = [4269, 4230, 4314, 4277, 4806]
 # A projected CRS PROJ finds by its name, with another false easting.
 CHANGED = 31467
 DEG = 'ANGLEUNIT["degree",0.0174532925199433]'
-# What terrio does not follow yet (see the module's doc comment).
+# What terrio does not follow yet (see the module's doc comment): none now. A key added here
+# marks its cases `pending`, checked against the code instead of PROJ.
 PENDING = set()
 
 

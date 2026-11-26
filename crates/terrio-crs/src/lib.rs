@@ -1782,6 +1782,11 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
             };
             theirs.iter().any(|d| datums.contains(d))
         };
+        // A conversion terrio reads but refuses (an Albers conic of parallels 29.5° and -29.5°,
+        // which PROJ refuses too) is no registered CRS, whatever its name: no code.
+        if own.is_none() && refused_conversion(wkt) {
+            return None;
+        }
         // Else wbprojection's registry (projections terrio cannot compare, CRSs its table lacks).
         let report = wbp::identify_epsg_from_wkt_report(wkt, wbp::EpsgIdentifyPolicy::Lenient)?;
         // The registry matches loosely: keep a code only when its definition converts coordinates
@@ -1818,6 +1823,35 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
     }
     #[cfg(not(feature = "wbprojection-fallback"))]
     None
+}
+
+/// Whether a WKT's conversion is one terrio reads into a PROJ string of a method it knows but
+/// refuses for its parameters, rather than one of a method it does not know: the conversion alone,
+/// on a sphere, so that an ellipsoid or datum terrio cannot read does not count.
+#[cfg(feature = "wbprojection-fallback")]
+fn refused_conversion(wkt: &str) -> bool {
+    const FIGURE: &[&str] = &["ellps", "datum", "a", "b", "f", "rf", "es", "e", "R", "towgs84", "nadgrids", "geoidgrids", "pm"];
+    let Some(root) = crate::parsed::tree(wkt) else { return false };
+    let c = if wkt2::handles(&root) { model::wkt2_to_proj(wkt).ok() } else { model::wkt1_to_proj(wkt) };
+    let Some(c) = c else { return false };
+    let conversion: Vec<&str> = c
+        .proj
+        .split_whitespace()
+        .filter(|t| !FIGURE.contains(&t.trim_start_matches('+').split('=').next().unwrap_or_default()) && !t.starts_with("+R_"))
+        .collect();
+    // `unsupported projection:` is the method's refusal (`Def::wkt_conversion` reads it alike).
+    matches!(Def::from_proj(&format!("{} +R=6371000", conversion.join(" "))), Err(Error::Crs(m)) if !m.starts_with("unsupported projection:"))
+}
+
+/// The name of a CRS's geodetic CRS from its WKT, where [`SpatialRef::geographic_wkt`] gives
+/// none (an unregistered WKT 2 `GEOGCRS`): the root's own name, a compound CRS's horizontal
+/// one's, or a projected CRS's base geodetic CRS's.
+fn geodetic_crs_name(s: &SpatialRef) -> Option<String> {
+    let root = crate::parsed::tree(s.wkt.as_deref()?)?;
+    let horizontal = root.first_in(keywords::HORIZONTAL_CRS).unwrap_or(&root);
+    let geodetic = |n: &wkt1::Node| n.is(keywords::GEOGRAPHIC_OR_GEODETIC_CRS) || n.is(keywords::WKT1_GEOGRAPHIC);
+    let node = if geodetic(horizontal) { horizontal } else { horizontal.first_in(keywords::GEODETIC_BASE)? };
+    node.name().map(str::to_string)
 }
 
 /// Whether a registry CRS has a definition's conversion on its ellipsoid.
@@ -2513,8 +2547,13 @@ fn run_model(ops: &[std::sync::Arc<datum::Op>], p: datum::Point, reverse: bool) 
 pub struct CoordinateOperation {
     /// The names of the transformations, in the order they run, joined by ` + ` as PROJ joins
     /// them (`Inverse of OSGB36 to WGS 84 (6)`). Conversions (projections, units, axes) are not
-    /// named. PROJ's ballpark transformations are `Ballpark geographic offset` and
-    /// `Ballpark vertical transformation`.
+    /// named. PROJ's ballpark transformations are `Ballpark vertical transformation` and, as PROJ
+    /// 9.9.0 names it, `Ballpark geographic offset from Beijing 1954 to WGS 84`, between the
+    /// geographic CRSs, with a transformation of the prime meridian between CRSs of different
+    /// ones (`Transformation from Monte Mario (Rome) to Monte Mario (Rome) altered to use prime
+    /// meridian of WGS 84 + Ballpark geographic offset from Monte Mario (Rome) altered to use
+    /// prime meridian of WGS 84 to WGS 84`), also beside a vertical transformation;
+    /// `Ballpark geographic offset` in a chain of other datum transformations.
     pub name: String,
     /// The accuracy in metres: the sum of the transformations' accuracies, as PROJ adds them;
     /// `None` when one of them has none (a ballpark, a `+towgs84` definition).
@@ -3125,9 +3164,35 @@ impl Transformer {
     /// The point is transformed to find out, so this costs a transformation; the result is not
     /// kept, and the transformer is not changed (it can be shared between threads).
     pub fn operation_at(&self, x: f64, y: f64, z: f64) -> Result<Option<CoordinateOperation>> {
-        let (result, used) = route::recording(|| self.transform_at(x, y, z, self.time));
+        let (result, mut used) = route::recording(|| self.transform_at(x, y, z, self.time));
         result?;
+        self.name_ballpark(&mut used);
         Ok(CoordinateOperation::from_used(used))
+    }
+
+    /// Names a ballpark that is the only datum operation of a point's transformation as PROJ
+    /// 9.9.0 names it, from the geographic CRSs' names (#1012 item 54): `Ballpark geographic
+    /// offset from Beijing 1954 to WGS 84`. Between CRSs of different prime meridians, PROJ
+    /// alters the source to the target's prime meridian, or the target to the source's when the
+    /// source's is Greenwich.
+    fn name_ballpark(&self, used: &mut [route::Used]) {
+        let mut datum = used.iter_mut().filter(|u| u.datum);
+        let (Some(op), None) = (datum.next(), datum.next()) else { return };
+        if op.name != route::GEOGRAPHIC_BALLPARK {
+            return;
+        }
+        let name = |s: &SpatialRef| s.geographic_wkt().and_then(|w| SpatialRef::from_wkt(&w).name()).or_else(|| geodetic_crs_name(s));
+        let (Some(s), Some(t)) = (name(&self.src_ref), name(&self.dst_ref)) else { return };
+        let (from, to) = (self.src.pm(), self.dst.pm());
+        op.name = if (from - to).abs() < 1e-12 {
+            format!("Ballpark geographic offset from {s} to {t}")
+        } else if from != 0.0 {
+            let altered = format!("{s} altered to use prime meridian of {t}");
+            format!("Transformation from {s} to {altered} + Ballpark geographic offset from {altered} to {t}")
+        } else {
+            let altered = format!("{t} altered to use prime meridian of {s}");
+            format!("Ballpark geographic offset from {s} to {altered} + Transformation from {s} to {altered}")
+        };
     }
 
     /// The grids the transformation of a point needs, with where to get them, missing ones
@@ -3581,6 +3646,22 @@ impl Transformer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A conversion terrio refuses for its parameters (an Albers conic of parallels 29.5° and
+    /// -29.5°, which PROJ 9.9.0 refuses too) is refused; one of a method neither terrio nor
+    /// wbprojection reads (Goode Homolosine) is not, so its WKT still reaches wbprojection's registry.
+    #[cfg(feature = "wbprojection-fallback")]
+    #[test]
+    fn refused_conversion_tells_a_refused_conversion_from_an_unknown_method() {
+        let albers = SpatialRef::from_epsg(5070).unwrap().to_wkt().unwrap();
+        let refused = albers.replace("\"standard_parallel_2\",45.5", "\"standard_parallel_2\",-29.5");
+        assert_ne!(refused, albers);
+        assert!(refused_conversion(&refused));
+        assert!(!refused_conversion(&albers));
+        let goode = r#"PROJCRS["Goode",BASEGEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],UNIT["degree",0.0174532925199433]],CONVERSION["Goode",METHOD["Goode Homolosine"],PARAMETER["Longitude of natural origin",0,ANGLEUNIT["degree",0.0174532925199433]],PARAMETER["False easting",0,LENGTHUNIT["metre",1]],PARAMETER["False northing",0,LENGTHUNIT["metre",1]]],CS[Cartesian,2],AXIS["(E)",east],AXIS["(N)",north],LENGTHUNIT["metre",1]]"#;
+        assert!(model::wkt2_to_proj(goode).is_ok_and(|c| c.proj.contains("+proj=goode")), "{goode}");
+        assert!(!refused_conversion(goode));
+    }
 
     /// Missing destination geoid warnings use the destination datum's coordinates.
     /// GDAL 3.13.3 uses the same horizontal datum shift for this compound CRS.
