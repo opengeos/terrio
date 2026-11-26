@@ -7,6 +7,7 @@
 //! string). Outputs are `Dataset`s, written to bytes with `toBytes`. Options are objects with
 //! camelCase names after the command-line options (`tSrs`, `srcNodata`, `cropToCutline`...).
 
+use crate::pixel::NodataValue;
 use crate::{Dataset, Inner, OverviewArg, js_err, parse_options};
 use serde::Deserialize;
 use terrio::crs::SpatialRef;
@@ -143,12 +144,13 @@ pub(crate) fn srs(s: Option<&str>) -> Result<Option<SpatialRef>, JsError> {
     s.map(SpatialRef::parse_literal).transpose().map_err(js_err)
 }
 
-/// A number, a list of numbers, or a word (`"none"`).
+/// A number, a list of numbers, or a word (`"none"`, or `"nan"`, `"inf"`, `"-inf"`, which a list
+/// may also hold).
 #[derive(Deserialize, Clone)]
 #[serde(untagged)]
 enum NumberOrList {
     Number(f64),
-    List(Vec<f64>),
+    List(#[serde(deserialize_with = "crate::pixel::nodata_field::array")] Vec<f64>),
     Word(String),
 }
 
@@ -166,7 +168,9 @@ fn numbers(v: Option<NumberOrList>) -> Result<Vec<f64>, JsError> {
         None => Ok(Vec::new()),
         Some(NumberOrList::Number(x)) => Ok(vec![x]),
         Some(NumberOrList::List(v)) => Ok(v),
-        Some(NumberOrList::Word(s)) => Err(invalid(format!("expected a number or a list of numbers, got '{s}'"))),
+        Some(NumberOrList::Word(s)) => {
+            NodataValue::parse(&s).map(|x| vec![x]).map_err(|_| invalid(format!("expected a number or a list of numbers, got '{s}'")))
+        }
     }
 }
 
@@ -454,8 +458,8 @@ struct TranslateArgs {
 /// Options: `bands` (numbered from 1), `ot`, `srcwin` (`[colOff, rowOff, width, height]`),
 /// `projwin` (`[ulx, uly, lrx, lry]`), `projwinSrs`, `outsize` (`[width, height]`, pixels or
 /// percentages such as `"50%"`; 0 keeps the aspect ratio), `tr`, `resampling`, `scale` (`true`,
-/// `[srcMin, srcMax]` or `[srcMin, srcMax, dstMin, dstMax]`), `exponent`, `aNodata` (a number or
-/// `"none"`), `aSrs`, `aUllr`, `overview` (the stored resolution to read, as `gdal_translate
+/// `[srcMin, srcMax]` or `[srcMin, srcMax, dstMin, dstMax]`), `exponent`, `aNodata` (a number,
+/// `"nan"`, `"inf"`, `"-inf"` or `"none"`), `aSrs`, `aUllr`, `overview` (the stored resolution to read, as `gdal_translate
 /// -ovr`: `"AUTO"`, the default, `"AUTO-n"`, `"NONE"` or a level from 0). Inputs the lazy reader
 /// opens (GeoTIFFs, JPEG 2000, GRIB, tile archives...) are read by window, for the output alone,
 /// from that level where the reader exposes overviews; a TIFF it refuses is decoded whole, at
@@ -478,8 +482,10 @@ pub fn translate(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     let assign_nodata = match a.a_nodata {
         None => None,
         Some(NumberOrList::Number(x)) => Some(Some(x)),
-        Some(NumberOrList::Word(s)) if s.eq_ignore_ascii_case("none") => Some(None),
-        Some(_) => return Err(invalid("aNodata is a number or 'none'")),
+        Some(NumberOrList::Word(s)) => {
+            Some(NodataValue::parse_or_none(&s).map_err(|_| invalid("aNodata is a number, 'nan', 'inf', '-inf' or 'none'"))?)
+        }
+        Some(_) => return Err(invalid("aNodata is a number, 'nan', 'inf', '-inf' or 'none'")),
     };
     let o = TranslateOptions {
         bands: a.bands.unwrap_or_default(),
@@ -524,6 +530,7 @@ struct RasterizeArgs {
     tap: bool,
     ot: Option<String>,
     init: Option<NumberOrList>,
+    #[serde(deserialize_with = "crate::pixel::nodata_field::option")]
     nodata: Option<f64>,
     all_touched: bool,
     add: bool,
@@ -788,8 +795,8 @@ struct CalcArgs {
 ///
 /// `expression`: an expression, or an array of them (one per output band), in NumPy syntax.
 /// `inputs`: the rasters by the names the expressions use, `{ A: dem, B: other }`. Options:
-/// `bands` (the band of each input, `{ A: 2 }`; 1 by default), `type`, `nodata` (a number or
-/// `"none"`), `hideNodata`, `extent` (`ignore`, `fail`, `union`, `intersect`), `projwin`,
+/// `bands` (the band of each input, `{ A: 2 }`; 1 by default), `type`, `nodata` (a number,
+/// `"nan"`, `"inf"`, `"-inf"` or `"none"`), `hideNodata`, `extent` (`ignore`, `fail`, `union`, `intersect`), `projwin`,
 /// `allBands` (the input whose every band is processed), `projectionCheck`.
 #[wasm_bindgen]
 pub fn calc(expression: JsValue, inputs: JsValue, options: JsValue) -> Result<Dataset, JsError> {
@@ -830,8 +837,13 @@ pub fn calc(expression: JsValue, inputs: JsValue, options: JsValue) -> Result<Da
     let nodata = match a.nodata {
         None => CalcNodata::Default,
         Some(NumberOrList::Number(x)) => CalcNodata::Value(x),
-        Some(NumberOrList::Word(s)) if s.eq_ignore_ascii_case("none") => CalcNodata::None,
-        Some(_) => return Err(invalid("nodata is a number or 'none'")),
+        Some(NumberOrList::Word(s)) => {
+            match NodataValue::parse_or_none(&s).map_err(|_| invalid("nodata is a number, 'nan', 'inf', '-inf' or 'none'"))? {
+                Some(x) => CalcNodata::Value(x),
+                None => CalcNodata::None,
+            }
+        }
+        Some(_) => return Err(invalid("nodata is a number, 'nan', 'inf', '-inf' or 'none'")),
     };
     let o = CalcOptions {
         calc: exprs,
@@ -918,6 +930,7 @@ struct ProximityArgs {
     values: Option<ValuesArg>,
     distunits: String,
     maxdist: Option<f64>,
+    #[serde(deserialize_with = "crate::pixel::nodata_field::option")]
     nodata: Option<f64>,
     use_input_nodata: bool,
     fixed_buf_val: Option<f64>,
@@ -1138,6 +1151,7 @@ pub fn open_catalog(index: JsValue, sources: JsValue, options: JsValue) -> Resul
         srs: Option<String>,
         bands: Option<usize>,
         ot: Option<String>,
+        #[serde(deserialize_with = "crate::pixel::nodata_field::option")]
         nodata: Option<f64>,
         alpha_band: Option<usize>,
         cache_size: Option<usize>,
@@ -1213,7 +1227,7 @@ impl Default for PansharpenArgs {
 
 /// Weighted Brovey pansharpening. `spectral` is a raster/bytes or an array of them;
 /// all bands contribute intensity. Options: `weights`, output `bands` (from 1),
-/// `panBand`, `resampling` (default cubic), `bitdepth`, `nodata` (number or "none"),
+/// `panBand`, `resampling` (default cubic), `bitdepth`, `nodata` (a number or "none"; pansharpening refuses non-finite values),
 /// `spatAdjust` (union/intersection/none), `ot` (output type).
 #[wasm_bindgen]
 pub fn pansharpen(pan: JsValue, spectral: JsValue, options: JsValue) -> Result<Dataset, JsError> {
@@ -1231,9 +1245,14 @@ fn pansharpen_options(options: JsValue) -> Result<terrio::ops::pansharpen::Pansh
     let a: PansharpenArgs = parse_options(&options)?;
     let nodata = match a.nodata {
         None | Some(serde_json::Value::Null) => PansharpenNodata::Auto,
-        Some(serde_json::Value::String(s)) if s.eq_ignore_ascii_case("none") => PansharpenNodata::None,
         Some(serde_json::Value::Number(n)) => PansharpenNodata::Value(n.as_f64().ok_or_else(|| invalid("nodata must be a finite number"))?),
-        _ => return Err(invalid("nodata must be a number or 'none'")),
+        Some(serde_json::Value::String(s)) => {
+            match NodataValue::parse_or_none(&s).map_err(|_| invalid("nodata must be a number, 'nan', 'inf', '-inf' or 'none'"))? {
+                Some(x) => PansharpenNodata::Value(x),
+                None => PansharpenNodata::None,
+            }
+        }
+        _ => return Err(invalid("nodata must be a number, 'nan', 'inf', '-inf' or 'none'")),
     };
     Ok(PansharpenOptions {
         pan_band: a.pan_band,

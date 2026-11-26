@@ -43,6 +43,7 @@ struct VectorGridArgs {
     max_points: Option<u32>,
     min_points_per_quadrant: Option<u32>,
     max_points_per_quadrant: Option<u32>,
+    #[serde(deserialize_with = "crate::pixel::nodata_field::option")]
     nodata: Option<f64>,
 }
 
