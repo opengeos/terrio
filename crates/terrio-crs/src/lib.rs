@@ -1866,30 +1866,30 @@ fn vertical_crs_name(def: &Def, s: &SpatialRef) -> Option<String> {
     node.name().map(str::to_string)
 }
 
-/// PROJ 9.9.0's name of its ballpark between geographic CRSs `s` and `t`, of prime meridians `from` and
-/// `to` (radians).
-fn geographic_ballpark(s: &str, t: &str, from: f64, to: f64) -> String {
+/// The steps of PROJ 9.9.0's ballpark between geographic CRSs `s` and `t`, of prime meridians
+/// `from` and `to` (radians), by name.
+fn geographic_ballpark(s: &str, t: &str, from: f64, to: f64) -> Vec<String> {
     if (from - to).abs() < 1e-12 {
-        format!("Ballpark geographic offset from {s} to {t}")
+        vec![format!("Ballpark geographic offset from {s} to {t}")]
     } else if from != 0.0 {
         let altered = format!("{s} altered to use prime meridian of {t}");
-        format!("Transformation from {s} to {altered} + Ballpark geographic offset from {altered} to {t}")
+        vec![format!("Transformation from {s} to {altered}"), format!("Ballpark geographic offset from {altered} to {t}")]
     } else {
         let altered = format!("{t} altered to use prime meridian of {s}");
-        format!("Ballpark geographic offset from {s} to {altered} + Transformation from {s} to {altered}")
+        vec![format!("Ballpark geographic offset from {s} to {altered}"), format!("Transformation from {s} to {altered}")]
     }
 }
 
-/// The name of the inverse of a chain of operations, as PROJ 9.9.0 gives it: its steps the other
-/// way, each inverted.
-fn inverse(chain: &str) -> String {
-    let mut steps: Vec<&str> = chain.split(" + ").collect();
-    steps.reverse();
-    let steps: Vec<String> = steps
-        .into_iter()
-        .map(|step| step.strip_prefix("Inverse of ").map_or_else(|| format!("Inverse of {step}"), str::to_string))
+/// The name of the inverse of the steps of an operation, as PROJ 9.9.0 gives it: the steps the
+/// other way, each inverted. A step whose CRS names hold ` + ` stays whole, quoted as PROJ quotes it
+/// (`Inverse of 'Ballpark geographic offset from Alpha + Beta to WGS 84'`).
+fn inverse(steps: &[String]) -> String {
+    let inverted: Vec<String> = steps
+        .iter()
+        .rev()
+        .map(|step| if step.contains(" + ") { format!("Inverse of '{step}'") } else { format!("Inverse of {step}") })
         .collect();
-    steps.join(" + ")
+    inverted.join(" + ")
 }
 
 /// Whether a registry CRS has a definition's conversion on its ellipsoid.
@@ -3229,6 +3229,10 @@ impl Transformer {
     ///   (ballpark vertical transformation, without ellipsoid height to vertical height
     ///   correction)`, after the horizontal operations, as PROJ runs it.
     ///
+    /// A vertical CRS's name is used as it is, empty too, as PROJ uses it; without one (`+geoidgrids`)
+    /// the step keeps `Ballpark vertical transformation`, and its place after the horizontal
+    /// operations.
+    ///
     /// Into a CRS with a vertical CRS from one without, PROJ names the operation the other way,
     /// inverted: `Inverse of Transformation from EGM96 height to WGS 84 (...) + Inverse of
     /// Ballpark geographic offset from Beijing 1954 to WGS 84`.
@@ -3248,25 +3252,27 @@ impl Transformer {
             op.name = if inverted {
                 inverse(&geographic_ballpark(t, s, self.dst.pm(), self.src.pm()))
             } else {
-                geographic_ballpark(s, t, self.src.pm(), self.dst.pm())
+                geographic_ballpark(s, t, self.src.pm(), self.dst.pm()).join(" + ")
             };
         }
         const WITHOUT: &str = "ballpark vertical transformation, without ellipsoid height to vertical height correction";
-        let name = match (self.src.vertical().and(src_vertical), self.dst.vertical().and(dst_vertical)) {
+        let name = match (src_vertical, dst_vertical) {
             (Some(a), Some(b)) => Some(format!("Transformation from {a} to {b} (ballpark vertical transformation)")),
             (Some(a), None) if self.dst.vertical().is_none() => dst.map(|g| format!("Transformation from {a} to {g} ({WITHOUT})")),
             (None, Some(b)) if inverted => src.map(|g| format!("Inverse of Transformation from {b} to {g} ({WITHOUT})")),
             _ => None,
         };
-        let Some(name) = name else { return };
-        for u in used.iter_mut().filter(|u| !u.datum && u.name == route::VERTICAL_BALLPARK) {
-            u.name.clone_from(&name);
+        // The vertical ballparks, named or not (without a vertical CRS name, the generic one).
+        let vertical: Vec<bool> = used.iter().map(|u| !u.datum && u.name == route::VERTICAL_BALLPARK).collect();
+        if let Some(name) = name {
+            for (u, _) in used.iter_mut().zip(&vertical).filter(|(_, v)| **v) {
+                u.name.clone_from(&name);
+            }
         }
         // From a vertical CRS to a CRS without one, after the horizontal operations.
         if self.src.vertical().is_some() && self.dst.vertical().is_none() {
-            let (vertical, rest): (Vec<_>, Vec<_>) = used.drain(..).partition(|u| u.name == name);
-            used.extend(rest);
-            used.extend(vertical);
+            let (ballparks, rest): (Vec<_>, Vec<_>) = used.drain(..).zip(vertical).partition(|(_, v)| *v);
+            used.extend(rest.into_iter().chain(ballparks).map(|(u, _)| u));
         }
     }
 

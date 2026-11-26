@@ -202,3 +202,39 @@ fn vertical_ballparks_are_named_as_proj_names_them() {
         assert_eq!(op.name, name, "{src} to {dst}");
     }
 }
+
+/// A ballpark between CRSs whose names hold ` + ` is named whole: into a compound CRS of an
+/// unregistered geographic CRS named `Alpha + Beta`, inverted and quoted as PROJ 9.9.0 quotes it.
+#[test]
+fn ballparks_keep_crs_names_that_hold_a_plus_whole() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let custom = SpatialRef::from_wkt(
+        r#"COMPD_CS["Alpha + Beta + EGM96 height",GEOGCS["Alpha + Beta",DATUM["Alpha",SPHEROID["Alpha",6378300,298.3]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AXIS["Latitude",NORTH],AXIS["Longitude",EAST]],VERT_CS["EGM96 height",VERT_DATUM["EGM96 geoid",2005,AUTHORITY["EPSG","5171"]],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Gravity-related height",UP],AUTHORITY["EPSG","5773"]]]"#,
+    );
+    assert_eq!(custom.epsg, None);
+    let into = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &custom).unwrap();
+    let op = into.operation_at(116.0, 40.0, 0.0).unwrap().unwrap();
+    assert_eq!(op.name, "Inverse of 'Ballpark geographic offset from Alpha + Beta to WGS 84'");
+    let from = Transformer::new(&custom, &SpatialRef::from_epsg(4979).unwrap()).unwrap();
+    let op = from.operation_at(116.0, 40.0, 0.0).unwrap().unwrap();
+    let vertical = "Transformation from EGM96 height to WGS 84 (ballpark vertical transformation, without ellipsoid height to vertical height correction)";
+    assert_eq!(op.name, format!("Ballpark geographic offset from Alpha + Beta to WGS 84 + {vertical}"));
+}
+
+/// A vertical CRS of an empty name is named so, after the horizontal ballpark, as PROJ 9.9.0
+/// names it: `Transformation from  to WGS 84 (...)`.
+#[test]
+fn a_vertical_ballpark_of_an_empty_name_follows_the_horizontal_step() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let compound = SpatialRef::from_wkt(
+        r#"COMPD_CS["x",GEOGCS["Beijing 1954",DATUM["Beijing_1954",SPHEROID["Krassowsky 1940",6378245,298.3,AUTHORITY["EPSG","7024"]],AUTHORITY["EPSG","6214"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","4214"]],VERT_CS["",VERT_DATUM["",2005],UNIT["metre",1],AXIS["Gravity-related height",UP]]]"#,
+    );
+    let t = Transformer::new(&compound, &SpatialRef::from_epsg(4979).unwrap()).unwrap();
+    let op = t.operation_at(116.0, 40.0, 0.0).unwrap().unwrap();
+    assert_eq!(
+        op.name,
+        "Ballpark geographic offset from Beijing 1954 to WGS 84 + Transformation from  to WGS 84 (ballpark vertical transformation, without ellipsoid height to vertical height correction)"
+    );
+}
