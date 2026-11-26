@@ -1039,7 +1039,9 @@ terrio.network_stats()  # {"request_count": 1, "received_bytes": 16384, "sent_by
 terrio.clear_http_cache()
 
 # The cache of decoded GeoTIFF/COG chunks (GDAL's GetCacheMax/SetCacheMax): TERRIO_CACHEMAX, else
-# GDAL_CACHEMAX, else 64 MiB; 0 turns it off. It also keeps the bands lazy GRIB reads decode.
+# GDAL_CACHEMAX, else 64 MiB; 0 turns it off. It also keeps the bands lazy GRIB reads decode and
+# the Zarr chunks a window read covers in part, for as long as their array is open: a chunk
+# rewritten in the store meanwhile is read anew only by an array opened after the change.
 terrio.block_cache_max()  # 67108864
 terrio.set_block_cache_max(256 << 20)
 terrio.clear_block_cache()
