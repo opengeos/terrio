@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import math
+import numbers
 import re
 import warnings
 from collections.abc import Mapping
@@ -354,8 +355,9 @@ class CRS(Mapping[str, Any]):
         """A CRS from any supported input.
 
         Args:
-            value: A `CRS`, an EPSG code (int), a string, a mapping of PROJ parameters, or an
-                object with a `to_wkt()` method (such as a pyproj CRS).
+            value: A `CRS`, an EPSG code (an int or a NumPy integer, not a bool), a string, a
+                mapping of PROJ parameters, or an object with a `to_wkt()` method (such as a
+                pyproj CRS).
             morph_from_esri_dialect: Unused.
 
         Returns:
@@ -366,8 +368,10 @@ class CRS(Mapping[str, Any]):
         """
         if isinstance(value, CRS):
             return value
-        if isinstance(value, int) and not isinstance(value, bool):
-            return cls.from_epsg(value)
+        # NumPy integers too, as file attributes such as NetCDF's are decoded. `np.bool_` is not
+        # an `Integral`.
+        if isinstance(value, numbers.Integral) and not isinstance(value, bool):
+            return cls.from_epsg(int(value))
         if isinstance(value, Mapping):
             return cls.from_dict(value)
         if isinstance(value, str):

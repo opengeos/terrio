@@ -665,6 +665,19 @@ def test_crs():
         _ = g.linear_units_factor
 
 
+@pytest.mark.parametrize("code", [np.int64(4326), np.int32(4326), np.uint16(4326)])
+def test_crs_reads_numpy_integer_as_epsg_code(code):
+    # File attributes, such as a NetCDF `crs` attribute, come back as NumPy integers.
+    assert rio.CRS.from_user_input(code).to_string() == "EPSG:4326"
+    assert rio.CRS.from_epsg(4326) == code
+
+
+@pytest.mark.parametrize("value", [True, np.bool_(True)])
+def test_crs_refuses_boolean_as_epsg_code(value):
+    with pytest.raises(CRSError, match="CRS is invalid"):
+        rio.CRS.from_user_input(value)
+
+
 def test_features():
     geoms = [
         {
