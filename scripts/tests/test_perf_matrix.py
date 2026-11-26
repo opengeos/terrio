@@ -1333,6 +1333,7 @@ def test_geoparquet_real_reads_its_own_extent_columns_and_filter(tmp_path):
     """Boxes lie in the file's extent, and the filter's own column prunes row groups by their statistics."""
     pa = pytest.importorskip("pyarrow")
     pq = pytest.importorskip("pyarrow.parquet")
+    pytest.importorskip("pyogrio")  # the GDAL reader
     real = perf_matrix.GeoParquetReal
     x0, y0, x1, y1 = real.EXTENT
     assert all(x0 <= a < c <= x1 and y0 <= b < d <= y1 for a, b, c, d in real.bboxes(16))
