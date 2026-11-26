@@ -137,7 +137,11 @@ struct PairLists {
 /// The table: its text and an index of its lines, built once. Entries are parsed on first use.
 struct Table {
     text: Cow<'static, str>,
-    crs: HashMap<u32, Lazy<Option<Entry>>>,
+    /// Each entry boxed: indexing the table writes a slot per CRS line, not an entry's size.
+    crs: HashMap<u32, Lazy<Option<Box<Entry>>>>,
+    /// The codes and lines of the CRSs, in the table's order: indexes built from every CRS line
+    /// read the text in order rather than in the map's.
+    crs_lines: Vec<(u32, (u32, u32))>,
     ops: HashMap<u32, Lazy<Option<Arc<Op>>>>,
     /// Direct transformations between geographic CRSs, by (source, target) code.
     pairs: HashMap<(u32, u32), Lazy<PairLists>>,
@@ -224,7 +228,7 @@ fn esri_table() -> &'static Table {
 
 /// Indexes the lines of a table's text.
 fn load(text: Cow<'static, str>) -> Table {
-    let (mut crs, mut ops, mut pairs) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let (mut crs, mut crs_lines, mut ops, mut pairs) = (HashMap::new(), Vec::new(), HashMap::new(), HashMap::new());
     let (mut verticals, mut compounds, mut geoids) = (HashMap::new(), HashMap::new(), HashMap::<u32, Vec<_>>::new());
     let mut vertical_ops = HashMap::new();
     let mut alternatives = HashMap::<String, Vec<String>>::new();
@@ -255,6 +259,7 @@ fn load(text: Cow<'static, str>) -> Table {
             "C" => {
                 if let Ok(code) = key.parse::<u32>() {
                     crs.insert(code, Lazy::new(rest, end));
+                    crs_lines.push((code, (rest as u32, end as u32)));
                 }
             }
             "P" => {
@@ -319,6 +324,7 @@ fn load(text: Cow<'static, str>) -> Table {
     Table {
         text,
         crs,
+        crs_lines,
         ops,
         pairs,
         verticals,
@@ -408,7 +414,7 @@ impl Table {
                 let fields: Vec<&str> = line.split('\t').collect();
                 let [name, datum, geog, op_ids, grid_ids, flags, area, proj, wkt] = fields[..] else { return None };
                 let area: Vec<f64> = area.split(',').filter_map(|v| v.parse().ok()).collect();
-                Some(Entry {
+                Some(Box::new(Entry {
                     name: name.to_string(),
                     datum: datum.parse().unwrap_or(0),
                     geog: geog.parse().unwrap_or(0),
@@ -419,9 +425,9 @@ impl Table {
                     area: (area.len() == 4).then(|| [area[0], area[1], area[2], area[3]]),
                     proj: proj.to_string(),
                     wkt: wkt.to_string(),
-                })
+                }))
             })
-            .as_ref()
+            .as_deref()
     }
 
     fn lists(&self, ids: &str) -> OpLists {
@@ -588,9 +594,9 @@ pub(crate) fn esri(code: u32) -> Option<&'static Entry> {
 /// An index of a table's CRSs by name, as `key` gives it.
 fn name_index(t: &Table, key: impl Fn(&str) -> String) -> HashMap<String, Vec<u32>> {
     let mut names = HashMap::<String, Vec<u32>>::new();
-    for (code, l) in &t.crs {
-        if let Some(n) = t.text[l.line.0 as usize..l.line.1 as usize].split('\t').next() {
-            names.entry(key(n)).or_default().push(*code);
+    for &(code, (start, end)) in &t.crs_lines {
+        if let Some(n) = t.text[start as usize..end as usize].split('\t').next() {
+            names.entry(key(n)).or_default().push(code);
         }
     }
     names.values_mut().for_each(|c| c.sort_unstable());
@@ -783,6 +789,18 @@ fn kind_of(projected: bool, three_d: bool) -> u8 {
 /// EPSG codes by kind and name, with whether each is current.
 type NameIndex = HashMap<(u8, String), Vec<(u32, bool)>>;
 
+/// The fields of a CRS line before its WKT: its name, datum, geographic CRS, transformation and
+/// grid transformation ids, flags, area of use and PROJ string. `None` for a line without its
+/// WKT field, which has no entry either.
+fn crs_fields(t: &'static Table, (start, end): (u32, u32)) -> Option<[&'static str; 8]> {
+    let mut f = t.text[start as usize..end as usize].splitn(9, '\t');
+    let mut fields = [""; 8];
+    for field in &mut fields {
+        *field = f.next()?;
+    }
+    f.next().map(|_| fields)
+}
+
 /// The EPSG geographic and projected CRSs of the table by kind ([`kind_of`]) and official name,
 /// its ASCII letters in lowercase, with whether each is current.
 fn officially_named() -> &'static NameIndex {
@@ -790,9 +808,8 @@ fn officially_named() -> &'static NameIndex {
     INDEX.get_or_init(|| {
         let t = table();
         let mut index = NameIndex::new();
-        for (code, l) in &t.crs {
-            let f: Vec<&str> = t.text[l.line.0 as usize..l.line.1 as usize].splitn(9, '\t').collect();
-            let [name, _, _, _, _, flags, _, proj, _] = f[..] else { continue };
+        for &(code, line) in &t.crs_lines {
+            let Some([name, _, _, _, _, flags, _, proj]) = crs_fields(t, line) else { continue };
             let kind = if proj.starts_with("+proj=longlat") {
                 kind_of(false, flags.contains('3'))
             } else if proj.starts_with("+proj=geocent") {
@@ -801,7 +818,7 @@ fn officially_named() -> &'static NameIndex {
                 b'p'
             };
             let current = !flags.contains('x');
-            index.entry((kind, name.to_ascii_lowercase())).or_default().push((*code, current));
+            index.entry((kind, name.to_ascii_lowercase())).or_default().push((code, current));
         }
         index
     })
@@ -843,15 +860,14 @@ pub(crate) fn geographic_on(datum: u32) -> &'static [u32] {
     let index = INDEX.get_or_init(|| {
         let t = table();
         let mut index = HashMap::<u32, Vec<u32>>::new();
-        for (code, l) in &t.crs {
-            let f: Vec<&str> = t.text[l.line.0 as usize..l.line.1 as usize].splitn(9, '\t').collect();
-            let [_, datum_field, geog, _, _, flags, _, proj, ..] = f[..] else { continue };
-            if geog.parse() == Ok(*code)
+        for &(code, line) in &t.crs_lines {
+            let Some([_, datum_field, geog, _, _, flags, _, proj]) = crs_fields(t, line) else { continue };
+            if geog.parse() == Ok(code)
                 && !flags.contains('3')
                 && proj.starts_with("+proj=longlat")
                 && let Ok(d) = datum_field.parse::<u32>()
             {
-                index.entry(d).or_default().push(*code);
+                index.entry(d).or_default().push(code);
             }
         }
         index.values_mut().for_each(|c| c.sort_unstable_by_key(|c| (is_deprecated(*c), *c)));
@@ -867,15 +883,14 @@ pub(crate) fn projected_on(geog: u32) -> &'static [(u32, &'static str)] {
     let index = INDEX.get_or_init(|| {
         let t = table();
         let mut index = HashMap::<u32, Vec<(u32, &'static str)>>::new();
-        for (code, l) in &t.crs {
-            let f: Vec<&'static str> = t.text[l.line.0 as usize..l.line.1 as usize].splitn(9, '\t').collect();
-            let [_, _, geog, _, _, flags, _, proj, _] = f[..] else { continue };
+        for &(code, line) in &t.crs_lines {
+            let Some([_, _, geog, _, _, flags, _, proj]) = crs_fields(t, line) else { continue };
             let method = proj.split_whitespace().next().unwrap_or_default();
             if !flags.contains('3')
                 && method != "+proj=longlat"
                 && let Ok(g) = geog.parse::<u32>()
             {
-                index.entry(g).or_default().push((*code, method));
+                index.entry(g).or_default().push((code, method));
             }
         }
         index.values_mut().for_each(|c| c.sort_unstable_by_key(|(c, _)| (is_deprecated(*c), *c)));
@@ -1165,6 +1180,27 @@ pub(crate) fn grid_alternatives(name: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Indexing the table writes each CRS line's position and an empty slot, a pointer and its
+    /// once-state: a slot holding an [`Entry`] itself would take the size of one for every CRS line.
+    #[test]
+    fn crs_index_slots_do_not_hold_parsed_entries() {
+        fn slot_size<V>(_: &HashMap<u32, V>) -> usize {
+            std::mem::size_of::<V>()
+        }
+        assert!(slot_size(&table().crs) <= std::mem::size_of::<(u32, u32)>() + 2 * std::mem::size_of::<usize>());
+    }
+
+    /// The indexes built by scanning the CRS lines in the table's order see each CRS of the map
+    /// once, at its line.
+    #[test]
+    fn crs_lines_are_the_indexed_lines_in_table_order() {
+        for t in [table(), esri_table()] {
+            assert_eq!(t.crs_lines.len(), t.crs.len());
+            assert!(t.crs_lines.iter().all(|(code, line)| t.crs[code].line == *line));
+            assert!(t.crs_lines.windows(2).all(|w| w[0].1.0 < w[1].1.0));
+        }
+    }
 
     #[test]
     fn geocentric_registry_entries_are_usable() {
