@@ -201,7 +201,8 @@ impl GroupWindows {
 
     fn next_window(&mut self) -> Result<Option<RecordBatch>> {
         while self.ready.is_empty() && !self.groups.is_empty() {
-            let bytes = |g: usize| self.ranges[g].iter().map(|r| r.1).sum::<u64>();
+            // Footer lengths, saturated: a corrupt footer's cannot overflow.
+            let bytes = |g: usize| self.ranges[g].iter().fold(0u64, |t, r| t.saturating_add(r.1));
             let budget = self.prefetch.as_ref().map_or(u64::MAX, |p| p.1);
             // within the bytes the prefetcher takes at once and the decoded bytes a window holds
             let (mut n, mut total, mut decoded) = (0, 0u64, 0u64);
@@ -224,8 +225,8 @@ impl GroupWindows {
                     size = size.saturating_add(bytes(self.groups[end].0));
                     end += 1;
                 }
-                let ranges = |end: usize| -> Vec<(u64, u64)> {
-                    self.groups.range(..end).flat_map(|(g, _)| self.ranges[*g].iter().copied()).collect()
+                let ranges = |upto: usize| -> Vec<(u64, u64)> {
+                    self.groups.range(..upto).flat_map(|(g, _)| self.ranges[*g].iter().copied()).collect()
                 };
                 // A failed read-ahead fails only the reads of its row groups: the window is
                 // announced alone again, and so are the windows after it.
@@ -867,6 +868,33 @@ mod tests {
         // with 4).
         let requests = seen.lock().unwrap().len();
         assert!(requests <= 20, "{requests} requests");
+    }
+
+    /// Column chunk lengths from a footer that overflow when summed saturate: the reader reads on
+    /// rather than panicking or wrapping.
+    #[test]
+    fn overflowing_chunk_lengths_saturate() {
+        use super::GroupWindows;
+        use arrow_array::{ArrayRef, Int32Array, RecordBatch};
+        use std::sync::Arc;
+        let mut w = GroupWindows {
+            groups: (0..2).map(|g| (g, None)).collect(),
+            ready: Default::default(),
+            decode: Box::new(|g, _| {
+                Ok(vec![RecordBatch::try_from_iter([("g", Arc::new(Int32Array::from(vec![g as i32])) as ArrayRef)]).unwrap()])
+            }),
+            ranges: vec![vec![(0, u64::MAX), (0, u64::MAX)]; 2],
+            decoded: vec![1; 2],
+            prefetch: Some((Box::new(|_: &[(u64, u64)]| Ok(())), u64::MAX)),
+            announced: 0,
+            ahead: 0,
+            no_read_ahead: false,
+            context: crate::stac::AssetReadContext::capture(None),
+            window: 1,
+            failed: false,
+        };
+        assert!(w.next().unwrap().is_some() && w.next().unwrap().is_some());
+        assert!(w.next().unwrap().is_none());
     }
 
     /// The row groups whose column chunks are announced to the prefetcher at each call: the
