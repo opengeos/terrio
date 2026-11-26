@@ -19,7 +19,8 @@ terrio ran 0.5.2's `std` runner with the `threads` feature, which another depend
 a tile of several groups was encoded on up to two scoped threads. Each group writes to its own
 bit writers, joined in order, so the bytes are the same; terrio compresses tiles in parallel.
 The `std` and `threads` variants and the doc examples are omitted. Paths point at this
-module, `alloc` at `std`. Each file's header keeps the source's copyright line and adds the
+module, `alloc` at `std`. Error messages are written with `write!` rather than `writeln!`, so
+they end without a newline. Each file's header keeps the source's copyright line and adds the
 holder named by the crate's LICENSE-MIT. The snapshot
 remains inside the published terrio crate so the correction survives Cargo packaging.
 

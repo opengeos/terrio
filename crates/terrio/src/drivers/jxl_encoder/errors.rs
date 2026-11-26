@@ -40,24 +40,24 @@ pub const SUPPORTED_DEPTHS: [BitDepth; 2] = [BitDepth::Eight, BitDepth::Sixteen]
 impl Debug for JxlEncodeErrors {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
-            JxlEncodeErrors::ZeroDimension(param) => writeln!(f, "The {param} is less than 2"),
+            JxlEncodeErrors::ZeroDimension(param) => write!(f, "The {param} is less than 2"),
             JxlEncodeErrors::UnsupportedColorspace(color) => {
-                writeln!(f, "JXL encoder cannot encode images in colorspace {color:?}, supported ones are {:?}", SUPPORTED_COLORSPACES)
+                write!(f, "JXL encoder cannot encode images in colorspace {color:?}, supported ones are {:?}", SUPPORTED_COLORSPACES)
             }
             JxlEncodeErrors::UnsupportedDepth(depth) => {
-                writeln!(f, "JXL encoder cannot encode images in depth {depth:?},supported ones are {:?}", SUPPORTED_DEPTHS)
+                write!(f, "JXL encoder cannot encode images in depth {depth:?},supported ones are {:?}", SUPPORTED_DEPTHS)
             }
             JxlEncodeErrors::TooLargeDimensions(value) => {
-                writeln!(f, "Too large dimensions {value} greater than supported dimensions {MAX_DIMENSIONS}")
+                write!(f, "Too large dimensions {value} greater than supported dimensions {MAX_DIMENSIONS}")
             }
             JxlEncodeErrors::LengthMismatch(expected, found) => {
-                writeln!(f, "Expected array of length {expected} but found {found}")
+                write!(f, "Expected array of length {expected} but found {found}")
             }
             JxlEncodeErrors::Generic(msg) => {
-                writeln!(f, "{}", msg)
+                write!(f, "{}", msg)
             }
             JxlEncodeErrors::IoErrors(e) => {
-                writeln!(f, "I/O error {:?}", e)
+                write!(f, "I/O error {:?}", e)
             }
         }
     }
@@ -71,7 +71,7 @@ impl From<ZByteIoError> for JxlEncodeErrors {
 
 impl core::fmt::Display for JxlEncodeErrors {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        writeln!(f, "{:?}", self)
+        write!(f, "{:?}", self)
     }
 }
 

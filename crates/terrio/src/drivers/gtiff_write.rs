@@ -317,9 +317,7 @@ fn jxl_encode(mut data: Vec<u8>, c: &ChunkInfo) -> Result<Vec<u8>> {
     };
     let options = zune_core::options::EncoderOptions::new(c.w, c.h, colorspace, depth).set_num_threads(1);
     let mut out = Vec::new();
-    super::jxl_encoder::JxlSimpleEncoder::new(&data, options)
-        .encode(&mut out)
-        .map_err(|e| Error::InvalidData(format!("JPEG XL: {e:?}")))?;
+    super::jxl_encoder::JxlSimpleEncoder::new(&data, options).encode(&mut out).map_err(|e| Error::InvalidData(format!("JPEG XL: {e}")))?;
     Ok(out)
 }
 
@@ -6248,14 +6246,15 @@ following conditions:
             for bands in [1, 3] {
                 for data_type in [DataType::U8, DataType::U16] {
                     let mut state = 0x9E37_79B9_7F4A_7C15u64;
-                    let mut sample = |i: usize| {
+                    // 16 bits of noise in the first `noise_rows` rows, then the uniform value 7.
+                    let mut noise = |i: usize| {
                         state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
-                        if i / cols % rows < noise_rows { state >> 48 } else { 7 }
+                        (i / cols % rows < noise_rows).then_some(state >> 48)
                     };
                     let n = cols * rows * bands;
                     let data = match data_type {
-                        DataType::U8 => RasterData::U8((0..n).map(|i| (sample(i) >> 8) as u8).collect()),
-                        _ => RasterData::U16((0..n).map(|i| sample(i) as u16).collect()),
+                        DataType::U8 => RasterData::U8((0..n).map(|i| noise(i).map_or(7, |v| (v >> 8) as u8)).collect()),
+                        _ => RasterData::U16((0..n).map(|i| noise(i).map_or(7, |v| v as u16)).collect()),
                     };
                     let cfg = wbraster::RasterConfig { cols, rows, bands, data_type, ..Default::default() };
                     let raster = Raster::from_data_native(cfg, data).unwrap();
@@ -6266,6 +6265,14 @@ following conditions:
             }
         }
         cases
+    }
+
+    #[test]
+    fn jpeg_xl_encoder_errors_read_as_one_line() {
+        let cfg = wbraster::RasterConfig { cols: 1, rows: 5, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let raster = Raster::from_data_native(cfg, RasterData::U8(vec![3; 5])).unwrap();
+        let error = encode(&raster, &TiffOptions { compression: Compression::Jxl, ..Default::default() }).unwrap_err().to_string();
+        assert!(error.ends_with("JPEG XL: The width is less than 2"), "{error:?}");
     }
 
     #[test]
