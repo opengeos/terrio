@@ -45,7 +45,7 @@ pub struct Args {
     bigtiff: bool,
     /// Convert only this window of a raster: first column, first row, width and height (in the
     /// overview's pixels with --overview). GeoTIFFs, local or remote, are read in place.
-    #[arg(long, num_args = 4, value_names = ["XOFF", "YOFF", "XSIZE", "YSIZE"])]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 4, value_names = ["XOFF", "YOFF", "XSIZE", "YSIZE"])]
     srcwin: Option<Vec<usize>>,
     /// Convert a raster's overview N (0 is the largest) instead of its full resolution.
     #[arg(long, value_name = "N")]

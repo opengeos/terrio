@@ -32,13 +32,13 @@ pub struct Args {
     #[arg(long = "where", value_name = "EXPR")]
     where_clause: Option<String>,
     /// The pixel size.
-    #[arg(long, num_args = 2, value_names = ["XRES", "YRES"])]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 2, value_names = ["XRES", "YRES"])]
     tr: Option<Vec<f64>>,
     /// The size in pixels; one of them may be 0 to keep the aspect ratio.
-    #[arg(long, num_args = 2, value_names = ["WIDTH", "HEIGHT"], conflicts_with = "tr")]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 2, value_names = ["WIDTH", "HEIGHT"], conflicts_with = "tr")]
     ts: Option<Vec<usize>>,
     /// The extent. By default, that of the layers.
-    #[arg(long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true)]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true)]
     te: Option<Vec<f64>>,
     /// Align the extent on multiples of the pixel size.
     #[arg(long, requires = "tr")]

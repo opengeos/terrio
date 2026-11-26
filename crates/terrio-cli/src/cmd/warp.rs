@@ -26,20 +26,20 @@ pub struct Args {
     #[arg(long = "t-srs", value_name = "CRS")]
     t_srs: Option<String>,
     /// The output resolution, in output CRS units.
-    #[arg(long, num_args = 2, value_names = ["XRES", "YRES"])]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 2, value_names = ["XRES", "YRES"])]
     tr: Option<Vec<f64>>,
     /// The output extent, in output CRS units (or `--te-srs`).
-    #[arg(long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true)]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true)]
     te: Option<Vec<f64>>,
     /// The CRS of `--te`.
     #[arg(long = "te-srs", value_name = "CRS")]
     te_srs: Option<String>,
     /// The output size in pixels; 0 computes one dimension from the other.
-    #[arg(long, num_args = 2, value_names = ["WIDTH", "HEIGHT"])]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 2, value_names = ["WIDTH", "HEIGHT"])]
     ts: Option<Vec<usize>>,
     /// The output geotransform, in GDAL's order, for a rotated output grid (or any affine one):
     /// needs `--ts`, and excludes `--te`, `--tr` and `--tap`.
-    #[arg(long = "dst-transform", num_args = 6, value_names = ["X0", "A", "B", "Y0", "D", "E"], allow_negative_numbers = true)]
+    #[arg(action = clap::ArgAction::Set, long = "dst-transform", num_args = 6, value_names = ["X0", "A", "B", "Y0", "D", "E"], allow_negative_numbers = true)]
     dst_transform: Option<Vec<f64>>,
     /// Align the output extent on multiples of `--tr`.
     #[arg(long)]

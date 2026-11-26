@@ -24,7 +24,7 @@ pub struct Args {
     #[arg(long, value_name = "N|X,Y", default_value = "1")]
     skip: String,
     /// Write only this window, in pixels.
-    #[arg(long, num_args = 4, value_names = ["XOFF", "YOFF", "XSIZE", "YSIZE"])]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 4, value_names = ["XOFF", "YOFF", "XSIZE", "YSIZE"])]
     srcwin: Option<Vec<usize>>,
     /// Leave out pixels whose values all equal the source nodata.
     #[arg(long, visible_alias = "skip-nodata")]

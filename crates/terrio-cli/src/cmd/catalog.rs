@@ -21,10 +21,10 @@ pub struct Args {
     #[arg(long)]
     sort_descending: bool,
     /// Output pixel resolution in the index CRS.
-    #[arg(long,num_args=2,value_names=["XRES","YRES"])]
+    #[arg(action = clap::ArgAction::Set, long,num_args=2,value_names=["XRES","YRES"])]
     tr: Option<Vec<f64>>,
     /// Output extent in the index CRS.
-    #[arg(long,num_args=4,allow_negative_numbers=true,value_names=["XMIN","YMIN","XMAX","YMAX"])]
+    #[arg(action = clap::ArgAction::Set, long,num_args=4,allow_negative_numbers=true,value_names=["XMIN","YMIN","XMAX","YMAX"])]
     te: Option<Vec<f64>>,
     /// Assign the index CRS if missing; otherwise must match the index CRS.
     #[arg(long)]
@@ -48,7 +48,7 @@ pub struct Args {
     #[arg(short = 'r', long)]
     resampling: Option<String>,
     /// Read only this output pixel window.
-    #[arg(long,num_args=4,value_names=["XOFF","YOFF","WIDTH","HEIGHT"])]
+    #[arg(action = clap::ArgAction::Set, long,num_args=4,value_names=["XOFF","YOFF","WIDTH","HEIGHT"])]
     window: Option<Vec<usize>>,
     /// Print logical I/O counters as JSON after a window read.
     #[arg(long, requires = "window")]

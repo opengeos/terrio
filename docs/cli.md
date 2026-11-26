@@ -4288,7 +4288,7 @@ for one command and its descendants. Required dataset arguments may be omitted;
 metadata requests open no datasets or output files. The Python package supports
 identical requests with `python -m terrio`.
 
-The payload has `schema_version: "0.1.15"`, `unstable: true`, the program/version,
+The payload has `schema_version: "0.1.16"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,
@@ -4300,9 +4300,11 @@ not repeatable in clap terms, and a second occurrence is an error. For positiona
 arguments (such as `warp`'s `paths`), `repeatable: true` reflects variadic operand
 collection via clap's `append` action. terrio sets
 neither `args_override_self` nor `overrides_with`, so no option is made repeatable
-by an override. For example, `warp --tr 0.02 0.02 --tr 0.05 0.05` is accepted, but
-the command uses only the first pair (`0.02 0.02`); the catalog reports `--tr` as
-`repeatable: true` with `num_args` 2, so it does not promise that later pairs apply.
+by an override. Options that take several values in one occurrence (`--tr`, `--te`,
+`--ts`, `--srcwin`, `--projwin`, `--scale`, `--bounds` and the like) are `set` options,
+so `warp --tr 0.02 0.02 --tr 0.05 0.05` is an error rather than a silently ignored
+second pair, and the catalog reports them as `repeatable: false`. Options that take one
+value per occurrence, such as `--co KEY=VALUE` or `-b`, remain repeatable.
 Types are `string`, `integer`, `number`, `boolean`, `path` or
 `unknown`; dataset locations represented as strings are tagged as paths. Custom
 parsers whose result type is not recognized report `unknown`.

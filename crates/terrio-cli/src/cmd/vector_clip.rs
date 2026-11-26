@@ -17,7 +17,7 @@ pub struct Args {
     #[command(flatten)]
     output: VectorOutput,
     /// Clip to xmin,ymin,xmax,ymax in the input CRS, unless --bbox-crs is supplied.
-    #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
+    #[arg(action = clap::ArgAction::Set, long, value_delimiter = ',', allow_hyphen_values = true)]
     bbox: Option<Vec<f64>>,
     #[arg(long, requires = "bbox")]
     bbox_crs: Option<String>,

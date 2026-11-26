@@ -49,7 +49,7 @@ pub struct Args {
     bin: bool,
     /// The grid: the first cell's corner (XMIN, YMIN), and floor((MAX - MIN) / RES) + 1 cells
     /// each way, as in PDAL. By default, the points' bounds.
-    #[arg(long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true)]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true)]
     te: Option<Vec<f64>>,
     /// The nodata value.
     #[arg(long = "a-nodata", value_name = "VALUE", default_value_t = -9999.0, allow_negative_numbers = true)]

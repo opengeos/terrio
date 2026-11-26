@@ -23,10 +23,10 @@ pub struct Args {
     #[arg(long, default_value = "average")]
     resolution: String,
     /// The output resolution (implies `--resolution user`).
-    #[arg(long, num_args = 2, value_names = ["XRES", "YRES"])]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 2, value_names = ["XRES", "YRES"])]
     tr: Option<Vec<f64>>,
     /// The output extent.
-    #[arg(long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true)]
+    #[arg(action = clap::ArgAction::Set, long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true)]
     te: Option<Vec<f64>>,
     /// Align the extent on multiples of the resolution.
     #[arg(long)]

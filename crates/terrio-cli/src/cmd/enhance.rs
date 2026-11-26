@@ -23,7 +23,7 @@ pub struct Args {
     config: Option<String>,
     /// Stretch this source range linearly over the bins, without tables (gdalenhance parses
     /// -src_scale but ignores it).
-    #[arg(long = "src-scale", alias = "src_scale", num_args = 2, value_names = ["MIN", "MAX"], allow_hyphen_values = true, conflicts_with_all = ["equalize", "config"])]
+    #[arg(action = clap::ArgAction::Set, long = "src-scale", alias = "src_scale", num_args = 2, value_names = ["MIN", "MAX"], allow_hyphen_values = true, conflicts_with_all = ["equalize", "config"])]
     src_scale: Option<Vec<f64>>,
     /// The number of bins of the tables (256, as in gdalenhance).
     #[arg(long = "lut-bins", alias = "lutbins", default_value_t = 256)]

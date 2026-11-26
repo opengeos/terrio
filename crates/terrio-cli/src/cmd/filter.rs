@@ -379,7 +379,7 @@ enum Filter {
         #[arg(long, default_value_t = 1000.0)]
         length: f64,
         /// The squares' origin (by default, the first point).
-        #[arg(long, num_args = 2, value_names = ["X", "Y"], allow_negative_numbers = true)]
+        #[arg(action = clap::ArgAction::Set, long, num_args = 2, value_names = ["X", "Y"], allow_negative_numbers = true)]
         origin: Option<Vec<f64>>,
         /// A buffer around each square whose points it takes too.
         #[arg(long, default_value_t = 0.0)]
@@ -406,7 +406,7 @@ enum Filter {
         #[arg(long, default_value_t = 8)]
         knn: usize,
         /// Orient the normals towards this point (rather than up).
-        #[arg(long, num_args = 3, value_names = ["X", "Y", "Z"], allow_negative_numbers = true)]
+        #[arg(action = clap::ArgAction::Set, long, num_args = 3, value_names = ["X", "Y", "Z"], allow_negative_numbers = true)]
         viewpoint: Option<Vec<f64>>,
         /// Do not orient the normals up.
         #[arg(long = "not-always-up")]
@@ -771,7 +771,7 @@ enum Filter {
         #[arg(long = "hole-cull-area-tolerance", value_name = "AREA")]
         hole_cull_area_tolerance: Option<f64>,
         /// The grid's origin, a hexagon's lower-left corner (by default, the first point).
-        #[arg(long, num_args = 2, value_names = ["X", "Y"], allow_negative_numbers = true)]
+        #[arg(action = clap::ArgAction::Set, long, num_args = 2, value_names = ["X", "Y"], allow_negative_numbers = true)]
         origin: Option<Vec<f64>>,
         /// The decimals of the boundary's coordinates (as PDAL rounds them, before smoothing).
         #[arg(long, default_value_t = 8)]
