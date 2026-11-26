@@ -694,7 +694,7 @@ def test_changed_files_choose_the_formats_to_measure():
     assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet"]
     assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
     assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet", "flatgeobuf", "geopackage", "geotiff-write",
-                                                   "geoparquet-write", "warp", "terrain"]
+                                                   "geoparquet-write", "rasterize", "zonal", "warp", "terrain"]
     assert perf_matrix.touched(["crates/terrio/src/stream/sqlite.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
     assert perf_matrix.touched(["crates/terrio/src/stream/mod.rs"]) == ["geoparquet", "flatgeobuf", "geopackage"]
     assert perf_matrix.touched(["crates/terrio/src/ops/sql/select.rs"]) == ["geopackage"]
@@ -1366,3 +1366,104 @@ def test_gdals_second_configuration_reads_with_gdal(monkeypatch):
     monkeypatch.setitem(perf_matrix.FORMATS, "fake", SimpleNamespace(EXT=".tif", reader=reader))
     perf_matrix.worker({"format": "fake", "tool": "gdal_allcpus", "src": "http://localhost/f.tif", "access": "full", "meta": {}})
     assert tools == ["gdal"]
+
+
+def test_rasterize_and_zonal_are_chosen_by_their_operations():
+    """The rasterizer picks both formats, as zonal statistics grid their zones with it."""
+    assert perf_matrix.touched(["crates/terrio/src/ops/rasterize.rs"]) == ["rasterize", "zonal"]
+    assert perf_matrix.touched(["crates/terrio/src/ops/zonal_reduce.rs", "python/src/analysis.rs"]) == ["zonal"]
+
+
+def _polygons(ogr, osr, path, rings, points=False):
+    """A FlatGeobuf file of polygons (or of their first vertices) with `id` and `value`, in UTM 31N.
+
+    Args:
+        ogr: OGR's module.
+        osr: OSR's module.
+        path: The file.
+        rings: Each polygon's vertices.
+        points: Write each ring's first vertex as a point instead.
+    """
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(32631)
+    ds = ogr.GetDriverByName("FlatGeobuf").CreateDataSource(str(path))
+    lyr = ds.CreateLayer("data", srs, ogr.wkbPoint if points else ogr.wkbPolygon)
+    for name, kind in (("id", ogr.OFTInteger64), ("value", ogr.OFTReal)):
+        lyr.CreateField(ogr.FieldDefn(name, kind))
+    for i, ring in enumerate(rings):
+        f = ogr.Feature(lyr.GetLayerDefn())
+        f["id"], f["value"] = i, 10.5 * (i + 1)
+        pts = ", ".join(f"{x} {y}" for x, y in [*ring, ring[0]])
+        f.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT ({ring[0][0]} {ring[0][1]})" if points else f"POLYGON (({pts}))"))
+        lyr.CreateFeature(f)
+    lyr = ds = None
+
+
+@pytest.mark.parametrize("fmt,access", [("rasterize", "burn"), ("rasterize", "attribute_all_touched"), ("rasterize", "burn_t1"),
+                                        ("zonal", "fields"), ("zonal", "fields_all_touched")])
+def test_rasterize_and_zonal_run_in_a_worker_and_match_gdal(tmp_path, monkeypatch, fmt, access):
+    """Run a rasterization or zonal statistics as the runner's worker does, on small files, against GDAL's output.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped environment and grid replacements.
+        fmt: The operation's format.
+        access: The operation.
+    """
+    np = pytest.importorskip("numpy")
+    gdal = pytest.importorskip("osgeo.gdal")
+    ogr, osr = pytest.importorskip("osgeo.ogr"), pytest.importorskip("osgeo.osr")
+    pytest.importorskip("terrio")
+    gdal.UseExceptions()
+    for name in ("RAYON_NUM_THREADS", "GDAL_NUM_THREADS"):
+        monkeypatch.setenv(name, "2")
+    # Off the pixel grid, overlapping, one reaching past the raster's edge.
+    rings = [[(x, y), (x + 431.3, y + 87.1), (x + 254.9, y + 503.7)]
+             for x, y in ((500113.7, 4998021.3), (500301.2, 4998219.9), (502401.1, 4999800.4))]
+    op = perf_matrix.FORMATS[fmt]
+    if fmt == "rasterize":
+        monkeypatch.setattr(op, "RES", 1000.0)  # 100 x 100 pixels over the fixtures' extent
+        rings = [[(x - 500000, y - 4900000) for x, y in r] for r in rings]
+        src = tmp_path / "poly_index.fgb"
+        _polygons(ogr, osr, src, rings)
+        _polygons(ogr, osr, tmp_path / "_warmup.fgb", rings, points=True)
+    else:
+        src = tmp_path / "f32_none.tif"
+        gdal.Translate(str(src), _mem(np, gdal, perf_matrix.terrain(np, 256, 1, "float32")[0]), format="GTiff")
+        warm = _mem(np, gdal, np.ones((64, 64), "float32"), gt=(500000, 10, 0, 4959680, 0, -10))
+        gdal.Translate(str(tmp_path / "_zonal_warmup.tif"), warm, format="GTiff")
+        gdal.Translate(str(tmp_path / "_warmup.tif"), warm, format="GTiff")
+        _polygons(ogr, osr, tmp_path / "_zones_fields.fgb", rings)
+        _polygons(ogr, osr, tmp_path / "_zones_warmup.fgb", [[(500000, 4959040), (500300, 4959040), (500300, 4959340)]])
+    meta = op.meta(src, access)
+    samples = {tool: perf_matrix.worker({"format": fmt, "tool": tool, "src": str(src), "access": access, "meta": meta})
+               for tool in ("gdal", "terrio")}
+    assert os.environ["RAYON_NUM_THREADS"] == ("1" if access.endswith("_t1") else "2")
+    c = samples["terrio"]["compare"]
+    assert c["n"] == samples["gdal"]["n"] == (10_000 if fmt == "rasterize" else 15) and c["beyond_tol"] == 0, c
+    assert not c["mismatch"], c
+    row = summarize({**_row(terrio=[samples["terrio"]], gdal=[samples["gdal"]]), "format": fmt, "access": access})
+    assert row["values"] in ("exact", "within_tol")
+
+
+def test_zonal_statistics_are_compared_zone_by_zone():
+    """Match zones by id; a value missing in both tools agrees, one missing in one tool differs."""
+    nan = float("nan")
+    stats = perf_matrix.Zonal.STATS
+
+    def ours(rows):
+        return SimpleNamespace(columns=lambda: {"id": [r[0] for r in rows],
+                                                **{f"raster1_b1_{s}": [r[k + 1] for r in rows] for k, s in enumerate(stats)}})
+
+    def theirs(rows):
+        return SimpleNamespace(GetLayer=lambda _: [{"id": r[0], **dict(zip(stats, r[1:], strict=True))} for r in rows])
+
+    gdal_rows = [(1, 4.0, 10.0, 2.5, 1.0, 4.0), (2, 0.0, 0.0, nan, None, None)]  # zone 2 is empty
+    same = perf_matrix.compare_zonal(ours([(2, 0, 0.0, None, None, None), (1, 4, 10.0 + 1e-12, 2.5, 1.0, 4.0)]), theirs(gdal_rows), 1e-9)
+    assert (same["n"], same["differing"], same["beyond_tol"], same["mismatch"]) == (10, 1, 0, "")
+    empty = perf_matrix.compare_zonal(ours([(1, 4, 10.0, 2.5, 1.0, 4.0), (2, 0, None, None, None, None)]), theirs(gdal_rows), 1e-9)
+    assert (empty["beyond_tol"], empty["max_diff"], empty["worst"]) == (1, 0.0, "zone 2 sum: None vs GDAL's 0.0")
+    off = perf_matrix.compare_zonal(ours([(1, 5, 12.0, 2.4, 1.0, 4.0), (2, 0, 0.0, None, None, None)]), theirs(gdal_rows), 1e-9)
+    assert (off["differing"], off["beyond_tol"], off["max_diff"]) == (3, 3, 0.25)  # count 1/4, sum 2/10, mean 0.1/2.5
+    other = perf_matrix.compare_zonal(ours([(1, 4, 10.0, 2.5, 1.0, 4.0)]), theirs(gdal_rows), 1e-9)
+    assert other["mismatch"] == "zones 1 vs 2, 1 ids in one only" and other["beyond_tol"] == 10
