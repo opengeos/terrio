@@ -536,11 +536,27 @@ fn parse_gdal_metadata(text: &str) -> HashMap<(i32, String), String> {
     out
 }
 
+/// The bounds of the TIFF decoder for grids: what one chunk (tile or strip) or one tag's value
+/// may decode to (`decoding_buffer_size`, which tiff 0.11.3 also applies to tag values), and the
+/// compressed bytes read for one chunk (`intermediate_buffer_size`). tiff 0.11.3 parses a file's
+/// first IFD with its default limits, which have the same `decoding_buffer_size`. PROJ's GeoTIFF
+/// grids are tiled
+/// 256 x 256 (the largest grids of the CDN, `us_nga_egm08_25.tif` at 8640 x 4321 and
+/// `de_lgl_bw_BWTA2017.tif` at 4369 x 5611 x 3 samples of `Float32`, checked in November 2026),
+/// so a chunk is 768 KiB at most; a whole image of the largest grid as one strip, 149 MB, is
+/// still within both bounds. Tag values hold at most a few hundred thousand chunk offsets.
+fn grid_tiff_limits() -> tiff::decoder::Limits {
+    let mut limits = tiff::decoder::Limits::default();
+    limits.decoding_buffer_size = 256 << 20;
+    limits.intermediate_buffer_size = 256 << 20;
+    limits
+}
+
 /// Reads the images of a PROJ GeoTIFF grid, as PROJ's `GTiffDataset::nextGrid`.
 fn read_tiff(reader: GridReader) -> Option<GridFile> {
-    use tiff::decoder::{Decoder, Limits};
+    use tiff::decoder::Decoder;
     use tiff::tags::Tag;
-    let mut dec = Decoder::new(reader).ok()?.with_limits(Limits::unlimited());
+    let mut dec = Decoder::new(reader).ok()?.with_limits(grid_tiff_limits());
     let mut out = Vec::new();
     let mut infos = Vec::new();
     let mut ifd = 0usize;
@@ -981,9 +997,12 @@ fn machine_search_dirs() -> Vec<std::path::PathBuf> {
     dirs
 }
 
-/// The largest grid file read, larger than any grid on the PROJ CDN.
+/// The largest grid file read, larger than any grid on the PROJ CDN; the same as the download
+/// limit (`network::MAX_GRID_DOWNLOAD_BYTES`).
 #[cfg(not(target_family = "wasm"))]
 const MAX_GRID_BYTES: u64 = 2 << 30;
+#[cfg(remote)]
+const _: () = assert!(MAX_GRID_BYTES == crate::network::MAX_GRID_DOWNLOAD_BYTES);
 
 /// Whether file metadata is that of a grid file that can be read: a regular file of at most
 /// [`MAX_GRID_BYTES`].
@@ -1148,10 +1167,18 @@ fn single_file_name(name: &str) -> bool {
     matches!(parts.next(), Some(std::path::Component::Normal(_))) && parts.next().is_none() && !name.contains(['/', '\\'])
 }
 
+/// Whether a grid name can be put in a CDN URL as is: a single file name of ASCII letters,
+/// digits, `.`, `_` and `-` (as every grid of the PROJ CDN is named), so that no `%`, `?`, `#` or
+/// other character changes the URL's meaning.
+#[cfg(any(remote, test))]
+fn cdn_file_name(name: &str) -> bool {
+    single_file_name(name) && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
 /// The URL of a grid on the PROJ CDN.
 #[cfg(remote)]
 fn cdn_url(name: &str) -> Option<String> {
-    if !single_file_name(name) || !name.ends_with(".tif") {
+    if !cdn_file_name(name) || !name.ends_with(".tif") {
         return None;
     }
     let endpoint =
@@ -1175,19 +1202,32 @@ fn open_remote(name: &str) -> Result<GridFile, bool> {
     read_tiff(GridReader::Remote(reader)).ok_or(false)
 }
 
+/// Downloads a grid whole into the cache directory and reads it. The download goes to a scratch
+/// file of its own in the cache directory (concurrent downloads of one grid, from threads of one
+/// process or from several processes, never share one), which is removed on failure. It enters
+/// the cache by an atomic rename only once it is no larger than [`MAX_GRID_BYTES`] and reads as a
+/// grid, so the cache never holds a partial, oversized or unreadable download. `Err(true)` when
+/// the grid could not be obtained (a failed request, an oversized download), `Err(false)` when
+/// what was obtained is not a grid.
 #[cfg(remote)]
-fn download(name: &str) -> Option<Arc<[u8]>> {
-    let url = cdn_url(name)?;
-    let dir = cache_dir()?;
-    std::fs::create_dir_all(&dir).ok()?;
-    let tmp = dir.join(format!("{name}.part{}", std::process::id()));
-    if crate::network::download(&url, &tmp).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        return None;
-    }
-    let path = dir.join(name);
-    std::fs::rename(&tmp, &path).ok()?;
-    read_grid_file(&path)
+fn download(name: &str) -> Result<GridFile, bool> {
+    let url = cdn_url(name).ok_or(true)?;
+    let dir = cache_dir().ok_or(true)?;
+    std::fs::create_dir_all(&dir).map_err(|_| true)?;
+    let tmp = tempfile::Builder::new().prefix(&format!(".{name}.")).suffix(".part").tempfile_in(&dir).map_err(|_| true)?.into_temp_path();
+    crate::network::download(&url, &tmp).map_err(|_| true)?;
+    let file = verified_download(name, &tmp)?;
+    tmp.persist(dir.join(name)).map_err(|_| true)?;
+    Ok(file)
+}
+
+/// The grid a download holds, when it is a regular file of at most [`MAX_GRID_BYTES`] that reads
+/// as a grid of its name's format: `Err(true)` when it cannot be read or is larger, `Err(false)`
+/// when it is not a grid.
+#[cfg(any(remote, test))]
+fn verified_download(name: &str, path: &std::path::Path) -> Result<GridFile, bool> {
+    let bytes = read_grid_file(path).ok_or(true)?;
+    read_file(name, bytes).ok_or(false)
 }
 
 /// The grid file of a name, read once.
@@ -1269,10 +1309,10 @@ fn load_uncached(name: &str) -> Option<Arc<GridFile>> {
     if bytes.is_none() && fetch {
         // Read as the file fetched (`us_nga_egm96_15.tif` for `egm96_15.gtx`), not as named.
         let got = download(remote_name);
-        if got.is_none() {
+        if matches!(got, Err(true)) {
             record_fetch_failure(name);
         }
-        return got.and_then(|b| read_file(remote_name, b)).map(Arc::new);
+        return got.ok().map(Arc::new);
     }
     bytes.and_then(|b| read_file(name, b)).map(Arc::new)
 }
@@ -1516,24 +1556,33 @@ pub(crate) fn grid_names(spec: &str) -> Vec<(String, bool)> {
         .collect()
 }
 
+/// The deepest nesting of subgrids read: a grid nested deeper (its parent already at this depth,
+/// top-level grids being at depth 0) makes the file unusable. Real grids nest a few levels (NTv2
+/// files such as Canada's and Australia's, two or three); the bound keeps building and searching
+/// the nesting, both recursive, from exhausting the stack or taking quadratic time on a crafted
+/// file.
+const MAX_SUBGRID_DEPTH: usize = 32;
+
 /// Builds the nesting of a file's grids as PROJ's `insertIntoHierarchy` (and, for NTv2, its
-/// parent names) does.
+/// parent names) does. Empty, with a warning, for subgrids nested deeper than
+/// [`MAX_SUBGRID_DEPTH`].
 fn hierarchy(file: &GridFile, keep: impl Fn(&Source, usize) -> Option<Use>) -> Vec<Grid> {
-    // Grids in an arena: each with its children's indices.
+    // Grids in an arena: each with its children's indices and its depth.
     let mut nodes: Vec<(Grid, Vec<usize>)> = Vec::new();
+    let mut depth: Vec<usize> = Vec::new();
     let mut top: Vec<usize> = Vec::new();
     let mut named: HashMap<String, usize> = HashMap::new();
-    // Inserts a grid under node `at` or one of its descendants whose extent holds it.
-    fn insert_under(nodes: &mut Vec<(Grid, Vec<usize>)>, at: usize, new: usize) {
-        let ext = nodes[new].0.ext;
-        let children = nodes[at].1.clone();
-        for c in children {
-            if nodes[c].0.ext.contains(&ext) {
-                insert_under(nodes, c, new);
-                return;
-            }
+    let too_deep = || {
+        crate::warnings::warn(format!("grid file is not used: subgrids nested deeper than {MAX_SUBGRID_DEPTH} levels"));
+        Vec::new()
+    };
+    // The node under which a grid of extent `ext` goes: `at` or its deepest descendant, first
+    // child first, whose extent holds it.
+    fn insert_point(nodes: &[(Grid, Vec<usize>)], mut at: usize, ext: &Extent) -> usize {
+        while let Some(&c) = nodes[at].1.iter().find(|&&c| nodes[c].0.ext.contains(ext)) {
+            at = c;
         }
-        nodes[at].1.push(new);
+        at
     }
     for (i, (ext, src, name, parent)) in file.sources.iter().enumerate() {
         if file.format == Format::Tiff && src.subfile_type != 0 && src.subfile_type != 2 {
@@ -1542,9 +1591,20 @@ fn hierarchy(file: &GridFile, keep: impl Fn(&Source, usize) -> Option<Use>) -> V
         let Some(usage) = keep(src, i) else { continue };
         let id = nodes.len();
         nodes.push((Grid { ext: *ext, src: src.clone(), usage, children: Vec::new() }, Vec::new()));
+        depth.push(0);
+        // Puts the new grid under node `p`, unless that nests it too deep.
+        let mut nest = |nodes: &mut Vec<(Grid, Vec<usize>)>, p: usize| {
+            depth[id] = depth[p] + 1;
+            nodes[p].1.push(id);
+            depth[id] <= MAX_SUBGRID_DEPTH
+        };
         if file.format == Format::Ntv2 {
             match named.get(parent) {
-                Some(&p) => nodes[p].1.push(id),
+                Some(&p) => {
+                    if !nest(&mut nodes, p) {
+                        return too_deep();
+                    }
+                }
                 None => top.push(id),
             }
             if !name.is_empty() {
@@ -1560,7 +1620,9 @@ fn hierarchy(file: &GridFile, keep: impl Fn(&Source, usize) -> Option<Use>) -> V
             && let Some(&p) = named.get(parent)
             && nodes[p].0.ext.contains(ext)
         {
-            nodes[p].1.push(id);
+            if !nest(&mut nodes, p) {
+                return too_deep();
+            }
             if !name.is_empty() {
                 named.entry(name.clone()).or_insert(id);
             }
@@ -1574,7 +1636,12 @@ fn hierarchy(file: &GridFile, keep: impl Fn(&Source, usize) -> Option<Use>) -> V
         let parent =
             top.iter().copied().find(|&t| (kind.is_empty() || nodes[t].0.src.meta("TYPE", -1) == kind) && nodes[t].0.ext.contains(ext));
         match parent {
-            Some(t) => insert_under(&mut nodes, t, id),
+            Some(t) => {
+                let p = insert_point(&nodes, t, ext);
+                if !nest(&mut nodes, p) {
+                    return too_deep();
+                }
+            }
             None => top.push(id),
         }
     }
@@ -2652,6 +2719,156 @@ mod tests {
         }
         #[cfg(unix)]
         assert!(single_file_name("C:grid.tif"));
+    }
+
+    /// A little-endian TIFF of one `Float32` strip of `width` x `height`, and a private tag
+    /// (65000) of `values` `LONG`s, whose pixel data and tag values are not in the file.
+    fn tiff_claiming(width: u32, height: u32, values: u32) -> Vec<u8> {
+        let entries: [(u16, u16, u32, u32); 11] = [
+            (256, 4, 1, width),
+            (257, 4, 1, height),
+            (258, 3, 1, 32),
+            (259, 3, 1, 1),
+            (262, 3, 1, 1),
+            (273, 4, 1, 8),
+            (277, 3, 1, 1),
+            (278, 4, 1, height),
+            (279, 4, 1, 8),
+            (339, 3, 1, 3),
+            (65000, 4, values, 8),
+        ];
+        let mut b = b"II*\0".to_vec();
+        b.extend(8u32.to_le_bytes());
+        b.extend((entries.len() as u16).to_le_bytes());
+        for (tag, kind, count, value) in entries {
+            b.extend(tag.to_le_bytes());
+            b.extend(kind.to_le_bytes());
+            b.extend(count.to_le_bytes());
+            b.extend(value.to_le_bytes());
+        }
+        b.extend(0u32.to_le_bytes());
+        b
+    }
+
+    /// The grid TIFF decoder is bounded: a chunk claiming more than the limit is refused before it
+    /// is allocated, as is a tag value larger than its limit, while the chunks of the largest
+    /// grids PROJ ships (tiled 256 x 256, at most 3 `Float32` samples) and even a whole image of
+    /// the largest as one strip are within the bounds.
+    #[test]
+    fn grid_tiff_decoding_is_bounded() {
+        use std::io::Cursor;
+        use tiff::{TiffError, decoder::Decoder, tags::Tag};
+        let limits = grid_tiff_limits();
+        assert!(limits.decoding_buffer_size >= 8640 * 4321 * 4);
+        assert!(limits.decoding_buffer_size >= 256 * 256 * 3 * 4);
+        assert!(limits.decoding_buffer_size < usize::MAX && limits.intermediate_buffer_size < usize::MAX);
+        // One strip of 65536 x 1100 Float32: 275 MiB.
+        let mut dec = Decoder::new(Cursor::new(tiff_claiming(65536, 1100, 1))).unwrap().with_limits(grid_tiff_limits());
+        assert!(matches!(dec.read_chunk(0), Err(TiffError::LimitsExceeded)));
+        // A tag of 80 million LONGs: a 305 MiB value.
+        let mut dec = Decoder::new(Cursor::new(tiff_claiming(1, 1, 80_000_000))).unwrap().with_limits(grid_tiff_limits());
+        assert!(matches!(dec.find_tag(Tag::Unknown(65000)), Err(TiffError::LimitsExceeded)));
+    }
+
+    /// Grid names in CDN URLs are plain file names of the characters PROJ's grids use: nothing
+    /// that would change the URL (`%`, `?`, `#`) or need escaping.
+    #[test]
+    fn cdn_names_are_plain_ascii_file_names() {
+        for name in ["us_nga_egm08_25.tif", "de_lgl_bw_BWTA2017.tif", "au_icsm_GDA94_GDA2020_conformal_and_distortion.tif", "a-b.c_d.tif"] {
+            assert!(cdn_file_name(name), "{name}");
+        }
+        for name in [
+            "grid%2e.tif",
+            "grid.tif?x=1",
+            "grid.tif#frag",
+            "a%2F..%2Fb.tif",
+            "grid name.tif",
+            "gr\u{ef}d.tif",
+            "grid+1.tif",
+            "",
+            "..",
+            "a/b.tif",
+        ] {
+            assert!(!cdn_file_name(name), "{name}");
+        }
+        for grid in &catalog().grids {
+            if grid.name.ends_with(".tif") {
+                assert!(cdn_file_name(grid.name), "{}", grid.name);
+            }
+        }
+    }
+
+    /// A download is used only once it is a readable grid of at most `MAX_GRID_BYTES`: an
+    /// oversized one is refused as a failed fetch, one that is not a grid as no grid.
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn downloads_are_verified_before_use() {
+        use tiff::encoder::{TiffEncoder, colortype::Gray32Float};
+        use tiff::tags::Tag;
+        let dir = tempfile::tempdir().unwrap();
+        let mut grid = std::io::Cursor::new(Vec::new());
+        {
+            let mut encoder = TiffEncoder::new(&mut grid).unwrap();
+            let mut image = encoder.new_image::<Gray32Float>(2, 2).unwrap();
+            image.encoder().write_tag(Tag::ModelPixelScaleTag, &[1.0f64, 1.0, 0.0][..]).unwrap();
+            image.encoder().write_tag(Tag::ModelTiepointTag, &[0.0f64, 0.0, 0.0, 0.0, 1.0, 0.0][..]).unwrap();
+            image.write_data(&[0.0f32; 4]).unwrap();
+        }
+        let path = dir.path().join("download.part");
+        std::fs::write(&path, grid.get_ref()).unwrap();
+        assert!(verified_download("grid.tif", &path).is_ok());
+        std::fs::write(&path, b"not a grid").unwrap();
+        assert!(matches!(verified_download("grid.tif", &path), Err(false)));
+        std::fs::write(&path, grid.get_ref()).unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap().set_len(MAX_GRID_BYTES + 1).unwrap();
+        assert!(matches!(verified_download("grid.tif", &path), Err(true)));
+    }
+
+    /// Subgrids nested up to `MAX_SUBGRID_DEPTH` levels are kept; one level deeper, by extents,
+    /// explicit GeoTIFF parents or NTv2 parent names, the file is refused with a warning instead
+    /// of building an unbounded nesting.
+    #[test]
+    fn subgrid_nesting_depth_is_bounded() {
+        let src = Arc::new(Source {
+            values: Values::Null,
+            width: 2,
+            height: 2,
+            samples: 1,
+            meta: HashMap::new(),
+            nodata: None,
+            scale_offset: Vec::new(),
+            first: None,
+            subfile_type: 0,
+            format: Format::Tiff,
+        });
+        let nested = |levels: usize, format: Format, parents: bool| {
+            let sources = (0..=levels)
+                .map(|i| {
+                    let half = 1.0 / (i + 1) as f64;
+                    let ext = Extent { west: -half, south: -half, east: half, north: half, res_x: 0.01, res_y: 0.01, geographic: true };
+                    let parent = if parents && i > 0 { format!("g{}", i - 1) } else { String::new() };
+                    (ext, src.clone(), format!("g{i}"), parent)
+                })
+                .collect();
+            GridFile { sources, format }
+        };
+        let levels = |grids: &[Grid]| {
+            let mut n = 0;
+            let mut g = grids.first();
+            while let Some(grid) = g {
+                g = grid.children.first();
+                n += 1;
+            }
+            n
+        };
+        for (format, parents) in [(Format::Tiff, false), (Format::Tiff, true), (Format::Ntv2, true)] {
+            let grids = hierarchy(&nested(MAX_SUBGRID_DEPTH, format, parents), |_, _| Some(Use::Generic));
+            assert_eq!(levels(&grids), MAX_SUBGRID_DEPTH + 1, "{parents}");
+            let (grids, warnings) =
+                crate::warnings::capture(|| hierarchy(&nested(MAX_SUBGRID_DEPTH + 1, format, parents), |_, _| Some(Use::Generic)));
+            assert!(grids.is_empty(), "{parents}");
+            assert!(warnings.iter().any(|w| w.contains("nested deeper")), "{warnings:?}");
+        }
     }
 
     #[test]

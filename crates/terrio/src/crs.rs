@@ -791,7 +791,14 @@ impl terrio_crs::network::GridTransport for GridTransport {
             .map_err(transport_error)
     }
     fn download(&self, url: &str, path: &std::path::Path) -> std::io::Result<()> {
-        crate::http::download(&crate::http::Remote::Url(url.to_string()), path).map_err(transport_error)
+        // Refuse a grid larger than the engine accepts before any of its body is written.
+        let check = |_: &[u8], len: u64| {
+            if len > terrio_crs::network::MAX_GRID_DOWNLOAD_BYTES {
+                return Err(Error::Http(format!("grid is larger than {} bytes", terrio_crs::network::MAX_GRID_DOWNLOAD_BYTES)));
+            }
+            Ok(())
+        };
+        crate::http::download_checked(&crate::http::Remote::Url(url.to_string()), path, &check).map_err(transport_error)
     }
 }
 
