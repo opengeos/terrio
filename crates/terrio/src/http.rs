@@ -2164,6 +2164,7 @@ struct Claim {
 impl Claim {
     /// Claims those of `blocks` no other reader of the file is fetching. Returns the claim and
     /// the blocks other readers are fetching.
+    #[cfg(test)]
     fn take(key: &str, block_size: u64, blocks: &[u64]) -> (Self, Vec<u64>) {
         let mut flight = in_flight();
         let fetching = flight.files.entry(key.to_string()).or_default();
@@ -2961,9 +2962,46 @@ impl Shared {
         if self.mixed_origins || blocks.is_empty() || self.shared_budget < self.block_size {
             return self.fetch_blocks_now(&blocks, gap);
         }
-        let (mut claim, others) = Claim::take(&self.key, self.block_size, &blocks);
+        // Runs of the blocks, as `fetch_blocks_now` forms them. A run other readers are fetching
+        // whole is left to them. Any other run is fetched here whole, as without them, so that
+        // sharing never splits a request in two (scattered reads, such as many threads' pages,
+        // would otherwise send more and shorter requests, and wait between them). Only the runs
+        // whose requests go out at once (the first PARALLEL_RUNS, or one) are claimed: a reader waits
+        // only for requests under way, never for runs queued behind another reader's.
+        let mut runs = Vec::new();
+        let mut start = 0;
+        while start < blocks.len() {
+            let mut end = start + 1;
+            while end < blocks.len() && Self::joins(blocks[end - 1], blocks[end], gap) {
+                end += 1;
+            }
+            runs.push(&blocks[start..end]);
+            start = end;
+        }
+        let (mut fetch, mut others, mut mine) = (Vec::new(), Vec::new(), Vec::new());
+        {
+            let mut flight = in_flight();
+            let fetching = flight.files.entry(self.key.clone()).or_default();
+            let at_once = if self.client.options.parallel_ranges { PARALLEL_RUNS } else { 1 };
+            let mut sent = 0;
+            for run in runs {
+                if run.iter().all(|&b| fetching.contains(&(self.block_size, b))) {
+                    others.extend_from_slice(run);
+                    continue;
+                }
+                fetch.extend_from_slice(run);
+                if sent < at_once {
+                    sent += 1;
+                    mine.extend(run.iter().copied().filter(|&b| fetching.insert((self.block_size, b))));
+                }
+            }
+            if fetching.is_empty() {
+                flight.files.remove(&self.key);
+            }
+        }
+        let mut claim = Claim { key: self.key.clone(), block_size: self.block_size, blocks: mine };
         self.claimed.clone_from(&claim.blocks);
-        let fetched = self.fetch_blocks_now(&claim.blocks, gap);
+        let fetched = self.fetch_blocks_now(&fetch, gap);
         // The claim keeps only the blocks that did not land: those that did left the registry
         // then, and may since be another reader's claim.
         claim.blocks = std::mem::take(&mut self.claimed);
@@ -3674,7 +3712,7 @@ mod tests {
         NoContentRange,
         /// The first request is answered with its range; every later one with the whole file (200).
         FirstRangeOnly,
-        /// As `Ranges`, a range past the file's first bytes answered after 300 ms.
+        /// As `Ranges`, a range past the file's first bytes answered after 1 s.
         Slow,
         /// As `Slow`, the first range past the file's first bytes answered 404.
         SlowFailingOnce,
@@ -3706,7 +3744,7 @@ mod tests {
                 }
                 counter.fetch_add(1, Ordering::SeqCst);
                 if matches!(mode, Mode::Slow | Mode::SlowFailingOnce) && range.is_some_and(|(a, _)| a > 0) {
-                    std::thread::sleep(Duration::from_millis(300));
+                    std::thread::sleep(Duration::from_secs(1));
                 }
                 let head = |status: &str, extra: &str, len: usize| {
                     format!("HTTP/1.1 {status}\r\nContent-Length: {len}\r\nConnection: close\r\n{extra}\r\n")
@@ -3776,7 +3814,7 @@ mod tests {
         let opened = count.load(Ordering::SeqCst);
         std::thread::scope(|s| {
             let a = s.spawn(|| read_range(&mut first, 100_000, 40_000));
-            // the second asks while the first's request is in flight (answered after 300 ms)
+            // the second asks while the first's request is in flight (answered after 1 s)
             wait_for_request(&count, opened);
             let b = s.spawn(|| read_range(&mut second, 110_000, 20_000));
             assert_eq!(a.join().unwrap(), data[100_000..140_000]);
@@ -3784,6 +3822,27 @@ mod tests {
         });
         // The second's blocks (26-31) are among the first's (24-34): one request.
         assert_eq!(count.load(Ordering::SeqCst) - opened, 1);
+    }
+
+    /// A reader whose run another reader fetches only part of requests the whole run, as without
+    /// the other reader: sharing never splits a request in two.
+    #[test]
+    fn a_run_another_reader_fetches_part_of_is_requested_whole() {
+        let _serial = cache_test_guard();
+        let data = test_data();
+        let (url, count) = serve(data.clone(), Mode::Slow);
+        let mut first = RangeReader::open_with(&Remote::Url(url.clone()), options()).unwrap();
+        let mut second = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+        let opened = count.load(Ordering::SeqCst);
+        std::thread::scope(|s| {
+            let a = s.spawn(|| read_range(&mut first, 110_000, 20_000));
+            wait_for_request(&count, opened);
+            // blocks 21-39, around the first's 26-31
+            let b = s.spawn(|| read_range(&mut second, 90_000, 70_000));
+            assert_eq!(a.join().unwrap(), data[110_000..130_000]);
+            assert_eq!(b.join().unwrap(), data[90_000..160_000]);
+        });
+        assert_eq!(count.load(Ordering::SeqCst) - opened, 2);
     }
 
     /// A reader waiting for another's request in flight requests the bytes itself when that
