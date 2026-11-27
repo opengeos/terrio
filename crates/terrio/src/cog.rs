@@ -976,12 +976,12 @@ impl LazyRaster {
         if let Inner::Memory(ds) = &self.inner { Some(Arc::clone(ds)) } else { None }
     }
 
-    /// The description and metadata of each band, for drivers that report them per band (GRIB);
-    /// empty otherwise.
+    /// The description and metadata of each band, including a GeoTIFF's `GDAL_METADATA` band
+    /// items and color interpretations, as its driver's eager read reports them.
     pub fn band_metadata(&self) -> &[crate::BandMetadata] {
         match &self.inner {
             Inner::Memory(ds) | Inner::Source(ds, _) => &ds.band_metadata,
-            Inner::Tiff(_) => &[],
+            Inner::Tiff(t) => &t.tags.band_properties,
         }
     }
 
@@ -1094,23 +1094,25 @@ impl LazyRaster {
         if tags.band_nodata.iter().any(|(b, _)| *b == band) { None } else { tags.integer_nodata }
     }
 
-    /// The declared band type, falling back to the shared raster type.
-    pub(crate) fn band_data_type(&self, band: usize) -> DataType {
+    /// The declared type of one band (numbered from 1), when the source declares per-band types
+    /// (heterogeneous bands); else the raster's [`LazyRaster::data_type`].
+    pub fn band_data_type(&self, band: usize) -> DataType {
         match &self.inner {
             Inner::Source(_, source) => source.band_data_type(band).unwrap_or_else(|| self.data_type()),
             _ => self.data_type(),
         }
     }
 
-    /// The bits of a sample as a TIFF stores them (its `BitsPerSample`); `None` for other
-    /// sources. Samples may be read as a wider [`LazyRaster::data_type`], as GDAL reads them:
-    /// Float16 (16 bits, read as Float32; GDAL's Float16) and unsigned samples of 1 to 7 or 9 to
-    /// 31 bits (GDAL's `NBITS`).
+    /// The bits of a sample as stored (a TIFF's `BitsPerSample`; for an in-memory raster its
+    /// `IMAGE_STRUCTURE` `NBITS`, when narrower than the type); `None` when unknown. Samples may
+    /// be read as a wider [`LazyRaster::data_type`], as GDAL reads them: Float16 (16 bits, read
+    /// as Float32; GDAL's Float16) and unsigned samples of 1 to 7 or 9 to 31 bits (GDAL's
+    /// `NBITS`).
     pub fn sample_bits(&self) -> Option<u16> {
         match &self.inner {
             Inner::Tiff(t) => Some(t.bits),
             Inner::Source(_, source) => source.level_sample_bits(None),
-            Inner::Memory(_) => None,
+            Inner::Memory(ds) => ds.band_sample_bits(0),
         }
     }
 
@@ -1263,6 +1265,54 @@ impl LazyRaster {
         match &self.inner {
             Inner::Tiff(t) => t.tags.metadata.clone(),
             Inner::Memory(ds) | Inner::Source(ds, _) => ds.raster.metadata.clone(),
+        }
+    }
+
+    /// One dataset metadata item of a domain, as GDAL's `GetMetadataItem(key, domain)` returns it
+    /// (GDAL 3.13.3): the default domain (`""`) holds the file's metadata items (for a GeoTIFF
+    /// its `GDAL_METADATA` and `TIFFTAG_*` tags, so `STATISTICS_*` and `SOFTWARE` among them),
+    /// `IMAGE_STRUCTURE` the storage ones (`COMPRESSION`, `INTERLEAVE`), `RPC` the rational
+    /// polynomial coefficients (`HEIGHT_OFF`, `LINE_NUM_COEFF`, ...), and any other domain the
+    /// driver reports. Keys and domains match case-insensitively; `None` when absent.
+    pub fn metadata_item(&self, key: &str, domain: &str) -> Option<String> {
+        match &self.inner {
+            Inner::Tiff(t) => t.metadata_item(key, domain),
+            Inner::Memory(ds) | Inner::Source(ds, _) => {
+                if domain.is_empty() {
+                    ds.raster.metadata.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.clone())
+                } else {
+                    ds.metadata_domains
+                        .iter()
+                        .find(|(band, d, _)| band.is_none() && d.eq_ignore_ascii_case(domain))
+                        .and_then(|(_, _, items)| items.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.clone()))
+                }
+            }
+        }
+    }
+
+    /// One band metadata item of a domain, as GDAL's band `GetMetadataItem(key, domain)` returns
+    /// it (GDAL 3.13.3; band numbered from 1): the default domain holds the band's items (for a
+    /// GeoTIFF its `GDAL_METADATA` tag's band items), `IMAGE_STRUCTURE` the stored width `NBITS`
+    /// when the samples are narrower than their unsigned type. `None` for an out-of-range band or
+    /// an absent item.
+    pub fn band_metadata_item(&self, band: usize, key: &str, domain: &str) -> Option<String> {
+        if band == 0 || band > self.band_count() {
+            return None;
+        }
+        match &self.inner {
+            Inner::Tiff(t) => t.band_metadata_item(band, key, domain),
+            Inner::Memory(ds) | Inner::Source(ds, _) => {
+                if domain.is_empty() {
+                    ds.band_metadata
+                        .get(band - 1)
+                        .and_then(|b| b.items.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.clone()))
+                } else {
+                    ds.metadata_domains
+                        .iter()
+                        .find(|(b, d, _)| *b == Some(band - 1) && d.eq_ignore_ascii_case(domain))
+                        .and_then(|(_, _, items)| items.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.clone()))
+                }
+            }
         }
     }
 
@@ -2758,6 +2808,10 @@ struct TiffRaster {
     complex: bool,
     /// `BitsPerSample` of the full-resolution image.
     bits: u16,
+    /// The full-resolution image's Compression tag code (1 when the tag is absent).
+    compression: u16,
+    /// Whether the full-resolution image is band-interleaved (PlanarConfiguration 2).
+    planar: bool,
     geo_transform: [f64; 6],
     /// The full-resolution image, then the overviews, largest first.
     levels: Vec<Level>,
@@ -2960,6 +3014,9 @@ impl TiffRaster {
         // As the in-memory reader does without georeferencing: unit pixels, with the image's
         // bottom at y = 0.
         let geo_transform = tags.corner_geo_transform().unwrap_or([0.0, 1.0, 0.0, h as f64, 0.0, -1.0]);
+        // The decoder is back on the first image here.
+        let compression = dec.find_tag_unsigned::<u16>(Tag::Compression).map_err(tiff_err)?.unwrap_or(1);
+        let planar = dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).map_err(tiff_err)? == Some(2);
         Ok(Self {
             decoder: dec,
             tags,
@@ -2970,6 +3027,8 @@ impl TiffRaster {
             data_type,
             complex,
             bits,
+            compression,
+            planar,
             geo_transform,
             levels,
             masks,
@@ -3054,6 +3113,52 @@ impl TiffRaster {
         match (self.levels[level].external, self.ovr.as_ref()) {
             (Some(i), Some(ovr)) => ovr.tags_at_level(i),
             _ => &self.tags,
+        }
+    }
+
+    /// One dataset metadata item of a domain, as GDAL's `GetMetadataItem(key, domain)` returns it
+    /// (GDAL 3.13.3): the default domain (`""`) holds the `GDAL_METADATA` and `TIFFTAG_*` items,
+    /// `IMAGE_STRUCTURE` the storage ones (`COMPRESSION`, `INTERLEAVE`), `RPC` the rational
+    /// polynomial coefficients. Keys match case-insensitively.
+    fn metadata_item(&self, key: &str, domain: &str) -> Option<String> {
+        if domain.is_empty() {
+            self.tags.metadata.iter().chain(&self.tags.tiff_tag_items).find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.clone())
+        } else if domain.eq_ignore_ascii_case("IMAGE_STRUCTURE") {
+            match key.to_ascii_uppercase().as_str() {
+                "COMPRESSION" => crate::geotiff::compression_name(self.compression).map(str::to_string),
+                // GDAL reports BAND for a band-interleaved image and for a single-band one.
+                "INTERLEAVE" => Some(if self.planar || self.samples == 1 { "BAND" } else { "PIXEL" }.to_string()),
+                _ => None,
+            }
+        } else if domain.eq_ignore_ascii_case("RPC") {
+            let rpc = self.tags.rpc.as_ref()?;
+            crate::ops::compare::rpc_items(rpc).into_iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v)
+        } else {
+            None
+        }
+    }
+
+    /// One band metadata item of a domain, as GDAL's band `GetMetadataItem(key, domain)` returns
+    /// it (GDAL 3.13.3; band from 1): the default domain holds the `GDAL_METADATA` tag's band
+    /// items, `IMAGE_STRUCTURE` the stored width (`NBITS`, when the samples are narrower than
+    /// their unsigned type) and `PIXELTYPE` (`SIGNEDBYTE` for 8-bit signed samples).
+    fn band_metadata_item(&self, band: usize, key: &str, domain: &str) -> Option<String> {
+        if domain.is_empty() {
+            self.tags.band_metadata.iter().find(|(b, k, _)| *b == band - 1 && k.eq_ignore_ascii_case(key)).map(|(_, _, v)| v.clone())
+        } else if domain.eq_ignore_ascii_case("IMAGE_STRUCTURE") {
+            match key.to_ascii_uppercase().as_str() {
+                "NBITS" => {
+                    let width = self.data_type.size_bytes() as u16 * 8;
+                    (matches!(self.data_type, DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64)
+                        && self.bits > 0
+                        && self.bits < width)
+                        .then(|| self.bits.to_string())
+                }
+                "PIXELTYPE" => (self.data_type == DataType::I8).then(|| "SIGNEDBYTE".to_string()),
+                _ => None,
+            }
+        } else {
+            None
         }
     }
 
@@ -5935,5 +6040,105 @@ mod tests {
             let Inner::Tiff(tiff) = &r.inner else { panic!("not a TIFF reader") };
             assert_eq!(tiff.levels[0].codec.as_ref().map(Option::is_some), Some(compression != 8), "compression {compression}");
         }
+    }
+
+    /// `metadata_item`/`band_metadata_item` cover the default, `IMAGE_STRUCTURE` and `RPC`
+    /// domains of a written GeoTIFF, as GDAL's `GetMetadataItem` reports them (GDAL 3.13.3),
+    /// and of the same raster in memory.
+    #[test]
+    fn metadata_items_cover_default_image_structure_and_rpc_domains() {
+        let ds = RasterDataset::new(
+            wbraster::Raster::from_data_native(
+                wbraster::RasterConfig { cols: 4, rows: 4, bands: 1, data_type: DataType::U16, ..Default::default() },
+                RasterData::from_f64_vec(DataType::U16, vec![7.0; 16]),
+            )
+            .unwrap(),
+            false,
+        );
+        let mut rpc = vec![0.0; 92];
+        rpc[2] = 50.5;
+        rpc[6] = 100.0;
+        rpc[12] = 1.0;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meta.tif");
+        crate::write_raster_dataset(
+            &ds,
+            path.to_str().unwrap(),
+            &crate::RasterWriteOptions {
+                compression: Some("DEFLATE".into()),
+                creation_options: vec![("NBITS".into(), "12".into())],
+                rpc,
+                metadata: vec![("STATISTICS_MINIMUM".into(), "3".into()), ("software".into(), "terrio-test".into())],
+                band_metadata: vec![crate::BandMetadata {
+                    description: Some("height".into()),
+                    items: vec![("BAND_1_EXTRA".into(), "x".into())],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let r = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        // Default domain: keys match case-insensitively, from the GDAL_METADATA tag.
+        assert_eq!(r.metadata_item("STATISTICS_MINIMUM", ""), Some("3".to_string()));
+        assert_eq!(r.metadata_item("Software", ""), Some("terrio-test".to_string()));
+        assert_eq!(r.metadata_item("MISSING", ""), None);
+        // IMAGE_STRUCTURE: the stored image's compression and interleave.
+        assert_eq!(r.metadata_item("COMPRESSION", "IMAGE_STRUCTURE"), Some("DEFLATE".to_string()));
+        assert_eq!(r.metadata_item("interleave", "image_structure"), Some("BAND".to_string()), "single band, as GDAL reports");
+        // RPC domain: from the RPCCoefficientTag, formatted as GDAL formats it.
+        assert_eq!(r.metadata_item("HEIGHT_OFF", "RPC"), Some("100".to_string()));
+        assert_eq!(r.metadata_item("line_off", "rpc"), Some("50.5".to_string()));
+        let coeffs = r.metadata_item("LINE_NUM_COEFF", "RPC").unwrap();
+        assert_eq!(coeffs.split_whitespace().count(), 20);
+        assert!(coeffs.starts_with("1 "));
+        // Band-level: default-domain items, the description, and NBITS narrower than the type.
+        assert_eq!(r.band_metadata_item(1, "band_1_extra", ""), Some("x".to_string()));
+        assert_eq!(r.band_metadata_item(2, "BAND_1_EXTRA", ""), None, "out of range");
+        assert_eq!(r.band_metadata()[0].description.as_deref(), Some("height"));
+        assert_eq!(r.band_metadata_item(1, "NBITS", "IMAGE_STRUCTURE"), Some("12".to_string()));
+        assert_eq!(r.sample_bits(), Some(12));
+        assert_eq!(r.band_data_type(1), DataType::U16);
+
+        // The same dataset in memory: default-domain items, and NBITS from its IMAGE_STRUCTURE
+        // domain (set_sample_bits keeps only widths narrower than the unsigned type).
+        let mut mem = ds.clone();
+        mem.raster.metadata = vec![("STATISTICS_MINIMUM".into(), "3".into())];
+        mem.set_sample_bits(9);
+        let m = LazyRaster::from(mem);
+        assert_eq!(m.metadata_item("statistics_minimum", ""), Some("3".to_string()));
+        assert_eq!(m.metadata_item("COMPRESSION", "IMAGE_STRUCTURE"), None);
+        assert_eq!(m.band_metadata_item(1, "NBITS", "IMAGE_STRUCTURE"), Some("9".to_string()));
+        assert_eq!(m.sample_bits(), Some(9));
+        assert_eq!(m.band_data_type(1), DataType::U16);
+    }
+
+    /// An uncompressed GeoTIFF reports no `COMPRESSION` item (as GDAL does), and 8-bit signed
+    /// samples report `PIXELTYPE=SIGNEDBYTE` without `NBITS`.
+    #[test]
+    fn tiff_image_structure_omits_compression_and_marks_signed_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |data_type: DataType| {
+            let ds = RasterDataset::new(
+                wbraster::Raster::from_data_native(
+                    wbraster::RasterConfig { cols: 2, rows: 2, bands: 1, data_type, ..Default::default() },
+                    RasterData::from_f64_vec(data_type, vec![0.0; 4]),
+                )
+                .unwrap(),
+                false,
+            );
+            let path = dir.path().join(format!("{data_type:?}.tif"));
+            crate::write_raster_dataset(&ds, path.to_str().unwrap(), &crate::RasterWriteOptions::default()).unwrap();
+            crate::open_raster_lazy(path.to_str().unwrap()).unwrap()
+        };
+        let r = write(DataType::U8);
+        assert_eq!(r.data_type(), DataType::U8);
+        assert_eq!(r.metadata_item("COMPRESSION", "IMAGE_STRUCTURE"), None, "uncompressed, as GDAL reports none");
+        assert_eq!(r.metadata_item("INTERLEAVE", "IMAGE_STRUCTURE"), Some("BAND".to_string()), "single band, as GDAL reports");
+        assert_eq!(r.band_metadata_item(1, "NBITS", "IMAGE_STRUCTURE"), None, "full type width: no NBITS");
+        let r = write(DataType::I8);
+        assert_eq!(r.data_type(), DataType::I8);
+        assert_eq!(r.band_metadata_item(1, "PIXELTYPE", "IMAGE_STRUCTURE"), Some("SIGNEDBYTE".to_string()));
+        assert_eq!(r.band_metadata_item(1, "NBITS", "IMAGE_STRUCTURE"), None);
     }
 }

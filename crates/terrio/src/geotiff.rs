@@ -150,6 +150,44 @@ pub(crate) fn check_open<R: Read + Seek>(
     Ok(())
 }
 
+/// `GTIFFGetCompressionMethodName` (GDAL 3.13.3): the name GDAL reports as the `COMPRESSION` item
+/// of the `IMAGE_STRUCTURE` domain for a TIFF compression code. `None` for uncompressed images
+/// (code 1), which GDAL reports without a `COMPRESSION` item, and for codes it does not name.
+pub(crate) fn compression_name(code: u16) -> Option<&'static str> {
+    Some(match code {
+        1 => return None,
+        2 => "CCITTRLE",
+        3 => "CCITTFAX3",
+        4 => "CCITTFAX4",
+        5 => "LZW",
+        6 => "OJPEG",
+        7 => "JPEG",
+        8 | 32946 => "DEFLATE",
+        9 => "T85",
+        10 => "T43",
+        32766 => "NEXT",
+        32771 => "CCITTRLEW",
+        32773 => "PACKBITS",
+        32809 => "THUNDERSCAN",
+        32895 => "IT8CTPAD",
+        32896 => "IT8LW",
+        32897 => "IT8MP",
+        32898 => "IT8BL",
+        32908 => "PIXARFILM",
+        32909 => "PIXARLOG",
+        32947 => "DCS",
+        34661 => "JBIG",
+        34676 => "SGILOG",
+        34677 => "SGILOG24",
+        34712 => "JP2000",
+        34925 => "LZMA",
+        50000 => "ZSTD",
+        50001 => "WEBP",
+        50002 => "JXL",
+        _ => return None,
+    })
+}
+
 impl GeoTags {
     /// The geotransform of the pixels' corners: PixelIsPoint tie points refer to pixel centres,
     /// shifted by half a pixel as GDAL does. Rotated and south-up geotransforms included.
