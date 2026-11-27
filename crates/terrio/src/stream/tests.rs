@@ -1184,19 +1184,20 @@ fn sql_on_a_geopackage_matches_the_query_on_the_whole_layer() {
         assert_eq!(rows(&crate::ops::sql::query_path(&local, statement, &options).unwrap()), rows(&expected));
     }
     // The other table's root page broken: the query reads only its own table, where the whole
-    // read of every layer fails.
+    // read of every layer fails (without GDAL, which opens the file).
     let (root, _) = sqlite::FileDb::open(&local).unwrap().table_root("other").unwrap();
     let page = u16::from_be_bytes([bytes[16], bytes[17]]) as usize;
     let mut broken = bytes.clone();
     broken[(root as usize - 1) * page..root as usize * page].fill(0xff);
     let broken_path = dir.path().join("broken.gpkg").to_string_lossy().into_owned();
     std::fs::write(&broken_path, broken).unwrap();
+    #[cfg(not(feature = "gdal"))]
     assert!(crate::open_vector(&broken_path, &Default::default()).is_err());
     let statement = "SELECT * FROM t WHERE id < 7";
     let got = crate::ops::sql::query_path(&broken_path, statement, &Default::default()).unwrap();
     assert_eq!(rows(&got), rows(&crate::ops::sql::query(&whole, statement).unwrap()));
     // With a write-ahead log or a hot journal beside it, the file is read whole, as before: the
-    // query fails as the whole read does.
+    // query fails as the whole read does (or succeeds as it does, with GDAL to fall back on).
     let journal = {
         let mut j = vec![0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7, 0, 0, 0, 0, 0, 0, 0, 0];
         j.extend([(bytes.len() / page) as u32, 512, page as u32].iter().flat_map(|v| v.to_be_bytes()));
@@ -1206,10 +1207,13 @@ fn sql_on_a_geopackage_matches_the_query_on_the_whole_layer() {
     for (suffix, sidecar) in [("-wal", b"frames".to_vec()), ("-journal", journal)] {
         let path = format!("{broken_path}{suffix}");
         std::fs::write(&path, sidecar).unwrap();
-        let whole = crate::open_vector(&broken_path, &Default::default()).map(drop).unwrap_err();
-        let got = crate::ops::sql::query_path(&broken_path, statement, &Default::default()).map(drop).unwrap_err();
-        assert_eq!(got.to_string(), whole.to_string(), "{suffix}");
-        std::fs::remove_file(&path).unwrap();
+        let whole = crate::open_vector(&broken_path, &Default::default()).map(drop).map_err(|e| e.to_string());
+        let got = crate::ops::sql::query_path(&broken_path, statement, &Default::default()).map(drop).map_err(|e| e.to_string());
+        #[cfg(not(feature = "gdal"))]
+        assert!(whole.is_err(), "{suffix}");
+        assert_eq!(got, whole, "{suffix}");
+        // GDAL's SQLite, opening the file, may have recovered and removed it.
+        let _ = std::fs::remove_file(&path);
     }
     // With a write-ahead log beside it, the file is read whole, as before (the stream refuses it).
     std::fs::write(format!("{local}-wal"), b"frames").unwrap();
