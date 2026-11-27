@@ -1322,6 +1322,11 @@ fn new_agent_with(options: &HttpOptions, provider: tls::Provider) -> ureq::Agent
         .max_idle_connections_per_host(64)
         .build();
     if options.unsafe_ssl {
+        // Warn once per process: the switch is easy to leave on by accident.
+        static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        WARNED.get_or_init(|| {
+            eprintln!("terrio: TERRIO_HTTP_UNSAFESSL is set: HTTPS certificates and hostnames are NOT verified");
+        });
         return tls::without_verification(config, provider);
     }
     if let Some(path) = &options.ca_bundle {
@@ -7267,7 +7272,9 @@ mod tests {
     /// A self-signed certificate for `localhost`/`127.0.0.1` (openssl req -x509, 100-year,
     /// RSA-2048, no passphrase), embedded so the test needs no key generation. It is not a trust
     /// anchor anywhere, which is the point.
+    // gitleaks:allow -- test-only throwaway key for a localhost test server, not a credential.
     const SELF_SIGNED_CERT: &str = "-----BEGIN CERTIFICATE-----\nMIIDJzCCAg+gAwIBAgIUW+E7bqN6MDhOcuCum/n0CRWi9BIwDQYJKoZIhvcNAQEL\nBQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTEyNzE0MTIxOFoYDzIxMjYx\nMTAzMTQxMjE4WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEB\nAQUAA4IBDwAwggEKAoIBAQDPeor+RXgraMj7+yhn4sC+PJn/pt7OEo11aTUgSMj4\nQMgowj0/KSEx5MxEGOvvEiSPjcZ4DAXMi3y3WNLArSiKKjBguyI5Ui6NUgLlG9Dg\nYDf3Voo99IGYf5MAZ7T9LEVmn/d9Hnc9t3gqnoPBDYM0YiZBQCliHSRXA4Zxq+nj\nytIdKJVQNPunP83XaqHE6BiJ6QUrrX3Z7/i+SVTGWlvuMTMQMiR23+vhg/VLlwRS\nnuNptjpZJ3MYzWwfMN/1IzWyNR6MbQMplFecAWdOwTrqG640dRITzA2ek2ujS1hi\n9EMc4V/JaBNKDy60T6LuZgLCXB32xX4Ts48Btm5VkdrzAgMBAAGjbzBtMB0GA1Ud\nDgQWBBQsZu8FLTmhN3RZ0wLO6389WYdGLzAfBgNVHSMEGDAWgBQsZu8FLTmhN3RZ\n0wLO6389WYdGLzAPBgNVHRMBAf8EBTADAQH/MBoGA1UdEQQTMBGCCWxvY2FsaG9z\ndIcEfwAAATANBgkqhkiG9w0BAQsFAAOCAQEAg6MK+WDWN9MOuhlL8n1BW1gqgBwU\nJ7cvfCQ09uSA0IqPVF14kcxhJ3ro1YPIQCDvM/GCaDR4L77AtS+SqixXdSHuTcjm\nIjxe68kDuluoJ4TOBfZEdLvy/w1eJ5q8DxQeYXeysAuLJTOVY+jlEc/6Tfp8NEah\noEeXMq6GGAJYpwQEWbRQ8/4r/yYOYJCy9WBYScsg4/rS2edtcgePSJxenVMiVAPv\n/55oPdweHB/iq0GZ5nI5G7QE7j1K6cAeNDDXPP/5n8MYRiraAG/wqHpTGlOGoR0f\ngPkQWlPfG1y3c8OuCT/Y8Pnq88hYL6N5eNYhkqu8EhkFg7x7mk3lwlzdZA==\n-----END CERTIFICATE-----\n";
+    // gitleaks:allow -- test-only throwaway key for a localhost test server, not a credential.
     const SELF_SIGNED_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDPeor+RXgraMj7\n+yhn4sC+PJn/pt7OEo11aTUgSMj4QMgowj0/KSEx5MxEGOvvEiSPjcZ4DAXMi3y3\nWNLArSiKKjBguyI5Ui6NUgLlG9DgYDf3Voo99IGYf5MAZ7T9LEVmn/d9Hnc9t3gq\nnoPBDYM0YiZBQCliHSRXA4Zxq+njytIdKJVQNPunP83XaqHE6BiJ6QUrrX3Z7/i+\nSVTGWlvuMTMQMiR23+vhg/VLlwRSnuNptjpZJ3MYzWwfMN/1IzWyNR6MbQMplFec\nAWdOwTrqG640dRITzA2ek2ujS1hi9EMc4V/JaBNKDy60T6LuZgLCXB32xX4Ts48B\ntm5VkdrzAgMBAAECggEAUgzeudbEQrqCPTBils7UNYdmyXT3CNzKZ4PPODDAlXid\nD41dRkSgNYiLhWSrrVRp9AF32xK6Gl2RWTq9wefYr+cmUaK/0pZfBZFIxs08yfcT\nOvPU4NJ4i9Pr0Q2yRCsFWSPq7maldlk/ou8kIK0U1Zr5EPXsR7pJnEWvHfYEHYpq\nQrKaxxb8VDXRrfDZgSwG6NKl2VnvdEQbBOzxHX5TbNeFZL4EooIoo4lAesc+wBv3\nKuz7OQTe0yVwrK0BKw34zwWdD3eqkNAX71FO1jC3SjWIKk01yqP119giostYoYa4\nNjvoBLEeVpeQbqHZfDKaIqva85HRO5EJ73859yy/wQKBgQDrCrXJVf0LLXO9DReM\nwfjpNba3uKV+UN5Cc1YB3M9yASRPzlbCO4UUvgW1PSaZIkfw65Aau7WwO3QWBA5I\nfXjw1UnPQwjryjmKe0o35wTuPIjc20pUu5FNDhdqZUqQegAKYVjY3VaOC4BxVZ4X\neSKPnqVMbnGZTODvKhKgH+21QQKBgQDh+qZh20teg5qhOzgWYRiew2qh17l9I/9D\nVpJdsHOHlDuAktLcU8s3F3ak9vA36UdfZKsfXPaSExhBW2+UEu2XJcL0UvM9lrYn\n4hM1FHFrHcOMtM/EWCXi2yYKjCiuiTP5OwfmWQBE5niVkk9/5Budj4bvpRLRVsFD\nwQxmD+v/MwKBgQCjduhk5Qu+mVbUFWXafBDryHKSJbXbOszI9EPNuc8AX7DsW/nU\nzeZJPbrkiGnuuHvGH14yaXf73+1lXl68pZ7WB9B0eA+dRSBtoj9Ez8OLGMiqqUxx\nz51HNNSuJ1ILVv3uOjO7Z3xJ/8/NgpkXhCS4M8KMfIc+8cvCKcWYXXxJwQKBgD7x\nH5K2EAIdSd6Krg6dsMvXxkWZ3pJaimjpHg92bFdhFEm1m4G+3SVVJbjBBxuroDOT\nyI4NyKfbJbBelW967i5hWDHRQOrwpX/qWks4jHa3bZYtbolTvAm53JinfVVP5egP\nZx3jwE1wnDmc7QPEN2Tla0IoiltAfMgwZxGucZ89AoGAAuZ/3UbUdJB7fyG99zC2\ncNHgDCzc1/5o8S6BoXL5BsccFUucd1Qc7a8ASzEGbtT3IDLxKiAZft/Ppbg/0Wkk\nNX23GfPshEi7ipDp72UT+Aa5QRcZTf/tjei6BLEYa37q3+W1hn9bdV4E/5/ZXBTx\nhCHOW9TxjMniEPuPLdb1IRI=\n-----END PRIVATE KEY-----\n";
 
     /// Serves `body` over TLS on a local port with the embedded self-signed certificate.
