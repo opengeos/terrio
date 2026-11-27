@@ -164,6 +164,29 @@ impl GcpTransformer {
             }
         }
     }
+
+    /// The residuals of `gcps` under this transformer: for each GCP, the georeferenced position
+    /// its pixel/line maps to minus the GCP's own `(x, y)`, as `(dx, dy)`. `gdalwarp` reports
+    /// these (GDAL 3.13.3, `GDALGCPsToResiduals` in gdalwarp's quality reporting).
+    pub fn residuals(&self, gcps: &[Gcp]) -> Vec<(f64, f64)> {
+        gcps.iter()
+            .map(|g| {
+                let (x, y) = self.to_geo(g.pixel, g.line);
+                (x - g.x, y - g.y)
+            })
+            .collect()
+    }
+
+    /// The RMS of [`Self::residuals`]: `sqrt(mean(dx² + dy²))` over `gcps`, in georeferenced
+    /// units, as `gdalwarp` reports it (GDAL 3.13.3). `None` when `gcps` is empty.
+    pub fn rms(&self, gcps: &[Gcp]) -> Option<f64> {
+        let r = self.residuals(gcps);
+        if r.is_empty() {
+            return None;
+        }
+        let sum: f64 = r.iter().map(|(dx, dy)| dx * dx + dy * dy).sum();
+        Some((sum / r.len() as f64).sqrt())
+    }
 }
 
 /// Applies a homography (GDAL's 9 coefficients). Non-finite where its denominator vanishes.
@@ -684,5 +707,33 @@ mod tests {
             assert!((p - 15.0).abs() < 1e-6 && (l - 7.0).abs() < 1e-6, "{p} {l}");
         }
         assert!(GcpTransformer::polynomial(&gcps[..5], 2).is_err());
+    }
+
+    #[test]
+    fn residuals_vanish_for_an_exact_fit_and_rms_matches_the_perturbation() {
+        // An exact affine map: order-1 polynomial and TPS both interpolate, so every residual
+        // is zero (GDAL 3.13.3 reports the same for an exactly fittable GCP set).
+        let exact: Vec<Gcp> = vec![gcp(0.0, 0.0, 1000.0, 500.0), gcp(10.0, 0.0, 1020.0, 502.0), gcp(0.0, 10.0, 1005.0, 480.0)];
+        for t in [GcpTransformer::polynomial(&exact, 1).unwrap(), GcpTransformer::tps(&exact).unwrap()] {
+            let r = t.residuals(&exact);
+            assert_eq!(r.len(), 3);
+            assert!(r.iter().all(|(dx, dy)| dx.abs() < 1e-9 && dy.abs() < 1e-9), "{r:?}");
+            assert!(t.rms(&exact).unwrap() < 1e-9);
+        }
+        assert!(GcpTransformer::polynomial(&exact, 1).unwrap().rms(&[]).is_none());
+
+        // One GCP moved 3 units off the affine fit: the least-squares polynomial spreads the
+        // error, so every residual is non-zero and the RMS is positive and bounded by 3.
+        let mut perturbed = exact.clone();
+        perturbed.push(gcp(10.0, 10.0, 1025.0 + 3.0, 482.0));
+        let t = GcpTransformer::polynomial(&perturbed, 1).unwrap();
+        let r = t.residuals(&perturbed);
+        assert_eq!(r.len(), 4);
+        assert!(r.iter().any(|(dx, dy)| dx * dx + dy * dy > 1e-6), "{r:?}");
+        let rms = t.rms(&perturbed).unwrap();
+        assert!(rms > 0.0 && rms <= 3.0, "{rms}");
+        // rms equals sqrt(mean(dx^2 + dy^2)) over the residuals.
+        let expect = (r.iter().map(|(dx, dy)| dx * dx + dy * dy).sum::<f64>() / 4.0).sqrt();
+        assert!((rms - expect).abs() < 1e-12);
     }
 }
