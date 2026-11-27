@@ -38,6 +38,7 @@ mod cube;
 mod multidim;
 use crate::formats::RasterDriver;
 use crate::memfs;
+use crate::ops::window::avx2_rows;
 use crate::{Error, RasterDataset, Result};
 pub(crate) use cube::write as write_cube;
 pub(crate) use multidim::{MdSource, md_open, md_write};
@@ -829,7 +830,12 @@ fn blosc_blocks(
             blosc_block(src, pos, nsplits, compressor, &mut block[..bsize])?;
             // The block holds byte 0 of every element, then byte 1...
             let n = bsize / typesize;
-            interleave(&block[..bsize], dst, typesize, n);
+            // 2-byte elements interleave faster in the baseline build than in the AVX2 one.
+            if typesize == 2 {
+                interleave(&block[..bsize], dst, typesize, n);
+            } else {
+                interleave_avx2(&block[..bsize], dst, typesize, n);
+            }
             dst[n * typesize..].copy_from_slice(&block[n * typesize..bsize]);
         } else {
             blosc_block(src, pos, nsplits, compressor, dst)?;
@@ -888,7 +894,9 @@ fn blosc_block(src: &[u8], mut pos: usize, nsplits: usize, compressor: u8, dst: 
 /// Interleaves `typesize` planes of `n` bytes, at the start of `planes`, into the first
 /// `n * typesize` bytes of `out`: byte `k` of element `e` is byte `e` of plane `k`. Common element
 /// sizes take a loop of their size, which the compiler turns into vector instructions.
+#[inline(always)]
 fn interleave(planes: &[u8], out: &mut [u8], typesize: usize, n: usize) {
+    #[inline(always)]
     fn fixed<const T: usize>(planes: &[u8], out: &mut [u8], n: usize) {
         let p: [&[u8]; T] = std::array::from_fn(|k| &planes[k * n..(k + 1) * n]);
         for (e, item) in out[..n * T].as_chunks_mut::<T>().0.iter_mut().enumerate() {
@@ -912,36 +920,84 @@ fn interleave(planes: &[u8], out: &mut [u8], typesize: usize, n: usize) {
     }
 }
 
-/// Undoes Blosc's bit shuffle of `block` in place, with `planes` (as large) as scratch: bit `kk`
-/// of byte `j` of element `i` is stored at bit `(j * 8 + kk) * n + i`
-/// (least significant bit first), over a multiple `n` of 8 elements (Blosc format version 2
-/// leaves blocks of other sizes as they are; later versions leave the rest in place).
-///
-/// Eight elements at a time: bits `kk` of byte `j` of elements `8g..8g + 8` are byte `g` of bit
-/// row `j * 8 + kk`, so the eight rows' bytes `g` are an 8 x 8 bit matrix whose transpose holds
-/// byte `j` of the eight elements, written to byte plane `j`; the planes are then interleaved. A
-/// bit at a time, 4.7 MB of int8 TESSERA embeddings took about 100 ms in WebAssembly.
-fn bit_unshuffle(block: &mut [u8], planes: &mut [u8], typesize: usize, version: u8) {
-    let bsize = block.len();
-    let nelems = bsize / typesize;
-    if version <= 2 && !nelems.is_multiple_of(8) {
-        return;
+avx2_rows! {
+    /// [`interleave`], in AVX2 instructions where the CPU has them: 4- and 8-byte elements of 64 MB
+    /// of blocks took 2-4 ms rather than 9 ms (2-byte ones are slower in it: 2.5 ms, not 1.5 ms).
+    fn interleave_avx2[](planes: &[u8], out: &mut [u8], typesize: usize, n: usize) {
+        interleave(planes, out, typesize, n)
     }
-    let n = nelems - nelems % 8;
-    let row = n / 8;
-    for j in 0..typesize {
-        let rows: [&[u8]; 8] = std::array::from_fn(|kk| &block[(j * 8 + kk) * row..(j * 8 + kk + 1) * row]);
-        for (g, dst) in planes[j * n..(j + 1) * n].as_chunks_mut::<8>().0.iter_mut().enumerate() {
-            let x = u64::from_le_bytes(std::array::from_fn(|kk| rows[kk][g]));
-            *dst = transpose_bits_8x8(x).to_le_bytes();
+}
+
+avx2_rows! {
+    /// Undoes Blosc's bit shuffle of `block` in place, with `planes` (as large) as scratch: bit `kk`
+    /// of byte `j` of element `i` is stored at bit `(j * 8 + kk) * n + i`
+    /// (least significant bit first), over a multiple `n` of 8 elements (Blosc format version 2
+    /// leaves blocks of other sizes as they are; later versions leave the rest in place).
+    ///
+    /// Eight elements at a time: bits `kk` of byte `j` of elements `8g..8g + 8` are byte `g` of bit
+    /// row `j * 8 + kk`, so the eight rows' bytes `g` are an 8 x 8 bit matrix whose transpose holds
+    /// byte `j` of the eight elements, written to byte plane `j`; the planes are then interleaved. A
+    /// bit at a time, 4.7 MB of int8 TESSERA embeddings took about 100 ms in WebAssembly.
+    ///
+    /// The matrices of `BIT_LANES` x 8 consecutive groups are built together, from 8 bytes of each
+    /// row in each lane (an 8 x 8 byte transpose), and transposed together: operations on whole
+    /// arrays of lanes, which the AVX2 build runs in vector registers. 64 MB of Float32 blocks took
+    /// 10-11 ms with AVX2 and 22 ms in the x86-64 baseline build, rather than 26 ms.
+    fn bit_unshuffle[](block: &mut [u8], planes: &mut [u8], typesize: usize, version: u8) {
+        const BIT_LANES: usize = 4;
+        let bsize = block.len();
+        let nelems = bsize / typesize;
+        if version <= 2 && !nelems.is_multiple_of(8) {
+            return;
         }
+        let n = nelems - nelems % 8;
+        let row = n / 8;
+        for j in 0..typesize {
+            let rows: [&[u8]; 8] = std::array::from_fn(|kk| &block[(j * 8 + kk) * row..(j * 8 + kk + 1) * row]);
+            let words: [&[[u8; 8]]; 8] = std::array::from_fn(|kk| rows[kk].as_chunks::<8>().0);
+            let plane = &mut planes[j * n..(j + 1) * n];
+            let (whole, _) = plane.as_chunks_mut::<{ 64 * BIT_LANES }>();
+            for (m, dst) in whole.iter_mut().enumerate() {
+                // Word `kk` of lane `l`: bytes `8g..8g + 8` of row `kk`, for `g = m * BIT_LANES + l`.
+                let mut a: [[u64; BIT_LANES]; 8] =
+                    std::array::from_fn(|kk| std::array::from_fn(|l| u64::from_le_bytes(words[kk][m * BIT_LANES + l])));
+                // Byte `g` of word `kk` to byte `kk` of word `g`: blocks of 4, 2 then 1 bytes swapped
+                // across the diagonal.
+                for (s, low) in [(4usize, 0x0000_0000_FFFF_FFFFu64), (2, 0x0000_FFFF_0000_FFFF), (1, 0x00FF_00FF_00FF_00FF)] {
+                    for k in (0..8).filter(|k| k & s == 0) {
+                        let (x, y) = (a[k], a[k + s]);
+                        let t: [u64; BIT_LANES] = std::array::from_fn(|l| ((x[l] >> (8 * s)) ^ y[l]) & low);
+                        a[k] = std::array::from_fn(|l| x[l] ^ (t[l] << (8 * s)));
+                        a[k + s] = std::array::from_fn(|l| y[l] ^ t[l]);
+                    }
+                }
+                for word in &mut a {
+                    for x in word.iter_mut() {
+                        *x = transpose_bits_8x8(*x);
+                    }
+                }
+                let out = dst.as_chunks_mut::<8>().0;
+                for l in 0..BIT_LANES {
+                    for (g, word) in a.iter().enumerate() {
+                        out[8 * l + g] = word[l].to_le_bytes();
+                    }
+                }
+            }
+            // The groups past the last whole lanes, one at a time.
+            let done = whole.len() * 8 * BIT_LANES;
+            for (g, dst) in plane[8 * done..].as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                let x = u64::from_le_bytes(std::array::from_fn(|kk| rows[kk][done + g]));
+                *dst = transpose_bits_8x8(x).to_le_bytes();
+            }
+        }
+        // The bytes past the last 8 elements are left in place.
+        interleave(planes, block, typesize, n);
     }
-    // The bytes past the last 8 elements are left in place.
-    interleave(planes, block, typesize, n);
 }
 
 /// Transposes an 8 x 8 bit matrix held in a `u64`, byte `i` its row `i` and bit `j` of a byte its
 /// column `j`: bit `j` of byte `i` goes to bit `i` of byte `j` (Hacker's Delight, 7-3).
+#[inline(always)]
 fn transpose_bits_8x8(mut x: u64) -> u64 {
     let t = (x ^ (x >> 7)) & 0x00AA_00AA_00AA_00AA;
     x ^= t ^ (t << 7);
@@ -3495,6 +3551,8 @@ mod tests {
     fn bit_unshuffles_as_the_bitwise_definition() {
         // Pseudo-random blocks (xorshift): element sizes 1 to 16, element counts a multiple of 8
         // or not, blocks with bytes past their last whole element, in format versions 2 and 3.
+        // From 256 elements, groups of 8 rows' bytes are transposed in lanes; 808 and 811 leave
+        // groups past the last whole lanes.
         let mut s = 0x9E37_79B9_7F4A_7C15u64;
         let mut next = || {
             s ^= s << 13;
@@ -3503,7 +3561,7 @@ mod tests {
             s as u8
         };
         for typesize in [1usize, 2, 3, 4, 8, 16] {
-            for nelems in [1, 3, 7, 8, 16, 24, 64, 1000, 4096, 4101] {
+            for nelems in [1, 3, 7, 8, 16, 24, 64, 256, 808, 811, 1000, 4096, 4101] {
                 for extra in [0, 1, typesize.saturating_sub(1)] {
                     let bsize = nelems * typesize + extra;
                     let block: Vec<u8> = (0..bsize).map(|_| next()).collect();
