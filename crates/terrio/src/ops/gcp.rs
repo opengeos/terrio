@@ -165,13 +165,13 @@ impl GcpTransformer {
         }
     }
 
-    /// The residuals of `gcps` under this transformer: for each GCP, the georeferenced position
-    /// its pixel/line maps to minus the GCP's own `(x, y)`, as `(dx, dy)` — terrio's sign
-    /// convention, in the GCPs' georeferenced units. This is a fit check: for methods that
-    /// interpolate their GCPs exactly (TPS, a homography fitted to its own GCPs, a polynomial with
-    /// as many coefficients as GCPs), every residual is zero by construction; only an
+    /// The residuals of `gcps` under this transformer: for each GCP, as `(dx, dy)`, the
+    /// georeferenced position its pixel/line maps to minus the GCP's own `(x, y)` — model minus
+    /// observed, in the GCPs' georeferenced units. This is a fit check: for methods that
+    /// interpolate their GCPs exactly (TPS, a homography fitted to 4 GCPs, a polynomial with as
+    /// many coefficients as GCPs), every residual is zero by construction; only an
     /// over-determined fit (a higher-order polynomial, a 5+-GCP homography) gives a meaningful
-    /// error. Reference: GDAL 3.13.3's GCP fit (`GDALGCPsToGeoTransform` and friends).
+    /// error.
     pub fn residuals(&self, gcps: &[Gcp]) -> Vec<(f64, f64)> {
         gcps.iter()
             .map(|g| {
@@ -183,7 +183,7 @@ impl GcpTransformer {
 
     /// The RMS of [`Self::residuals`]: `sqrt(mean(dx² + dy²))` over `gcps`, in georeferenced
     /// units. `None` when `gcps` is empty or any residual is non-finite (a homography is
-    /// undefined where its denominator vanishes). Reference: GDAL 3.13.3.
+    /// undefined where its denominator vanishes).
     pub fn rms(&self, gcps: &[Gcp]) -> Option<f64> {
         let r = self.residuals(gcps);
         if r.is_empty() || r.iter().any(|(dx, dy)| !dx.is_finite() || !dy.is_finite()) {
@@ -728,13 +728,14 @@ mod tests {
         assert!(GcpTransformer::polynomial(&exact, 1).unwrap().rms(&[]).is_none());
 
         // One GCP moved 3 units off the affine fit: the least-squares polynomial spreads the
-        // error, so every residual is non-zero and the RMS is positive and bounded by 3.
+        // error over all four GCPs, so every residual is non-zero and the RMS is positive and
+        // bounded by 3.
         let mut perturbed = exact.clone();
         perturbed.push(gcp(10.0, 10.0, 1025.0 + 3.0, 482.0));
         let t = GcpTransformer::polynomial(&perturbed, 1).unwrap();
         let r = t.residuals(&perturbed);
         assert_eq!(r.len(), 4);
-        assert!(r.iter().any(|(dx, dy)| dx * dx + dy * dy > 1e-6), "{r:?}");
+        assert!(r.iter().all(|(dx, dy)| dx * dx + dy * dy > 1e-6), "{r:?}");
         let rms = t.rms(&perturbed).unwrap();
         assert!(rms > 0.0 && rms <= 3.0, "{rms}");
         // rms equals sqrt(mean(dx^2 + dy^2)) over the residuals.
