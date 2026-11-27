@@ -331,7 +331,8 @@ impl FeatureReader {
     }
 
     /// Pushes an attribute predicate into the source before the first batch: a GeoParquet file
-    /// reads only the rows it may match. Other sources ignore it.
+    /// reads only the rows it may match, a GeoPackage decodes the geometries of matching rows
+    /// only. Other sources ignore it.
     pub(crate) fn filter_attributes(&mut self, expression: &crate::ops::sql::Expression) -> Result<()> {
         self.source.filter_attributes(expression)
     }
@@ -895,6 +896,8 @@ struct GpkgSource {
     rowid_col: Option<usize>,
     rows: GpkgRows,
     bbox: Option<gpkg_read::Rect>,
+    /// The attribute filter: rows that fail it are dropped before their geometry is decoded.
+    filter: Option<crate::ops::sql::BoundExpression>,
     n: i64,
     batch: usize,
     batch_bytes: usize,
@@ -914,6 +917,14 @@ enum GpkgRows {
 
 #[cfg(feature = "sqlite")]
 impl FeatureSource for GpkgSource {
+    fn filter_attributes(&mut self, expression: &crate::ops::sql::Expression) -> Result<()> {
+        if self.n != 0 {
+            return Err(Error::InvalidArgument("attribute filters must precede the first batch".into()));
+        }
+        self.filter = Some(expression.bind(&self.def.layer.schema)?);
+        Ok(())
+    }
+
     fn set_batch_bytes(&mut self, bytes: usize) {
         self.batch_bytes = bytes;
     }
@@ -956,10 +967,11 @@ impl FeatureSource for GpkgSource {
         if rows.is_empty() {
             return Ok(None);
         }
-        let (def, columns, rowid_col, bbox, first) = (&self.def, self.columns, self.rowid_col, self.bbox, self.n);
+        let (def, columns, rowid_col, bbox, filter, first) =
+            (&self.def, self.columns, self.rowid_col, self.bbox, self.filter.as_ref(), self.n);
         let features = crate::par::map_range(rows.len(), |i| {
             let (rowid, payload) = &rows[i];
-            sqlite::row_values(&self.db, payload, *rowid, columns, rowid_col).map(|row| def.feature(&row, first + i as i64, bbox))
+            sqlite::row_values(&self.db, payload, *rowid, columns, rowid_col).map(|row| def.feature(&row, first + i as i64, bbox, filter))
         });
         self.n += rows.len() as i64;
         Ok(Some(features.into_iter().collect::<Result<Vec<_>>>()?.into_iter().flatten().collect()))
@@ -1019,7 +1031,8 @@ fn open_gpkg(
             None => GpkgRows::Scan(db.cursor(root)),
         };
         let layer = crate::dataset::fix_layer(def.layer.clone(), path, VectorDriver::GPKG);
-        let source = GpkgSource { db, def, columns, rowid_col, rows, bbox, n: 0, batch, batch_bytes: source_bytes(CHUNK_BYTES) };
+        let source =
+            GpkgSource { db, def, columns, rowid_col, rows, bbox, filter: None, n: 0, batch, batch_bytes: source_bytes(CHUNK_BYTES) };
         out.push(FeatureReader::new(layer, Box::new(source)).with_range(options));
     }
     Ok(out)

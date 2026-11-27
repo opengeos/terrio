@@ -1088,3 +1088,130 @@ fn remote_geopackages_stream_by_range() {
     let requests = seen.lock().unwrap().len();
     assert!(requests <= 150, "a full read of overflowing rows took {requests} requests for {size} bytes");
 }
+
+/// A query on a GeoPackage on disk filters the rows of the streamed table, reading no other
+/// table, and gives what the same query gives on the layer read whole, also when the reader
+/// cannot evaluate the clause, at a URL (read whole) and with a write-ahead log (read whole).
+#[cfg(feature = "sqlite")]
+#[test]
+fn sql_on_a_geopackage_matches_the_query_on_the_whole_layer() {
+    let mut t = Layer::new("t");
+    t.crs = Some(wbvector::Crs::new().with_epsg(4326));
+    t.add_field(FieldDef::new("id", FieldType::Integer));
+    t.add_field(FieldDef::new("name", FieldType::Text));
+    // A field named as `id` qualified by the table's name: `t.id` in a query is `id`.
+    t.add_field(FieldDef::new("t.id", FieldType::Integer));
+    for i in 0..50 {
+        t.push(Feature {
+            fid: i + 1,
+            geometry: Some(Geometry::point(i as f64, 0.0)),
+            attributes: vec![
+                FieldValue::Integer(i as i64),
+                if i % 9 == 0 { FieldValue::Null } else { FieldValue::Text(format!("n{i}")) },
+                FieldValue::Integer(100 - i as i64),
+            ],
+        });
+    }
+    let mut other = Layer::new("other");
+    other.add_field(FieldDef::new("name", FieldType::Text));
+    for i in 0..20 {
+        other.push(Feature {
+            fid: i + 1,
+            geometry: Some(Geometry::point(0.0, i as f64)),
+            attributes: vec![FieldValue::Text("x".repeat(1000))],
+        });
+    }
+    let bytes = crate::drivers::vector::geopackage::to_bytes(&[t, other]).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("t.gpkg").to_string_lossy().into_owned();
+    std::fs::write(&local, &bytes).unwrap();
+    #[allow(unused_mut)]
+    let mut sources = vec![local.clone()];
+    #[cfg(remote)]
+    let (base, _) = crate::http::test_server(bytes.clone());
+    #[cfg(remote)]
+    sources.push(format!("{base}/t.gpkg"));
+    let whole = crate::open_vector(&local, &Default::default()).unwrap().into_resolved_layers();
+    let rows =
+        |l: &Layer| l.features.iter().map(|f| (f.fid, f.geometry.as_ref().map(Geometry::to_wkb), f.attributes.clone())).collect::<Vec<_>>();
+    let fields = |l: &Layer| l.schema.fields().iter().map(|f| (f.name.clone(), f.field_type, f.width)).collect::<Vec<_>>();
+    let check = |source: &str| {
+        for statement in [
+            "SELECT * FROM t WHERE id < 7",
+            "SELECT name FROM t WHERE id IN (3, 40, 99) ORDER BY id DESC",
+            "SELECT * FROM t WHERE id BETWEEN 10 AND 12 OR name = 'N45' LIMIT 2",
+            "SELECT * FROM t WHERE name IS NULL",
+            "SELECT * FROM t WHERE FID >= 47",
+            "SELECT COUNT(*) FROM t WHERE id > 20",
+            "SELECT * FROM t WHERE missing > 1 OR id = 1",
+            "SELECT * FROM t WHERE ST_Area(geom) = 0 AND id < 3",
+            "SELECT * FROM T WHERE id = 5",
+            "SELECT * FROM t WHERE name LIKE 'n1%'",
+            "SELECT * FROM t WHERE name NOT IN ('n1', 'n2') AND id < 12",
+            "SELECT * FROM t WHERE name <> 'n3' AND id < 6",
+            "SELECT * FROM t WHERE id = '5'",
+            "SELECT * FROM t WHERE id > 47.5",
+            "SELECT * FROM t WHERE t.id = 5",
+        ] {
+            let expected = crate::ops::sql::query(&whole, statement);
+            match (crate::ops::sql::query_path(source, statement, &Default::default()), expected) {
+                (Ok(got), Ok(expected)) => {
+                    assert!(!expected.features.is_empty(), "{statement}");
+                    assert_eq!(rows(&got), rows(&expected), "{source}: {statement}");
+                    assert_eq!(got.crs_epsg(), expected.crs_epsg(), "{source}: {statement}");
+                    assert_eq!(got.geom_type, expected.geom_type, "{source}: {statement}");
+                    assert_eq!((&got.name, fields(&got)), (&expected.name, fields(&expected)), "{source}: {statement}");
+                }
+                (Err(got), Err(expected)) => assert_eq!(got.to_string(), expected.to_string(), "{source}: {statement}"),
+                (got, expected) => panic!(
+                    "{source}: {statement}: got {:?}, expected {:?}",
+                    got.map(|l| l.features.len()),
+                    expected.map(|l| l.features.len())
+                ),
+            }
+        }
+    };
+    for source in &sources {
+        check(source);
+    }
+    // A range applies to the table's rows before the WHERE clause, as in the whole read; so does a
+    // spatial filter.
+    let ranged = crate::VectorOpenOptions { skip_features: 1, max_features: Some(8), ..Default::default() };
+    let boxed = crate::VectorOpenOptions { spatial_filter: Some((10.0, -1.0, 30.0, 1.0)), ..Default::default() };
+    for (options, statement, n) in [(ranged, "SELECT * FROM t WHERE id > 5", 3), (boxed, "SELECT * FROM t WHERE id > 13", 17)] {
+        let expected = crate::ops::sql::query(&crate::open_vector(&local, &options).unwrap().into_resolved_layers(), statement).unwrap();
+        assert_eq!(expected.features.len(), n);
+        assert_eq!(rows(&crate::ops::sql::query_path(&local, statement, &options).unwrap()), rows(&expected));
+    }
+    // The other table's root page broken: the query reads only its own table, where the whole
+    // read of every layer fails.
+    let (root, _) = sqlite::FileDb::open(&local).unwrap().table_root("other").unwrap();
+    let page = u16::from_be_bytes([bytes[16], bytes[17]]) as usize;
+    let mut broken = bytes.clone();
+    broken[(root as usize - 1) * page..root as usize * page].fill(0xff);
+    let broken_path = dir.path().join("broken.gpkg").to_string_lossy().into_owned();
+    std::fs::write(&broken_path, broken).unwrap();
+    assert!(crate::open_vector(&broken_path, &Default::default()).is_err());
+    let statement = "SELECT * FROM t WHERE id < 7";
+    let got = crate::ops::sql::query_path(&broken_path, statement, &Default::default()).unwrap();
+    assert_eq!(rows(&got), rows(&crate::ops::sql::query(&whole, statement).unwrap()));
+    // With a write-ahead log or a hot journal beside it, the file is read whole, as before: the
+    // query fails as the whole read does.
+    let journal = {
+        let mut j = vec![0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7, 0, 0, 0, 0, 0, 0, 0, 0];
+        j.extend([(bytes.len() / page) as u32, 512, page as u32].iter().flat_map(|v| v.to_be_bytes()));
+        j.resize(512, 0);
+        j
+    };
+    for (suffix, sidecar) in [("-wal", b"frames".to_vec()), ("-journal", journal)] {
+        let path = format!("{broken_path}{suffix}");
+        std::fs::write(&path, sidecar).unwrap();
+        let whole = crate::open_vector(&broken_path, &Default::default()).map(drop).unwrap_err();
+        let got = crate::ops::sql::query_path(&broken_path, statement, &Default::default()).map(drop).unwrap_err();
+        assert_eq!(got.to_string(), whole.to_string(), "{suffix}");
+        std::fs::remove_file(&path).unwrap();
+    }
+    // With a write-ahead log beside it, the file is read whole, as before (the stream refuses it).
+    std::fs::write(format!("{local}-wal"), b"frames").unwrap();
+    check(&local);
+}

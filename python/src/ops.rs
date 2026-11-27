@@ -758,7 +758,8 @@ pub(crate) fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Optio
 #[pyfunction]
 #[pyo3(signature = (src, query, *, layers=None))]
 fn sql(py: Python<'_>, src: &Bound<'_, PyAny>, query: &str, layers: Option<Vec<String>>) -> PyResult<PyLayer> {
-    // A path passes the query's WHERE clause to its reader (GeoParquet row-group pruning).
+    // A path passes the query's WHERE clause to its reader (GeoParquet row-group pruning, a
+    // GeoPackage on disk streamed with its geometries decoded for matching rows only).
     if let Some(path) = crate::vector::vector_path(src)? {
         let options = VectorOpenOptions { layers: layers.unwrap_or_default(), ..Default::default() };
         return Ok(PyLayer::from(py.detach_result(|| terrio::ops::sql::query_path(&path, query, &options)).py()?));

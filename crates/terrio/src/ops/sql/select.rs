@@ -79,7 +79,7 @@ pub(super) fn primary_name<'a>(name: &'a str, s: &Select) -> &'a str {
     name
 }
 
-fn normalize(e: Expr, s: &Select) -> Expr {
+pub(super) fn normalize(e: Expr, s: &Select) -> Expr {
     match e {
         Expr::Field(n) => Expr::Field(primary_name(&n, s).to_owned()),
         Expr::Call(name, args) => {

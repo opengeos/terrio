@@ -59,8 +59,9 @@ pub fn query(layers: &[Layer], statement: &str) -> Result<Layer> {
 /// the row groups whose column statistics exclude it and decodes the other columns of matching
 /// rows only; feature IDs stay the file's. Remotely (with the `remote` feature), the filter
 /// columns of the row groups kept are fetched together, then the other columns of the groups with
-/// matching rows. Other queries, archives and other formats read their layers whole, as
-/// [`crate::open_vector`] does.
+/// matching rows. On a GeoPackage on disk, the reader streams the table a page at a time and
+/// decodes the geometries of matching rows only. Other queries, archives, other formats and
+/// GeoPackages at a URL read their layers whole, as [`crate::open_vector`] does.
 ///
 /// ```no_run
 /// let result = terrio::ops::sql::query_path(
@@ -71,33 +72,50 @@ pub fn query(layers: &[Layer], statement: &str) -> Result<Layer> {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn query_path(path: &str, statement: &str, options: &crate::VectorOpenOptions) -> Result<Layer> {
-    #[cfg(feature = "parquet")]
-    if let Some(layer) = filtered_parquet_layer(path, statement, options)? {
+    #[cfg(any(feature = "parquet", feature = "sqlite"))]
+    if let Some(layer) = filtered_layer(path, statement, options)? {
         return query(&[layer], statement);
     }
     query(&crate::open_vector(path, options)?.into_resolved_layers(), statement)
 }
 
-/// The layer a single-layer query with a WHERE clause reads from a GeoParquet file, its rows
-/// already filtered; `None` when the query or the file is not one, or the reader cannot evaluate
-/// the clause (spatial functions, unknown fields), which then applies to the layer read whole.
-#[cfg(feature = "parquet")]
-fn filtered_parquet_layer(path: &str, statement: &str, options: &crate::VectorOpenOptions) -> Result<Option<Layer>> {
+/// The layer a single-layer query with a WHERE clause reads from a GeoParquet file or a
+/// GeoPackage, its rows already filtered; `None` when the query or the file is not one, or the
+/// reader cannot evaluate the clause (spatial functions, unknown fields), which then applies to
+/// the layer read whole.
+#[cfg(any(feature = "parquet", feature = "sqlite"))]
+fn filtered_layer(path: &str, statement: &str, options: &crate::VectorOpenOptions) -> Result<Option<Layer>> {
     let Ok(select) = Select::parse(statement) else { return Ok(None) };
     let Some(filter) = select.filter.as_ref().filter(|_| select.joins.is_empty()) else { return Ok(None) };
-    // Local files qualify, and remote ones: their predicate pass fetches the filter columns of
-    // the row groups together.
+    // Names qualified by the layer's name or alias are bound as the query binds them.
+    let filter = &Expression(select::normalize(filter.0.clone(), &select));
+    // GeoParquet files qualify on disk and remote (their predicate pass fetches the filter
+    // columns of the row groups together); GeoPackages on disk only: a URL's table, read by
+    // range requests a prefetch at a time, takes longer than the download it would replace.
     let location = crate::vfs::Location::parse(path);
     #[cfg(remote)]
     let remote = location.remote().is_some();
     #[cfg(not(remote))]
     let remote = false;
-    if crate::formats::VectorDriver::for_extension(&location.file_name()) != Some(crate::formats::VectorDriver::Parquet)
-        || !(remote || std::path::Path::new(path).is_file())
+    let driver = crate::formats::VectorDriver::for_extension(&location.file_name());
+    let gpkg = driver == Some(crate::formats::VectorDriver::GPKG);
+    if !driver.is_some_and(|d| {
+        matches!(d, crate::formats::VectorDriver::Parquet | crate::formats::VectorDriver::GPKG) && crate::stream::can_read_stream(d)
+    }) || !((remote && !gpkg) || std::path::Path::new(path).is_file())
     {
         return Ok(None);
     }
-    let readers = crate::stream::open_layers(path, options, crate::stream::DEFAULT_CHUNK)?;
+    // A GeoPackage with a hot journal is read whole, as before: the stream reads the file's pages
+    // as they are. So is one the stream cannot open (one with a write-ahead log, say): the whole
+    // read reports what is wrong with it.
+    #[cfg(feature = "sqlite")]
+    if gpkg && crate::drivers::sqlite_edit::has_hot_journal(std::path::Path::new(path))? {
+        return Ok(None);
+    }
+    let readers = match crate::stream::open_layers(path, options, crate::stream::DEFAULT_CHUNK) {
+        Err(_) if gpkg => return Ok(None),
+        readers => readers?,
+    };
     let Some(mut reader) = readers.into_iter().find(|r| r.layer().name.eq_ignore_ascii_case(&select.from)) else {
         return Ok(None);
     };
