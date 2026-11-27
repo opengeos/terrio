@@ -1524,6 +1524,13 @@ pub(crate) fn decode_worker_limit() -> usize {
     cores.max(crate::par::threads())
 }
 
+/// The decode workers that no read holds now, of [`decode_worker_limit`]: about as many as the next
+/// read can start (reads starting at once may take them first).
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn decode_workers_free() -> usize {
+    decode_worker_limit().saturating_sub(DECODE_WORKERS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 #[cfg(not(target_family = "wasm"))]
 impl Drop for DecodeWorkers<'_> {
     fn drop(&mut self) {
