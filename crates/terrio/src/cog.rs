@@ -3469,7 +3469,21 @@ impl TiffRaster {
         }
         let codec = codec.as_ref().and_then(Option::as_ref);
         let pool = Some(&self.workers);
-        crate::geotiff::decode_chunks(dec, reopen, pool, ifd, &misses, codec, limits.chunk_bytes, &tiff_err, |(idx, chunk, dims)| {
+        let mut decode = |place: &mut PlaceChunk| {
+            crate::geotiff::decode_chunks(dec, reopen, pool, ifd, &misses, codec, limits.chunk_bytes, &tiff_err, place)
+        };
+        // Many pixel-interleaved bands: one thread cannot copy the chunks out as fast as several
+        // decode them, so groups of bands are copied on threads of their own.
+        // Not when this thread decodes them all (no decoders over the file).
+        let groups = if planar || reopen.is_none() { 1 } else { copy_groups(bands.len(), misses.len()) };
+        if groups > 1 {
+            let cached = keep.then_some((handle, ifd));
+            let map = &planes[0].1;
+            if crate::pixel::with_data!(&mut out, values => place_in_groups(values, groups, map, &targets, w, spp, cached, &mut decode))? {
+                return Ok(out);
+            }
+        }
+        decode(&mut |(idx, chunk, dims)| {
             place_decoded(&mut out, &chunk, dims, &targets[&idx], w, spp)?;
             if keep {
                 crate::block_cache::insert(handle, ifd, idx, chunk, dims);
@@ -3750,6 +3764,142 @@ fn place_decoded(
     place!(U8 <- U8, I8 <- I8, U16 <- U16, I16 <- I16, U32 <- U32, I32 <- I32, U64 <- U64, I64 <- I64, F32 <- F32, F64 <- F64);
     Ok(())
 }
+
+/// The decode threads one copy thread keeps up with: it copies a chunk of many pixel-interleaved
+/// bands out about four times as fast as one decodes it (256 x 256 Deflate tiles of 12 UInt16
+/// bands, decoded on other cores).
+const DECODERS_PER_COPY_THREAD: usize = 4;
+
+/// The groups of bands, each copied on a thread of its own, of a read of `bands` pixel-interleaved
+/// bands that decodes `chunks` chunks: one for every [`DECODERS_PER_COPY_THREAD`] decode threads it
+/// can start (no more than the thread count, nor than other reads leave free), at most one a band.
+/// 1 (the calling thread copies them all) for a read of fewer chunks than decode threads, and in
+/// WebAssembly.
+#[cfg(not(target_family = "wasm"))]
+fn copy_groups(bands: usize, chunks: usize) -> usize {
+    // Two groups need twice the decoders a group keeps up with, and as many chunks: a smaller read
+    // does not ask for the thread count, which starts the pool.
+    if bands < 2 || chunks < 2 * DECODERS_PER_COPY_THREAD {
+        return 1;
+    }
+    let threads = crate::par::threads();
+    if chunks < threads {
+        return 1;
+    }
+    (threads.min(crate::geotiff::decode_workers_free()) / DECODERS_PER_COPY_THREAD).clamp(1, bands)
+}
+
+#[cfg(target_family = "wasm")]
+fn copy_groups(_bands: usize, _chunks: usize) -> usize {
+    1
+}
+
+/// A sample type of the window, and the samples of a decoded chunk as that type: a half-float
+/// chunk's as `f32`, as [`place_decoded`] converts them.
+trait ChunkSamples: Copy + Send + Sync {
+    fn of(chunk: &DecodingResult) -> Result<Option<std::borrow::Cow<'_, [Self]>>>;
+}
+
+macro_rules! chunk_samples {
+    ($($t:ty: $variant:ident),*) => {$(
+        impl ChunkSamples for $t {
+            fn of(chunk: &DecodingResult) -> Result<Option<std::borrow::Cow<'_, [Self]>>> {
+                Ok(match chunk {
+                    DecodingResult::$variant(v) => Some(v.as_slice().into()),
+                    _ => None,
+                })
+            }
+        }
+    )*};
+}
+chunk_samples!(u8: U8, i8: I8, u16: U16, i16: I16, u32: U32, i32: I32, u64: U64, i64: I64, f64: F64);
+
+impl ChunkSamples for f32 {
+    fn of(chunk: &DecodingResult) -> Result<Option<std::borrow::Cow<'_, [Self]>>> {
+        Ok(match chunk {
+            DecodingResult::F32(v) => Some(v.as_slice().into()),
+            DecodingResult::F16(v) => {
+                let mut f = Vec::new();
+                crate::dataset::fallible::reserve(&mut f, v.len(), "a TIFF chunk")?;
+                f.extend(v.iter().map(|x| x.to_f32()));
+                Some(f.into())
+            }
+            _ => None,
+        })
+    }
+}
+
+/// Places the chunks that `decode` hands over into `out`, the window `w` in all its bands, as
+/// [`place_decoded`] does: each of `groups` groups of bands is copied on a thread of its own, fed
+/// every chunk, while the decode threads go on. No thread waits for the pool, whose threads may
+/// all be waiting for a lock the read holds (a raster shared with the pool's tasks). `map` pairs
+/// the samples to copy with their output band, in every chunk (a pixel-interleaved image). With
+/// `cached` (the cache's handle and the image), the last group to copy a chunk keeps it in the
+/// cache. Returns false, having decoded nothing, when a thread cannot be started.
+#[allow(clippy::too_many_arguments)]
+fn place_in_groups<T: ChunkSamples>(
+    out: &mut [T],
+    groups: usize,
+    map: &[(usize, usize)],
+    targets: &std::collections::HashMap<u32, Vec<ChunkTarget>>,
+    w: Window,
+    spp: usize,
+    cached: Option<(u64, usize)>,
+    decode: &mut dyn FnMut(&mut PlaceChunk) -> Result<()>,
+) -> Result<bool> {
+    // Every target places through `map`: the grouped path splits that one map by group.
+    debug_assert!(targets.values().flatten().all(|t| t.2.as_slice() == map), "targets of a grouped read share one map");
+    let band_len = w.width * w.height;
+    let per = (out.len() / band_len).div_ceil(groups);
+    std::thread::scope(|scope| {
+        let mut copiers = Vec::new();
+        for (g, part) in out.chunks_mut(per * band_len).enumerate() {
+            let bands = g * per..g * per + part.len() / band_len;
+            // The group's samples to copy, with their band within the group.
+            let map: Vec<(usize, usize)> = map.iter().filter(|(_, b)| bands.contains(b)).map(|&(s, b)| (s, b - bands.start)).collect();
+            // A chunk or two waiting a group: chunks in flight stay about as many as the decode
+            // threads queue.
+            let (tx, rx) = std::sync::mpsc::sync_channel::<Arc<crate::geotiff::DecodedChunk>>(2);
+            let copy = move || -> Result<()> {
+                for chunk in rx {
+                    let (idx, samples, (dw, dh)) = &*chunk;
+                    let vals = T::of(samples)?.ok_or_else(|| Error::InvalidData("TIFF chunks differ in sample type".into()))?;
+                    for &(x0, y0, _) in &targets[idx] {
+                        place(part, &vals, &ChunkGeom { x0, y0, dw: *dw, dh: *dh, spp }, w, &map);
+                    }
+                    if let (Some((handle, ifd)), Some((idx, samples, dims))) = (cached, Arc::into_inner(chunk)) {
+                        crate::block_cache::insert(handle, ifd, idx, samples, dims);
+                    }
+                }
+                Ok(())
+            };
+            match std::thread::Builder::new().spawn_scoped(scope, copy) {
+                Ok(thread) => copiers.push((tx, thread)),
+                // The threads started end as their channels close.
+                Err(_) => return Ok(false),
+            }
+        }
+        let (senders, threads): (Vec<_>, Vec<_>) = copiers.into_iter().unzip();
+        let decoded = decode(&mut |chunk| {
+            // Sent to every group and not held here: the last group done with it keeps it.
+            let chunk = Arc::new(chunk);
+            let ended = || Error::InvalidData("a TIFF chunk copy thread ended".into());
+            for tx in &senders[1..] {
+                tx.send(chunk.clone()).map_err(|_| ended())?;
+            }
+            senders[0].send(chunk).map_err(|_| ended())
+        });
+        drop(senders);
+        // A copy thread's error first: the send to a thread that ended failed on it.
+        for thread in threads {
+            thread.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))?;
+        }
+        decoded.map(|()| true)
+    })
+}
+
+/// What places each decoded chunk in a window.
+type PlaceChunk<'a> = dyn FnMut(crate::geotiff::DecodedChunk) -> Result<()> + 'a;
 
 /// Where a chunk goes in a window: its first column and row, and the output band of each of its
 /// samples to copy.
@@ -5272,6 +5422,138 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Pixel-interleaved chunks copied in groups of bands, each on a thread, fill the window as one
+    /// thread copying them does: any bands, reordered or repeated, cropped windows, a chunk left
+    /// out (sparse) and a truncated one, half floats; and the chunks are kept in the cache.
+    #[test]
+    fn bands_copied_in_groups_equal_those_copied_by_one_thread() {
+        let _serial = crate::block_cache::tests::cache_test_guard(64 << 20);
+        let (width, height, cw, ch) = (40, 30, 16, 16);
+        // Chunk 1 is truncated, chunk 4 left out.
+        let chunk = |idx: u32, spp: usize| -> Vec<u16> {
+            let n = if idx == 1 { cw * ch * spp - 7 } else { cw * ch * spp };
+            (0..n).map(|i| (idx as usize * 7919 + i * 13) as u16).collect()
+        };
+        let windows = [Window::full(width, height), Window::new(5, 3, 30, 20), Window::new(17, 16, 9, 9)];
+        for spp in [5, 12] {
+            let maps: [Vec<(usize, usize)>; 3] =
+                [(0..spp).map(|s| (s, s)).collect(), vec![(4, 0), (0, 1), (2, 2), (2, 3), (1, 4)], vec![(3, 0), (spp - 1, 1)]];
+            for map in &maps {
+                let bands = map.len();
+                for w in windows {
+                    let mut targets: std::collections::HashMap<u32, Vec<ChunkTarget>> = std::collections::HashMap::new();
+                    let mut chunks = Vec::new();
+                    for ty in w.y / ch..=(w.y + w.height - 1) / ch {
+                        for tx in w.x / cw..=(w.x + w.width - 1) / cw {
+                            let idx = (ty * width.div_ceil(cw) + tx) as u32;
+                            if idx != 4 {
+                                targets.entry(idx).or_default().push((tx * cw, ty * ch, map));
+                                chunks.push((idx, (cw.min(width - tx * cw), ch.min(height - ty * ch))));
+                            }
+                        }
+                    }
+                    let n = bands * w.width * w.height;
+                    let mut want = RasterData::U16(vec![u16::MAX; n]);
+                    for &(idx, dims) in &chunks {
+                        place_decoded(&mut want, &DecodingResult::U16(chunk(idx, spp)), dims, &targets[&idx], w, spp).unwrap();
+                    }
+                    let RasterData::U16(want) = want else { unreachable!() };
+                    for groups in [2, 3, bands] {
+                        let handle = crate::block_cache::new_handle();
+                        let mut decode = |place: &mut PlaceChunk| {
+                            chunks.iter().try_for_each(|&(idx, dims)| place((idx, DecodingResult::U16(chunk(idx, spp)), dims)))
+                        };
+                        let mut got = vec![u16::MAX; n];
+                        assert!(place_in_groups(&mut got, groups, map, &targets, w, spp, Some((handle, 0)), &mut decode).unwrap());
+                        assert_eq!(got, want, "{w:?} {map:?} {groups} groups of {spp} samples");
+                        assert!(chunks.iter().all(|&(idx, _)| crate::block_cache::get(handle, 0, idx).is_some()));
+                    }
+                }
+            }
+        }
+        // Half floats, as `f32`.
+        let w = Window::new(5, 3, 30, 20);
+        let map: Vec<(usize, usize)> = (0..5).map(|s| (s, 4 - s)).collect();
+        let halves =
+            |idx: u32| -> Vec<half::f16> { (0..cw * ch * 5).map(|i| half::f16::from_f32((idx as usize * 31 + i) as f32 * 0.25)).collect() };
+        let targets: std::collections::HashMap<u32, Vec<ChunkTarget>> =
+            (0..6).map(|i| (i, vec![((i as usize % 3) * cw, (i as usize / 3) * ch, &map)])).collect();
+        let dims = |i: u32| (cw.min(width - (i as usize % 3) * cw), ch.min(height - (i as usize / 3) * ch));
+        let mut want = RasterData::F32(vec![-1.0; 5 * w.width * w.height]);
+        for i in 0..6 {
+            place_decoded(&mut want, &DecodingResult::F16(halves(i)), dims(i), &targets[&i], w, 5).unwrap();
+        }
+        let mut got = vec![-1.0f32; 5 * w.width * w.height];
+        let mut decode = |place: &mut PlaceChunk| (0..6).try_for_each(|i| place((i, DecodingResult::F16(halves(i)), dims(i))));
+        assert!(place_in_groups(&mut got, 2, &map, &targets, w, 5, None, &mut decode).unwrap());
+        let RasterData::F32(want) = want else { unreachable!() };
+        assert_eq!(got, want);
+    }
+
+    /// Bands are copied in groups while every thread of the pool waits for a lock that the reading
+    /// thread holds (a raster shared with the pool's tasks): the copy does not wait for the pool.
+    #[cfg(unix)]
+    #[test]
+    fn bands_are_copied_in_groups_while_the_pool_waits_for_the_readers_lock() {
+        crate::par::alone(60, || {
+            let (dw, dh, spp) = (256, 256, 8);
+            let vals: Vec<u32> = (0..(dw * dh * spp) as u32).collect();
+            let map: Vec<(usize, usize)> = (0..spp).map(|s| (s, s)).collect();
+            let targets: std::collections::HashMap<u32, Vec<ChunkTarget>> = std::collections::HashMap::from([(0, vec![(0, 0, &map)])]);
+            let lock = std::sync::Mutex::new(());
+            let held = lock.lock().unwrap();
+            std::thread::scope(|scope| {
+                let waiting = scope.spawn(|| crate::par::map_range(4 * crate::par::threads(), |_| drop(lock.lock())));
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let mut out = vec![0u32; dw * dh * spp];
+                let mut decode = |place: &mut PlaceChunk| place((0, DecodingResult::U32(vals.clone()), (dw, dh)));
+                let placed = place_in_groups(&mut out, 4, &map, &targets, Window::new(0, 0, dw, dh), spp, None, &mut decode);
+                // Released before the result is checked, so that a failure fails the test rather
+                // than leaving the waiting thread blocked.
+                drop(held);
+                waiting.join().unwrap();
+                placed.unwrap() && (0..spp).all(|b| (0..dw * dh).all(|p| out[b * dw * dh + p] == vals[p * spp + b]))
+            })
+        });
+    }
+
+    /// A read whose bands are copied in groups returns the error of a chunk that fails to decode,
+    /// or that differs in sample type, rather than waiting for its copy threads.
+    #[test]
+    fn bands_copied_in_groups_return_a_chunks_error() {
+        let map: Vec<(usize, usize)> = (0..4).map(|s| (s, s)).collect();
+        let targets: std::collections::HashMap<u32, Vec<ChunkTarget>> = (0..8).map(|i| (i, vec![(0, 0, &map)])).collect();
+        let w = Window::full(8, 8);
+        let mut out = vec![0u8; 4 * 64];
+        let mut failing = |place: &mut PlaceChunk| {
+            place((0, DecodingResult::U8(vec![1; 256]), (8, 8)))?;
+            Err(Error::InvalidData("a chunk that does not decode".into()))
+        };
+        let e = place_in_groups(&mut out, 2, &map, &targets, w, 4, None, &mut failing).unwrap_err();
+        assert!(e.to_string().contains("does not decode"), "{e}");
+        let mut mixed = |place: &mut PlaceChunk| {
+            (0..8u32).try_for_each(|i| {
+                place((i, if i == 2 { DecodingResult::U16(vec![1; 256]) } else { DecodingResult::U8(vec![1; 256]) }, (8, 8)))
+            })
+        };
+        let e = place_in_groups(&mut out, 2, &map, &targets, w, 4, None, &mut mixed).unwrap_err();
+        assert!(e.to_string().contains("differ in sample type"), "{e}");
+    }
+
+    /// A copy thread's panic (a chunk the window has no place for) reaches the reading thread,
+    /// rather than leaving it waiting for the thread.
+    #[test]
+    fn a_panic_copying_bands_in_groups_reaches_the_reader() {
+        let map: Vec<(usize, usize)> = (0..4).map(|s| (s, s)).collect();
+        let targets: std::collections::HashMap<u32, Vec<ChunkTarget>> = (0..8).map(|i| (i, vec![(0, 0, &map)])).collect();
+        let mut out = vec![0u8; 4 * 64];
+        let mut unplaced = |place: &mut PlaceChunk| (0..16u32).try_for_each(|i| place((i, DecodingResult::U8(vec![1; 256]), (8, 8))));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            place_in_groups(&mut out, 2, &map, &targets, Window::full(8, 8), 4, None, &mut unplaced)
+        }));
+        assert!(panicked.is_err());
     }
 
     /// With the cache off, reads decode every time and look nothing up.
