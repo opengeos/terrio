@@ -43,7 +43,7 @@
 
 use crate::s3::{self, Credentials, S3Object};
 use crate::{Error, Result};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -2065,6 +2065,114 @@ fn file_cache() -> std::sync::MutexGuard<'static, FileCache> {
     FILE_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The blocks requests are fetching now, by file key, as (block size, block): a reader of a file
+/// waits for those another reader of it is fetching and takes them from the process-wide cache,
+/// rather than requesting them again (as several readers of one file's tiles, each reading part
+/// of them, do). Entries name the process that made them: a forked child drops its parent's,
+/// whose requests it does not have.
+static IN_FLIGHT: Mutex<InFlight> = Mutex::new(InFlight { pid: 0, files: BTreeMap::new() });
+
+/// Signalled when blocks leave [`IN_FLIGHT`].
+static IN_FLIGHT_DONE: std::sync::Condvar = std::sync::Condvar::new();
+
+struct InFlight {
+    pid: u32,
+    files: BTreeMap<String, BTreeSet<(u64, u64)>>,
+}
+
+/// [`IN_FLIGHT`], emptied first in a process that did not fill it (a forked child).
+fn in_flight() -> std::sync::MutexGuard<'static, InFlight> {
+    crate::par::fork_safe();
+    let mut guard = IN_FLIGHT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    guard.reset_if_forked();
+    guard
+}
+
+impl InFlight {
+    fn reset_if_forked(&mut self) {
+        let pid = std::process::id();
+        if self.pid != pid {
+            self.pid = pid;
+            self.files.clear();
+        }
+    }
+
+    fn fetching(&self, key: &str, block_size: u64, block: u64) -> bool {
+        self.files.get(key).is_some_and(|blocks| blocks.contains(&(block_size, block)))
+    }
+}
+
+/// Takes `blocks` of the file out of [`IN_FLIGHT`] (as they land in the cache, or when their
+/// fetch ends) and wakes the readers waiting for them.
+fn release_in_flight(key: &str, block_size: u64, blocks: impl IntoIterator<Item = u64>) {
+    let mut flight = in_flight();
+    let Some(fetching) = flight.files.get_mut(key) else { return };
+    let before = fetching.len();
+    for b in blocks {
+        fetching.remove(&(block_size, b));
+    }
+    let released = fetching.len() != before;
+    if fetching.is_empty() {
+        flight.files.remove(key);
+    }
+    drop(flight);
+    if released {
+        IN_FLIGHT_DONE.notify_all();
+    }
+}
+
+/// Waits until none of `blocks` of the file is being fetched, until `until`, or until the read is
+/// cancelled (an error).
+fn wait_in_flight(key: &str, block_size: u64, blocks: &[u64], until: Option<Instant>) -> io::Result<()> {
+    let cancel = CANCEL_READS.with_borrow(Clone::clone);
+    let mut flight = in_flight();
+    while blocks.iter().any(|&b| flight.fetching(key, block_size, b)) {
+        if cancel.iter().any(|flag| flag.load(Ordering::SeqCst)) {
+            return Err(io::Error::other("request cancelled"));
+        }
+        let mut poll = CANCEL_POLL;
+        if let Some(until) = until {
+            match until.checked_duration_since(Instant::now()).filter(|left| !left.is_zero()) {
+                Some(left) => poll = poll.min(left),
+                None => break,
+            }
+        }
+        flight = IN_FLIGHT_DONE.wait_timeout(flight, poll).unwrap_or_else(std::sync::PoisonError::into_inner).0;
+        flight.reset_if_forked();
+    }
+    Ok(())
+}
+
+/// Blocks a reader claimed in [`IN_FLIGHT`] while it fetches them; those still there leave it
+/// when the claim drops, on success, failure or panic, and the readers waiting for them go on.
+struct Claim {
+    key: String,
+    block_size: u64,
+    blocks: Vec<u64>,
+}
+
+impl Claim {
+    /// Claims those of `blocks` no other reader of the file is fetching. Returns the claim and
+    /// the blocks other readers are fetching.
+    fn take(key: &str, block_size: u64, blocks: &[u64]) -> (Self, Vec<u64>) {
+        let mut flight = in_flight();
+        let fetching = flight.files.entry(key.to_string()).or_default();
+        let (mine, others) = blocks.iter().partition(|&&b| fetching.insert((block_size, b)));
+        if fetching.is_empty() {
+            flight.files.remove(key);
+        }
+        (Self { key: key.to_string(), block_size, blocks: mine }, others)
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        if !self.blocks.is_empty() {
+            release_in_flight(&self.key, self.block_size, self.blocks.iter().copied());
+        }
+    }
+}
+
 /// Whether a test holds [`cache_test_guard`]: the process-wide cache then drops nothing.
 #[cfg(test)]
 static EVICTION_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -2108,13 +2216,15 @@ impl Drop for CacheTestGuard {
     }
 }
 
-/// Holds this module's process-wide locks (the cache of remote files, the request statistics,
-/// the path-specific options, the retry warnings and the process's agent) across a fork, for
+/// Holds this module's process-wide locks (the cache of remote files, the requests in flight,
+/// the request statistics, the path-specific options, the retry warnings and the process's
+/// agent) across a fork, for
 /// [`crate::par`]: the forking thread takes them before the process is copied and lets them go
 /// after, so that the child never starts with one held by a thread it does not have.
 #[cfg(unix)]
 pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
     held.push(Box::new(file_cache()));
+    held.push(Box::new(in_flight()));
     held.push(Box::new(stats(&HOST_STATS)));
     held.push(Box::new(stats(&FILE_STATS)));
     held.push(Box::new(path_options_write()));
@@ -2794,6 +2904,7 @@ impl Shared {
 
     fn store(&mut self, first_block: u64, data: Vec<u8>) {
         let bs = self.block_size as usize;
+        let stored = first_block..first_block + data.len().div_ceil(bs) as u64;
         let mut cache = file_cache();
         for (i, chunk) in data.chunks(bs).enumerate() {
             let b = first_block + i as u64;
@@ -2811,6 +2922,11 @@ impl Shared {
                 self.order.push_back(b);
             }
         }
+        drop(cache);
+        // Readers waiting for these blocks take them now, not when the whole fetch ends.
+        if !self.mixed_origins {
+            release_in_flight(&self.key, self.block_size, stored);
+        }
     }
 
     /// Fetches the given blocks (sorted, not cached), merging runs separated by at most `gap`
@@ -2818,8 +2934,36 @@ impl Shared {
     /// the first request returned are not asked again. Separate runs are requested in parallel
     /// (see [`HttpOptions::parallel_ranges`] and [`Shared::fetch_runs_in_parallel`]), and stored
     /// in order as if fetched one after another.
+    ///
+    /// Blocks another reader of the file is fetching are not requested again: they are waited
+    /// for once this reader's own requests are answered, then taken from the process-wide cache
+    /// (fetched here after all if it does not hold them, as when that fetch failed).
     fn fetch_blocks(&mut self, blocks: &[u64], gap: u64) -> io::Result<()> {
         let blocks: Vec<u64> = blocks.iter().copied().filter(|&b| !self.load_cached_block(b)).collect();
+        // A reader whose responses came from several origins keeps them out of the cache.
+        // Nor is a block kept when the cache's budget is smaller: a waiter would find nothing.
+        if self.mixed_origins || blocks.is_empty() || self.shared_budget < self.block_size {
+            return self.fetch_blocks_now(&blocks, gap);
+        }
+        let (claim, others) = Claim::take(&self.key, self.block_size, &blocks);
+        let fetched = self.fetch_blocks_now(&claim.blocks, gap);
+        // Released before waiting, so that two readers never wait for each other.
+        drop(claim);
+        fetched?;
+        if others.is_empty() || self.whole.is_some() {
+            return Ok(());
+        }
+        // A wait ends by the reader's own timeout at the latest; it then requests the bytes itself.
+        let until = self.client.options.timeout.map(|t| Instant::now() + t);
+        wait_in_flight(&self.key, self.block_size, &others, until)?;
+        let missing: Vec<u64> = others.into_iter().filter(|&b| !self.blocks.contains_key(&b) && !self.load_cached_block(b)).collect();
+        // Requested again only once: a reader never waits twice.
+        self.fetch_blocks_now(&missing, gap)
+    }
+
+    /// Fetches the given blocks (sorted, not cached) as [`Shared::fetch_blocks`] does, whether or
+    /// not other readers of the file are fetching them.
+    fn fetch_blocks_now(&mut self, blocks: &[u64], gap: u64) -> io::Result<()> {
         // Runs of consecutive missing blocks (or separated by at most `gap` cached ones).
         let mut spans = Vec::new();
         let mut i = 0;
@@ -3509,6 +3653,10 @@ mod tests {
         NoContentRange,
         /// The first request is answered with its range; every later one with the whole file (200).
         FirstRangeOnly,
+        /// As `Ranges`, a range past the file's first bytes answered after 300 ms.
+        Slow,
+        /// As `Slow`, the first range past the file's first bytes answered 404.
+        SlowFailingOnce,
     }
 
     /// Serves `data` on a local port. Returns the URL and a counter of the requests served.
@@ -3536,11 +3684,18 @@ mod tests {
                     }
                 }
                 counter.fetch_add(1, Ordering::SeqCst);
+                if matches!(mode, Mode::Slow | Mode::SlowFailingOnce) && range.is_some_and(|(a, _)| a > 0) {
+                    std::thread::sleep(Duration::from_millis(300));
+                }
                 let head = |status: &str, extra: &str, len: usize| {
                     format!("HTTP/1.1 {status}\r\nContent-Length: {len}\r\nConnection: close\r\n{extra}\r\n")
                 };
                 let response = match (mode, range) {
                     (Mode::Forbidden, _) => head("403 Forbidden", "", 0).into_bytes(),
+                    (Mode::SlowFailingOnce, Some((a, _))) if a > 0 && !failed => {
+                        failed = true;
+                        head("404 Not Found", "", 0).into_bytes()
+                    }
                     (Mode::BrokenBody, _) if !failed => {
                         failed = true;
                         [head("200 OK", "", data.len()).into_bytes(), data[..1024].to_vec()].concat()
@@ -3586,6 +3741,131 @@ mod tests {
 
     fn test_data() -> Vec<u8> {
         (0..300_000u32).map(|i| (i * 7 % 251) as u8).collect()
+    }
+
+    /// Two readers of a file that want the same bytes at once send one request for them: the
+    /// second waits for the first's response and takes its blocks from the process-wide cache.
+    #[test]
+    fn readers_of_a_file_share_a_request_in_flight() {
+        let _serial = cache_test_guard();
+        let data = test_data();
+        let (url, count) = serve(data.clone(), Mode::Slow);
+        let mut first = RangeReader::open_with(&Remote::Url(url.clone()), options()).unwrap();
+        let mut second = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+        let opened = count.load(Ordering::SeqCst);
+        std::thread::scope(|s| {
+            let a = s.spawn(|| read_range(&mut first, 100_000, 40_000));
+            // the second asks while the first's request is in flight (answered after 300 ms)
+            wait_for_request(&count, opened);
+            let b = s.spawn(|| read_range(&mut second, 110_000, 20_000));
+            assert_eq!(a.join().unwrap(), data[100_000..140_000]);
+            assert_eq!(b.join().unwrap(), data[110_000..130_000]);
+        });
+        // The second's blocks (26-31) are among the first's (24-34): one request.
+        assert_eq!(count.load(Ordering::SeqCst) - opened, 1);
+    }
+
+    /// A reader waiting for another's request in flight requests the bytes itself when that
+    /// request fails.
+    #[test]
+    fn a_reader_requests_the_bytes_whose_request_in_flight_failed() {
+        let _serial = cache_test_guard();
+        let data = test_data();
+        let (url, count) = serve(data.clone(), Mode::SlowFailingOnce);
+        let mut first = RangeReader::open_with(&Remote::Url(url.clone()), options()).unwrap();
+        let mut second = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+        let opened = count.load(Ordering::SeqCst);
+        std::thread::scope(|s| {
+            let a = s.spawn(|| {
+                first.seek(SeekFrom::Start(100_000)).unwrap();
+                first.read_exact(&mut [0u8; 40_000])
+            });
+            wait_for_request(&count, opened);
+            let b = s.spawn(|| read_range(&mut second, 110_000, 20_000));
+            assert!(a.join().unwrap().is_err());
+            assert_eq!(b.join().unwrap(), data[110_000..130_000]);
+        });
+        assert_eq!(count.load(Ordering::SeqCst) - opened, 2);
+    }
+
+    /// A reader waiting for another's request in flight stops waiting when its read is cancelled.
+    #[test]
+    fn a_cancelled_read_stops_waiting_for_a_request_in_flight() {
+        let _serial = cache_test_guard();
+        let data = test_data();
+        let (url, count) = serve(data.clone(), Mode::Slow);
+        let mut first = RangeReader::open_with(&Remote::Url(url.clone()), options()).unwrap();
+        let mut second = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+        let opened = count.load(Ordering::SeqCst);
+        let flag = Arc::new(AtomicBool::new(false));
+        std::thread::scope(|s| {
+            let a = s.spawn(|| read_range(&mut first, 100_000, 40_000));
+            wait_for_request(&count, opened);
+            let b = s.spawn(|| {
+                let _scope = ReadCancellation::capture_with(flag.clone()).enter();
+                second.seek(SeekFrom::Start(110_000)).unwrap();
+                second.read_exact(&mut [0u8; 20_000])
+            });
+            // the second is waiting: all its blocks are among the first's
+            std::thread::sleep(Duration::from_millis(100));
+            flag.store(true, Ordering::SeqCst);
+            assert!(b.join().unwrap().is_err());
+            assert_eq!(a.join().unwrap(), data[100_000..140_000]);
+        });
+        assert_eq!(count.load(Ordering::SeqCst) - opened, 1);
+    }
+
+    /// A reader waiting for blocks another reader is fetching takes them as soon as they land,
+    /// before the rest of that reader's fetch ends.
+    #[test]
+    fn a_waiting_reader_takes_blocks_as_they_land() {
+        let _serial = cache_test_guard();
+        let data = test_data();
+        // Each of the first reader's two runs (blocks 24-26 and 48-50) is answered once opened.
+        let opened = [Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false))];
+        let gates = opened.clone();
+        let (url, gate) = serve_gated(data.clone(), move |first, _| {
+            let run = match first {
+                98_304 => &gates[0],
+                196_608 => &gates[1],
+                _ => return 206,
+            };
+            let until = Instant::now() + Duration::from_secs(10);
+            while !run.load(Ordering::SeqCst) && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            206
+        });
+        let first = RangeReader::open_with(&Remote::Url(url.clone()), options()).unwrap();
+        let mut second = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+        std::thread::scope(|s| {
+            let a = s.spawn(|| first.prefetch(&[(100_000, 8_000), (200_000, 8_000)]));
+            gate.wait_until(|seen| seen.firsts.iter().filter(|&&f| f > 0).count() >= 2, Duration::from_secs(10));
+            // the second wants blocks 24-25, of the first's first run
+            let b = s.spawn(|| read_range(&mut second, 101_000, 4_000));
+            std::thread::sleep(Duration::from_millis(100));
+            opened[0].store(true, Ordering::SeqCst);
+            let until = Instant::now() + Duration::from_secs(5);
+            while !b.is_finished() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let finished = b.is_finished();
+            opened[1].store(true, Ordering::SeqCst);
+            assert!(finished, "the second reader waited for the first's whole fetch");
+            assert_eq!(b.join().unwrap(), data[101_000..105_000]);
+            a.join().unwrap().unwrap();
+        });
+        // the second sent no request: the first's two runs are all the server saw
+        let mut asked = gate.ranges_asked();
+        asked.sort_unstable();
+        assert_eq!(asked, [98_304, 196_608]);
+    }
+
+    /// Returns once the server has received a request more than the `seen` it had.
+    fn wait_for_request(count: &AtomicU64, seen: u64) {
+        while count.load(Ordering::SeqCst) == seen {
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     fn options() -> HttpOptions {
