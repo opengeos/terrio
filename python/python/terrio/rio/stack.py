@@ -308,11 +308,13 @@ def stack(
 
         if dst is None:
             if masked:
-                dest = np.ma.masked_equal(dest, nodataval, copy=False)
+                if nodataval is not None and cmath.isnan(nodataval):
+                    dest = np.ma.masked_where(np.isnan(dest), dest, copy=False)
+                else:
+                    dest = np.ma.masked_equal(dest, nodataval, copy=False)
             return dest, output_transform
         if first_colormap:
             dst.write_colormap(1, first_colormap)
-        dst.close()
         return None
 
 

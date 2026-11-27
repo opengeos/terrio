@@ -198,7 +198,10 @@ def setenv(**options: Any) -> None:
         _terrio.config_push(env._scope())
         return
     for k, v in options.items():
-        os.environ[k] = Env._value(v)
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = Env._value(v)
 
 
 def defenv(**options: Any) -> None:

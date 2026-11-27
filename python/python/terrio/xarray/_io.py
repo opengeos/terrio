@@ -1338,7 +1338,7 @@ def open_rasterio(
             name = f"band_{band}"
             opts = dict(common, parse_coordinates=band == 1 and parse_coordinates)
             da = _build(src, [band], band_only=True, default_name=name, **opts)
-            data_vars[name] = da.squeeze().drop_vars("band")
+            data_vars[name] = da.squeeze("band", drop=True)
         dataset = xarray.Dataset(data_vars, attrs=_parse_tags(src.tags))
         dataset.set_close(src.pool.close)
         return dataset

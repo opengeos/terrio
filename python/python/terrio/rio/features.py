@@ -132,6 +132,19 @@ def _pixel_geometry(geom: dict[str, Any], inv: Affine) -> dict[str, Any]:
     return out
 
 
+def _geojson_geometry(geom: dict[str, Any]) -> dict[str, Any]:
+    """Normalizes non-GeoJSON geometry types accepted by rasterio (`LinearRing`)."""
+    kind = geom["type"]
+    if kind == "GeometryCollection":
+        return {
+            "type": "GeometryCollection",
+            "geometries": [_geojson_geometry(g) for g in geom["geometries"]],
+        }
+    if kind == "LinearRing":
+        return {"type": "LineString", "coordinates": geom["coordinates"]}
+    return geom
+
+
 def _north_up(transform: Affine) -> bool:
     """Whether terrio can burn on `transform` itself (else, in pixel space)."""
     return transform.b == 0 and transform.d == 0 and transform.a > 0 and transform.e < 0
@@ -165,7 +178,7 @@ def _burn(
         # Map coordinates on the exact grid of the transform.
         grid = transform.to_gdal()
         feats = [
-            {"type": "Feature", "properties": {"v": v}, "geometry": g}
+            {"type": "Feature", "properties": {"v": v}, "geometry": _geojson_geometry(g)}
             for g, v in zip(geoms, values, strict=False)
         ]
     else:
