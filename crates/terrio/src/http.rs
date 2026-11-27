@@ -2068,9 +2068,13 @@ fn file_cache() -> std::sync::MutexGuard<'static, FileCache> {
 /// The blocks requests are fetching now, by file key, as (block size, block): a reader of a file
 /// waits for those another reader of it is fetching and takes them from the process-wide cache,
 /// rather than requesting them again (as several readers of one file's tiles, each reading part
-/// of them, do). Entries name the process that made them: a forked child drops its parent's,
-/// whose requests it does not have.
+/// of them, do). The registry names the process that filled it: a forked child empties it of its
+/// parent's requests, which it does not have.
 static IN_FLIGHT: Mutex<InFlight> = Mutex::new(InFlight { pid: 0, files: BTreeMap::new() });
+
+/// How long a reader with no timeout of its own waits for another reader's request before it
+/// requests the bytes itself.
+const WAIT_IN_FLIGHT: Duration = Duration::from_secs(30);
 
 /// Signalled when blocks leave [`IN_FLIGHT`].
 static IN_FLIGHT_DONE: std::sync::Condvar = std::sync::Condvar::new();
@@ -2123,21 +2127,15 @@ fn release_in_flight(key: &str, block_size: u64, blocks: impl IntoIterator<Item 
 
 /// Waits until none of `blocks` of the file is being fetched, until `until`, or until the read is
 /// cancelled (an error).
-fn wait_in_flight(key: &str, block_size: u64, blocks: &[u64], until: Option<Instant>) -> io::Result<()> {
+fn wait_in_flight(key: &str, block_size: u64, blocks: &[u64], until: Instant) -> io::Result<()> {
     let cancel = CANCEL_READS.with_borrow(Clone::clone);
     let mut flight = in_flight();
     while blocks.iter().any(|&b| flight.fetching(key, block_size, b)) {
         if cancel.iter().any(|flag| flag.load(Ordering::SeqCst)) {
             return Err(io::Error::other("request cancelled"));
         }
-        let mut poll = CANCEL_POLL;
-        if let Some(until) = until {
-            match until.checked_duration_since(Instant::now()).filter(|left| !left.is_zero()) {
-                Some(left) => poll = poll.min(left),
-                None => break,
-            }
-        }
-        flight = IN_FLIGHT_DONE.wait_timeout(flight, poll).unwrap_or_else(std::sync::PoisonError::into_inner).0;
+        let Some(left) = until.checked_duration_since(Instant::now()).filter(|left| !left.is_zero()) else { break };
+        flight = IN_FLIGHT_DONE.wait_timeout(flight, left.min(CANCEL_POLL)).unwrap_or_else(std::sync::PoisonError::into_inner).0;
         flight.reset_if_forked();
     }
     Ok(())
@@ -2218,8 +2216,7 @@ impl Drop for CacheTestGuard {
 
 /// Holds this module's process-wide locks (the cache of remote files, the requests in flight,
 /// the request statistics, the path-specific options, the retry warnings and the process's
-/// agent) across a fork, for
-/// [`crate::par`]: the forking thread takes them before the process is copied and lets them go
+/// agent) across a fork, for [`crate::par`]: the forking thread takes them before the process is copied and lets them go
 /// after, so that the child never starts with one held by a thread it does not have.
 #[cfg(unix)]
 pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
@@ -2480,6 +2477,9 @@ struct Shared {
     max_blocks: usize,
     /// The size of the process-wide cache.
     shared_budget: u64,
+    /// The blocks this reader claimed in [`IN_FLIGHT`] for the fetch under way (sorted): those
+    /// it stores leave the registry; a gap block another reader claimed stays that reader's.
+    claimed: Vec<u64>,
     blocks: HashMap<u64, Arc<[u8]>>,
     /// Cached blocks, oldest first, for eviction.
     order: VecDeque<u64>,
@@ -2537,6 +2537,7 @@ impl RangeReader {
             block_size,
             max_blocks,
             shared_budget,
+            claimed: Vec::new(),
             blocks: HashMap::new(),
             order: VecDeque::new(),
             whole: None,
@@ -2924,8 +2925,9 @@ impl Shared {
         }
         drop(cache);
         // Readers waiting for these blocks take them now, not when the whole fetch ends.
-        if !self.mixed_origins {
-            release_in_flight(&self.key, self.block_size, stored);
+        if !self.mixed_origins && !self.claimed.is_empty() {
+            let landed: Vec<u64> = stored.filter(|b| self.claimed.binary_search(b).is_ok()).collect();
+            release_in_flight(&self.key, self.block_size, landed);
         }
     }
 
@@ -2946,15 +2948,18 @@ impl Shared {
             return self.fetch_blocks_now(&blocks, gap);
         }
         let (claim, others) = Claim::take(&self.key, self.block_size, &blocks);
+        self.claimed.clone_from(&claim.blocks);
         let fetched = self.fetch_blocks_now(&claim.blocks, gap);
+        self.claimed.clear();
         // Released before waiting, so that two readers never wait for each other.
         drop(claim);
         fetched?;
         if others.is_empty() || self.whole.is_some() {
             return Ok(());
         }
-        // A wait ends by the reader's own timeout at the latest; it then requests the bytes itself.
-        let until = self.client.options.timeout.map(|t| Instant::now() + t);
+        // A wait ends by the reader's own timeout at the latest, or after WAIT_IN_FLIGHT without
+        // one (a request may stall); the reader then requests the bytes itself.
+        let until = Instant::now() + self.client.options.timeout.unwrap_or(WAIT_IN_FLIGHT);
         wait_in_flight(&self.key, self.block_size, &others, until)?;
         let missing: Vec<u64> = others.into_iter().filter(|&b| !self.blocks.contains_key(&b) && !self.load_cached_block(b)).collect();
         // Requested again only once: a reader never waits twice.
@@ -3863,7 +3868,9 @@ mod tests {
 
     /// Returns once the server has received a request more than the `seen` it had.
     fn wait_for_request(count: &AtomicU64, seen: u64) {
+        let until = Instant::now() + Duration::from_secs(10);
         while count.load(Ordering::SeqCst) == seen {
+            assert!(Instant::now() < until, "no request reached the server");
             std::thread::sleep(Duration::from_millis(1));
         }
     }

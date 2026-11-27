@@ -72,8 +72,8 @@ work too); errors have rioxarray's names (`terrio.xarray.exceptions`: `MissingCR
   chunk the selection touches is read whole, then cut. Select the area of interest on each opened
   array first, then concatenate. For a 10 km area over 10 Sentinel-2 dates of 12 bands, opened
   with `chunks=True`, concatenating then selecting fetched 2.57 GB, and selecting then
-  concatenating 64 MB, as much as reading each file's window directly. rioxarray's arrays behave
-  the same.
+  concatenating 64 MB, as much as reading each file's window directly. rioxarray's arrays fetched
+  the same bytes in that setup.
 - **Metadata.** As rioxarray: `band`, `y` and `x` dimensions, coordinates at pixel centres (2-D
   `xc` and `yc` for rotated grids), a `spatial_ref` coordinate with `crs_wkt`, `spatial_ref`,
   `GeoTransform` and the CF grid mapping attributes of the CRS (as `pyproj.CRS.to_cf()` gives
