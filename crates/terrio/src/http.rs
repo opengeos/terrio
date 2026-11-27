@@ -859,7 +859,7 @@ impl Client {
                     self.backoff(&mut attempt)?;
                     continue;
                 }
-                Err(e) => return Err(Error::Http(format!("{}: {e}", redact(&url)))),
+                Err(e) => return Err(http_error(&url, e)),
             };
             let status = status.unwrap_or_default();
             let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
@@ -1627,6 +1627,16 @@ fn transient(e: &ureq::Error) -> bool {
     matches!(e, ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed | ureq::Error::Protocol(_))
 }
 
+/// A ureq request error as a terrio error: a TLS failure keeps its own [`Error::Tls`] variant, so
+/// callers can tell a certificate or handshake failure from another HTTP failure.
+pub(crate) fn http_error(url: &str, e: ureq::Error) -> Error {
+    let message = format!("{}: {e}", redact(url));
+    match e {
+        ureq::Error::Tls(_) => Error::Tls(message),
+        _ => Error::Http(message),
+    }
+}
+
 /// The absolute URL a `Location` header points to.
 fn resolve_redirect(from: &str, location: &str) -> String {
     if location.contains("://") {
@@ -1989,7 +1999,7 @@ pub(crate) fn request_response(
                 backoff(&mut attempt);
                 continue;
             }
-            Err(e) => return Err(Error::Http(format!("{}: {e}", redact(&url)))),
+            Err(e) => return Err(http_error(&url, e)),
         };
         let status = response.status().as_u16();
         // A POST follows only 307 and 308, which keep the method and body.
@@ -3499,6 +3509,17 @@ pub(crate) fn test_routes_with(make_routes: impl FnOnce(&str) -> Vec<TestRoute>)
 mod tests {
     use super::*;
     use crate::vsi::listing::{xml_elements, xml_unescape};
+
+    #[test]
+    fn tls_failures_keep_their_own_error_variant() {
+        let e = http_error("https://example.test/x", ureq::Error::Tls("certificate verify failed"));
+        assert!(
+            matches!(&e, crate::Error::Tls(m) if m.contains("certificate verify failed") && m.contains("https://example.test/x")),
+            "{e}"
+        );
+        assert!(matches!(http_error("https://example.test/x", ureq::Error::Io(std::io::Error::other("reset"))), crate::Error::Http(_)));
+        assert!(matches!(http_error("https://example.test/x", ureq::Error::StatusCode(500)), crate::Error::Http(_)));
+    }
 
     #[test]
     fn object_fetcher_uses_creation_options_without_inheriting_another_scope() {

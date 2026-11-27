@@ -26,6 +26,9 @@ pub enum Error {
     /// An HTTP request failed.
     #[error("HTTP: {0}")]
     Http(String),
+    /// A TLS handshake or certificate verification failed (HTTPS).
+    #[error("TLS: {0}")]
+    Tls(String),
     /// The dataset's format is not recognized, or the operation is not supported for it.
     #[error("{0}")]
     Unsupported(String),
