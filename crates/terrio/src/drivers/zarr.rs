@@ -3648,12 +3648,15 @@ mod tests {
                             s as u8
                         })
                         .collect();
-                    let mut out = vec![0xA5; bsize];
-                    interleave(&block, &mut out, typesize, nelems);
                     let expected: Vec<u8> = (0..bsize)
                         .map(|i| if i < nelems * typesize { block[(i % typesize) * nelems + i / typesize] } else { 0xA5 })
                         .collect();
-                    assert_eq!(out, expected, "{typesize} {nelems} {extra}");
+                    // Both the plain copy and the one dispatched to AVX2 where the CPU has it.
+                    for interleaves in [interleave, interleave_avx2] {
+                        let mut out = vec![0xA5; bsize];
+                        interleaves(&block, &mut out, typesize, nelems);
+                        assert_eq!(out, expected, "{typesize} {nelems} {extra}");
+                    }
                 }
             }
         }
