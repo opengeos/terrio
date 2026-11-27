@@ -222,6 +222,7 @@ mod tests {
             "SELECT COUNT(*) FROM t WHERE id > 20",
             "SELECT * FROM t WHERE missing > 1 OR id = 1",
             "SELECT * FROM t WHERE ST_Area(geometry) = 0 AND id < 3",
+            "SELECT * FROM t WHERE t.id < 7",
             "SELECT * FROM t",
         ] {
             let expected = crate::ops::sql::query(&whole, statement);

@@ -1410,8 +1410,8 @@ class GeoPackage:
     """GeoPackage feature tables (by geometry, R-tree and spatial order of the rows) and their reads.
 
     terrio reads a file a page at a time (`terrio.open_stream`), a URL's pages by range requests
-    as GDAL does. Its `where` is `terrio.sql`, which reads the whole file through
-    `terrio.open_vector`.
+    as GDAL does. Its `where` is `terrio.sql`, which streams a local file's table, decoding the
+    geometries of the matching rows only, and reads a URL whole through `terrio.open_vector`.
     """
 
     # name: (geometry, rows, R-tree, rows sorted along a Hilbert curve)

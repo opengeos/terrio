@@ -16,6 +16,7 @@
 
 use super::wkb::from_wkb;
 use crate::drivers::sqlite::{self, Db, Value};
+use crate::ops::sql::BoundExpression;
 use crate::{Error, Result};
 use wbvector::{Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
 
@@ -461,43 +462,56 @@ pub(crate) fn layer_def(db: &impl Tables, c: &Content) -> Result<LayerDef> {
 
 impl LayerDef {
     /// The feature of a row (the `n`-th, from 0, numbering a table without a rowid alias), or
-    /// `None` when `bbox` is given and the geometry's bounding box does not intersect it.
-    pub(crate) fn feature(&self, row: &[Value], n: i64, bbox: Option<Rect>) -> Option<Feature> {
+    /// `None` when `bbox` is given and the geometry's bounding box does not intersect it, or
+    /// `filter` is given and the row's feature ID and attributes do not satisfy it (tested before
+    /// the geometry is decoded).
+    pub(crate) fn feature(&self, row: &[Value], n: i64, bbox: Option<Rect>, filter: Option<&BoundExpression>) -> Option<Feature> {
         let fid = self.fid_col.and_then(|i| row.get(i)?.as_i64()).unwrap_or(n + 1);
-        let geometry = self.geom_col.and_then(|i| match row.get(i) {
+        let attributes = || -> Vec<FieldValue> {
+            self.kept
+                .iter()
+                .map(|&(i, t)| {
+                    let v = row.get(i).unwrap_or(&Value::Null);
+                    match (t, v) {
+                        (_, Value::Null) => FieldValue::Null,
+                        (FieldType::Integer, Value::Int(x)) => FieldValue::Integer(*x),
+                        (FieldType::Integer, Value::Real(x)) => FieldValue::Integer(*x as i64),
+                        (FieldType::Integer, Value::Text(s)) => s.trim().parse().map_or(FieldValue::Null, FieldValue::Integer),
+                        (FieldType::Boolean, v) => v.as_i64().map_or(FieldValue::Null, |x| FieldValue::Boolean(x != 0)),
+                        (FieldType::Float, v) => v.as_f64().map_or(FieldValue::Null, FieldValue::Float),
+                        (FieldType::Date, Value::Text(s)) => FieldValue::Date(s.clone()),
+                        (FieldType::DateTime, Value::Text(s)) => FieldValue::DateTime(s.clone()),
+                        (FieldType::Blob, Value::Blob(b)) => FieldValue::Blob(b.clone()),
+                        (FieldType::Blob, Value::Text(s)) => FieldValue::Blob(s.as_bytes().to_vec()),
+                        (_, Value::Text(s)) => FieldValue::Text(s.clone()),
+                        (_, Value::Int(x)) => FieldValue::Text(x.to_string()),
+                        (_, Value::Real(x)) => FieldValue::Text(x.to_string()),
+                        (_, Value::Blob(b)) => FieldValue::Text(String::from_utf8_lossy(b).into_owned()),
+                    }
+                })
+                .collect()
+        };
+        let mut feature = Feature { fid: fid as u64, geometry: None, attributes: Vec::new() };
+        if let Some(filter) = filter {
+            feature.attributes = attributes();
+            if !filter.matches(&feature) {
+                return None;
+            }
+        }
+        feature.geometry = self.geom_col.and_then(|i| match row.get(i) {
             Some(Value::Blob(b)) => decode_geometry(b),
             _ => None,
         });
         // The exact test of the boxes the R-tree (in single precision) or the scan found.
         if let (Some(rect), Some(_)) = (bbox, self.geom_col)
-            && !geometry.as_ref().is_some_and(|g| bbox_intersects(g, rect))
+            && !feature.geometry.as_ref().is_some_and(|g| bbox_intersects(g, rect))
         {
             return None;
         }
-        let attributes = self
-            .kept
-            .iter()
-            .map(|&(i, t)| {
-                let v = row.get(i).unwrap_or(&Value::Null);
-                match (t, v) {
-                    (_, Value::Null) => FieldValue::Null,
-                    (FieldType::Integer, Value::Int(x)) => FieldValue::Integer(*x),
-                    (FieldType::Integer, Value::Real(x)) => FieldValue::Integer(*x as i64),
-                    (FieldType::Integer, Value::Text(s)) => s.trim().parse().map_or(FieldValue::Null, FieldValue::Integer),
-                    (FieldType::Boolean, v) => v.as_i64().map_or(FieldValue::Null, |x| FieldValue::Boolean(x != 0)),
-                    (FieldType::Float, v) => v.as_f64().map_or(FieldValue::Null, FieldValue::Float),
-                    (FieldType::Date, Value::Text(s)) => FieldValue::Date(s.clone()),
-                    (FieldType::DateTime, Value::Text(s)) => FieldValue::DateTime(s.clone()),
-                    (FieldType::Blob, Value::Blob(b)) => FieldValue::Blob(b.clone()),
-                    (FieldType::Blob, Value::Text(s)) => FieldValue::Blob(s.as_bytes().to_vec()),
-                    (_, Value::Text(s)) => FieldValue::Text(s.clone()),
-                    (_, Value::Int(x)) => FieldValue::Text(x.to_string()),
-                    (_, Value::Real(x)) => FieldValue::Text(x.to_string()),
-                    (_, Value::Blob(b)) => FieldValue::Text(String::from_utf8_lossy(b).into_owned()),
-                }
-            })
-            .collect();
-        Some(Feature { fid: fid as u64, geometry, attributes })
+        if filter.is_none() {
+            feature.attributes = attributes();
+        }
+        Some(feature)
     }
 }
 
@@ -528,7 +542,7 @@ fn read_layer(db: &Db, c: &Content, options: &crate::VectorOpenOptions) -> Resul
                     return Ok(true);
                 }
             }
-            if let Some(feature) = def.feature(&row.values()?, ordinal as i64, None) {
+            if let Some(feature) = def.feature(&row.values()?, ordinal as i64, None, None) {
                 layer.push(feature);
             }
             Ok(options.max_features.is_none_or(|m| layer.len() < m))
@@ -543,7 +557,7 @@ fn read_layer(db: &Db, c: &Content, options: &crate::VectorOpenOptions) -> Resul
     };
     let mut layer = def.layer.clone();
     // Rows are decoded in parallel, and kept in order.
-    let features = crate::par::map_range(table.rows.len(), |n| def.feature(&table.rows[n], n as i64, bbox));
+    let features = crate::par::map_range(table.rows.len(), |n| def.feature(&table.rows[n], n as i64, bbox, None));
     for f in features.into_iter().flatten() {
         layer.push(f);
     }
@@ -696,7 +710,7 @@ impl IndexedLayer {
         {
             row[column] = Value::Int(rowid);
         }
-        self.def.feature(&row, rowid.saturating_sub(1), bbox)
+        self.def.feature(&row, rowid.saturating_sub(1), bbox, None)
     }
     pub(crate) fn first(&self) -> Result<Layer> {
         let mut layer = self.def.layer.clone();
