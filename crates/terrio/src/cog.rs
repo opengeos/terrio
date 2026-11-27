@@ -3847,6 +3847,8 @@ fn place_in_groups<T: ChunkSamples>(
     cached: Option<(u64, usize)>,
     decode: &mut dyn FnMut(&mut PlaceChunk) -> Result<()>,
 ) -> Result<bool> {
+    // Every target places through `map`: the grouped path splits that one map by group.
+    debug_assert!(targets.values().flatten().all(|t| t.2.as_slice() == map), "targets of a grouped read share one map");
     let band_len = w.width * w.height;
     let per = (out.len() / band_len).div_ceil(groups);
     std::thread::scope(|scope| {
@@ -5507,10 +5509,12 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(200));
                 let mut out = vec![0u32; dw * dh * spp];
                 let mut decode = |place: &mut PlaceChunk| place((0, DecodingResult::U32(vals.clone()), (dw, dh)));
-                let placed = place_in_groups(&mut out, 4, &map, &targets, Window::new(0, 0, dw, dh), spp, None, &mut decode).unwrap();
+                let placed = place_in_groups(&mut out, 4, &map, &targets, Window::new(0, 0, dw, dh), spp, None, &mut decode);
+                // Released before the result is checked, so that a failure fails the test rather
+                // than leaving the waiting thread blocked.
                 drop(held);
                 waiting.join().unwrap();
-                placed && (0..spp).all(|b| (0..dw * dh).all(|p| out[b * dw * dh + p] == vals[p * spp + b]))
+                placed.unwrap() && (0..spp).all(|b| (0..dw * dh).all(|p| out[b * dw * dh + p] == vals[p * spp + b]))
             })
         });
     }
