@@ -641,14 +641,13 @@ fn idct_islow(coef: &[i32; 64], q: &[u16; 64], out: &mut [u8], stride: usize) {
 }
 
 /// libjpeg's post-IDCT range limiting: the sample centred on 128 and clamped, its value taken
-/// modulo 1024 first, as the lookup table is indexed.
+/// modulo 1024 first, as the lookup table is indexed. Written as arithmetic and a select rather
+/// than a branch on the sample's range, so that it can compile to conditional moves: samples fall
+/// on either side of 0, so a branch on the sign would be mispredicted about half the time.
 fn range_limit(v: i32) -> u8 {
-    match v & 1023 {
-        i @ 0..=127 => (i + 128) as u8,
-        128..=511 => 255,
-        512..=895 => 0,
-        i => (i - 896) as u8,
-    }
+    // Centred, modulo 1024: 0 to 255 are samples, 256 to 639 too bright, 640 to 1023 too dark.
+    let i = v.wrapping_add(128) & 1023;
+    if i >= 640 { 0 } else { i.min(255) as u8 }
 }
 
 /// Upsamples the components to the image size (libjpeg's fancy upsampling) and converts colours,
@@ -733,10 +732,11 @@ fn upsample_row<'a>(c: &'a Component, hs: usize, vs: usize, y: usize, buf: &'a m
             let i = row(r as isize);
             o[0] = i[0];
             o[1] = ((i[0] as u32 * 3 + i[1] as u32 + 2) >> 2) as u8;
-            for x in 1..w - 1 {
-                let v = i[x] as u32 * 3;
-                o[2 * x] = ((v + i[x - 1] as u32 + 1) >> 2) as u8;
-                o[2 * x + 1] = ((v + i[x + 1] as u32 + 2) >> 2) as u8;
+            // Pairs 1 to w - 2, from each sample and its neighbours: iterated, without bounds checks.
+            let neighbours = i.iter().zip(&i[1..]).zip(&i[2..]);
+            for (o, ((&a, &b), &c)) in o[2..2 * w - 2].as_chunks_mut::<2>().0.iter_mut().zip(neighbours) {
+                let v = b as u32 * 3;
+                *o = [((v + a as u32 + 1) >> 2) as u8, ((v + c as u32 + 2) >> 2) as u8];
             }
             o[2 * w - 2] = ((i[w - 1] as u32 * 3 + i[w - 2] as u32 + 1) >> 2) as u8;
             o[2 * w - 1] = i[w - 1];
@@ -749,10 +749,10 @@ fn upsample_row<'a>(c: &'a Component, hs: usize, vs: usize, y: usize, buf: &'a m
             let (mut last, mut this) = (first, sum(1));
             o[0] = ((first * 4 + 8) >> 4) as u8;
             o[1] = ((first * 3 + this + 7) >> 4) as u8;
-            for x in 2..w {
-                let next = sum(x);
-                o[2 * x - 2] = ((this * 3 + last + 8) >> 4) as u8;
-                o[2 * x - 1] = ((this * 3 + next + 7) >> 4) as u8;
+            // Pairs 1 to w - 2, each from the column sums before, at and after it.
+            for (o, (&a, &b)) in o[2..2 * w - 2].as_chunks_mut::<2>().0.iter_mut().zip(i0[2..].iter().zip(&i1[2..])) {
+                let next = a as u32 * 3 + b as u32;
+                *o = [((this * 3 + last + 8) >> 4) as u8, ((this * 3 + next + 7) >> 4) as u8];
                 (last, this) = (this, next);
             }
             o[2 * w - 2] = ((this * 3 + last + 8) >> 4) as u8;
@@ -781,22 +781,41 @@ fn upsample_row<'a>(c: &'a Component, hs: usize, vs: usize, y: usize, buf: &'a m
 /// A YCbCr sample converted to RGB, with libjpeg's fixed-point tables (`jdcolor.c`).
 #[inline]
 fn ycc(y: u8, cb: u8, cr: u8) -> [u8; 3] {
+    let y = y as i32;
+    let (cb, cr) = (cb as usize, cr as usize);
+    let r = y + YCC.cr_r[cr];
+    let g = y + ((YCC.cb_g[cb] + YCC.cr_g[cr]) >> 16);
+    let b = y + YCC.cb_b[cb];
+    [r.clamp(0, 255) as u8, g.clamp(0, 255) as u8, b.clamp(0, 255) as u8]
+}
+
+/// `jdcolor.c`'s tables, by Cb or Cr sample: the red and blue offsets, and the green one's two
+/// terms, `ONE_HALF` included, before their sum is descaled.
+struct YccTables {
+    cr_r: [i32; 256],
+    cb_b: [i32; 256],
+    cr_g: [i32; 256],
+    cb_g: [i32; 256],
+}
+
+static YCC: YccTables = {
     const SCALEBITS: i32 = 16;
     const ONE_HALF: i32 = 1 << (SCALEBITS - 1);
     const fn fix(x: f64) -> i32 {
         (x * (1i64 << SCALEBITS) as f64 + 0.5) as i32
     }
-    const CR_R: i32 = fix(1.40200);
-    const CB_B: i32 = fix(1.77200);
-    const CR_G: i32 = fix(0.71414);
-    const CB_G: i32 = fix(0.34414);
-    let y = y as i32;
-    let (cb, cr) = (cb as i32 - 128, cr as i32 - 128);
-    let r = y + ((CR_R * cr + ONE_HALF) >> SCALEBITS);
-    let g = y + ((-CB_G * cb + ONE_HALF - CR_G * cr) >> SCALEBITS);
-    let b = y + ((CB_B * cb + ONE_HALF) >> SCALEBITS);
-    [r.clamp(0, 255) as u8, g.clamp(0, 255) as u8, b.clamp(0, 255) as u8]
-}
+    let mut t = YccTables { cr_r: [0; 256], cb_b: [0; 256], cr_g: [0; 256], cb_g: [0; 256] };
+    let mut i = 0;
+    while i < 256 {
+        let x = i as i32 - 128;
+        t.cr_r[i] = (fix(1.40200) * x + ONE_HALF) >> SCALEBITS;
+        t.cb_b[i] = (fix(1.77200) * x + ONE_HALF) >> SCALEBITS;
+        t.cr_g[i] = -fix(0.71414) * x;
+        t.cb_g[i] = -fix(0.34414) * x + ONE_HALF;
+        i += 1;
+    }
+    t
+};
 
 #[cfg(test)]
 mod tests {
@@ -861,6 +880,16 @@ mod tests {
                 for c in 0..8 {
                     out[row * stride + c] = range_limit(descale(y[c], CONST_BITS + PASS1_BITS + 3) as i32);
                 }
+            }
+        }
+
+        /// libjpeg's post-IDCT range limiting, as its table reads.
+        pub(super) fn range_limit(v: i32) -> u8 {
+            match v & 1023 {
+                i @ 0..=127 => (i + 128) as u8,
+                128..=511 => 255,
+                512..=895 => 0,
+                i => (i - 896) as u8,
             }
         }
 
@@ -969,7 +998,7 @@ mod tests {
         }
 
         /// Converts YCbCr samples to RGB in place, with libjpeg's fixed-point tables (`jdcolor.c`).
-        fn ycc_to_rgb(v: &mut [u8]) {
+        pub(super) fn ycc_to_rgb(v: &mut [u8]) {
             const SCALEBITS: i32 = 16;
             const ONE_HALF: i32 = 1 << (SCALEBITS - 1);
             let fix = |x: f64| (x * (1i64 << SCALEBITS) as f64 + 0.5) as i32;
@@ -1005,11 +1034,22 @@ mod tests {
     fn ycc_converts_as_libjpeg() {
         // Grey stays grey; saturated chroma, worked out with libjpeg's tables.
         assert_eq!([ycc(128, 128, 128), ycc(0, 0, 255), ycc(255, 255, 0)], [[128, 128, 128], [178, 0, 0], [76, 255, 255]]);
+        // Every sample, as the arithmetic gives it.
+        for y in 0..=255u8 {
+            let mut theirs: Vec<u8> = (0..1 << 16).flat_map(|i: u32| [y, (i >> 8) as u8, i as u8]).collect();
+            let ours: Vec<u8> = theirs.as_chunks::<3>().0.iter().flat_map(|p| ycc(p[0], p[1], p[2])).collect();
+            reference::ycc_to_rgb(&mut theirs);
+            assert_eq!(ours, theirs, "Y {y}");
+        }
     }
 
     #[test]
     fn range_limit_follows_libjpegs_table() {
         assert_eq!([-129, -128, 0, 127, 128, 511, 512].map(range_limit), [0, 0, 128, 255, 255, 255, 0]);
+        // Every residue modulo 1024, and the extremes a corrupt stream's coefficients can reach.
+        for v in (-1024..1024).chain([i32::MIN, i32::MIN + 1, i32::MAX - 128, i32::MAX - 127, i32::MAX]) {
+            assert_eq!(range_limit(v), reference::range_limit(v), "{v}");
+        }
     }
 
     #[test]
