@@ -874,6 +874,11 @@ impl Def {
             return Err(Error::Crs(format!("invalid value for to_meter in '{s}'")));
         }
         let to_meter = units.or(explicit_to_meter).unwrap_or(1.0);
+        let explicit_to_deg = p.f64("to_deg");
+        if p.has("to_deg") && explicit_to_deg.is_none_or(|v| !v.is_finite() || v <= 0.0) {
+            return Err(Error::Crs(format!("invalid value for to_deg in '{s}'")));
+        }
+        let to_deg = explicit_to_deg.unwrap_or(1.0);
         let explicit_pm = p.str("pm").and_then(|v| {
             v.parse::<f64>()
                 .ok()
@@ -1044,7 +1049,7 @@ impl Def {
             x0,
             y0,
             to_meter,
-            to_deg: p.f64("to_deg").unwrap_or(1.0),
+            to_deg,
             pm: proj_prime_meridian(pm).to_radians(),
             over: p.has("over"),
             axis,
@@ -2956,5 +2961,16 @@ mod vertical_wkt_tests {
         let v = super::vertical_from_wkt(esri).unwrap();
         assert!(v.down && v.models.len() == 1);
         assert_eq!(v.to_metres(10.0), -10.0);
+    }
+
+    #[test]
+    fn non_positive_or_non_finite_to_deg_is_rejected() {
+        for bad in ["+to_deg=0", "+to_deg=-1", "+to_deg=NaN", "+to_deg=inf", "+to_deg=-inf", "+to_deg=abc", "+to_deg"] {
+            let proj = format!("+proj=longlat +datum=WGS84 {bad}");
+            assert!(super::Def::from_proj(&proj).is_err(), "from_proj accepted {bad}");
+            assert!(super::Def::from_proj_extension(&proj).is_err(), "from_proj_extension accepted {bad}");
+        }
+        assert!(super::Def::from_proj("+proj=longlat +datum=WGS84 +to_deg=0.9").is_ok());
+        assert!(super::Def::from_proj_extension("+proj=longlat +datum=WGS84 +to_deg=0.9").is_ok());
     }
 }
