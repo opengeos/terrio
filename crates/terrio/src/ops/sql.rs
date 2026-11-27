@@ -106,8 +106,8 @@ fn filtered_layer(path: &str, statement: &str, options: &crate::VectorOpenOption
         return Ok(None);
     }
     // A GeoPackage with a hot journal is read whole, as before: the stream reads the file's pages
-    // as they are. So is one the stream cannot open (one with a write-ahead log, say): the whole
-    // read reports what is wrong with it.
+    // as they are. So is one the stream fails to open, whatever the error (a write-ahead log,
+    // say): the whole read reports what is wrong with it.
     #[cfg(feature = "sqlite")]
     if gpkg && crate::drivers::sqlite_edit::has_hot_journal(std::path::Path::new(path))? {
         return Ok(None);

@@ -133,6 +133,12 @@ impl FeatureSource for RangedSource {
     fn select_columns(&mut self, keep: &[usize]) -> Result<bool> {
         self.inner.select_columns(keep)
     }
+
+    /// Not forwarded: `skip` and `max` count the source's rows before any WHERE clause, so a
+    /// ranged source must see every row and leave the filtering to the query.
+    fn filter_attributes(&mut self, _expression: &crate::ops::sql::Expression) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// The features of a reader with some of their fields (see [`FeatureReader::select_fields`]).
