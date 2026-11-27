@@ -527,7 +527,10 @@ reference resolution; supply corresponding input aliases. Outputs remain in
 memory. Saved write and checkpoint destinations are discarded by default; use
 `{ allowSavedOutputs: true }` only for trusted GDALG definitions to retain those
 destinations for explicit byte export. Nested definitions used as inputs always
-discard their saved outputs. Raster band/crop views retain window and overview
+discard their saved outputs. If a trusted definition contains an `--append`
+output, `outputBytes()` rejects the entire result, including its other outputs.
+Remove `--append` from the definition when byte export is needed.
+Raster band/crop views retain window and overview
 reads. Vector `select` requires `_ogr_geometry_` to retain geometry and CRS. Supported steps and their
 limits are listed in the CLI pipeline reference.
 
