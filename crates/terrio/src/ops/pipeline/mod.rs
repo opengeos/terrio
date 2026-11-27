@@ -801,7 +801,7 @@ mod tests {
         assert_eq!(result.data.as_ref().unwrap().vectors().unwrap()[0].name, "places");
     }
     #[test]
-    fn loaded_input_isolation_discards_saved_output_targets() {
+    fn loaded_definitions_discard_saved_output_targets() {
         let definition = serde_json::json!({
             "type": "gdal_streamed_alg",
             "command_line": "read alias ! materialize --output checkpoint.geojson --overwrite ! write embedded.geojson --overwrite"
@@ -1010,6 +1010,11 @@ mod tests {
         .run()
         .unwrap();
         assert!(output.exists());
+        let outer = Pipeline::from_tokens(&["read".into(), definition.to_string_lossy().into_owned()]).unwrap();
+        let trusted = Pipeline::from_gdalg_with_output_policy(&outer.to_gdalg().unwrap(), None, SavedOutputPolicy::Allow).unwrap();
+        let trusted_output = dir.path().join("trusted.geojson");
+        trusted.with_output(trusted_output.to_str().unwrap(), None, false).run().unwrap();
+        assert!(trusted_output.exists());
         assert_eq!(std::fs::read(protected).unwrap(), b"keep existing bytes");
     }
     #[test]

@@ -499,15 +499,17 @@ fn open_vrt_document(bytes: Vec<u8>, base: &str, policy: Option<crate::stac::Ass
 fn read_remote_definition(path: &str, policy: &crate::stac::AssetReadPolicy) -> Result<(Vec<u8>, String)> {
     let _observer = policy.observe_transport();
     #[cfg(remote)]
-    if let Some(remote) = crate::vfs::Location::parse(path).remote() {
-        let name = crate::vfs::Location::parse(path).file_name();
+    let location = crate::vfs::Location::parse(path);
+    #[cfg(remote)]
+    if let Some(remote) = location.remote() {
+        let name = location.file_name();
         let response = crate::http::get_file_response_checked(
             &remote,
             MAX_REMOTE_VRT_XML_BYTES as u64,
             crate::http::Redirects::for_reads(),
-            Some(&|head, len| crate::formats::check_remote_head(&name, path, head, len)),
+            Some(&|head, len| crate::formats::check_remote_head(&name, &location.shown(), head, len)),
         )?;
-        let base = if matches!(crate::vfs::Location::parse(path), crate::vfs::Location::S3 { .. }) {
+        let base = if matches!(location, crate::vfs::Location::S3 { .. }) {
             path.to_string()
         } else {
             crate::stac::azure_document_location(path, &remote, &response.url).unwrap_or(response.url)
@@ -1873,7 +1875,7 @@ mod tests {
 
     #[cfg(remote)]
     #[test]
-    fn loaded_input_isolation_remote_vrt_refuses_local_sources() {
+    fn remote_vrt_refuses_local_sources() {
         let dir = tempfile::tempdir().unwrap();
         let host = dir.path().join("host.tif");
         crate::write_raster_dataset(&raster(), host.to_str().unwrap(), &Default::default()).unwrap();
@@ -1885,17 +1887,49 @@ mod tests {
             raster().raster.data.to_f64_vec()
         );
         let (server, _) = crate::http::test_server(text.into_bytes());
-        let path = format!("{server}/remote.vrt");
-        let result = open_virtual_raster(&path).and_then(|mut raster| raster.read());
-        assert!(result.is_err(), "a directly opened remote VRT must not read a host file");
-        assert!(crate::open_raster(&path).is_err(), "an eager raster open must retain the remote source policy");
-        assert!(crate::open(&path).is_err(), "a generic dataset open must retain the remote source policy");
+        for suffix in ["", "?token=synthetic", "#fragment"] {
+            let path = format!("{server}/remote.vrt{suffix}");
+            let result = open_virtual_raster(&path).and_then(|mut raster| raster.read());
+            assert!(result.is_err(), "a directly opened remote VRT must not read a host file");
+            for result in [crate::open_raster(&path).map(|_| ()), crate::open(&path).map(|_| ())] {
+                let error = result.expect_err("an eager open must retain the remote source policy").to_string();
+                assert!(error.contains("local files"), "{error}");
+            }
+        }
         assert!(crate::stac::AssetReadPolicy::current().is_none());
+    }
+
+    #[test]
+    fn stac_asset_names_ending_in_vrt_keep_selector_dispatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.tif");
+        crate::write_raster_dataset(&raster(), source.to_str().unwrap(), &Default::default()).unwrap();
+        let vrt = dir.path().join("source.vrt");
+        std::fs::write(
+            &vrt,
+            document(&format!("<VRTRasterBand dataType=\"Float64\">{}</VRTRasterBand>", simple_source(&source, "1", None))),
+        )
+        .unwrap();
+        let item = dir.path().join("item.json");
+        std::fs::write(
+            &item,
+            serde_json::to_vec(&serde_json::json!({
+                "type": "Feature", "stac_version": "1.0.0", "assets": {"dem.vrt": {"href": "source.vrt"}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        for selector in [format!("STAC:\"{}\":dem.vrt", item.display()), format!("{}!dem.vrt", item.display())] {
+            let actual = crate::open_raster(&selector).unwrap();
+            assert_eq!(actual.raster.data.to_f64_vec(), raster().raster.data.to_f64_vec());
+            let crate::Dataset::Raster(actual) = crate::open(&selector).unwrap() else { panic!("expected a raster") };
+            assert_eq!(actual.raster.data.to_f64_vec(), raster().raster.data.to_f64_vec());
+        }
     }
 
     #[cfg(remote)]
     #[test]
-    fn loaded_input_isolation_remote_raw_vrt_cannot_use_opaque_fallback() {
+    fn remote_raw_vrt_cannot_use_opaque_fallback() {
         let dir = tempfile::tempdir().unwrap();
         let host = dir.path().join("host.raw");
         std::fs::write(&host, [7_u8; 4]).unwrap();
@@ -1910,17 +1944,67 @@ mod tests {
         assert!(crate::open_raster(&path).is_err());
         assert!(crate::open(&path).is_err());
         #[cfg(feature = "gdal")]
-        for name in [&path, &format!("/vsizip/{{{server}/raw.zip}}/raw.vrt")] {
-            let result: Result<()> = crate::dataset::gdal_fallback(name, Err(Error::Unsupported("VRT: VRTRawRasterBand".into())), |_| {
+        for name in
+            [path.clone(), format!("{path}?token=synthetic"), format!("{path}#fragment"), format!("/vsizip/{{{server}/raw.zip}}/raw.vrt")]
+        {
+            let result: Result<()> = crate::dataset::gdal_fallback(&name, Err(Error::Unsupported("VRT: VRTRawRasterBand".into())), |_| {
                 panic!("a remote VRT must not be retried through an opaque source parser")
             });
             assert!(result.is_err());
         }
     }
 
+    #[cfg(all(remote, feature = "gdal"))]
+    #[test]
+    fn remote_vrt_content_cannot_use_opaque_fallback_under_other_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("host.raw");
+        std::fs::write(&raw, [7_u8; 4]).unwrap();
+        let xml = format!(
+            "<VRTDataset rasterXSize=\"2\" rasterYSize=\"2\"><VRTRasterBand dataType=\"Byte\" band=\"1\" subClass=\"VRTRawRasterBand\"><SourceFilename>{}</SourceFilename><ImageOffset>0</ImageOffset><PixelOffset>1</PixelOffset><LineOffset>2</LineOffset></VRTRasterBand></VRTDataset>",
+            raw.display()
+        );
+        for prefix in [String::new(), format!("<?xml version=\"1.0\"?><!--{}-->", " ".repeat(2048))] {
+            let (server, _) = crate::http::test_server(format!("{prefix}{xml}").into_bytes());
+            for name in ["raw", "raw.tif", "raw.dat"] {
+                let path = format!("{server}/{name}");
+                for result in [
+                    crate::open_raster(&path).map(|_| ()),
+                    crate::open(&path).map(|_| ()),
+                    crate::LazyRaster::open(&path).and_then(|mut r| r.read()).map(|_| ()),
+                ] {
+                    assert!(result.is_err(), "remote VRT content must never read a host raw file through GDAL");
+                }
+                let result: Result<()> =
+                    crate::dataset::gdal_fallback(&path, Err(Error::Unsupported("native document refusal".into())), |_| {
+                        panic!("remote XML retried through GDAL")
+                    });
+                assert!(result.is_err());
+            }
+        }
+    }
+
     #[cfg(remote)]
     #[test]
-    fn loaded_input_isolation_remote_vrt_xml_is_bounded() {
+    #[cfg(feature = "netcdf-hdf5")]
+    fn remote_vrt_subdatasets_read_public_backing_files() {
+        let bytes = crate::memory::write_raster_bytes(&raster(), "source.nc", &Default::default()).unwrap();
+        let (source, seen) = crate::http::test_server(bytes);
+        let selector = format!("NETCDF:\"{source}/source.nc\":Band1");
+        let text =
+            document(&format!("<VRTRasterBand dataType=\"Float64\">{}</VRTRasterBand>", simple_source(Path::new(&selector), "1", None)));
+        let (server, _) = crate::http::test_server(text.into_bytes());
+        crate::config::with_options(&[("GDAL_HTTP_HEADERS", ""), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+            let mut opened = open_virtual_raster(&format!("{server}/public.vrt")).unwrap();
+            assert!(seen.lock().unwrap().is_empty());
+            assert_eq!(opened.read().unwrap().raster.data.to_f64_vec(), raster().raster.data.to_f64_vec());
+            assert!(!seen.lock().unwrap().is_empty());
+        });
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn remote_vrt_xml_is_bounded() {
         use std::io::Write;
         let mut bytes = document("<VRTRasterBand dataType=\"Byte\"/>").into_bytes();
         bytes.resize((64 << 20) + 1, b' ');
@@ -1940,26 +2024,28 @@ mod tests {
 
     #[cfg(remote)]
     #[test]
-    fn loaded_input_isolation_public_remote_vrt_stays_lazy() {
-        let pixels = crate::memory::write_raster_bytes(&raster(), "source.tif", &Default::default()).unwrap();
-        let (source, seen) = crate::http::test_server(pixels);
-        let text = document(&format!(
-            "<VRTRasterBand dataType=\"Float64\">{}</VRTRasterBand>",
-            simple_source(Path::new(&format!("{source}/source.tif")), "1", None)
-        ));
-        let (server, _) = crate::http::test_server(text.into_bytes());
-        crate::config::with_options(&[("GDAL_HTTP_HEADERS", ""), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
-            let mut opened = open_virtual_raster(&format!("{server}/public.vrt")).unwrap();
-            assert!(seen.lock().unwrap().is_empty(), "opening the VRT must not fetch source pixels");
-            assert_eq!(opened.read().unwrap().raster.data.to_f64_vec(), raster().raster.data.to_f64_vec());
-            assert!(!seen.lock().unwrap().is_empty());
-            assert!(crate::stac::AssetReadPolicy::current().is_none());
-        });
+    fn public_remote_vrt_stays_lazy() {
+        for suffix in ["", "?token=synthetic", "#fragment"] {
+            let pixels = crate::memory::write_raster_bytes(&raster(), "source.tif", &Default::default()).unwrap();
+            let (source, seen) = crate::http::test_server(pixels);
+            let text = document(&format!(
+                "<VRTRasterBand dataType=\"Float64\">{}</VRTRasterBand>",
+                simple_source(Path::new(&format!("{source}/source.tif")), "1", None)
+            ));
+            let (server, _) = crate::http::test_server(text.into_bytes());
+            crate::config::with_options(&[("GDAL_HTTP_HEADERS", ""), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+                let mut opened = crate::open_raster_lazy(&format!("{server}/public.vrt{suffix}")).unwrap();
+                assert!(seen.lock().unwrap().is_empty(), "opening the VRT must not fetch source pixels");
+                assert_eq!(opened.read().unwrap().raster.data.to_f64_vec(), raster().raster.data.to_f64_vec());
+                assert!(!seen.lock().unwrap().is_empty());
+                assert!(crate::stac::AssetReadPolicy::current().is_none());
+            });
+        }
     }
 
     #[cfg(remote)]
     #[test]
-    fn loaded_input_isolation_remote_vrt_requires_cloud_consent() {
+    fn remote_vrt_requires_cloud_consent() {
         let pixels = crate::memory::write_raster_bytes(&raster(), "source.tif", &Default::default()).unwrap();
         let (store, seen) = crate::http::test_server(pixels);
         let text = document(&format!(
@@ -1994,7 +2080,7 @@ mod tests {
 
     #[cfg(remote)]
     #[test]
-    fn loaded_input_isolation_cloud_documents_keep_credential_consent() {
+    fn cloud_vrt_documents_keep_credential_consent() {
         crate::config::with_options(
             &[("GDAL_HTTP_HEADERS", "Authorization: test-secret"), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")],
             || {
@@ -3682,7 +3768,9 @@ mod inventory_tests {
         // them, as GDAL's `/vsicurl/` cache does. Held, it evicts nothing meanwhile.
         let _cache = crate::http::cache_test_guard();
         let dir = tempfile::tempdir().unwrap();
-        let leaf = dir.path().join("unopened.tif");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let leaf = format!("http://{address}/unopened.tif");
         let source = |name: &str, relative: bool| {
             format!(
                 "<SimpleSource><SourceFilename relativeToVRT=\"{}\">{name}</SourceFilename><SourceBand>1</SourceBand></SimpleSource>",
@@ -3696,10 +3784,8 @@ mod inventory_tests {
         };
         let root = document(format!("{}{}", source("a.vrt", true), source("b.vrt", true)));
         let parent = document(source("nested.vrt", true));
-        let nested = document(source(leaf.to_str().unwrap(), false));
+        let nested = document(source(&leaf, false));
         let expected_bytes = root.len() + 2 * parent.len() + nested.len();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -3773,8 +3859,10 @@ mod inventory_tests {
                 options.clone(),
             )?
             .into_lazy();
-            assert_eq!(catalog.input_paths()?, vec![leaf.to_string_lossy().into_owned()]);
-            assert_eq!(catalog.input_paths()?, vec![leaf.to_string_lossy().into_owned()]);
+            // Overwrite inventory lists local files only. Remote leaves still need their
+            // descriptions checked, without fetching pixels or inventing local targets.
+            assert!(catalog.input_paths()?.is_empty());
+            assert!(catalog.input_paths()?.is_empty());
             assert_eq!(requests.lock().unwrap().len(), 4);
             #[cfg(feature = "sqlite")]
             {
@@ -3785,7 +3873,7 @@ mod inventory_tests {
                 crate::write_vector(&[layer], index.to_str().unwrap(), &Default::default())?;
                 let catalog = crate::catalog::RasterCatalog::open(index.to_str().unwrap(), options)?.into_lazy();
                 let paths = catalog.input_paths()?;
-                assert!(paths.contains(&leaf.to_string_lossy().into_owned()));
+                assert_eq!(paths, vec![index.to_string_lossy().into_owned()]);
                 // Every document is in the cache: no request.
                 assert_eq!(requests.lock().unwrap().len(), 4);
             }
@@ -3799,7 +3887,7 @@ mod inventory_tests {
         assert!(requests.iter().all(|(path, _)| matches!(path.as_str(), "/root.vrt" | "/a.vrt" | "/b.vrt" | "/nested.vrt")));
         assert_eq!(requests.iter().map(|(_, bytes)| bytes).sum::<usize>(), expected_bytes);
         assert!(expected_bytes < 4096);
-        assert!(!leaf.exists());
+        assert!(!requests.iter().any(|(path, _)| path == "/unopened.tif"), "inventory must never fetch source pixels");
     }
 
     #[test]

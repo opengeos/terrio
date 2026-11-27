@@ -4106,7 +4106,7 @@ item of the [roadmap](https://github.com/opengeos/terrio/blob/main/ROADMAP.md).
 
 A saved definition used as a nested `read` input contributes its evaluated dataset;
 its checkpoint and write artifacts are discarded. Execute a definition directly
-with `--load` to request its own named checkpoints. Output preflight checks are
+with `--load --allow-saved-outputs` to request its own named checkpoints. Output preflight checks are
 completed before writing, but multi-file writes are not transactional: an
 encoding or I/O failure can leave earlier outputs in place. CLI runs without
 `write`, `--output`, or `--save` print a dataset summary without saving a file.
@@ -4116,9 +4116,9 @@ this value does not retain the source file driver's provenance.
 
 `relative_paths_relative_to_this_file` applies to input paths only. Named
 checkpoint and final output paths resolve against the caller's working directory.
-Executing a definition directly with `--load` executes its write options, including
-explicit `--overwrite`; this is an instruction to run that definition, including
-its requested output writes. Nested `read` definitions continue to discard writes.
+Executing a definition directly with `--load` discards saved destinations and their
+write options unless `--allow-saved-outputs` is enabled. The opt-in trusts saved
+writes, including explicit `--overwrite`. Nested `read` definitions continue to discard writes.
 
 Each Python/JavaScript `dataset` property access creates an independent wrapper;
 vector features are copied on each access and at write/checkpoint snapshots. Keep

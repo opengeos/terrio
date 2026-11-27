@@ -545,11 +545,15 @@ pub(crate) fn open_native(path: &str) -> Result<Dataset> {
     Ok(ds)
 }
 
-fn open_native_unchecked(path: &str) -> Result<Dataset> {
-    // Keep the original VRT location so remote source policy survives eager opens.
-    if RasterDriver::for_extension(path) == Some(RasterDriver::VRT) {
-        return crate::ops::vrt::read_vrt(path).map(Dataset::Raster);
+/// Identifies a VRT by its location's filename, excluding remote queries and fragments.
+pub(crate) fn is_vrt_location(path: &str) -> bool {
+    if crate::ops::vrt::subdataset_parts(path).ok().flatten().is_some() {
+        return false;
     }
+    RasterDriver::for_extension(&vfs::Location::parse(path).file_name()) == Some(RasterDriver::VRT)
+}
+
+fn open_native_unchecked(path: &str) -> Result<Dataset> {
     if let Some(result) = crate::catalog::open_lazy(path) {
         return read_lazy_whole(result?).map(Dataset::Raster);
     }
@@ -558,6 +562,11 @@ fn open_native_unchecked(path: &str) -> Result<Dataset> {
     }
     if let Some(result) = crate::drivers::open_subdataset(path) {
         return result.map(Dataset::Raster);
+    }
+    // Selectors take precedence over extensions. Keep the original VRT location so the
+    // remote source policy and redirect-relative source base survive eager opens.
+    if is_vrt_location(path) {
+        return crate::ops::vrt::read_vrt(path).map(Dataset::Raster);
     }
     if let Some(result) = crate::drivers::open_in_place(path) {
         return result.map(Dataset::Raster);
@@ -630,9 +639,6 @@ pub(crate) fn read_lazy_whole(mut r: crate::LazyRaster) -> Result<RasterDataset>
 }
 
 fn read_raster_native(path: &str) -> Result<RasterDataset> {
-    if RasterDriver::for_extension(path) == Some(RasterDriver::VRT) {
-        return crate::ops::vrt::read_vrt(path);
-    }
     if let Some(result) = crate::catalog::open_lazy(path) {
         return read_lazy_whole(result?);
     }
@@ -644,6 +650,9 @@ fn read_raster_native(path: &str) -> Result<RasterDataset> {
     }
     if let Some(result) = crate::drivers::open_subdataset(path) {
         return result;
+    }
+    if is_vrt_location(path) {
+        return crate::ops::vrt::read_vrt(path);
     }
     if let Some(result) = crate::drivers::open_in_place(path) {
         return result;
@@ -1220,7 +1229,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
         return Err(e);
     }
     // An opaque VRT parser could follow sources that the remote document policy forbids.
-    if RasterDriver::for_extension(path) == Some(RasterDriver::VRT) && crate::stac::AssetReadPolicy::for_document(path)?.is_some() {
+    if is_vrt_location(path) && crate::stac::AssetReadPolicy::for_document(path)?.is_some() {
         return Err(e);
     }
     let retry = match &e {
@@ -1241,10 +1250,17 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     if !retry {
         return Err(e);
     }
-    // Keep an asset-policy refusal terminal and visible, rather than replacing it with the
-    // native format error when a remote STAC-selected raster needs the optional backend.
+    // Check consent and transport restrictions before inspecting any remote fallback bytes.
     crate::stac::check_gdal_asset_read()?;
     crate::gdal_backend::check_redirect_policy()?;
+    // GDAL can identify VRTs by content under extensionless or misleading names. Native
+    // refusals of those documents must not hand their sources to a second pointer parser.
+    if !matches!(&e, Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound)
+        && crate::stac::AssetReadPolicy::for_document(path)?.is_some()
+        && crate::formats::remote_may_be_vrt(path)
+    {
+        return Err(e);
+    }
     gdal(path).map_err(|gdal_error| if gdal_error.is_resource_refusal() { gdal_error } else { e })
 }
 
@@ -1599,7 +1615,7 @@ fn option_enabled(key: &str) -> bool {
 }
 
 fn read_raster_local(path: &str) -> Result<RasterDataset> {
-    if RasterDriver::for_extension(path) == Some(RasterDriver::VRT) {
+    if is_vrt_location(path) {
         return crate::ops::vrt::read_vrt(path);
     }
     if let Some(result) = crate::drivers::read(path) {

@@ -510,7 +510,7 @@ struct Client {
     missing_ok: bool,
     refused_ok: bool,
     service_errors: bool,
-    /// The most bytes a response to a request without a range may hold (see
+    /// The most bytes any response body may hold (see
     /// [`Client::fetch_range`]); `None`: as many as it holds.
     body_cap: Option<u64>,
     /// Whether the file is an `az://` blob whose requests carry an Azure bearer token.
@@ -1001,7 +1001,7 @@ impl Client {
     }
 
     /// [`Client::fetch_range`], a body read without range capped at `page_cap` bytes too (an
-    /// object store's listing page), as [`Client::body_cap`] caps it.
+    /// object store's listing page). [`Client::body_cap`] also bounds range responses.
     pub(crate) fn fetch_range_limited(&mut self, range: Option<String>, page_cap: Option<usize>) -> Result<Fetched> {
         let mut attempt = 0;
         loop {
@@ -1024,16 +1024,13 @@ impl Client {
             // A whole body over its cap is refused before it is read when its length is declared
             // (as GDAL's `MAX_FILE_SIZE` refuses it, `CURLOPT_MAXFILESIZE`), else once the cap is
             // passed.
-            let cap = if range.is_none() {
-                match (self.body_cap, page_cap.map(|n| n as u64)) {
-                    (Some(a), Some(b)) => Some(a.min(b)),
-                    (a, b) => a.or(b),
-                }
-            } else {
-                None
+            let page_cap = page_cap.filter(|_| range.is_none()).map(|n| n as u64);
+            let cap = match (self.body_cap, page_cap) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
             };
             if let Some(cap) = cap
-                && declared.is_some_and(|n| n > cap)
+                && (declared.is_some_and(|n| n > cap) || content_range.is_some_and(|n| n > cap))
             {
                 // Not read: a request with no body received.
                 record_fetch(&self.url, &self.stats_name(), 0);
@@ -1048,7 +1045,11 @@ impl Client {
                 let _ = data.try_reserve_exact(usize::try_from(n.min(declared)).unwrap_or(0));
             }
             let reader = response.into_body().into_reader();
-            let read = match limit.or(cap) {
+            let read_limit = match (limit, cap) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            let read = match read_limit {
                 Some(limit) => reader.take(limit.saturating_add(1)).read_to_end(&mut data),
                 None => { reader }.read_to_end(&mut data),
             };
@@ -1818,7 +1819,7 @@ pub(crate) fn get_file_response(remote: &Remote, redirects: Redirects) -> Result
     get_file_response_checked(remote, json_max_size(), redirects, None)
 }
 
-/// A bounded file read whose first bytes are checked before fetching the remaining body.
+/// Checks a file's first bytes and total length before its remaining body is fetched.
 type FileHeaderCheck<'a> = dyn Fn(&[u8], u64) -> Result<()> + 'a;
 
 /// A bounded file read with an optional check before fetching the remaining body.
@@ -1828,7 +1829,7 @@ pub(crate) fn get_file_response_checked(
     redirects: Redirects,
     check: Option<&FileHeaderCheck<'_>>,
 ) -> Result<JsonResponse> {
-    let reader = RangeReader::open_following(remote, HttpOptions::from_env(), redirects)?;
+    let reader = RangeReader::open_following_capped(remote, HttpOptions::from_env(), redirects, Some(cap))?;
     let mut s = reader.lock()?;
     if s.len > cap {
         return Err(over_cap(&s.client.url, cap));
@@ -2402,14 +2403,21 @@ impl RangeReader {
 
     /// [`RangeReader::open_with`], every request's redirects followed as `redirects` allows.
     pub(crate) fn open_following(remote: &Remote, options: HttpOptions, redirects: Redirects) -> Result<Self> {
+        Self::open_following_capped(remote, options, redirects, None)
+    }
+
+    /// A document read whose cap applies to the initial response and subsequent range bodies.
+    fn open_following_capped(remote: &Remote, options: HttpOptions, redirects: Redirects, cap: Option<u64>) -> Result<Self> {
         let block_size = options.block_size.max(1);
         let max_blocks = (options.cache_size / block_size).max(16) as usize;
         let shared_budget = options.cache_size;
         // GDAL_INGESTED_BYTES_AT_OPEN: a whole header in the first request, in whole blocks.
         let first_len =
             options.ingested_bytes_at_open.map_or(FIRST_READ.min(block_size), |n| n.max(block_size).div_ceil(block_size) * block_size);
+        let first_len = cap.map_or(first_len, |cap| first_len.min(cap.max(1)));
         let mut client = Client::new(remote, options);
         client.redirects = redirects;
+        client.body_cap = cap;
         client.check_asset_request(&client.url.clone())?;
         let key = client.cache_key();
         let mut shared = Shared {
@@ -5955,6 +5963,61 @@ mod tests {
             assert!(err.contains("larger than the 2048 bytes allowed"), "{err}");
         }
         assert_eq!(get(&Remote::Url(url)).unwrap(), doc, "within the default cap");
+    }
+
+    #[test]
+    fn document_caps_bound_the_initial_ignored_range_body() {
+        let _stats = stats_test_guard();
+        let cap = 32768;
+        crate::config::with_options(&[("GDAL_INGESTED_BYTES_AT_OPEN", "65536")], || {
+            for size in [cap, cap + 1, cap * 4] {
+                let body = vec![b'x'; size];
+                let (url, _) = serve(body.clone(), Mode::NoRanges);
+                let result = get_file_response_checked(&Remote::Url(url.clone()), cap as u64, Redirects::Any, None);
+                if size <= cap {
+                    assert_eq!(result.unwrap().body, body);
+                } else {
+                    assert!(result.err().expect("an oversized document must fail").to_string().contains("32768 bytes allowed"));
+                }
+                let received = fetch_stats_by_file().into_iter().find(|(name, _)| name == &format!("/vsicurl/{url}")).unwrap().1.bytes;
+                assert!(received <= cap as u64, "a document cap must apply before the first body is buffered: {received}");
+            }
+        });
+    }
+
+    #[test]
+    fn document_caps_bound_initial_bodies_without_content_length() {
+        use std::io::BufRead;
+        let _stats = stats_test_guard();
+        let cap = 32768;
+        for size in [cap, cap * 4] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/document.vrt", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut request = std::io::BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if request.read_line(&mut line).unwrap() == 0 || line.trim().is_empty() {
+                        break;
+                    }
+                }
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
+                let _ = stream.write_all(&vec![b'x'; size]);
+            });
+            crate::config::with_options(&[("GDAL_INGESTED_BYTES_AT_OPEN", "65536")], || {
+                let result = get_file_response_checked(&Remote::Url(url.clone()), cap as u64, Redirects::Any, None);
+                if size <= cap {
+                    assert_eq!(result.unwrap().body, vec![b'x'; size]);
+                } else {
+                    assert!(result.err().expect("an oversized document must fail").to_string().contains("32768 bytes allowed"));
+                }
+            });
+            server.join().unwrap();
+            let received = fetch_stats_by_file().into_iter().find(|(name, _)| name == &format!("/vsicurl/{url}")).unwrap().1.bytes;
+            assert!(received <= cap as u64 + 1, "an unframed response must stop at the cap plus its sentinel byte: {received}");
+        }
     }
 
     #[test]

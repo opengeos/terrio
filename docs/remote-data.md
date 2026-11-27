@@ -564,4 +564,7 @@ starting origin. The source policy stays attached to the
 lazy raster through later window, overview and mask reads. Local VRTs retain their
 filesystem source resolution. Remote VRT errors are terminal, including unsupported
 VRT features: the optional GDAL backend does not retry them with an opaque source
-parser.
+parser. This also applies to VRT content under extensionless or misleading remote
+names. An XML prefix whose root cannot be identified within the bounded inspection
+is conservatively refused by the fallback. Use a `.vrt` filename for native remote
+VRT reads; URL queries and fragments do not affect filename recognition.

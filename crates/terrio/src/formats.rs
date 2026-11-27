@@ -988,6 +988,19 @@ fn read_head_remote(location: &crate::vfs::Location) -> Option<(Vec<u8>, u64)> {
     }
 }
 
+/// Whether remote bytes could be a VRT that an opaque fallback would open by content.
+/// An unfinished XML prolog is conservative: its root may lie beyond the bounded prefix.
+#[cfg(feature = "gdal")]
+pub(crate) fn remote_may_be_vrt(path: &str) -> bool {
+    let location = crate::vfs::Location::parse(path);
+    let head = if matches!(location, crate::vfs::Location::Zip { .. }) {
+        crate::vfs::member_head(&location, 1024)
+    } else {
+        read_head_remote(&location).map(|(head, _)| head)
+    };
+    head.is_some_and(|head| sniff(&head) == Some("VRT") || inconclusive_xml(&head))
+}
+
 /// The drivers whose files start with a signature, with what shows it in a file's first bytes: a file
 /// named for one of these drivers alone is read only if its first bytes show one of their formats.
 /// Each is what terrio's reader of the format requires at the start of a file, or more lenient: a

@@ -366,7 +366,12 @@ fn local_backed(loc: &crate::vfs::Location) -> bool {
 /// back to whoever opened it.
 pub(crate) fn names_local_files(doc_loc: &str, href: &str) -> bool {
     let parse = crate::vfs::Location::parse;
-    !local_backed(&parse(doc_loc)) && local_backed(&parse(href))
+    !local_backed(&parse(asset_location(doc_loc))) && local_backed(&parse(asset_location(href)))
+}
+
+/// The backing filename of a supported subdataset selector, or the ordinary asset location.
+fn asset_location(href: &str) -> &str {
+    crate::ops::vrt::subdataset_parts(href).ok().flatten().map_or(href, |(_, file, _)| file)
 }
 
 /// Remote-document provenance retained by deferred raster reads. The original credential
@@ -466,7 +471,7 @@ impl AssetReadPolicy {
             Some(Name::Mosaic { source, .. }) => Some(source),
             None => crate::stacta::document_location(href).transpose()?,
         };
-        let href = selected.as_deref().unwrap_or(href);
+        let href = asset_location(selected.as_deref().unwrap_or(href));
         let inherited = Self::current();
         // A nested document must not replace the original catalog's origin and thereby turn
         // a cross-origin authenticated read into a same-origin exemption.
@@ -622,6 +627,7 @@ pub(crate) fn check_asset_access(doc_loc: &str, href: &str) -> Result<()> {
 }
 
 fn check_asset_access_with_origin(doc_loc: &str, href: &str, same_origin_allowed: bool) -> Result<()> {
+    let href = asset_location(href);
     #[cfg(not(remote))]
     let _ = same_origin_allowed;
     let redact = crate::vsi::listing::redact_url;
@@ -740,6 +746,7 @@ fn cloud_aliases(href: &str) -> (bool, bool, bool) {
 /// A backing object, including one inside nested zip archives, that would use ambient auth.
 #[cfg(remote)]
 fn asset_uses_credentials_with_origin(doc_loc: &str, href: &str, same_origin_allowed: bool) -> bool {
+    let href = asset_location(href);
     use crate::vfs::Location;
     fn backing(location: &Location) -> &Location {
         match location {
@@ -2843,6 +2850,27 @@ mod tests {
             assert!(seen.lock().unwrap().iter().all(|(request, _)| !request.contains("/private.tif")));
         });
         crate::http::clear_path_specific_options(Some(&format!("{base}/private.tif")));
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn subdataset_sources_check_the_backing_locations_and_credentials() {
+        let document = "https://catalog.example/root.vrt";
+        crate::config::with_options(&[("GDAL_HTTP_HEADERS", ""), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+            for prefix in ["NETCDF", "HDF5", "ZARR", "GPKG"] {
+                let remote = format!("{prefix}:\"https://public.example/source.nc\":Band1");
+                let local = format!("{prefix}:\"/private/source.nc\":Band1");
+                assert!(check_asset_access(document, &remote).is_ok(), "public subdatasets must remain readable");
+                assert!(check_asset_access(document, &local).is_err(), "local subdatasets must remain forbidden");
+                let policy = AssetReadPolicy::for_tests(document, false);
+                let _scope = policy.enter().unwrap();
+                assert!(AssetReadPolicy::nested(&remote).unwrap().is_some());
+                crate::config::with_options(&[("GDAL_HTTP_HEADERS", "X-Key: synthetic")], || {
+                    let error = check_asset_access(document, &remote).unwrap_err().to_string();
+                    assert!(error.contains("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS"), "{error}");
+                });
+            }
+        });
     }
 
     #[cfg(remote)]
