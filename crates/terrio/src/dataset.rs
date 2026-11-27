@@ -73,6 +73,13 @@ pub struct RasterDataset {
 /// domain and its items (see [`RasterDataset::metadata_domains`]).
 pub type MetadataDomain = (Option<usize>, String, Vec<(String, String)>);
 
+/// Whether samples of `data_type` can be stored packed narrower than the type and report `NBITS`
+/// (GDAL 3.13.3): the unsigned Byte, UInt16 and UInt32 containers — the ones the GeoTIFF writer's
+/// `NBITS` supports too, so reading and writing agree (a UInt64 container never reports NBITS).
+pub(crate) fn nbits_capable(data_type: wbraster::DataType) -> bool {
+    matches!(data_type, wbraster::DataType::U8 | wbraster::DataType::U16 | wbraster::DataType::U32)
+}
+
 /// Select and renumber per-band packing metadata without retaining unrelated source domains.
 pub(crate) fn selected_nbits(domains: &[MetadataDomain], bands: &[usize]) -> Vec<MetadataDomain> {
     bands
@@ -177,10 +184,7 @@ impl RasterDataset {
             }
         }
         self.metadata_domains.retain(|(band, domain, items)| !(band.is_some() && domain == "IMAGE_STRUCTURE" && items.is_empty()));
-        if matches!(self.raster.data_type, wbraster::DataType::U8 | wbraster::DataType::U16 | wbraster::DataType::U32)
-            && bits > 0
-            && usize::from(bits) < self.raster.data_type.size_bytes() * 8
-        {
+        if nbits_capable(self.raster.data_type) && bits > 0 && usize::from(bits) < self.raster.data_type.size_bytes() * 8 {
             for band in 0..self.raster.bands {
                 let item = ("NBITS".into(), bits.to_string());
                 if let Some((_, _, items)) =

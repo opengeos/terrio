@@ -3149,10 +3149,7 @@ impl TiffRaster {
             match key.to_ascii_uppercase().as_str() {
                 "NBITS" => {
                     let width = self.data_type.size_bytes() as u16 * 8;
-                    (matches!(self.data_type, DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64)
-                        && self.bits > 0
-                        && self.bits < width)
-                        .then(|| self.bits.to_string())
+                    (crate::dataset::nbits_capable(self.data_type) && self.bits > 0 && self.bits < width).then(|| self.bits.to_string())
                 }
                 "PIXELTYPE" => (self.data_type == DataType::I8).then(|| "SIGNEDBYTE".to_string()),
                 _ => None,
@@ -6173,5 +6170,43 @@ mod tests {
             .and_then(|(_, _, items)| items.iter().find(|(k, _)| k == "NBITS"))
             .map(|(_, v)| v.clone());
         assert_eq!(nbits.as_deref(), Some("12"), "{:?}", out.metadata_domains);
+    }
+
+    /// One shared NBITS rule for reading and writing: only the unsigned Byte/UInt16/UInt32
+    /// containers report it, so a UInt64 raster never does, in memory or in a file.
+    #[test]
+    fn nbits_is_reported_only_for_byte_u16_u32() {
+        assert!(!crate::dataset::nbits_capable(DataType::U64));
+        assert!(crate::dataset::nbits_capable(DataType::U8));
+        assert!(crate::dataset::nbits_capable(DataType::U16));
+        assert!(crate::dataset::nbits_capable(DataType::U32));
+        // In memory: set_sample_bits keeps the same rule, so no NBITS domain appears.
+        let mut ds = RasterDataset::new(
+            wbraster::Raster::from_data_native(
+                wbraster::RasterConfig { cols: 2, rows: 2, bands: 1, data_type: DataType::U64, ..Default::default() },
+                RasterData::from_f64_vec(DataType::U64, vec![1.0; 4]),
+            )
+            .unwrap(),
+            false,
+        );
+        ds.set_sample_bits(12);
+        let m = LazyRaster::from(ds);
+        assert_eq!(m.band_metadata_item(1, "NBITS", "IMAGE_STRUCTURE"), None);
+        assert_eq!(m.sample_bits(), None);
+        // In a file: a UInt64 GeoTIFF reports no NBITS either.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("u64.tif");
+        let ds = RasterDataset::new(
+            wbraster::Raster::from_data_native(
+                wbraster::RasterConfig { cols: 2, rows: 2, bands: 1, data_type: DataType::U64, ..Default::default() },
+                RasterData::from_f64_vec(DataType::U64, vec![1.0; 4]),
+            )
+            .unwrap(),
+            false,
+        );
+        crate::write_raster_dataset(&ds, path.to_str().unwrap(), &Default::default()).unwrap();
+        let r = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        assert_eq!(r.data_type(), DataType::U64);
+        assert_eq!(r.band_metadata_item(1, "NBITS", "IMAGE_STRUCTURE"), None);
     }
 }

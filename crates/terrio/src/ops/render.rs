@@ -1331,4 +1331,15 @@ mod tests {
         assert!(opaque >= 6, "{opaque}");
         assert!(render_vector(vec![Layer::new("empty")], &RenderOptions::default()).is_err());
     }
+
+    /// An alpha band stored packed (`NBITS` narrower than its type) scales to `2^bits - 1`, as
+    /// GDAL's `SRC_ALPHA_MAX` does (GDAL 3.13.3); without a stored width, the container's.
+    #[test]
+    fn alpha_max_uses_packed_nbits_when_present() {
+        assert_eq!(alpha_max(DataType::U16, Some(12)), 4095.0);
+        assert_eq!(alpha_max(DataType::U16, None), 65535.0);
+        assert_eq!(alpha_max(DataType::U16, Some(16)), 65535.0, "full width: the container's max");
+        assert_eq!(alpha_max(DataType::U8, None), 255.0);
+        assert_eq!(alpha_max(DataType::I16, None), 32767.0);
+    }
 }
