@@ -6141,4 +6141,37 @@ mod tests {
         assert_eq!(r.band_metadata_item(1, "PIXELTYPE", "IMAGE_STRUCTURE"), Some("SIGNEDBYTE".to_string()));
         assert_eq!(r.band_metadata_item(1, "NBITS", "IMAGE_STRUCTURE"), None);
     }
+
+    /// An in-memory raster's `NBITS` now reaches the existing stored-width callers on purpose
+    /// (as GDAL reports it for in-memory datasets too): `sample_bits`, `copy_sample_bits`/
+    /// `widest_sample_bits`, and a translate of the raster emits `NBITS` in its output.
+    #[test]
+    fn in_memory_nbits_propagates_to_stored_width_callers_and_translate() {
+        let mut ds = RasterDataset::new(
+            wbraster::Raster::from_data_native(
+                wbraster::RasterConfig { cols: 4, rows: 4, bands: 1, data_type: DataType::U16, ..Default::default() },
+                RasterData::from_f64_vec(DataType::U16, vec![7.0; 16]),
+            )
+            .unwrap(),
+            false,
+        );
+        ds.set_sample_bits(12);
+        let mut lazy = LazyRaster::from(ds);
+        assert_eq!(lazy.sample_bits(), Some(12));
+        assert_eq!(lazy.level_sample_bits(None), Some(12));
+        assert_eq!(lazy.widest_sample_bits(), Some(12));
+        let out = crate::ops::translate::translate_lazy(
+            &mut lazy,
+            &crate::ops::translate::TranslateOptions::default(),
+            crate::ops::overview::OverviewSelection::Auto,
+        )
+        .unwrap();
+        let nbits = out
+            .metadata_domains
+            .iter()
+            .find(|(b, d, _)| *b == Some(0) && d == "IMAGE_STRUCTURE")
+            .and_then(|(_, _, items)| items.iter().find(|(k, _)| k == "NBITS"))
+            .map(|(_, v)| v.clone());
+        assert_eq!(nbits.as_deref(), Some("12"), "{:?}", out.metadata_domains);
+    }
 }
