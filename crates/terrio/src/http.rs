@@ -2126,8 +2126,8 @@ fn release_in_flight(key: &str, block_size: u64, blocks: impl IntoIterator<Item 
 }
 
 /// Waits until none of `blocks` of the file is being fetched, for `wait` at most, until a fork
-/// begins (the reader then requests the bytes itself, a request the fork cancels as any), or
-/// until the read is cancelled (an error).
+/// begins (so that the fork does not wait for it; the reader then requests the bytes itself, as
+/// it would have without the other reader), or until the read is cancelled (an error).
 fn wait_in_flight(key: &str, block_size: u64, blocks: &[u64], wait: Duration) -> io::Result<()> {
     // A wait too long for the clock to reach has no end.
     let until = Instant::now().checked_add(wait);
