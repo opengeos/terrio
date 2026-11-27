@@ -2125,8 +2125,9 @@ fn release_in_flight(key: &str, block_size: u64, blocks: impl IntoIterator<Item 
     }
 }
 
-/// Waits until none of `blocks` of the file is being fetched, for `wait` at most, or until the read
-/// is cancelled (an error).
+/// Waits until none of `blocks` of the file is being fetched, for `wait` at most, until a fork
+/// begins (the reader then requests the bytes itself, a request the fork cancels as any), or
+/// until the read is cancelled (an error).
 fn wait_in_flight(key: &str, block_size: u64, blocks: &[u64], wait: Duration) -> io::Result<()> {
     // A wait too long for the clock to reach has no end.
     let until = Instant::now().checked_add(wait);
@@ -2135,6 +2136,9 @@ fn wait_in_flight(key: &str, block_size: u64, blocks: &[u64], wait: Duration) ->
     while blocks.iter().any(|&b| flight.fetching(key, block_size, b)) {
         if cancel.iter().any(|flag| flag.load(Ordering::SeqCst)) {
             return Err(io::Error::other("request cancelled"));
+        }
+        if crate::par::fork_pending() {
+            break;
         }
         let left = match until {
             Some(until) => match until.checked_duration_since(Instant::now()).filter(|left| !left.is_zero()) {
@@ -3876,6 +3880,37 @@ mod tests {
         let mut asked = gate.ranges_asked();
         asked.sort_unstable();
         assert_eq!(asked, [98_304, 196_608]);
+    }
+
+    /// A wait for blocks another reader never releases ends at its limit, and the reader then
+    /// requests them itself.
+    #[test]
+    fn a_wait_for_a_request_in_flight_ends_at_its_limit() {
+        let (_claim, _) = Claim::take("a wait's limit", 4096, &[1]);
+        let started = Instant::now();
+        wait_in_flight("a wait's limit", 4096, &[1], Duration::from_millis(100)).unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(100));
+    }
+
+    /// A fork ends a wait for another reader's request, as it cancels requests, rather than wait
+    /// for the wait's limit.
+    #[cfg(unix)]
+    #[test]
+    fn a_fork_ends_a_wait_for_a_request_in_flight() {
+        crate::par::alone(30, || {
+            let (claim, _) = Claim::take("a fork's wait", 4096, &[1]);
+            let waiter = std::thread::spawn(|| {
+                let started = Instant::now();
+                wait_in_flight("a fork's wait", 4096, &[1], Duration::from_secs(60)).unwrap();
+                started.elapsed()
+            });
+            std::thread::sleep(Duration::from_millis(100));
+            let fork = crate::par::ForkInProgress::begin();
+            let waited = waiter.join().unwrap();
+            drop(fork);
+            drop(claim);
+            waited < Duration::from_secs(5)
+        });
     }
 
     /// Returns once the server has received a request more than the `seen` it had.
