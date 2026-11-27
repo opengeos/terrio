@@ -2936,6 +2936,7 @@ impl Shared {
         // Readers waiting for these blocks take them now, not when the whole fetch ends.
         if !self.mixed_origins && !self.claimed.is_empty() {
             let landed: Vec<u64> = stored.filter(|b| self.claimed.binary_search(b).is_ok()).collect();
+            self.claimed.retain(|b| landed.binary_search(b).is_err());
             release_in_flight(&self.key, self.block_size, landed);
         }
     }
@@ -2956,10 +2957,12 @@ impl Shared {
         if self.mixed_origins || blocks.is_empty() || self.shared_budget < self.block_size {
             return self.fetch_blocks_now(&blocks, gap);
         }
-        let (claim, others) = Claim::take(&self.key, self.block_size, &blocks);
+        let (mut claim, others) = Claim::take(&self.key, self.block_size, &blocks);
         self.claimed.clone_from(&claim.blocks);
         let fetched = self.fetch_blocks_now(&claim.blocks, gap);
-        self.claimed.clear();
+        // The claim keeps only the blocks that did not land: those that did left the registry
+        // then, and may since be another reader's claim.
+        claim.blocks = std::mem::take(&mut self.claimed);
         // Released before waiting, so that two readers never wait for each other.
         drop(claim);
         fetched?;
