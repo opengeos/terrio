@@ -32,7 +32,7 @@
 //! | `TERRIO_HTTP_CACHE_SIZE` (bytes): the block cache of each open file, and the process-wide cache | `CPL_VSIL_CURL_CACHE_SIZE` | 67108864 |
 //! | `TERRIO_HTTP_USERAGENT` | `GDAL_HTTP_USERAGENT` | `terrio/VERSION` |
 //! | `TERRIO_HTTP_CAINFO` (PEM bundle added to Mozilla roots) | `GDAL_HTTP_CAINFO` | none |
-//! | `TERRIO_HTTP_UNSAFESSL=YES`: do not verify TLS certificates (curl's `CURLOPT_SSL_VERIFYPEER=0`); takes precedence over a CA bundle, and its connections never share a pool with verified ones | `GDAL_HTTP_UNSAFESSL` | off |
+//! | `TERRIO_HTTP_UNSAFESSL=YES`: do not verify TLS certificates or hostnames (curl's `CURLOPT_SSL_VERIFYPEER=0` and `CURLOPT_SSL_VERIFYHOST=0`, which GDAL sets for it); takes precedence over a CA bundle, and its connections and cached bytes never share a pool or cache entry with verified ones | `GDAL_HTTP_UNSAFESSL` | off |
 //! | `TERRIO_HTTP_MULTIRANGE`: `PARALLEL` requests the byte runs of one read up to 8 at once; `SERIAL` one after another; `SINGLE_GET` (one multipart request in GDAL, not supported) as `SERIAL`; any other value is `PARALLEL` | `GDAL_HTTP_MULTIRANGE` | `PARALLEL` |
 //! | `TERRIO_HTTP_LOG=YES`: print each request, and each new process-wide connection pool, to standard error | `CPL_CURL_VERBOSE` | off |
 //! | `TERRIO_JSON_MAX_SIZE` (bytes, `K`, `M` or `G` suffixes): the largest JSON document fetched whole | `CPL_JSON_MAX_SIZE` | 100 MB |
@@ -152,9 +152,10 @@ pub struct HttpOptions {
     /// An additional PEM CA bundle, supplementing the compiled Mozilla roots.
     /// Loaded when a connection pool is built; a changed path creates a new pool.
     pub ca_bundle: Option<std::path::PathBuf>,
-    /// Do not verify TLS certificates (`TERRIO_HTTP_UNSAFESSL=YES` / `GDAL_HTTP_UNSAFESSL`,
-    /// curl's `CURLOPT_SSL_VERIFYPEER=0`, as GDAL 3.13.3 reads it). Takes precedence over
-    /// [`Self::ca_bundle`], and its connections never share a pool with verified ones.
+    /// Do not verify TLS certificates or hostnames (`TERRIO_HTTP_UNSAFESSL=YES` /
+    /// `GDAL_HTTP_UNSAFESSL`, which GDAL 3.13.3 turns into curl's `CURLOPT_SSL_VERIFYPEER=0` and
+    /// `CURLOPT_SSL_VERIFYHOST=0`). Takes precedence over [`Self::ca_bundle`]; its connections
+    /// and cached bytes never share a pool or cache entry with verified ones.
     pub unsafe_ssl: bool,
     /// Print each request to standard error.
     pub log: bool,
@@ -781,14 +782,18 @@ impl Client {
 
     /// The file's key in the process-wide cache ([`FILE_CACHE`]): its URL, and a digest of the
     /// headers and credentials its requests carry (resolved when the client was created, as every
-    /// request sends them) and of where its redirects may lead, so that bytes fetched with a
-    /// credential are returned only to opens that would send the same one (GDAL keys its cache by
-    /// name alone), and bytes a redirect brought from another origin only to opens that would
-    /// follow it.
+    /// request sends them), of where its redirects may lead and of its TLS settings, so that bytes
+    /// fetched with a credential are returned only to opens that would send the same one (GDAL
+    /// keys its cache by name alone), bytes a redirect brought from another origin only to opens
+    /// that would follow it, and bytes fetched without certificate verification only to opens
+    /// that would not verify either.
     fn cache_key(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
-        h.update(format!("{:?}\n{}\n{:?}\n{:?}\n", self.remote, self.azure, self.redirects, self.options.ca_bundle).as_bytes());
+        h.update(
+            format!("{:?}\n{}\n{:?}\n{:?}\n{}\n", self.remote, self.azure, self.redirects, self.options.ca_bundle, self.options.unsafe_ssl)
+                .as_bytes(),
+        );
         for (k, v) in &self.headers {
             h.update(format!("{}: {v}\n", k.to_ascii_lowercase()).as_bytes());
         }
@@ -7350,5 +7355,24 @@ mod tests {
         let verified = agent_settings(&HttpOptions::default());
         let unverified = agent_settings(&HttpOptions { unsafe_ssl: true, ..Default::default() });
         assert_ne!(verified, unverified);
+    }
+
+    /// Bytes fetched without certificate verification never reach a verified open of the same URL:
+    /// `cache_key` includes `unsafe_ssl`, so the verified open misses the cache and makes a real
+    /// TLS connection — which the self-signed certificate fails.
+    #[test]
+    fn unsafe_ssl_never_shares_cached_bytes_with_a_verified_open() {
+        if tls::crypto_provider().is_err() {
+            return;
+        }
+        let _serial = cache_test_guard();
+        let url = serve_tls_self_signed(b"cached-body".to_vec());
+        let remote = Remote::Url(url.clone());
+        crate::config::push_scope(HashMap::from([("TERRIO_HTTP_UNSAFESSL".to_string(), Some("YES".to_string()))]));
+        let body = get(&remote);
+        crate::config::pop_scope();
+        assert_eq!(body.unwrap(), b"cached-body");
+        let err = get(&remote).unwrap_err();
+        assert!(matches!(err, Error::Http(_)), "the verified open made a real TLS connection and failed: {err}");
     }
 }

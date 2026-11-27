@@ -202,10 +202,11 @@ pub(super) fn with_bundle(config: ureq::config::Config, path: &Path, provider: P
     agent_with_tls(config, tls, error)
 }
 
-/// A client that does not verify the server's certificate, for `TERRIO_HTTP_UNSAFESSL=YES`
-/// (`GDAL_HTTP_UNSAFESSL`, which GDAL 3.13.3 turns into curl's `CURLOPT_SSL_VERIFYPEER=0`).
-/// It takes precedence over a CA bundle, as in GDAL. Without TLS cryptography (`provider` is an
-/// error), HTTPS fails with its reason, as with a bundle that cannot be read.
+/// A client that does not verify the server's certificate or match its name, for
+/// `TERRIO_HTTP_UNSAFESSL=YES` (`GDAL_HTTP_UNSAFESSL`, which GDAL 3.13.3 turns into curl's
+/// `CURLOPT_SSL_VERIFYPEER=0` and `CURLOPT_SSL_VERIFYHOST=0`). It takes precedence over a CA
+/// bundle, as in GDAL. Without TLS cryptography (`provider` is an error), HTTPS fails with its
+/// reason, as with a bundle that cannot be read.
 pub(super) fn without_verification(config: ureq::config::Config, provider: Provider) -> ureq::Agent {
     let configured = provider.and_then(|provider| {
         ClientConfig::builder_with_provider(provider.clone())
