@@ -391,7 +391,7 @@ mod native {
     }
 
     /// Whether a fork is waiting for the background work running.
-    #[cfg(all(test, unix))]
+    #[cfg(unix)]
     pub(super) fn fork_in_progress() -> bool {
         GATE.load(Ordering::SeqCst) >= FORK
     }
@@ -407,11 +407,11 @@ mod native {
 }
 
 /// Takes the process-wide locks of terrio's modules, for a fork (`native::prepare`): the decoded
-/// chunks' cache, the spare TIFF decoders, the remote files' cache, the request statistics, path
-/// options and retry warnings, the process's HTTP agent, the STAC tokens, the allow-list, the files
-/// in memory, the grids' caches and the warper's nodata warnings. Each is held for map operations
-/// (the agent while one is built) only, never while another is taken, so any order is free of
-/// deadlocks.
+/// chunks' cache, the spare TIFF decoders, the remote files' cache, the requests in flight, the
+/// request statistics, path options and retry warnings, the process's HTTP agent, the STAC
+/// tokens, the allow-list, the files in memory, the grids' caches and the warper's nodata
+/// warnings. Each is held for map operations (the agent while one is built) only, never while
+/// another is taken, so any order is free of deadlocks.
 #[cfg(all(unix, not(target_family = "wasm")))]
 fn hold_locks(held: &mut Vec<Box<dyn std::any::Any>>) {
     crate::block_cache::hold_for_fork(held);
@@ -435,6 +435,36 @@ fn hold_locks(held: &mut Vec<Box<dyn std::any::Any>>) {
 pub(crate) fn fork_safe() {
     #[cfg(all(unix, not(target_family = "wasm")))]
     native::register();
+}
+
+/// Whether a fork is waiting for the background work running: work waiting on another thread
+/// stops waiting then, as the fork cancels I/O batches (see [`with_waiting_workers`]).
+#[cfg(remote)]
+pub(crate) fn fork_pending() -> bool {
+    #[cfg(all(unix, not(target_family = "wasm")))]
+    return native::fork_in_progress();
+    #[cfg(not(all(unix, not(target_family = "wasm"))))]
+    false
+}
+
+/// A fork in progress in this process, for tests of work that must notice one; it ends when
+/// dropped.
+#[cfg(all(test, unix, not(target_family = "wasm")))]
+pub(crate) struct ForkInProgress;
+
+#[cfg(all(test, unix, not(target_family = "wasm")))]
+impl ForkInProgress {
+    pub(crate) fn begin() -> Self {
+        native::begin_fork();
+        Self
+    }
+}
+
+#[cfg(all(test, unix, not(target_family = "wasm")))]
+impl Drop for ForkInProgress {
+    fn drop(&mut self) {
+        native::end_fork();
+    }
 }
 
 /// Runs a native I/O batch with its worker threads counted until they have joined. A fork
