@@ -342,6 +342,48 @@ pub struct WarpOptions {
     /// top of which this applies. 1 by default; a positive finite number.
     #[doc(hidden)]
     pub sum_scale: f64,
+    /// Reports the warp's progress and can cancel it; `None` (the default) reports nothing.
+    pub progress: Option<ProgressCallback>,
+}
+
+/// A warp progress callback, for [`WarpOptions::progress`]: called with the fraction of the
+/// work done, which never decreases and stays within [0, 1] — the output rows warped for a
+/// windowed warp, the sources warped for one read whole into memory. Returning `false` cancels
+/// the warp with [`Error::Cancelled`], as
+/// [`crate::ops::overview::add_overviews_with_progress`]'s callback does.
+#[derive(Clone)]
+pub struct ProgressCallback(pub std::sync::Arc<dyn Fn(f64) -> bool + Send + Sync>);
+
+impl std::fmt::Debug for ProgressCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ProgressCallback(,)")
+    }
+}
+
+impl<F: Fn(f64) -> bool + Send + Sync + 'static> From<F> for ProgressCallback {
+    fn from(f: F) -> Self {
+        Self(std::sync::Arc::new(f))
+    }
+}
+
+/// A [`ProgressCallback`] with the fraction last reported, so reports never decrease.
+struct Progress {
+    callback: ProgressCallback,
+    last: std::sync::Mutex<f64>,
+}
+
+impl Progress {
+    fn new(callback: ProgressCallback) -> Self {
+        Self { callback, last: std::sync::Mutex::new(0.0) }
+    }
+
+    /// Reports `fraction`, clamped to [0, 1] and never below what was reported before;
+    /// `false` from the callback cancels with [`Error::Cancelled`].
+    fn report(&self, fraction: f64) -> Result<()> {
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        *last = last.max(fraction.clamp(0.0, 1.0));
+        if (self.callback.0)(*last) { Ok(()) } else { Err(Error::Cancelled) }
+    }
 }
 
 impl Default for WarpOptions {
@@ -382,6 +424,7 @@ impl Default for WarpOptions {
             sample_steps_all: false,
             rpc_output_window: false,
             sum_scale: 1.0,
+            progress: None,
         }
     }
 }
@@ -1876,6 +1919,10 @@ fn warp_data_masked(
         None => {}
     }
 
+    let progress = o.progress.as_ref().map(|c| Progress::new(c.clone()));
+    if let Some(prog) = &progress {
+        prog.report(0.0)?;
+    }
     for (k, s) in p.srcs.iter().enumerate() {
         let t = p.transformer(k)?;
         let (mut ctx, chunks, mut storage) = p.context(k, &t, o, None);
@@ -1908,6 +1955,13 @@ fn warp_data_masked(
             warp_source(&ctx, &chunks, &data, &storage, target);
         });
         t.check_policy()?;
+        // A source warped whole reports the fraction of the sources warped.
+        if let Some(prog) = &progress {
+            prog.report((k + 1) as f64 / p.srcs.len() as f64)?;
+        }
+    }
+    if let Some(prog) = &progress {
+        prog.report(1.0)?;
     }
     let mut ds = output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)?;
     ds.raster.metadata = p.srcs[0].ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
@@ -2112,6 +2166,13 @@ fn warp_reader_selected(
         let valid = validity(&src_bands, &nodata, unified, mask);
         Ok::<_, Error>((data, valid, masked))
     };
+    let progress = o.progress.as_ref().map(|c| Progress::new(c.clone()));
+    if let Some(p) = &progress {
+        p.report(0.0)?;
+    }
+    // The chunks partition the output rows: the fraction done is the rows warped so far.
+    let total_rows = grid.height.max(1) as f64;
+    let mut done_rows = 0usize;
     for c in &chunks {
         let strip = ctx.sum_strip_rows(c);
         if strip < c.sh {
@@ -2129,6 +2190,10 @@ fn warp_reader_selected(
             }
             let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: true };
             warp_chunks(std::slice::from_ref(c), bands, &storage, target, |c, sink, rows| ctx.store_sum_strips(c, &sums, sink, rows));
+            done_rows += c.dh;
+            if let Some(p) = &progress {
+                p.report(done_rows as f64 / total_rows)?;
+            }
             continue;
         }
         let mut c = *c;
@@ -2153,6 +2218,13 @@ fn warp_reader_selected(
                 None => break,
             }
         }
+        done_rows += c.dh;
+        if let Some(p) = &progress {
+            p.report(done_rows as f64 / total_rows)?;
+        }
+    }
+    if let Some(p) = &progress {
+        p.report(1.0)?;
     }
     t.check_policy()?;
     let mut ds = output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)?;
@@ -2429,6 +2501,13 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
         let mut src = src.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok((src.read_window(window, &options)?, source_mask(&mut *src, window, overview)?))
     };
+    let progress = o.progress.as_ref().map(|c| Progress::new(c.clone()));
+    if let Some(p) = &progress {
+        p.report(0.0)?;
+    }
+    // The output rows warped so far, across the pipelined chunks.
+    let done_rows = std::sync::atomic::AtomicU64::new(0);
+    let total_rows = grid.height.max(1) as f64;
     super::strips::pipelined(
         chunks.len(),
         |i| {
@@ -2495,10 +2574,17 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
                     }
                 }
             });
+            let done = done_rows.fetch_add(c.dh as u64, std::sync::atomic::Ordering::Relaxed) + c.dh as u64;
+            if let Some(p) = &progress {
+                p.report(done as f64 / total_rows)?;
+            }
             let upto = first_row(base, i);
             write_done(&mut rows, &mut base, upto)
         },
     )?;
+    if let Some(p) = &progress {
+        p.report(1.0)?;
+    }
     write_done(&mut rows, &mut base, grid.height)?;
     drop(write_done);
     t.check_policy()?;
@@ -11283,6 +11369,80 @@ mod tests {
             // A region over the source's edge is bounded pixel by pixel.
             assert!(ctx.affine_corner_taps(0, 0, 4000, 10, nearest).is_none());
         }
+    }
+
+    /// `WarpOptions::progress` gets the fraction done, never decreasing, ending at 1; returning
+    /// false cancels with `Error::Cancelled`. Reference: GDAL 3.13.3's progress callback.
+    #[test]
+    fn warp_reports_progress_and_cancels() {
+        use std::sync::{Arc, Mutex};
+        let src = raster(64, 64, [10.0, 0.01, 0.0, 50.0, 0.0, -0.01], 4326, |c, r| (c + 64 * r) as f64);
+        let o = WarpOptions {
+            dst_srs: Some(SpatialRef::parse("EPSG:3857").unwrap()),
+            size: Some((48, 48)),
+            error_threshold: 0.0,
+            ..Default::default()
+        };
+
+        // The in-memory warp reports per source, then 1.
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let mut o_mem = o.clone();
+        o_mem.progress = Some(ProgressCallback::from(move |f| {
+            sink.lock().unwrap().push(f);
+            true
+        }));
+        let out = warp(&[&src], &o_mem).unwrap();
+        assert_eq!(out.raster.cols, 48);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.first(), Some(&0.0), "{seen:?}");
+        assert_eq!(seen.last(), Some(&1.0), "{seen:?}");
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]), "never decreases: {seen:?}");
+        assert!(seen.iter().all(|f| (0.0..=1.0).contains(f)), "{seen:?}");
+        drop(seen);
+
+        // The windowed (lazy) warp reports the output rows warped per chunk.
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tif");
+        crate::write_raster_dataset(&src, input.to_str().unwrap(), &Default::default()).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let mut o_lazy = o.clone();
+        o_lazy.progress = Some(ProgressCallback::from(move |f| {
+            sink.lock().unwrap().push(f);
+            true
+        }));
+        let out = warp_paths(&[input.to_str().unwrap().to_string()], &o_lazy).unwrap();
+        assert_eq!(out.raster.cols, 48);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.first(), Some(&0.0), "{seen:?}");
+        assert_eq!(seen.last(), Some(&1.0), "{seen:?}");
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]), "never decreases: {seen:?}");
+        assert!(seen.len() > 2, "per chunk, not just the ends: {seen:?}");
+        drop(seen);
+
+        // Returning false cancels: the error is Error::Cancelled, on both paths.
+        let mut o_cancel = o.clone();
+        o_cancel.progress = Some(ProgressCallback::from(|_| false));
+        assert!(matches!(warp(&[&src], &o_cancel), Err(Error::Cancelled)));
+        let mut o_cancel_lazy = o.clone();
+        o_cancel_lazy.progress = Some(ProgressCallback::from(|_| false));
+        assert!(matches!(warp_paths(&[input.to_str().unwrap().to_string()], &o_cancel_lazy), Err(Error::Cancelled)));
+
+        // warp_to_path reports too (the streamed single-source path).
+        let output = dir.path().join("out.tif");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let mut o_path = o.clone();
+        o_path.progress = Some(ProgressCallback::from(move |f| {
+            sink.lock().unwrap().push(f);
+            true
+        }));
+        warp_to_path(&[input.to_str().unwrap().to_string()], &o_path, output.to_str().unwrap(), &Default::default()).unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.first(), Some(&0.0), "{seen:?}");
+        assert_eq!(seen.last(), Some(&1.0), "{seen:?}");
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]), "never decreases: {seen:?}");
     }
 }
 
