@@ -566,5 +566,6 @@ filesystem source resolution. Remote VRT errors are terminal, including unsuppor
 VRT features: the optional GDAL backend does not retry them with an opaque source
 parser. This also applies to VRT content under extensionless or misleading remote
 names. An XML prefix whose root cannot be identified within the bounded inspection
-is conservatively refused by the fallback. Use a `.vrt` filename for native remote
+is conservatively refused by the fallback. An unavailable remote or archive-member
+prefix also prevents an opaque retry. Use a `.vrt` filename for native remote
 VRT reads; URL queries and fragments do not affect filename recognition.

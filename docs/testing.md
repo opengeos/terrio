@@ -131,6 +131,8 @@ ignored ranges, large ingestion settings and missing Content-Length: declared
 oversized bodies remain unread and unframed bodies stop after the cap plus one
 sentinel byte. With the optional backend, the remote VRT tests also refuse GDAL
 fallback under extensionless and misleading names, including long XML prologs.
+Failed HTTP and archive-member prefix inspections must also refuse the GDAL
+closure after a native parser refusal, preserving the original error.
 
 `python/tests/test_pyogrio_buffer_routing.py` checks unsupported single-file and
 multi-file ZIPs through paths, bytes, named buffers and open files. Reads and

@@ -1268,6 +1268,25 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
 mod fallback_tests {
     use super::*;
 
+    #[cfg(remote)]
+    #[test]
+    fn remote_fallback_refuses_unavailable_document_headers() {
+        let (base, seen) = crate::http::test_routes(vec![
+            ("/opaque".into(), 400, Vec::new(), Vec::new()),
+            ("/archive.zip".into(), 400, Vec::new(), Vec::new()),
+        ]);
+        for path in [format!("{base}/opaque"), format!("/vsizip/{{{base}/archive.zip}}/opaque")] {
+            let called = std::cell::Cell::new(false);
+            let result = gdal_fallback(&path, Err(Error::Unsupported("native document refusal".into())), |_| {
+                called.set(true);
+                Ok(())
+            });
+            assert!(!called.get(), "a failed prefix inspection must not invoke an opaque parser");
+            assert!(matches!(result, Err(Error::Unsupported(_))));
+        }
+        assert_eq!(seen.lock().unwrap().len(), 2, "inspect each prefix once, without a fallback request");
+    }
+
     #[test]
     fn named_terminal_parser_refusals_are_not_retried() {
         let path = "/vsizip/input.zip/data";
