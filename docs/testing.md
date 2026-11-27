@@ -120,7 +120,10 @@ VRTs reject local and ambiently credentialed sources. Query-bearing URLs preserv
 provenance, STAC selectors keep their dispatch priority, and public remote subdataset
 sources use the policy of their backing file. Public sources remain lazy;
 consent can be granted and revoked, including for cached source reads. Remote XML
-and decompressed archive members are refused above 64 MiB. These are Terrio host
+and decompressed archive members are refused above 64 MiB, including VRTs beneath
+STAC-looking service paths. Remote JSON probes cannot spill VRT content into a
+file-enabled reader, including long prologs, case variants and UTF-16 XML; ordinary
+UTF-16 KML remains readable. These are Terrio host
 policies, rather than GDAL numerical conformance claims. CLI pipeline tests and
 `python/tests/test_pipeline.py` cover saved-output consent and overwrite behavior;
 the Node pipeline tests check the same default and explicit byte-export opt-in.

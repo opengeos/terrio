@@ -2014,9 +2014,17 @@ mod tests {
             .unwrap();
         archive.write_all(&bytes).unwrap();
         let archive = archive.finish().unwrap().into_inner();
-        let (server, _) = crate::http::test_server(bytes);
+        let (server, seen) = crate::http::test_server(bytes);
         let error = open_virtual_raster(&format!("{server}/large.vrt")).unwrap_err().to_string();
         assert!(error.contains("67108864"), "{error}");
+        for directory in ["collections", "search"] {
+            let path = format!("{server}/{directory}/large.vrt");
+            for result in [crate::open_raster(&path).map(|_| ()), crate::open(&path).map(|_| ())] {
+                let error = result.expect_err("STAC-looking paths must retain the VRT cap").to_string();
+                assert!(error.contains("67108864"), "{error}");
+            }
+        }
+        assert!(seen.lock().unwrap().iter().all(Option::is_some), "VRT locations must use the bounded range reader, not an API request");
         let (server, _) = crate::http::test_server(archive);
         let error = open_virtual_raster(&format!("/vsizip/{{{server}/archive.zip}}/large.vrt")).unwrap_err().to_string();
         assert!(error.contains("67108864"), "{error}");
@@ -2040,6 +2048,40 @@ mod tests {
                 assert!(!seen.lock().unwrap().is_empty());
                 assert!(crate::stac::AssetReadPolicy::current().is_none());
             });
+        }
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn remote_vrt_content_named_as_json_never_reads_host_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = dir.path().join("host.tif");
+        crate::write_raster_dataset(&raster(), host.to_str().unwrap(), &Default::default()).unwrap();
+        let xml = document(&format!("<VRTRasterBand dataType=\"Float64\">{}</VRTRasterBand>", simple_source(&host, "1", None)));
+        let mut documents: Vec<Vec<u8>> =
+            [xml.clone(), format!("<?xml version=\"1.0\"?><!--{}-->{xml}", " ".repeat(32768)), xml.replace("VRTDataset", "vrtdataset")]
+                .into_iter()
+                .map(String::into_bytes)
+                .collect();
+        for little in [true, false] {
+            let mut bytes = if little { vec![0xff, 0xfe] } else { vec![0xfe, 0xff] };
+            bytes.extend(
+                format!("<?xml version=\"1.0\" encoding=\"UTF-16\"?>{xml}")
+                    .encode_utf16()
+                    .flat_map(|unit| if little { unit.to_le_bytes() } else { unit.to_be_bytes() }),
+            );
+            documents.push(bytes);
+        }
+        for bytes in documents {
+            let (server, _) = crate::http::test_server(bytes);
+            for consent in ["NO", "YES"] {
+                crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", consent)], || {
+                    for name in ["data.json", "collections/data.json"] {
+                        let result = crate::open(&format!("{server}/{name}"));
+                        assert!(result.is_err(), "remote non-STAC bytes must not reach a host-file VRT reader");
+                    }
+                });
+            }
         }
     }
 

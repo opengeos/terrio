@@ -2204,6 +2204,11 @@ pub(crate) fn may_be_stac(path: &str) -> bool {
     if crate::drivers::vector::wfs::is_feature_request(path) {
         return false;
     }
+    // A named VRT owns its bounded, provenance-aware reader even beneath API-like paths.
+    // Explicit STAC selectors are handled separately, before document probing.
+    if crate::dataset::is_vrt_location(path) {
+        return false;
+    }
     let base = path.split(['?', '#']).next().unwrap_or(path).to_ascii_lowercase();
     if base.ends_with(".json") || base.ends_with(".geojson") {
         return true;
@@ -2256,7 +2261,21 @@ fn probe(path: &str) -> Option<Result<Probe>> {
             Some(Err(Error::InvalidArgument(format!("STAC: invalid remote JSON document; GDAL pointer fallback is disabled ({error})"))))
         }
         _ if loc.is_local() => None,
-        _ => Some(crate::memory::open_bytes(bytes, &loc.file_name()).map(|ds| Probe::Other(Box::new(ds)))),
+        _ => {
+            // Reuse the closed-map XML inspection so long prologs, case variants and
+            // malformed roots cannot spill a remote VRT into the file-enabled GDAL opener.
+            if crate::drivers::vector::citygml::is_xml_prefix(&bytes) {
+                let inspected = crate::drivers::vector::citygml::decode_xml(&bytes)
+                    .and_then(|text| crate::catalog::virtual_bytes(text.as_bytes(), &loc.file_name()));
+                match inspected {
+                    Ok(None) => {}
+                    Ok(Some(_)) => return Some(Err(Error::InvalidArgument("STAC: remote VRT content requires a .vrt location".into()))),
+                    Err(error) if error.is_resource_refusal() => return Some(Err(error)),
+                    Err(error) => return Some(Err(Error::InvalidArgument(format!("STAC: remote XML document refused ({error})")))),
+                }
+            }
+            Some(crate::memory::open_bytes(bytes, &loc.file_name()).map(|ds| Probe::Other(Box::new(ds))))
+        }
     }
 }
 
@@ -3629,6 +3648,26 @@ mod tests {
             ],
             || assert!(super::open(&format!("{server}/data.json")).unwrap().is_ok()),
         );
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn remote_non_stac_xml_keeps_supported_utf16_readers() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-16"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><Placemark><Point><coordinates>1,2,0</coordinates></Point></Placemark></Document></kml>"#;
+        for little in [true, false] {
+            let mut bytes = if little { vec![0xff, 0xfe] } else { vec![0xfe, 0xff] };
+            bytes.extend(xml.encode_utf16().flat_map(|unit| if little { unit.to_le_bytes() } else { unit.to_be_bytes() }));
+            let (server, _) = crate::http::test_server(bytes);
+            let Dataset::Vector(vector) = crate::open(&format!("{server}/collections/points.kml")).unwrap() else {
+                panic!("expected vector data")
+            };
+            assert_eq!(vector.layers[0].features.len(), 1);
+            let json = crate::drivers::vector::geojson::to_string(&vector.layers[0], &Default::default()).unwrap();
+            let json: Value = serde_json::from_str(&json).unwrap();
+            let point = &json["features"][0]["geometry"]["coordinates"];
+            assert_eq!(point[0].as_f64(), Some(1.0));
+            assert_eq!(point[1].as_f64(), Some(2.0));
+        }
     }
 
     #[cfg(remote)]

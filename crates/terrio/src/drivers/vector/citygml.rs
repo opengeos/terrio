@@ -38,7 +38,8 @@ fn utf16_encoding(bytes: &[u8]) -> Option<&'static encoding_rs::Encoding> {
     }
 }
 
-fn decode_xml(bytes: &[u8]) -> Result<Cow<'_, str>> {
+/// Decodes supported XML encodings for parsing or source-kind inspection.
+pub(crate) fn decode_xml(bytes: &[u8]) -> Result<Cow<'_, str>> {
     if let Some(encoding) = utf16_encoding(bytes) {
         let (text, errors) = encoding.decode_with_bom_removal(bytes);
         if errors {

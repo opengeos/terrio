@@ -524,8 +524,11 @@ const files = result.outputBytes(); // { "selected.tif": Uint8Array }
 saved-definition output; its JSON is available through `outputBytes()`. Imported
 GDALG JSON can use `{ baseFile: "folder/definition.gdalg.json" }` for relative
 reference resolution; supply corresponding input aliases. Outputs remain in
-memory. Raster band/crop views retain window and overview reads. Vector `select`
-requires `_ogr_geometry_` to retain geometry and CRS. Supported steps and their
+memory. Saved write and checkpoint destinations are discarded by default; use
+`{ allowSavedOutputs: true }` only for trusted GDALG definitions to retain those
+destinations for explicit byte export. Nested definitions used as inputs always
+discard their saved outputs. Raster band/crop views retain window and overview
+reads. Vector `select` requires `_ogr_geometry_` to retain geometry and CRS. Supported steps and their
 limits are listed in the CLI pipeline reference.
 
 Use `{ inputKind: "raster" }` or `{ inputKind: "vector" }` to force the input

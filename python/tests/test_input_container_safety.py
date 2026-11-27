@@ -156,13 +156,15 @@ def test_stac_vrt_asset_names_keep_selector_dispatch(tmp_path, lazy):
 
 @pytest.mark.parametrize("lazy", [False, True])
 @pytest.mark.parametrize("suffix", ["", "?token=synthetic", "#fragment"])
-def test_direct_remote_vrt_provenance_and_redirect_base(tmp_path, lazy, suffix):
+@pytest.mark.parametrize("directory", ["", "collections/", "search/"])
+def test_direct_remote_vrt_provenance_and_redirect_base(tmp_path, lazy, suffix, directory):
     """Keep deferred remote sources confined and resolve redirected relative sources.
 
     Args:
         tmp_path: Temporary directory containing the controlled local source.
         lazy: Whether to defer raster reads.
         suffix: Query or fragment attached to the caller-selected VRT location.
+        directory: Optional STAC-looking parent path for the VRT location.
     """
     from terrio import rio
 
@@ -186,12 +188,14 @@ def test_direct_remote_vrt_provenance_and_redirect_base(tmp_path, lazy, suffix):
             """Serve controlled document and raster responses."""
             requests.append(self.path)
             self.path = self.path.split("?", 1)[0]
+            if directory:
+                self.path = self.path.replace(f"/{directory}", "/", 1)
             if self.path in ("/entry.vrt", "/chain.vrt", "/archive-chain.zip"):
                 self.send_response(302)
                 target = "/nested/remote.vrt"
                 if self.path != "/entry.vrt":
-                    suffix = "archive-back" if self.path == "/archive-chain.zip" else "back"
-                    target = f"{bounce}/{suffix}"
+                    redirect_name = "archive-back" if self.path == "/archive-chain.zip" else "back"
+                    target = f"{bounce}/{redirect_name}"
                 self.send_header("Location", target)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
@@ -251,11 +255,11 @@ def test_direct_remote_vrt_provenance_and_redirect_base(tmp_path, lazy, suffix):
         try:
             base = f"http://127.0.0.1:{server.server_port}"
             with pytest.raises(Exception, match="local files"):
-                terrio.open_raster(f"{base}/blocked.vrt{suffix}", lazy=lazy).read(1)
+                terrio.open_raster(f"{base}/{directory}blocked.vrt{suffix}", lazy=lazy).read(1)
             with pytest.raises(Exception, match="local files"):
-                terrio.open(f"{base}/blocked.vrt{suffix}")
+                terrio.open(f"{base}/{directory}blocked.vrt{suffix}")
             np.testing.assert_array_equal(terrio.open_raster(str(path)).read(1), values)
-            opened = terrio.open_raster(f"{base}/entry.vrt{suffix}", lazy=lazy)
+            opened = terrio.open_raster(f"{base}/{directory}entry.vrt{suffix}", lazy=lazy)
             if lazy:
                 assert "/nested/source.tif" not in requests
             np.testing.assert_array_equal(opened.read(1), values)
