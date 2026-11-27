@@ -246,9 +246,14 @@ impl<In: Transport> Connector<In> for AdditionalRootsConnector {
             return Ok(Some(transport.boxed()));
         }
         let config = self.0.as_ref().ok_or(ureq::Error::Tls("additional CA configuration is unavailable"))?;
-        let host = details.uri.host().ok_or(ureq::Error::Tls("missing TLS hostname"))?;
+        // A missing or malformed host is a URL problem, not a TLS one: it stays an HTTP-class error.
+        let host = details
+            .uri
+            .host()
+            .ok_or_else(|| ureq::Error::Other(Box::new(io::Error::new(io::ErrorKind::InvalidInput, "missing TLS hostname"))))?;
         let host = host.strip_prefix('[').and_then(|host| host.strip_suffix(']')).unwrap_or(host);
-        let name = ServerName::try_from(host.to_owned()).map_err(|_| ureq::Error::Tls("invalid TLS hostname"))?;
+        let name = ServerName::try_from(host.to_owned())
+            .map_err(|_| ureq::Error::Other(Box::new(io::Error::new(io::ErrorKind::InvalidInput, "invalid TLS hostname"))))?;
         let mut connection = ClientConnection::new(config.clone(), name)?;
         let mut socket = TransportAdapter::new(transport.boxed(), details.current_time.clone());
         // TransportAdapter's public setter starts its clock now. Subtract time
