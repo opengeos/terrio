@@ -1236,7 +1236,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
         return Err(e);
     }
     let retry = match &e {
-        Error::InvalidArgument(_) | Error::Http(_) => false,
+        Error::InvalidArgument(_) | Error::Http(_) | Error::Tls(_) => false,
         error if crate::drivers::vector::geojson::is_crs_refusal(error) => false,
         Error::InvalidData(message) if message.ends_with(crate::drivers::vector::kml::AMBIGUOUS_KMZ) => false,
         Error::InvalidData(message) if message.ends_with(vfs::AMBIGUOUS_ZIP) => false,
