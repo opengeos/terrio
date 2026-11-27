@@ -343,7 +343,9 @@ pub struct WarpOptions {
     #[doc(hidden)]
     pub sum_scale: f64,
     /// Reports the warp's progress and can cancel it; `None` (the default) reports nothing.
-    /// Rust-only for now: the Python and JavaScript bindings do not expose the callback yet.
+    /// On the in-memory path (sources read whole) cancellation takes effect only between sources;
+    /// the windowed and streamed paths cancel between output chunks. Rust-only for now: the
+    /// Python and JavaScript bindings do not expose the callback yet.
     pub progress: Option<ProgressCallback>,
 }
 
@@ -351,7 +353,10 @@ pub struct WarpOptions {
 /// work done, which never decreases and stays within [0, 1] — the output rows warped for a
 /// windowed warp, the sources warped for one read whole into memory. Returning `false` cancels
 /// the warp with [`Error::Cancelled`], as
-/// [`crate::ops::overview::add_overviews_with_progress`]'s callback does.
+/// [`crate::ops::overview::add_overviews_with_progress`]'s callback does; returning `false` at
+/// the final 1.0 report still cancels, before the output is published. On the streamed
+/// `warp_to_path`, the 0 report comes before the output file is created, so cancelling at 0
+/// leaves a file already at the output path alone; cancelling later removes the partial output.
 #[derive(Clone)]
 pub struct ProgressCallback(pub std::sync::Arc<dyn Fn(f64) -> bool + Send + Sync>);
 
@@ -2444,6 +2449,12 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     if let Some(gt) = gt {
         header.set_geo_transform(gt);
     }
+    // Reported before the output file is created, so a callback that cancels at 0 leaves any
+    // file already at `path` alone.
+    let progress = o.progress.as_ref().map(|c| Progress::new(c.clone()));
+    if let Some(p) = &progress {
+        p.report(0.0)?;
+    }
     let mut out = super::strips::StripWriter::create(&header, path, options)?;
 
     // The last chunk (in order) writing each row: rows are written once it is warped.
@@ -2502,10 +2513,6 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
         let mut src = src.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok((src.read_window(window, &options)?, source_mask(&mut *src, window, overview)?))
     };
-    let progress = o.progress.as_ref().map(|c| Progress::new(c.clone()));
-    if let Some(p) = &progress {
-        p.report(0.0)?;
-    }
     // The output rows warped so far, across the pipelined chunks.
     let done_rows = std::sync::atomic::AtomicU64::new(0);
     let total_rows = grid.height.max(1) as f64;
@@ -11438,6 +11445,15 @@ mod tests {
             Err(Error::Cancelled)
         ));
         assert!(!cancelled_out.exists(), "a cancelled warp_to_path leaves no output file");
+        // Cancelling at the first report (0) happens before the output file is created, so a file
+        // already at the output path is left alone.
+        let pre_existing = dir.path().join("pre.tif");
+        std::fs::write(&pre_existing, b"keep me").unwrap();
+        assert!(matches!(
+            warp_to_path(&[input.to_str().unwrap().to_string()], &o_cancel_path, pre_existing.to_str().unwrap(), &Default::default()),
+            Err(Error::Cancelled)
+        ));
+        assert_eq!(std::fs::read(&pre_existing).unwrap(), b"keep me", "a pre-existing output survives a cancel at 0");
 
         // warp_to_path reports too (the streamed single-source path).
         let output = dir.path().join("out.tif");
