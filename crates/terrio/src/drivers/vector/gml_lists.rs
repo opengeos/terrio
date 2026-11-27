@@ -1,4 +1,3 @@
-// SPDX-FileCopyrightText: Copyright (c) 2002, Frank Warmerdam
 // SPDX-FileCopyrightText: Copyright (c) 2008-2013, Even Rouault <even dot rouault at spatialys.com>
 // SPDX-FileCopyrightText: Copyright (c) 2002, Frank Warmerdam <warmerdam@pobox.com>
 // SPDX-FileCopyrightText: Copyright (c) 2009-2013, Even Rouault <even dot rouault at spatialys.com>
@@ -91,9 +90,9 @@ pub(crate) enum State {
     BooleanList,
 }
 
-const N: usize = 14;
+const STATE_COUNT: usize = 14;
 
-const STATES: [State; N] = [
+const STATES: [State; STATE_COUNT] = [
     State::Untyped,
     State::String,
     State::Integer,
@@ -109,6 +108,24 @@ const STATES: [State; N] = [
     State::RealList,
     State::BooleanList,
 ];
+
+// Prefix transitions use a state's discriminant to index this table.
+const _: () = {
+    let mut i = 0;
+    while i < STATE_COUNT {
+        assert!(STATES[i] as usize == i);
+        i += 1;
+    }
+};
+
+/// How a repeating application-schema property obtains its list type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ListRule {
+    /// The schema supplies a list type supported by GDAL.
+    Typed(State),
+    /// The schema's scalar type has no GDAL list mapping; infer from the values.
+    Infer,
+}
 
 impl State {
     /// The OGR type of a list.
@@ -417,7 +434,7 @@ pub(crate) struct Inference {
     states: Vec<State>,
     /// For each property, what the values of the current feature make of each type, from its
     /// second value.
-    prefix: Vec<[State; N]>,
+    prefix: Vec<[State; STATE_COUNT]>,
     /// For each property, its first value in the current feature.
     first: Vec<Option<Class>>,
     /// For each property, its number of values in the current feature.
@@ -440,6 +457,8 @@ impl Inference {
 
     /// Adds a value of property `i` in feature `feature` (`GMLReader::SetFeaturePropertyDirectly`):
     /// GDAL analyses the property's values in the feature, except when the value added is null.
+    /// The null marker remains in the collected prefix: a later non-null addition re-analyses
+    /// that prefix, including its marker text, as GDAL does.
     pub(crate) fn add(&mut self, feature: usize, i: usize, sub: Sub<'_>) {
         if self.feature[i] != feature + 1 {
             self.feature[i] = feature + 1;
@@ -531,6 +550,9 @@ fn schema_type(element: &Element, schema: &Element) -> Option<State> {
             "long" | "unsignedlong" => State::Integer64,
             "string" => State::String,
             "boolean" => State::Boolean,
+            "date" => State::Date,
+            "time" => State::Time,
+            "datetime" => State::DateTime,
             _ => return None,
         })
     };
@@ -543,7 +565,9 @@ fn schema_type(element: &Element, schema: &Element) -> Option<State> {
                 "int" | "integer" | "short" => State::Integer,
                 "long" | "unsignedlong" => State::Integer64,
                 "boolean" => State::Boolean,
-                "date" | "time" | "datetime" | "timeinstanttype" => return None,
+                "date" => State::Date,
+                "time" => State::Time,
+                "datetime" | "timeinstanttype" => State::DateTime,
                 _ if t.starts_with("gml:") => return None,
                 _ => {
                     let simple = schema
@@ -560,13 +584,19 @@ fn schema_type(element: &Element, schema: &Element) -> Option<State> {
 
 /// The list type GDAL gives a property of an application schema: a property declared with a
 /// `maxOccurs` other than `1`, of a type GDAL lists (`GetListTypeFromSingleType`): strings,
-/// integers, 64-bit integers, reals and booleans. Dates and times are not listed.
-pub(crate) fn schema_list_type(element: &Element, schema: &Element) -> Option<State> {
-    let max = element.attr("maxOccurs")?;
+/// integers, 64-bit integers, reals and booleans. Dates and times are not listed. An unmapped
+/// repeating type uses value-based inference. `max_occurs` comes from the referring element
+/// when the property is a reference, while `element` supplies the resolved type.
+pub(crate) fn schema_list_type(element: &Element, schema: &Element, max_occurs: Option<&str>) -> Option<ListRule> {
+    let max = max_occurs?;
     if max == "1" {
         return None;
     }
-    schema_type(element, schema).map(State::as_list)
+    match schema_type(element, schema) {
+        Some(State::Date | State::Time | State::DateTime) => None,
+        Some(state) => Some(ListRule::Typed(state.as_list())),
+        None => Some(ListRule::Infer),
+    }
 }
 
 #[cfg(test)]

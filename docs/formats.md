@@ -996,6 +996,15 @@ schema (`tests/data/gml_lists`). Scalar types keep terrio's inference: times are
 without a schema are text, and a feature's `gml:boundedBy` is not read as fields. WFS layers keep
 scalar fields, and the GML writer writes a list field as its JSON text.
 
+For repeating scalar types without a GDAL list mapping, such as `xs:token`, the
+reader infers the list type from the values. Element references use `maxOccurs`
+from the reference and the element type from the resolved declaration; an absent
+`maxOccurs` defaults to a scalar. Terrio resolves some custom element references
+that GDAL rejects: their declared type is retained, so referenced `xs:string`
+values `1, 2` remain a string list where GDAL instead infers an integer list after
+discarding that schema. Declared scalar strings retain their whitespace according
+to the schema's whitespace facet, as before; GDAL removes leading whitespace.
+
 ### CityGML
 
 The pure-Rust `CityGML` reader accepts 2.0 and 3.0 city models, using namespace

@@ -220,21 +220,45 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
         // The list fields of a local file (a WFS read keeps scalars): those the schema declares,
         // or, without one, GDAL's inference, which goes on while GDAL reads the features.
         let mut prescan = None;
+        let rules: Vec<_> = fields.iter().map(|(name, _)| model.and_then(|model| model.list(name))).collect();
+        let infer_fields: Vec<_> = rules.iter().map(|rule| inferred || *rule == Some(lists::ListRule::Infer)).collect();
         let listed: Vec<Option<State>> = if compiled.is_some() {
             vec![None; fields.len()]
-        } else if inferred {
+        } else if inferred || infer_fields.iter().any(|infer| *infer) {
             let mut inference = Inference::new(fields.len());
             for (fid, raw) in raws.iter().enumerate() {
                 for (key, sub) in &raw.values {
-                    inference.add(fid, index[key], *sub);
+                    if let Some(&i) = index.get(key) {
+                        inference.add(fid, i, *sub);
+                    }
                 }
             }
             let states = inference.into_states();
-            let listed = states.iter().map(|s| s.list_type().map(|_| *s)).collect();
+            let listed = states
+                .iter()
+                .zip(&rules)
+                .zip(&infer_fields)
+                .map(|((s, rule), infer)| {
+                    if *infer {
+                        s.list_type().map(|_| *s)
+                    } else {
+                        match rule {
+                            Some(lists::ListRule::Typed(state)) => Some(*state),
+                            _ => None,
+                        }
+                    }
+                })
+                .collect();
             prescan = Some(states);
             listed
         } else {
-            fields.iter().map(|(name, _)| model.and_then(|model| model.list(name))).collect()
+            rules
+                .iter()
+                .map(|rule| match rule {
+                    Some(lists::ListRule::Typed(state)) => Some(*state),
+                    _ => None,
+                })
+                .collect()
         };
         let mut list_types = Vec::new();
         for ((name, scalar), list) in fields.iter().zip(&listed) {
@@ -314,10 +338,14 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
                     continue;
                 }
                 // GDAL sets a scalar property's first value, unless its reading made it a list.
-                let read = prescan.as_ref().zip(reading.as_ref()).and_then(|(p, r)| lists::scalar_read(p[i], r.state(i), values.len()));
+                let read = prescan
+                    .as_ref()
+                    .zip(reading.as_ref())
+                    .filter(|_| infer_fields[i])
+                    .and_then(|(p, r)| lists::scalar_read(p[i], r.state(i), values.len()));
                 let Some(Sub::Text(text)) = values.first().copied().filter(|_| read != Some(false)) else { continue };
                 let scalar = fields[i].1;
-                let text = scalar.normalize(if compiled.is_some() { text } else { text.trim() });
+                let text = scalar.normalize(if inferred { text.trim() } else { text });
                 let parsed = if text.is_empty() { FieldValue::Null } else { value(&text, scalar.field_type) };
                 if compiled.is_some()
                     && !text.is_empty()

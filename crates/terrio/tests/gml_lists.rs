@@ -19,6 +19,72 @@ fn expected() -> serde_json::Map<String, Value> {
     doc["files"].as_object().unwrap().clone()
 }
 
+/// Writes a minimal feature and application schema beside one another.
+fn schema_case(property: &str, declaration: &str, global: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let schema = std::fs::read_to_string(data("declared.xsd")).unwrap();
+    let start = schema.find("        <xs:element name=\"geometryProperty\"").unwrap();
+    let end = start + schema[start..].find("      </xs:sequence>").unwrap();
+    let schema = format!("{}{}{}", &schema[..start], declaration, &schema[end..]);
+    std::fs::write(dir.path().join("declared.xsd"), schema.replace("</xs:schema>", &format!("{global}</xs:schema>"))).unwrap();
+    let xml = format!(
+        r#"<ogr:FeatureCollection xmlns:ogr="http://ogr.maptools.org/" xmlns:gml="http://www.opengis.net/gml/3.2"><ogr:featureMember><ogr:declared gml:id="declared.1">{property}</ogr:declared></ogr:featureMember></ogr:FeatureCollection>"#
+    );
+    std::fs::write(dir.path().join("declared.gml"), xml).unwrap();
+    dir
+}
+
+#[test]
+fn declared_scalar_strings_keep_their_whitespace() {
+    for text in ["  Main  ", "  "] {
+        let dir = schema_case(&format!("<ogr:p>{text}</ogr:p>"), r#"<xs:element name="p" type="xs:string"/>"#, "");
+        let ds = terrio::open_vector(dir.path().join("declared.gml").to_str().unwrap(), &Default::default()).unwrap();
+        assert_eq!(ds.layers[0].features[0].attributes[1], FieldValue::Text(text.into()));
+    }
+}
+
+/// GDAL 3.13.3 infers lists when an xs:token schema type is not mapped by its GML reader.
+#[test]
+fn unmapped_repeating_schema_types_keep_their_values() {
+    for (a, b, expected, kind) in [("A", "B", r#"["A","B"]"#, "StringList"), ("1", "2", "[1,2]", "IntegerList")] {
+        let dir = schema_case(
+            &format!("<ogr:p>{a}</ogr:p><ogr:undeclared>ignored</ogr:undeclared><ogr:p>{b}</ogr:p>"),
+            r#"<xs:element name="p" type="xs:token" maxOccurs="unbounded"/>"#,
+            "",
+        );
+        let ds = terrio::open_vector(dir.path().join("declared.gml").to_str().unwrap(), &Default::default()).unwrap();
+        assert_eq!(ds.ogr_type(&ds.layers[0], 1).field_type.name(), kind);
+        assert_eq!(ds.layers[0].features[0].attributes[1], FieldValue::Text(expected.into()));
+    }
+}
+
+#[test]
+fn referenced_properties_use_the_occurrence_limit_at_the_reference() {
+    for (occurs, expected, list) in [(" maxOccurs=\"unbounded\"", r#"["A","B"]"#, true), ("", "A", false)] {
+        let dir = schema_case(
+            "<ogr:p>A</ogr:p><ogr:p>B</ogr:p>",
+            &format!(r#"<xs:element ref="ogr:p"{occurs}/>"#),
+            r#"<xs:element name="p" type="xs:string"/>"#,
+        );
+        let ds = terrio::open_vector(dir.path().join("declared.gml").to_str().unwrap(), &Default::default()).unwrap();
+        assert_eq!(ds.ogr_type(&ds.layers[0], 1).field_type.is_list(), list);
+        assert_eq!(ds.layers[0].features[0].attributes[1], FieldValue::Text(expected.into()));
+    }
+}
+
+/// Terrio resolves custom element references that GDAL 3.13.3 instead infers without a schema.
+#[test]
+fn referenced_properties_retain_the_declared_element_type() {
+    let dir = schema_case(
+        "<ogr:p>1</ogr:p><ogr:p>2</ogr:p>",
+        r#"<xs:element ref="ogr:p" maxOccurs="unbounded"/>"#,
+        r#"<xs:element name="p" type="xs:string"/>"#,
+    );
+    let ds = terrio::open_vector(dir.path().join("declared.gml").to_str().unwrap(), &Default::default()).unwrap();
+    assert_eq!(ds.ogr_type(&ds.layers[0], 1).field_type.name(), "StringList");
+    assert_eq!(ds.layers[0].features[0].attributes[1], FieldValue::Text(r#"["1","2"]"#.into()));
+}
+
 /// The fields of the scalars where terrio differs from GDAL, which are not lists: their types (as
 /// terrio infers or maps them) and their values, read as text.
 ///

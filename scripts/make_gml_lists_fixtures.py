@@ -282,6 +282,16 @@ def declared_xsd(name: str) -> str:
 
 
 def field_value(f: ogr.Feature, i: int, defn: ogr.FieldDefn):
+    """Read one OGR field without losing its list type.
+
+    Args:
+        f: Source OGR feature.
+        i: Field index.
+        defn: OGR field definition.
+
+    Returns:
+        The typed field value, or None for an unset or null field.
+    """
     if not f.IsFieldSetAndNotNull(i):
         return None
     t = defn.GetType()
@@ -356,6 +366,7 @@ def written(format_name: str, stem: str):
 
 
 def main() -> None:
+    """Generate the GML fixtures and their GDAL reference values."""
     if OUT.exists():
         shutil.rmtree(OUT)
     OUT.mkdir(parents=True)
