@@ -830,7 +830,8 @@ fn blosc_blocks(
             blosc_block(src, pos, nsplits, compressor, &mut block[..bsize])?;
             // The block holds byte 0 of every element, then byte 1...
             let n = bsize / typesize;
-            // 2-byte elements interleave faster in the baseline build than in the AVX2 one.
+            // 2-byte elements interleaved faster in the baseline build than in the AVX2 one (measured
+            // on x86-64 with AVX2).
             if typesize == 2 {
                 interleave(&block[..bsize], dst, typesize, n);
             } else {
@@ -921,8 +922,7 @@ fn interleave(planes: &[u8], out: &mut [u8], typesize: usize, n: usize) {
 }
 
 avx2_rows! {
-    /// [`interleave`], in AVX2 instructions where the CPU has them: 4- and 8-byte elements of 64 MB
-    /// of blocks took 2-4 ms rather than 9 ms (2-byte ones are slower in it: 2.5 ms, not 1.5 ms).
+    /// [`interleave`], in AVX2 instructions where the CPU has them.
     fn interleave_avx2[](planes: &[u8], out: &mut [u8], typesize: usize, n: usize) {
         interleave(planes, out, typesize, n)
     }
@@ -941,8 +941,7 @@ avx2_rows! {
     ///
     /// The matrices of `BIT_LANES` x 8 consecutive groups are built together, from 8 bytes of each
     /// row in each lane (an 8 x 8 byte transpose), and transposed together: operations on whole
-    /// arrays of lanes, which the AVX2 build runs in vector registers. 64 MB of Float32 blocks took
-    /// 10-11 ms with AVX2 and 22 ms in the x86-64 baseline build, rather than 26 ms.
+    /// arrays of lanes, which the AVX2 build runs in vector registers.
     fn bit_unshuffle[](block: &mut [u8], planes: &mut [u8], typesize: usize, version: u8) {
         const BIT_LANES: usize = 4;
         let bsize = block.len();
