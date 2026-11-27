@@ -42,7 +42,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     let mut buf = fallible::filled(size, 0u8, "the PNG image")?;
     let frame = reader.next_frame(&mut buf).map_err(|e| png_err(path, e))?;
     let line = frame.line_size;
-    let n = cols * rows;
+    let n = fallible::len(&[cols, rows], "the PNG raster")?;
     let len = fallible::len(&[n, bands], "the PNG raster")?;
     let data = if bits == 16 {
         let mut v = fallible::filled(len, 0u16, "the PNG raster")?;
@@ -235,7 +235,8 @@ pub(crate) fn read_world_file(path: &Path) -> Option<[f64; 6]> {
         return None;
     }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    let short = format!("{}{}w", &ext[..1], &ext[ext.len() - 1..]);
+    let (first, last) = (ext.chars().next()?, ext.chars().last()?);
+    let short = format!("{first}{last}w");
     let long = format!("{ext}w");
     let text = ["wld", short.as_str(), long.as_str()].iter().find_map(|e| std::fs::read_to_string(common::sibling(path, e)).ok())?;
     let v: Vec<f64> = text.split_whitespace().filter_map(|s| s.parse().ok()).collect();
@@ -661,5 +662,16 @@ mod tests {
             let error = write(Some(z)).unwrap_err().to_string();
             assert!(error.contains(&format!("invalid ZLEVEL '{z}'")), "{error}");
         }
+    }
+
+    #[test]
+    fn read_world_file_handles_non_ascii_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let img = dir.path().join("map.é");
+        std::fs::write(&img, b"").unwrap();
+        assert_eq!(read_world_file(&img), None);
+        let img2 = dir.path().join("map.图");
+        std::fs::write(&img2, b"").unwrap();
+        assert_eq!(read_world_file(&img2), None);
     }
 }

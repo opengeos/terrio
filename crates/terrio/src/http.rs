@@ -185,7 +185,7 @@ impl HttpOptions {
     pub fn from_env() -> Self {
         let d = Self::default();
         let var = |terrio: &str, gdal: &str| crate::config::get_any(&[terrio, gdal]).map(|v| v.trim().to_string());
-        let secs = |v: String| v.parse::<f64>().ok().filter(|s| s.is_finite() && *s >= 0.0).map(Duration::from_secs_f64);
+        let secs = |v: String| v.parse::<f64>().ok().and_then(|s| Duration::try_from_secs_f64(s).ok());
         Self {
             timeout: var("TERRIO_HTTP_TIMEOUT", "GDAL_HTTP_TIMEOUT").and_then(secs).filter(|t| !t.is_zero()),
             connect_timeout: var("TERRIO_HTTP_CONNECTTIMEOUT", "GDAL_HTTP_CONNECTTIMEOUT").and_then(secs).unwrap_or(d.connect_timeout),
@@ -1629,10 +1629,18 @@ fn transient(e: &ureq::Error) -> bool {
 
 /// The absolute URL a `Location` header points to.
 fn resolve_redirect(from: &str, location: &str) -> String {
-    if location.contains("://") {
+    let has_scheme = location.split_once("://").is_some_and(|(s, _)| {
+        let mut bytes = s.bytes();
+        bytes.next().is_some_and(|b| b.is_ascii_alphabetic())
+            && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+    });
+    if has_scheme {
         return location.to_string();
     }
     let (scheme, rest) = from.split_once("://").unwrap_or(("https", from));
+    if location.starts_with("//") {
+        return format!("{scheme}:{location}");
+    }
     let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     if location.starts_with('/') {
         format!("{scheme}://{host}{location}")
@@ -7245,5 +7253,46 @@ mod tests {
         let stats = fetch_stats_by_host().into_iter().find(|(host, _)| host == host_of(&base)).unwrap().1;
         assert_eq!(stats.requests, 1);
         assert_eq!(stats.bytes, crate::inspection::IDENTIFICATION_HEADER_BYTES as u64);
+    }
+
+    #[test]
+    fn from_env_ignores_overflowing_finite_timeouts() {
+        struct PopScope;
+        impl Drop for PopScope {
+            fn drop(&mut self) {
+                crate::config::pop_scope();
+            }
+        }
+        crate::config::push_scope(std::collections::HashMap::from([
+            ("TERRIO_HTTP_TIMEOUT".into(), Some("1e30".into())),
+            ("TERRIO_HTTP_CONNECTTIMEOUT".into(), Some("1e30".into())),
+            ("TERRIO_HTTP_RETRY_DELAY".into(), Some("1e30".into())),
+        ]));
+        let _guard = PopScope;
+        let opts = HttpOptions::from_env();
+        let def = HttpOptions::default();
+        assert_eq!(opts.timeout, None);
+        assert_eq!(opts.connect_timeout, def.connect_timeout);
+        assert_eq!(opts.retry_delay, def.retry_delay);
+    }
+
+    #[test]
+    fn resolve_redirect_handles_protocol_relative_and_query_scheme() {
+        assert_eq!(
+            resolve_redirect("https://origin.example/a/b", "//cdn.example/tile.tif"),
+            "https://cdn.example/tile.tif"
+        );
+        assert_eq!(
+            resolve_redirect("https://origin.example/a/b", "/download?next=https://other.example/x"),
+            "https://origin.example/download?next=https://other.example/x"
+        );
+        assert_eq!(
+            resolve_redirect("https://origin.example/a/b", "next?url=https://other.example/x"),
+            "https://origin.example/a/next?url=https://other.example/x"
+        );
+        assert_eq!(
+            resolve_redirect("https://origin.example/a/b", "https://cdn.example/c"),
+            "https://cdn.example/c"
+        );
     }
 }

@@ -1082,11 +1082,21 @@ impl Evaluator<'_> {
                     Data::F(v) => {
                         let dt = a.dt;
                         let r = |x: f64| -> f64 {
-                            if decimals == 0 {
+                            if !x.is_finite() || decimals == 0 {
                                 return x.round_ties_even();
                             }
-                            let f = round_float(10f64.powi(decimals.unsigned_abs() as i32), dt);
+                            let abs = decimals.unsigned_abs();
+                            if abs > 308 {
+                                return if decimals > 0 { x } else { 0.0_f64.copysign(x) };
+                            }
+                            let f = round_float(10f64.powi(abs as i32), dt);
+                            if !f.is_finite() {
+                                return if decimals > 0 { x } else { 0.0_f64.copysign(x) };
+                            }
                             let y = if decimals > 0 { round_float(x * f, dt) } else { round_float(x / f, dt) };
+                            if !y.is_finite() {
+                                return x;
+                            }
                             let y = y.round_ties_even();
                             if decimals > 0 { y / f } else { y * f }
                         };
@@ -1103,8 +1113,9 @@ impl Evaluator<'_> {
                                 .map(|&x| {
                                     let q = x.div_euclid(p);
                                     let r = x.rem_euclid(p);
-                                    let scaled =
-                                        q.checked_add(i128::from(r > p - r)).and_then(|v| v.checked_mul(p)).ok_or_else(int_overflow)?;
+                                    let half = p / 2;
+                                    let round_up = r > half || (r == half && q.rem_euclid(2) != 0);
+                                    let scaled = q.checked_add(i128::from(round_up)).and_then(|v| v.checked_mul(p)).ok_or_else(int_overflow)?;
                                     Ok(wrap(scaled, a.dt))
                                 })
                                 .collect::<Result<Vec<_>>>()?
@@ -1396,5 +1407,20 @@ mod tests {
         assert_eq!(promote(U8, F16), F16);
         assert_eq!(promote(I32, F32), F64);
         assert_eq!(promote(Bool, U16), U16);
+    }
+
+    #[test]
+    fn round_handles_large_decimals_and_integer_ties_to_even() {
+        let f64a = arr(DType::F64, &[1.5, -2.5]);
+        let f32a = arr(DType::F32, &[1.5, -2.5]);
+        let i32a = arr(DType::I32, &[5.0, 15.0, 25.0, 35.0, -5.0, -15.0, -25.0]);
+        // Large positive/negative decimals do not overflow to NaN or truncate u128 to i32.
+        check("round(A, 400)", &f64a, &f64a, DType::F64, &[1.5, -2.5]);
+        check("round(A, -400)", &f64a, &f64a, DType::F64, &[0.0, 0.0]);
+        check("round(A, 3000000000)", &f64a, &f64a, DType::F64, &[1.5, -2.5]);
+        check("round(A, 40)", &f32a, &f32a, DType::F32, &[1.5, -2.5]);
+        check("round(A, -40)", &f32a, &f32a, DType::F32, &[0.0, 0.0]);
+        // Integer negative decimals use ties-to-even, matching NumPy and float round().
+        check("round(A, -1)", &i32a, &i32a, DType::I32, &[0.0, 20.0, 20.0, 40.0, 0.0, -20.0, -20.0]);
     }
 }

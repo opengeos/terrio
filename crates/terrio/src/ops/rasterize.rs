@@ -209,6 +209,9 @@ fn rasterize_new(layers: &[Layer], options: &RasterizeOptions) -> Result<RasterD
             if !g.geo_transform.iter().all(|v| v.is_finite()) {
                 return Err(Error::InvalidArgument("the output grid geotransform must be finite".into()));
             }
+            if g.geo_transform[1] == 0.0 || g.geo_transform[5] == 0.0 {
+                return Err(Error::InvalidArgument("the output grid pixel size must be nonzero".into()));
+            }
             g.clone()
         }
         None => compute_grid(layers, options)?,
@@ -263,22 +266,29 @@ fn rasterize_new(layers: &[Layer], options: &RasterizeOptions) -> Result<RasterD
 /// Burns the layers' geometries into band buffers of type `T` (the output data type `dtype`),
 /// band-major.
 fn burn<T: Pixel>(layers: &[Layer], options: &RasterizeOptions, grid: &Grid, bands: usize, dtype: DataType) -> Result<Vec<T>> {
-    let n = grid.cols * grid.rows;
+    let n = crate::dataset::fallible::len(&[grid.cols, grid.rows], "the rasterized output")?;
+    let _ = crate::dataset::fallible::len(&[n, bands], "the rasterized output")?;
     let mut bufs: Vec<Vec<T>> = (0..bands)
         .map(|b| {
             let init = options.init.get(b).or(options.init.last()).copied().or(options.nodata).unwrap_or(0.0);
-            vec![T::from_f64(cast(init, dtype)); n]
+            crate::dataset::fallible::filled(n, T::from_f64(cast(init, dtype)), "the rasterized output")
         })
-        .collect();
+        .collect::<std::io::Result<Vec<_>>>()?;
     burn_into(layers, options, grid, dtype, &mut bufs)?;
     Ok(if bands == 1 { bufs.pop().unwrap_or_default() } else { bufs.concat() })
 }
 
 fn burn_into<T: Pixel>(layers: &[Layer], options: &RasterizeOptions, grid: &Grid, dtype: DataType, bufs: &mut [Vec<T>]) -> Result<()> {
     let bands = bufs.len();
+    if i32::try_from(grid.cols).is_err() || i32::try_from(grid.rows).is_err() {
+        return Err(Error::InvalidArgument("the output grid dimensions exceed the rasterizer limit".into()));
+    }
     let [g0, g1, g2, g3, g4, g5] = grid.geo_transform;
     if g2 != 0.0 || g4 != 0.0 {
         return Err(Error::Unsupported("rotated grids are not supported".into()));
+    }
+    if g1 == 0.0 || g5 == 0.0 || !g1.is_finite() || !g5.is_finite() {
+        return Err(Error::InvalidArgument("the output grid pixel size must be finite and nonzero".into()));
     }
     // As GDAL's `GDALInvGeoTransform`, for north-up grids.
     let inv = [-g0 / g1, 1.0 / g1, -g3 / g5, 1.0 / g5];
@@ -912,34 +922,7 @@ fn image_line_all_touched<T: Pixel>(b: &mut Burner<T>, nx: i32, ny: i32, p: &Par
             }
             // General case: left to right, sloped.
             let slope = (y_end - y) / (x_end - x);
-            if x_end > nxf {
-                y_end -= (x_end - nxf) * slope;
-                x_end = nxf;
-            }
-            if x < 0.0 {
-                y += (0.0 - x) * slope;
-                x = 0.0;
-            }
-            if y_end > y {
-                if y < 0.0 {
-                    x += (0.0 - y) / slope;
-                    y = 0.0;
-                }
-                if y_end >= nyf {
-                    x_end += (y_end - nyf) / slope;
-                    if x_end > nxf {
-                        x_end = nxf;
-                    }
-                }
-            } else {
-                if y >= nyf {
-                    x += (nyf - y) / slope;
-                    y = nyf;
-                }
-                if y_end < 0.0 {
-                    x_end -= (y_end - 0.0) / slope;
-                }
-            }
+            (x, y, x_end) = clip_all_touched_segment(x, y, x_end, y_end, nxf, nyf, slope);
             while x >= 0.0 && x < x_end {
                 let ix = x.floor() as i32;
                 let iy = y.floor() as i32;
@@ -972,6 +955,40 @@ fn image_line_all_touched<T: Pixel>(b: &mut Burner<T>, nx: i32, ny: i32, p: &Par
         }
         n += size;
     }
+}
+
+/// Clips a left-to-right sloped segment to the raster bounds `[0, nxf] x [0, nyf]`,
+/// matching GDAL's `GDALdllImageLineAllTouched`.
+fn clip_all_touched_segment(mut x: f64, mut y: f64, mut x_end: f64, mut y_end: f64, nxf: f64, nyf: f64, slope: f64) -> (f64, f64, f64) {
+    if x_end > nxf {
+        y_end -= (x_end - nxf) * slope;
+        x_end = nxf;
+    }
+    if x < 0.0 {
+        y += (0.0 - x) * slope;
+        x = 0.0;
+    }
+    if y_end > y {
+        if y < 0.0 {
+            x += (0.0 - y) / slope;
+            y = 0.0;
+        }
+        if y_end >= nyf {
+            x_end -= (y_end - nyf) / slope;
+            if x_end > nxf {
+                x_end = nxf;
+            }
+        }
+    } else {
+        if y >= nyf {
+            x += (nyf - y) / slope;
+            y = nyf;
+        }
+        if y_end < 0.0 {
+            x_end -= (y_end - 0.0) / slope;
+        }
+    }
+    (x, y, x_end)
 }
 
 /// GDAL's `GDALdllImageFilledPolygon`: even-odd scanline filling, pixel centres inside.
@@ -1308,5 +1325,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn all_touched_clips_steep_line_exiting_bottom_edge() {
+        // Clipping a steep segment exiting y >= nyf must shorten x_end back to y == nyf.
+        let (x, y, x_end) = clip_all_touched_segment(0.0, 0.0, 5.0, 50.0, 10.0, 10.0, 10.0);
+        assert_eq!((x, y), (0.0, 0.0));
+        assert!((x_end - 1.0).abs() < 1e-12, "expected x_end=1.0, got {x_end}");
+
+        // End-to-end rasterization of a steep line exiting y >= ny on a 10 x 10 grid.
+        // Pixel coords for grid(10, 10): x_px = x, y_px = 10 - y.
+        let line = Geometry::line_string(vec![Coord::xy(0.0, 10.0), Coord::xy(1.0, 10.0 - 1_000_000.0)]);
+        let o = RasterizeOptions { burn_values: vec![1.0], grid: Some(grid(10, 10)), all_touched: true, ..Default::default() };
+        let r = rasterize(&[layer(vec![line])], &o).unwrap();
+        let px = pixels(&r);
+        // Every row in column 0 is touched; column 1 is never reached before y >= 10.
+        for row in 0..10 {
+            assert_eq!(px[row * 10], 1.0, "row {row} col 0");
+            assert_eq!(px[row * 10 + 1], 0.0, "row {row} col 1");
+        }
+    }
+
+    #[test]
+    fn rejects_zero_pixel_size_grid() {
+        let mut g = grid(4, 4);
+        g.geo_transform[1] = 0.0;
+        let l = layer(vec![Geometry::point(1.0, 1.0)]);
+        let o = RasterizeOptions { burn_values: vec![1.0], grid: Some(g), ..Default::default() };
+        assert!(matches!(rasterize(&[l], &o), Err(Error::InvalidArgument(_))));
     }
 }
