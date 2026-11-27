@@ -343,6 +343,7 @@ pub struct WarpOptions {
     #[doc(hidden)]
     pub sum_scale: f64,
     /// Reports the warp's progress and can cancel it; `None` (the default) reports nothing.
+    /// Rust-only for now: the Python and JavaScript bindings do not expose the callback yet.
     pub progress: Option<ProgressCallback>,
 }
 
@@ -356,7 +357,7 @@ pub struct ProgressCallback(pub std::sync::Arc<dyn Fn(f64) -> bool + Send + Sync
 
 impl std::fmt::Debug for ProgressCallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ProgressCallback(,)")
+        f.write_str("ProgressCallback(..)")
     }
 }
 
@@ -11421,13 +11422,22 @@ mod tests {
         assert!(seen.len() > 2, "per chunk, not just the ends: {seen:?}");
         drop(seen);
 
-        // Returning false cancels: the error is Error::Cancelled, on both paths.
+        // Returning false cancels: the error is Error::Cancelled, on all paths, and a cancelled
+        // warp_to_path leaves no output file (the StripWriter's drop removes the partial file).
         let mut o_cancel = o.clone();
         o_cancel.progress = Some(ProgressCallback::from(|_| false));
         assert!(matches!(warp(&[&src], &o_cancel), Err(Error::Cancelled)));
         let mut o_cancel_lazy = o.clone();
         o_cancel_lazy.progress = Some(ProgressCallback::from(|_| false));
         assert!(matches!(warp_paths(&[input.to_str().unwrap().to_string()], &o_cancel_lazy), Err(Error::Cancelled)));
+        let cancelled_out = dir.path().join("cancelled.tif");
+        let mut o_cancel_path = o.clone();
+        o_cancel_path.progress = Some(ProgressCallback::from(|_| false));
+        assert!(matches!(
+            warp_to_path(&[input.to_str().unwrap().to_string()], &o_cancel_path, cancelled_out.to_str().unwrap(), &Default::default()),
+            Err(Error::Cancelled)
+        ));
+        assert!(!cancelled_out.exists(), "a cancelled warp_to_path leaves no output file");
 
         // warp_to_path reports too (the streamed single-source path).
         let output = dir.path().join("out.tif");
