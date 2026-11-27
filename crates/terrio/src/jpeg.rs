@@ -641,8 +641,9 @@ fn idct_islow(coef: &[i32; 64], q: &[u16; 64], out: &mut [u8], stride: usize) {
 }
 
 /// libjpeg's post-IDCT range limiting: the sample centred on 128 and clamped, its value taken
-/// modulo 1024 first, as the lookup table is indexed. Without branches: samples fall on either
-/// side of 0, so a branch on the sign would be mispredicted about half the time.
+/// modulo 1024 first, as the lookup table is indexed. Written as arithmetic and a select rather
+/// than a branch on the sample's range, so that it can compile to conditional moves: samples fall
+/// on either side of 0, so a branch on the sign would be mispredicted about half the time.
 fn range_limit(v: i32) -> u8 {
     // Centred, modulo 1024: 0 to 255 are samples, 256 to 639 too bright, 640 to 1023 too dark.
     let i = v.wrapping_add(128) & 1023;
