@@ -574,3 +574,5 @@ VRT reads; URL queries and fragments do not affect filename recognition.
 Named VRTs also keep this reader under STAC-looking `/collections/` or `/search`
 paths. VRT content discovered while probing a remote JSON document is refused
 before any file-enabled byte fallback; use a `.vrt` location to read its sources.
+Remote XML whose encoding or structure cannot be inspected safely is also refused
+by this probe, including non-VRT XML with an unsupported encoding label.

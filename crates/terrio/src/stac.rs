@@ -3650,6 +3650,20 @@ mod tests {
         );
     }
 
+    /// Uninspectable XML cannot establish that an opaque byte fallback is safe.
+    #[cfg(remote)]
+    #[test]
+    fn remote_non_stac_xml_refuses_unknown_or_malformed_encodings() {
+        for bytes in
+            [br#"<?xml version="1.0" encoding="unknown-encoding"?><kml/>"#.as_slice(), b"\xff\xfe<\0k\0m\0l\0/\0>\0\x00".as_slice()]
+        {
+            let (server, _) = crate::http::test_server(bytes.to_vec());
+            let error = super::open(&format!("{server}/collections/points.json")).unwrap().map(|_| ()).unwrap_err();
+            assert!(matches!(error, Error::InvalidArgument(_)), "{error}");
+            assert!(error.to_string().contains("remote XML document refused"), "{error}");
+        }
+    }
+
     #[cfg(remote)]
     #[test]
     fn remote_non_stac_xml_keeps_supported_utf16_readers() {

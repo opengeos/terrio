@@ -994,8 +994,8 @@ impl Client {
     /// carries the range asked, and a server that ignores the range (200, no `Content-Range`) is
     /// refused unless the range starts the file and the file is at most ten times the range, as
     /// GDAL refuses it (`VSICurlHandleWriteFunc`: "Range downloading not supported by this
-    /// server!"). A server cannot make a range read buffer an unbounded response. A request
-    /// without a range reads at most [`Client::body_cap`] bytes, when there is a cap.
+    /// server!"). A server cannot make a range read buffer an unbounded response.
+    /// [`Client::body_cap`], when set, also bounds responses with or without a range.
     fn fetch_range(&mut self, range: Option<String>) -> Result<Fetched> {
         self.fetch_range_limited(range, None)
     }

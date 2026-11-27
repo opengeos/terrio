@@ -4054,6 +4054,10 @@ Nested saved pipelines are limited to 16 levels. Definitions execute supported
 Terrio operations directly and never invoke a shell or external program.
 Loading discards embedded `write` destinations and converts named `materialize`
 checkpoints to in-memory snapshots. Choose a destination with `--output`.
+This also applies when re-saving a loaded definition with `--save`: saved
+checkpoints become in-memory snapshots unless `--allow-saved-outputs` is enabled.
+`--overwrite` alone does not restore a discarded destination; provide `--output`
+or explicitly trust the loaded destinations with `--allow-saved-outputs`.
 For a definition you explicitly trust, `--allow-saved-outputs` retains its saved
 destinations, including overwrite and append options. In that mode `--output`
 replaces the terminal destination while retaining trusted checkpoints. Rust callers
