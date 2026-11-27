@@ -166,8 +166,12 @@ impl GcpTransformer {
     }
 
     /// The residuals of `gcps` under this transformer: for each GCP, the georeferenced position
-    /// its pixel/line maps to minus the GCP's own `(x, y)`, as `(dx, dy)`. `gdalwarp` reports
-    /// these (GDAL 3.13.3, `GDALGCPsToResiduals` in gdalwarp's quality reporting).
+    /// its pixel/line maps to minus the GCP's own `(x, y)`, as `(dx, dy)` — terrio's sign
+    /// convention, in the GCPs' georeferenced units. This is a fit check: for methods that
+    /// interpolate their GCPs exactly (TPS, a homography fitted to its own GCPs, a polynomial with
+    /// as many coefficients as GCPs), every residual is zero by construction; only an
+    /// over-determined fit (a higher-order polynomial, a 5+-GCP homography) gives a meaningful
+    /// error. Reference: GDAL 3.13.3's GCP fit (`GDALGCPsToGeoTransform` and friends).
     pub fn residuals(&self, gcps: &[Gcp]) -> Vec<(f64, f64)> {
         gcps.iter()
             .map(|g| {
@@ -178,10 +182,11 @@ impl GcpTransformer {
     }
 
     /// The RMS of [`Self::residuals`]: `sqrt(mean(dx² + dy²))` over `gcps`, in georeferenced
-    /// units, as `gdalwarp` reports it (GDAL 3.13.3). `None` when `gcps` is empty.
+    /// units. `None` when `gcps` is empty or any residual is non-finite (a homography is
+    /// undefined where its denominator vanishes). Reference: GDAL 3.13.3.
     pub fn rms(&self, gcps: &[Gcp]) -> Option<f64> {
         let r = self.residuals(gcps);
-        if r.is_empty() {
+        if r.is_empty() || r.iter().any(|(dx, dy)| !dx.is_finite() || !dy.is_finite()) {
             return None;
         }
         let sum: f64 = r.iter().map(|(dx, dy)| dx * dx + dy * dy).sum();
@@ -712,7 +717,7 @@ mod tests {
     #[test]
     fn residuals_vanish_for_an_exact_fit_and_rms_matches_the_perturbation() {
         // An exact affine map: order-1 polynomial and TPS both interpolate, so every residual
-        // is zero (GDAL 3.13.3 reports the same for an exactly fittable GCP set).
+        // is zero by construction (a fit check, not a GDAL comparison).
         let exact: Vec<Gcp> = vec![gcp(0.0, 0.0, 1000.0, 500.0), gcp(10.0, 0.0, 1020.0, 502.0), gcp(0.0, 10.0, 1005.0, 480.0)];
         for t in [GcpTransformer::polynomial(&exact, 1).unwrap(), GcpTransformer::tps(&exact).unwrap()] {
             let r = t.residuals(&exact);
@@ -735,5 +740,16 @@ mod tests {
         // rms equals sqrt(mean(dx^2 + dy^2)) over the residuals.
         let expect = (r.iter().map(|(dx, dy)| dx * dx + dy * dy).sum::<f64>() / 4.0).sqrt();
         assert!((rms - expect).abs() < 1e-12);
+    }
+
+    #[test]
+    fn rms_is_none_when_a_residual_is_not_finite() {
+        // A homography whose denominator vanishes at a GCP maps it to NaN (see apply_homography).
+        let h = [0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0];
+        let t = GcpTransformer::Homography(Box::new((h, h)));
+        let gcps = vec![gcp(0.0, 0.0, 5.0, 6.0), gcp(1.0, 0.0, 1.0, 0.0), gcp(0.0, 1.0, 0.0, 1.0)];
+        let r = t.residuals(&gcps);
+        assert!(r[0].0.is_nan() && r[0].1.is_nan(), "{r:?}");
+        assert_eq!(t.rms(&gcps), None);
     }
 }
