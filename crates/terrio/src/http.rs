@@ -2125,17 +2125,25 @@ fn release_in_flight(key: &str, block_size: u64, blocks: impl IntoIterator<Item 
     }
 }
 
-/// Waits until none of `blocks` of the file is being fetched, until `until`, or until the read is
-/// cancelled (an error).
-fn wait_in_flight(key: &str, block_size: u64, blocks: &[u64], until: Instant) -> io::Result<()> {
+/// Waits until none of `blocks` of the file is being fetched, for `wait` at most, or until the read
+/// is cancelled (an error).
+fn wait_in_flight(key: &str, block_size: u64, blocks: &[u64], wait: Duration) -> io::Result<()> {
+    // A wait too long for the clock to reach has no end.
+    let until = Instant::now().checked_add(wait);
     let cancel = CANCEL_READS.with_borrow(Clone::clone);
     let mut flight = in_flight();
     while blocks.iter().any(|&b| flight.fetching(key, block_size, b)) {
         if cancel.iter().any(|flag| flag.load(Ordering::SeqCst)) {
             return Err(io::Error::other("request cancelled"));
         }
-        let Some(left) = until.checked_duration_since(Instant::now()).filter(|left| !left.is_zero()) else { break };
-        flight = IN_FLIGHT_DONE.wait_timeout(flight, left.min(CANCEL_POLL)).unwrap_or_else(std::sync::PoisonError::into_inner).0;
+        let left = match until {
+            Some(until) => match until.checked_duration_since(Instant::now()).filter(|left| !left.is_zero()) {
+                Some(left) => left.min(CANCEL_POLL),
+                None => break,
+            },
+            None => CANCEL_POLL,
+        };
+        flight = IN_FLIGHT_DONE.wait_timeout(flight, left).unwrap_or_else(std::sync::PoisonError::into_inner).0;
         flight.reset_if_forked();
     }
     Ok(())
@@ -2216,8 +2224,9 @@ impl Drop for CacheTestGuard {
 
 /// Holds this module's process-wide locks (the cache of remote files, the requests in flight,
 /// the request statistics, the path-specific options, the retry warnings and the process's
-/// agent) across a fork, for [`crate::par`]: the forking thread takes them before the process is copied and lets them go
-/// after, so that the child never starts with one held by a thread it does not have.
+/// agent) across a fork, for [`crate::par`]: the forking thread takes them before the process is
+/// copied and lets them go after, so that the child never starts with one held by a thread it
+/// does not have.
 #[cfg(unix)]
 pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
     held.push(Box::new(file_cache()));
@@ -2959,8 +2968,8 @@ impl Shared {
         }
         // A wait ends by the reader's own timeout at the latest, or after WAIT_IN_FLIGHT without
         // one (a request may stall); the reader then requests the bytes itself.
-        let until = Instant::now() + self.client.options.timeout.unwrap_or(WAIT_IN_FLIGHT);
-        wait_in_flight(&self.key, self.block_size, &others, until)?;
+        let wait = self.client.options.timeout.unwrap_or(WAIT_IN_FLIGHT);
+        wait_in_flight(&self.key, self.block_size, &others, wait)?;
         let missing: Vec<u64> = others.into_iter().filter(|&b| !self.blocks.contains_key(&b) && !self.load_cached_block(b)).collect();
         // Requested again only once: a reader never waits twice.
         self.fetch_blocks_now(&missing, gap)
