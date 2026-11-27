@@ -14,10 +14,13 @@
 //! Writing produces GML 3.2 with an `.xsd` schema, like GDAL's default output.
 
 use super::xml::{self, Element};
+#[path = "gml_lists.rs"]
+mod lists;
 #[path = "gml_schema.rs"]
 mod schema;
 use crate::crs::SpatialRef;
 use crate::{Error, Result};
+use lists::{Inference, State, Sub};
 pub(crate) use schema::{ApplicationSchema, PropertyKind};
 use schema::{Scalar, is_gml};
 use std::fmt::Write as _;
@@ -127,7 +130,8 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
     struct Raw<'a> {
         id: Option<&'a str>,
         geometry: Option<&'a Element>,
-        values: Vec<(&'a str, &'a str)>,
+        /// The scalar properties, in document order.
+        values: Vec<(&'a str, Sub<'a>)>,
     }
     let mut groups: Vec<(String, Vec<FeatureRef<'_>>)> = Vec::new();
     for feature in feature_refs(root) {
@@ -165,7 +169,7 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
                             if !property.children.is_empty() {
                                 return Err(Error::Unsupported("GML: complex scalar properties are unsupported".into()));
                             }
-                            raw.values.push((&property.name, &property.text));
+                            raw.values.extend(Sub::of(property).map(|sub| (property.name.as_str(), sub)));
                         }
                         PropertyKind::Geometry(_) => {
                             if raw.geometry.is_none() {
@@ -176,7 +180,9 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
                 } else if property.name != "boundedBy" {
                     match geometry_child(property) {
                         Some(geometry) if raw.geometry.is_none() => raw.geometry = Some(geometry),
-                        None if property.children.is_empty() => raw.values.push((&property.name, property.text.trim())),
+                        None if property.children.is_empty() => {
+                            raw.values.extend(Sub::of(property).map(|sub| (property.name.as_str(), sub)))
+                        }
                         _ => {}
                     }
                 }
@@ -187,22 +193,85 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
         layer.add_field(FieldDef::new("gml_id", FieldType::Text));
         let mut fields: Vec<(String, Scalar)> =
             model.map(|model| model.scalars().map(|(name, scalar)| (name.into(), scalar)).collect()).unwrap_or_default();
-        if compiled.is_none() && fields.is_empty() {
-            let mut names = Vec::new();
+        let inferred = compiled.is_none() && fields.is_empty();
+        if inferred {
+            let mut seen = std::collections::HashMap::new();
+            let mut types = Vec::new();
             for raw in &raws {
-                for (name, _) in &raw.values {
-                    if !names.contains(name) {
-                        names.push(*name);
+                for (key, sub) in &raw.values {
+                    let i = *seen.entry(*key).or_insert_with(|| {
+                        fields.push(((*key).into(), Scalar::inferred(FieldType::Text)));
+                        types.push(super::csv::TypeInference::default());
+                        types.len() - 1
+                    });
+                    if let Sub::Text(text) = sub {
+                        types[i].add(text);
                     }
                 }
             }
-            for name in names {
-                let values = raws.iter().flat_map(|raw| raw.values.iter().filter(|(key, _)| *key == name).map(|(_, value)| *value));
-                fields.push((name.into(), Scalar::inferred(super::csv::infer_type(values))));
+            for ((_, scalar), t) in fields.iter_mut().zip(&types) {
+                *scalar = Scalar::inferred(t.field_type());
             }
         }
-        for (name, scalar) in &fields {
-            layer.add_field(FieldDef::new(name, scalar.field_type));
+        let mut index = std::collections::HashMap::with_capacity(fields.len());
+        for (i, (name, _)) in fields.iter().enumerate() {
+            index.entry(name.as_str()).or_insert(i);
+        }
+        // The list fields of a local file (a WFS read keeps scalars): those the schema declares,
+        // or, without one, GDAL's inference, which goes on while GDAL reads the features.
+        let mut prescan = None;
+        let rules: Vec<_> = fields.iter().map(|(name, _)| model.and_then(|model| model.list(name))).collect();
+        let infer_fields: Vec<_> = rules.iter().map(|rule| inferred || *rule == Some(lists::ListRule::Infer)).collect();
+        let listed: Vec<Option<State>> = if compiled.is_some() {
+            vec![None; fields.len()]
+        } else if inferred || infer_fields.iter().any(|infer| *infer) {
+            let mut inference = Inference::new(fields.len());
+            for (fid, raw) in raws.iter().enumerate() {
+                for (key, sub) in &raw.values {
+                    if let Some(&i) = index.get(key) {
+                        inference.add(fid, i, *sub);
+                    }
+                }
+            }
+            let states = inference.into_states();
+            let listed = states
+                .iter()
+                .zip(&rules)
+                .zip(&infer_fields)
+                .map(|((s, rule), infer)| {
+                    if *infer {
+                        s.list_type().map(|_| *s)
+                    } else {
+                        match rule {
+                            Some(lists::ListRule::Typed(state)) => Some(*state),
+                            _ => None,
+                        }
+                    }
+                })
+                .collect();
+            prescan = Some(states);
+            listed
+        } else {
+            rules
+                .iter()
+                .map(|rule| match rule {
+                    Some(lists::ListRule::Typed(state)) => Some(*state),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut list_types = Vec::new();
+        for ((name, scalar), list) in fields.iter().zip(&listed) {
+            match list.and_then(|s| s.list_type()) {
+                Some(t) => {
+                    layer.add_field(FieldDef::new(name, FieldType::Json));
+                    list_types.push((name.clone(), t));
+                }
+                None => layer.add_field(FieldDef::new(name, scalar.field_type)),
+            }
+        }
+        if !list_types.is_empty() {
+            super::geojson::declare_list_types(&layer.name, list_types);
         }
         let srs_name = raws
             .iter()
@@ -246,23 +315,49 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
                 }
             }
         }
+        let mut reading = prescan.clone().map(Inference::from_states);
+        let mut subs: Vec<Vec<Sub<'_>>> = vec![Vec::new(); fields.len()];
+        let mut present = Vec::new();
         for (fid, raw) in raws.iter().enumerate() {
             let mut attributes = vec![FieldValue::Null; fields.len() + 1];
             attributes[0] = raw.id.map_or(FieldValue::Null, |id| FieldValue::Text(id.into()));
-            for (key, text) in &raw.values {
-                if let Some(index) = layer.schema.field_index(key) {
-                    let scalar = fields[index - 1].1;
-                    let text = scalar.normalize(text);
-                    let parsed = if text.is_empty() { FieldValue::Null } else { value(&text, scalar.field_type) };
-                    if compiled.is_some()
-                        && !text.is_empty()
-                        && ((matches!(scalar.field_type, FieldType::Integer | FieldType::Float) && matches!(&parsed, FieldValue::Text(_)))
-                            || scalar.field_type == FieldType::Boolean && !matches!(text.as_ref(), "true" | "false" | "1" | "0"))
-                    {
-                        return Err(Error::InvalidData(format!("WFS: malformed value for field {key}")));
-                    }
-                    attributes[index] = parsed;
+            for (key, sub) in &raw.values {
+                let Some(&i) = index.get(key) else { continue };
+                if subs[i].is_empty() {
+                    present.push(i);
                 }
+                subs[i].push(*sub);
+                if let Some(reading) = &mut reading {
+                    reading.add(fid, i, *sub);
+                }
+            }
+            for &i in &present {
+                let values = &subs[i];
+                if let Some(list) = listed[i] {
+                    attributes[i + 1] = lists::list_value(values, list);
+                    continue;
+                }
+                // GDAL sets a scalar property's first value, unless its reading made it a list.
+                let read = prescan
+                    .as_ref()
+                    .zip(reading.as_ref())
+                    .filter(|_| infer_fields[i])
+                    .and_then(|(p, r)| lists::scalar_read(p[i], r.state(i), values.len()));
+                let Some(Sub::Text(text)) = values.first().copied().filter(|_| read != Some(false)) else { continue };
+                let scalar = fields[i].1;
+                let text = scalar.normalize(if inferred { text.trim() } else { text });
+                let parsed = if text.is_empty() { FieldValue::Null } else { value(&text, scalar.field_type) };
+                if compiled.is_some()
+                    && !text.is_empty()
+                    && ((matches!(scalar.field_type, FieldType::Integer | FieldType::Float) && matches!(&parsed, FieldValue::Text(_)))
+                        || scalar.field_type == FieldType::Boolean && !matches!(text.as_ref(), "true" | "false" | "1" | "0"))
+                {
+                    return Err(Error::InvalidData(format!("WFS: malformed value for field {}", fields[i].0)));
+                }
+                attributes[i + 1] = parsed;
+            }
+            for i in present.drain(..) {
+                subs[i].clear();
             }
             let geometry = raw
                 .geometry

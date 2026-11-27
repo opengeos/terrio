@@ -5,6 +5,7 @@
 //! External application definitions are never fetched.
 
 use super::super::xml::Element;
+use super::lists::ListRule;
 use crate::{Error, Result};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -63,6 +64,8 @@ pub(crate) struct Property<'a> {
     pub name: &'a str,
     pub namespace: Option<&'a str>,
     pub kind: PropertyKind,
+    /// The list type GDAL gives the property ([`super::lists::schema_list_type`]).
+    pub list: Option<ListRule>,
 }
 
 pub(crate) struct ApplicationSchema<'a> {
@@ -137,6 +140,10 @@ impl<'a> ApplicationSchema<'a> {
             PropertyKind::Scalar(kind) => Some((property.name, kind)),
             _ => None,
         })
+    }
+    /// The list type GDAL gives a property: see [`super::lists::schema_list_type`].
+    pub fn list(&self, name: &str) -> Option<ListRule> {
+        self.index.get(name).and_then(|index| self.properties[*index].list)
     }
     pub fn geometry_hint(&self) -> Option<GeometryType> {
         self.properties
@@ -338,7 +345,7 @@ impl<'a> Resolver<'a> {
         model: &mut ApplicationSchema<'a>,
     ) -> Result<()> {
         if node.name == "element" {
-            return self.property(node, path, false, active, model);
+            return self.property(node, path, false, node.attr("maxOccurs"), active, model);
         }
         if node.name == "group" && node.attr("ref").is_some() {
             return Err(unsupported("referenced schema groups are unsupported"));
@@ -373,6 +380,7 @@ impl<'a> Resolver<'a> {
         node: &'a Element,
         path: &[&'a Element],
         global: bool,
+        max_occurs: Option<&str>,
         active: &mut Vec<&'a Element>,
         model: &mut ApplicationSchema<'a>,
     ) -> Result<()> {
@@ -387,12 +395,13 @@ impl<'a> Resolver<'a> {
                     name,
                     namespace,
                     kind: if name == "location" { PropertyKind::Geometry(None) } else { PropertyKind::Metadata },
+                    list: None,
                 });
             }
             self.local(namespace)?;
             let referenced = *self.elements.get(name).ok_or_else(|| unsupported(format!("unresolved element reference {name}")))?;
             enter(referenced, active)?;
-            let result = self.property(referenced, &[self.root, referenced], true, active, model);
+            let result = self.property(referenced, &[self.root, referenced], true, max_occurs, active, model);
             active.pop();
             return result;
         }
@@ -415,6 +424,7 @@ impl<'a> Resolver<'a> {
             path.push(inline);
             self.inline_kind(inline, &path, active)?
         };
-        model.add(Property { name, namespace, kind })
+        let list = matches!(kind, PropertyKind::Scalar(_)).then(|| super::lists::schema_list_type(node, self.root, max_occurs)).flatten();
+        model.add(Property { name, namespace, kind, list })
     }
 }

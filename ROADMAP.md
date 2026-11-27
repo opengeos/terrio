@@ -386,6 +386,10 @@ Command-group progress:
       other dimensions as bands, as GDAL reads them, identical to GDAL on CMIP6's 4D air
       temperature on GCS (37,620 bands, `DIM_*` metadata included).
 - [x] KML/KMZ, GPX, GML, TopoJSON.
+- [x] GML repeated and `maxOccurs` properties retain typed list values and OGR list
+      metadata through file, memory, streaming and schema reads
+      ([#1388](https://github.com/opengeos/terrio/pull/1388)); part of
+      [#614](https://github.com/opengeos/terrio/issues/614).
 - [x] PMTiles and MBTiles archives. Done: raster tiles (PNG, JPEG, WebP) read as rasters with their
       zoom levels as overviews, and vector tiles (MVT) as layers, as GDAL's MBTiles, PMTiles and MVT
       drivers read them; PMTiles read in place over HTTP; rasters written as tile pyramids and vector

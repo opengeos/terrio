@@ -56,6 +56,8 @@ mod geotiff_complex;
 mod geotiff_compound_crs;
 #[path = "../geotiff_unit_names.rs"]
 mod geotiff_unit_names;
+#[path = "../gml_lists.rs"]
+mod gml_lists;
 #[path = "../gpkg_layers_writer.rs"]
 mod gpkg_layers_writer;
 #[path = "../grib.rs"]

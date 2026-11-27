@@ -18,7 +18,10 @@ Commands compared (the complete suite requires GDAL 3.13 or newer):
   column names, geometry types, CRS codes, field names, types, subtypes, widths, precisions,
   nullability, unique constraints and defaults. GeoJSON list properties (the repository's
   ``tests/data/geojson_lists`` fixtures) are compared too, and so are their types and values
-  after ``terrio convert``, read back by GDAL.
+  after ``terrio convert``, read back by GDAL. So are the properties GDAL types as lists in
+  GML (``tests/data/gml_lists``, read with and without their ``.xsd``): their types, subtypes
+  and values after ``terrio convert`` to GeoJSON, read back by GDAL, against GDAL's reading of
+  the GML.
 - create: datasets created from a template (``--like``), an exported schema and explicit
   fields, read back by GDAL, against ``ogr2ogr -limit 0`` and GDAL's API.
 - set-field-type: conversions of real fields and of a matrix of edge values between every
@@ -98,18 +101,20 @@ def has_gdal_command(*words):
 
 
 LISTS = Path(__file__).resolve().parent.parent / "crates" / "terrio" / "tests" / "data" / "geojson_lists"
+GML_LISTS = LISTS.parent / "gml_lists"
 
 
-def read_fields(path):
+def read_fields(path, open_options=()):
     """The fields GDAL reads of a dataset's first layer: each one's type, subtype and values.
 
     Args:
         path: The dataset.
+        open_options: GDAL open options.
 
     Returns:
         ``{name: (type, subtype, [values])}``, lists as lists and other values as text.
     """
-    ds = ogr.Open(str(path))
+    ds = gdal.OpenEx(str(path), gdal.OF_VECTOR, open_options=list(open_options))
     layer = ds.GetLayer(0)
     defn = layer.GetLayerDefn()
     out = {}
@@ -689,6 +694,25 @@ def main():
         out.unlink(missing_ok=True)
         run([t, "convert", path, out])
         case(compare_features(f"convert-lists-{path.name}", read_fields(out), read_fields(path)))
+    # GML properties GDAL types as lists, with the schema next to the file and alone: their
+    # types and values after a conversion by terrio to GeoJSON, read back by GDAL.
+    for path in sorted(GML_LISTS.glob("*.gml")):
+        for tag, schema in (("xsd", path.with_suffix(".xsd")), ("alone", None)):
+            if tag == "xsd" and not schema.exists():
+                continue
+            src_dir = work / f"gml-lists-{tag}"
+            src_dir.mkdir(exist_ok=True)
+            src = src_dir / path.name
+            shutil.copy(path, src)
+            if schema:
+                shutil.copy(schema, src_dir / schema.name)
+            ref = read_fields(src, ["WRITE_GFS=NO"])
+            # A list null in every feature has no type in the GeoJSON written of it.
+            lists = {k: v for k, v in ref.items() if v[0].endswith("List") and any(x is not None for x in v[2])}
+            out = work / f"gml-lists-{tag}-{path.stem}.geojson"
+            run([t, "convert", src, out])
+            mine = read_fields(out)
+            case(compare_features(f"convert-gml-lists-{tag}-{path.name}", {k: mine.get(k) for k in lists}, lists))
 
     # -- create ------------------------------------------------------------------------------
     # GDAL 3.13's gdal vector create when this GDAL has it; otherwise ogr2ogr -limit 0 and

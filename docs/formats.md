@@ -816,7 +816,8 @@ list of one, a boolean in a number list 0 or 1), and `VectorDataset.ogr_type` (R
 the streamed layers' `ogr_type`, and `export-schema` report its OGR type. The types and values
 are GDAL 3.13.2's, except that the reals of a string list are written as terrio formats reals,
 not as the file spells them. Fields are not changed to or created as lists, and the lists of
-other formats (and of the GDAL fallback) are still JSON text of type `String(JSON)`.
+other formats (except GML, see [GML list properties](#gml-list-properties), and of the GDAL
+fallback) are still JSON text of type `String(JSON)`.
 
 A local vector file whose name points to no driver (`data`, `data.txt`, `data.xml`) is identified
 by its first 16 KiB. A JSON root `type` of `FeatureCollection`, `Feature` or a geometry type is
@@ -972,6 +973,37 @@ creating output because their name-only metadata cannot preserve the definition.
 Older Terrio versions wrote XY coordinates under northing-first projected EPSG URNs. Such
 files need their `srsName` changed to the short `EPSG:` form before reading; the current reader
 honors the declared authority order and cannot distinguish those old files from valid GML.
+
+### GML list properties
+
+GML properties are typed as GDAL's GML reader types them. A property the `.xsd` next to the file
+declares with a `maxOccurs` other than `1` is an `IntegerList` (`xs:integer`, `xs:short`),
+`Integer64List` (`xs:long`, `xs:unsignedLong`), `RealList` (`xs:decimal`, `xs:double`,
+`xs:float`), `StringList` (`xs:string`) or `IntegerList` of the `Boolean` subtype (`xs:boolean`);
+dates and times stay scalars. Without a schema (or from memory), a property repeated in a feature
+becomes a list of the type of its values, inferred value by value in feature order as GDAL infers
+it: an integer and an integer list make an integer list, integers and reals a real list, numbers
+and text a string list, and repeated dates or times stay one date or time. A list field holds each
+value as a JSON array of its type, converted as GDAL converts it (`atoi`, `atoll` and `CPLAtof`:
+`8x` is 8, text 0, and an integer beyond 32 bits in an integer list is truncated as on Linux and
+macOS), and `VectorDataset.ogr_type` (Rust), the streamed layers' `ogr_type`, and `export-schema`
+report its OGR type. As in GDAL, an empty element is left out, an element of spaces is an empty
+value, `xsi:nil="true"` first in a feature makes the list null (later, it is GDAL's null marker
+text, or 0), a property declared or inferred as a scalar reads its first value, and a scalar that
+GDAL's second inference pass makes a list while it reads the features is unset (or its one
+number). The types and values match GDAL 3.13.2 for GML 2, GML 3 and GML 3.2, with and without the
+schema (`tests/data/gml_lists`). Scalar types keep terrio's inference: times are text, booleans
+without a schema are text, and a feature's `gml:boundedBy` is not read as fields. WFS layers keep
+scalar fields, and the GML writer writes a list field as its JSON text.
+
+For repeating scalar types without a GDAL list mapping, such as `xs:token`, the
+reader infers the list type from the values. Element references use `maxOccurs`
+from the reference and the element type from the resolved declaration; an absent
+`maxOccurs` defaults to a scalar. Terrio resolves some custom element references
+that GDAL rejects: their declared type is retained, so referenced `xs:string`
+values `1, 2` remain a string list where GDAL instead infers an integer list after
+discarding that schema. Declared scalar strings retain their whitespace according
+to the schema's whitespace facet, as before; GDAL removes leading whitespace.
 
 ### CityGML
 
