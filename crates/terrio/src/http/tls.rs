@@ -199,12 +199,80 @@ pub(super) fn with_bundle(config: ureq::config::Config, path: &Path, provider: P
         }
         Err(error) => (None, Some(error)),
     };
-    // Same proxy-before-TCP ordering as DefaultConnector. This workspace does not
-    // enable ureq's SOCKS feature; refuse it here rather than silently going direct.
+    agent_with_tls(config, tls, error)
+}
+
+/// A client that does not verify the server's certificate, for `TERRIO_HTTP_UNSAFESSL=YES`
+/// (`GDAL_HTTP_UNSAFESSL`, which GDAL 3.13.3 turns into curl's `CURLOPT_SSL_VERIFYPEER=0`).
+/// It takes precedence over a CA bundle, as in GDAL. Without TLS cryptography (`provider` is an
+/// error), HTTPS fails with its reason, as with a bundle that cannot be read.
+pub(super) fn without_verification(config: ureq::config::Config, provider: Provider) -> ureq::Agent {
+    let configured = provider.and_then(|provider| {
+        ClientConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .map(|builder| builder.dangerous().with_custom_certificate_verifier(Arc::new(NoVerify { provider })).with_no_client_auth())
+            .map_err(|_| "TERRIO_HTTP_UNSAFESSL: cannot configure TLS protocol versions".into())
+    });
+    let (tls, error) = match configured {
+        Ok(mut tls) => {
+            tls.enable_sni = config.tls_config().use_sni();
+            (Some(Arc::new(tls)), None)
+        }
+        Err(error) => (None, Some(error)),
+    };
+    agent_with_tls(config, tls, error)
+}
+
+/// Accepts any server certificate and any handshake signature: `NoVerify` is only installed by
+/// [`without_verification`], for `TERRIO_HTTP_UNSAFESSL=YES`.
+#[derive(Debug)]
+struct NoVerify {
+    provider: Arc<CryptoProvider>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for NoVerify {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+/// An agent whose TLS connections use `tls` (a custom `ClientConfig`), failing HTTPS with `error`
+/// when there is none. Same proxy-before-TCP ordering as DefaultConnector; this workspace does not
+/// enable ureq's SOCKS feature, so it is refused here rather than silently going direct.
+fn agent_with_tls(config: ureq::config::Config, tls: Option<Arc<ClientConfig>>, error: Option<String>) -> ureq::Agent {
     let connector = BundleGuard(error)
         .chain(ConnectProxyConnector::default())
         .chain(TcpConnector::default())
-        .chain(AdditionalRootsConnector(tls))
+        .chain(CustomTlsConnector(tls))
         .chain(Http10CloseConnector);
     ureq::Agent::with_parts(config, connector, DefaultResolver::default())
 }
@@ -227,17 +295,19 @@ impl Connector<()> for BundleGuard {
         {
             return Err(ureq::Error::Other(Box::new(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "TERRIO_HTTP_CAINFO: SOCKS proxies are not supported with an additional CA bundle",
+                "TERRIO_HTTP_CAINFO/TERRIO_HTTP_UNSAFESSL: SOCKS proxies are not supported with a custom TLS configuration",
             ))));
         }
         Ok(chained)
     }
 }
 
+/// TLS with a custom `ClientConfig`: additional roots ([`with_bundle`]) or no verification
+/// ([`without_verification`]).
 #[derive(Debug)]
-struct AdditionalRootsConnector(Option<Arc<ClientConfig>>);
+struct CustomTlsConnector(Option<Arc<ClientConfig>>);
 
-impl<In: Transport> Connector<In> for AdditionalRootsConnector {
+impl<In: Transport> Connector<In> for CustomTlsConnector {
     type Out = Box<dyn Transport>;
 
     fn connect(&self, details: &ConnectionDetails, chained: Option<In>) -> Result<Option<Self::Out>, ureq::Error> {
@@ -245,7 +315,7 @@ impl<In: Transport> Connector<In> for AdditionalRootsConnector {
         if !details.needs_tls() || transport.is_tls() {
             return Ok(Some(transport.boxed()));
         }
-        let config = self.0.as_ref().ok_or(ureq::Error::Tls("additional CA configuration is unavailable"))?;
+        let config = self.0.as_ref().ok_or(ureq::Error::Tls("custom TLS configuration is unavailable"))?;
         let host = details.uri.host().ok_or(ureq::Error::Tls("missing TLS hostname"))?;
         let host = host.strip_prefix('[').and_then(|host| host.strip_suffix(']')).unwrap_or(host);
         let name = ServerName::try_from(host.to_owned()).map_err(|_| ureq::Error::Tls("invalid TLS hostname"))?;
@@ -261,19 +331,19 @@ impl<In: Transport> Connector<In> for AdditionalRootsConnector {
         }
         socket.set_timeout(timeout);
         connection.complete_io(&mut socket)?;
-        Ok(Some(Box::new(AdditionalRootsTransport {
+        Ok(Some(Box::new(CustomTlsTransport {
             buffers: LazyBuffers::new(details.config.input_buffer_size(), details.config.output_buffer_size()),
             stream: StreamOwned::new(connection, socket),
         })))
     }
 }
 
-struct AdditionalRootsTransport {
+struct CustomTlsTransport {
     buffers: LazyBuffers,
     stream: StreamOwned<ClientConnection, TransportAdapter>,
 }
 
-impl Transport for AdditionalRootsTransport {
+impl Transport for CustomTlsTransport {
     fn buffers(&mut self) -> &mut dyn Buffers {
         &mut self.buffers
     }
@@ -300,9 +370,9 @@ impl Transport for AdditionalRootsTransport {
     }
 }
 
-impl fmt::Debug for AdditionalRootsTransport {
+impl fmt::Debug for CustomTlsTransport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AdditionalRootsTransport").finish_non_exhaustive()
+        f.debug_struct("CustomTlsTransport").finish_non_exhaustive()
     }
 }
 
