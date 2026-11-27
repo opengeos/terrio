@@ -74,6 +74,7 @@ Terrio files derived from GDAL source files (each file's header names them):
   crates/terrio/src/drivers/jp2.rs
   crates/terrio/src/drivers/netcdf.rs
   crates/terrio/src/drivers/vector/geojson_lists.rs
+  crates/terrio/src/drivers/vector/gml_lists.rs
   crates/terrio/src/drivers/vector/mapinfo.rs
   crates/terrio/src/drivers/vector/osm.rs
   crates/terrio/src/drivers/vector/tab.rs
@@ -257,6 +258,11 @@ The copyright notices of those source files:
   Copyright 2007, Mateusz Loskot
   Copyright 2008-2024, Even Rouault <even.rouault at spatialys.com>
   Copyright (c) 2007, Mateusz Loskot
+  Copyright (c) 2002, Frank Warmerdam
+  Copyright (c) 2005, Frank Warmerdam
+  Copyright (c) 2010-2014, Even Rouault <even dot rouault at spatialys.com>
+  Copyright (c) 1998, Daniel Morissette
+  Copyright (c) 2006, Andrey Kiselev
 
 In general GDAL/OGR is licensed under an MIT style license with the
 following terms:

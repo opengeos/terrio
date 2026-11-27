@@ -530,12 +530,17 @@ pub(crate) fn with_list_types<T>(f: impl FnOnce() -> T) -> (T, ListTypes) {
 /// Records the list fields of a layer read (see [`with_list_types`]).
 pub(crate) fn declare_lists(layer: &Layer, scan: &SchemaScan) {
     let types = scan.list_types();
-    if types.is_empty() {
-        return;
+    if !types.is_empty() {
+        declare_list_types(&layer.name, types);
     }
+}
+
+/// Records the OGR types of the list fields of a layer read by any driver (see
+/// [`with_list_types`]).
+pub(crate) fn declare_list_types(layer: &str, types: Vec<(String, OgrType)>) {
     LISTS.with(|d| {
         if let Some(lists) = d.borrow_mut().as_mut() {
-            lists.push((layer.name.clone(), types));
+            lists.push((layer.to_string(), types));
         }
     });
 }

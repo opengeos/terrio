@@ -325,11 +325,14 @@ pub struct VectorDataset {
     pub style_table: Vec<(String, String)>,
     /// The OGR types of the fields that hold lists, by layer name, then field name: GeoJSON and
     /// GeoJSONSeq properties that GDAL's GeoJSON reader types `IntegerList`, `Integer64List`,
-    /// `RealList`, `StringList` or `IntegerList` of the `Boolean` subtype. Their values are JSON
-    /// arrays of that type ([`wbvector::FieldType::Json`] text, null for a null list): 32-bit or
-    /// 64-bit integers, booleans, reals or strings, converted as GDAL converts them (a scalar
-    /// to a list of one, a null element to 0). Other fields of JSON text, and the lists of other
-    /// formats, are not listed. Read a field's type with [`Self::ogr_type`].
+    /// `RealList`, `StringList` or `IntegerList` of the `Boolean` subtype, and GML properties
+    /// that GDAL's GML reader types so (declared with `maxOccurs` other than 1 in the `.xsd`, or
+    /// repeated in a feature without one). Their values are JSON arrays of that type
+    /// ([`wbvector::FieldType::Json`] text, null for a null list): 32-bit or 64-bit integers,
+    /// booleans, reals or strings, converted as GDAL converts them (a GeoJSON scalar to a list of
+    /// one, a null element to 0; GML text as C's `atoi`, `atoll` and `CPLAtof` read it). Other
+    /// fields of JSON text, and the lists of other formats, are not listed. Read a field's type
+    /// with [`Self::ogr_type`].
     pub list_types: BTreeMap<String, BTreeMap<String, OgrType>>,
 }
 
@@ -346,7 +349,7 @@ impl VectorDataset {
         typed_field(self.list_types.get(&layer.name), layer, i)
     }
 
-    /// Records the list fields of the GeoJSON layers an open read (see
+    /// Records the list fields of the GeoJSON and GML layers an open read (see
     /// [`crate::drivers::vector::geojson::with_list_types`]): by name, or the one layer read
     /// when the dataset renamed it. A field of layers sharing a name keeps a type only when they
     /// agree on it.

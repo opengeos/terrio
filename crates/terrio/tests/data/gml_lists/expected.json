@@ -1,0 +1,1325 @@
+{
+ "gdal_version": "3.13.2",
+ "files": {
+  "written_gml2.gml": {
+   "with_xsd": {
+    "ints": {
+     "type": "IntegerList",
+     "subtype": "None",
+     "values": [
+      [
+       1,
+       2
+      ],
+      [
+       3
+      ],
+      null,
+      null
+     ]
+    },
+    "int64s": {
+     "type": "Integer64List",
+     "subtype": "None",
+     "values": [
+      [
+       5000000000,
+       1
+      ],
+      [
+       2
+      ],
+      [
+       -7000000000
+      ],
+      null
+     ]
+    },
+    "reals": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       1.25,
+       2.5
+      ],
+      null,
+      [
+       7.5
+      ],
+      null
+     ]
+    },
+    "texts": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      [
+       "a",
+       "b"
+      ],
+      [
+       "c"
+      ],
+      null,
+      [
+       "d e",
+       "f"
+      ]
+     ]
+    },
+    "mixed": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       1.0,
+       2.5
+      ],
+      [
+       3.0
+      ],
+      [
+       4.25,
+       5.0
+      ],
+      null
+     ]
+    },
+    "booleans": {
+     "type": "IntegerList",
+     "subtype": "Boolean",
+     "values": [
+      [
+       1,
+       0
+      ],
+      [
+       1
+      ],
+      null,
+      null
+     ]
+    },
+    "single": {
+     "type": "IntegerList",
+     "subtype": "None",
+     "values": [
+      [
+       5
+      ],
+      [
+       6
+      ],
+      [
+       7
+      ],
+      [
+       8
+      ]
+     ]
+    }
+   },
+   "without_xsd": {
+    "ints": {
+     "type": "IntegerList",
+     "subtype": "None",
+     "values": [
+      [
+       1,
+       2
+      ],
+      [
+       3
+      ],
+      null,
+      null
+     ]
+    },
+    "int64s": {
+     "type": "Integer64List",
+     "subtype": "None",
+     "values": [
+      [
+       5000000000,
+       1
+      ],
+      [
+       2
+      ],
+      [
+       -7000000000
+      ],
+      null
+     ]
+    },
+    "reals": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       1.25,
+       2.5
+      ],
+      null,
+      [
+       7.5
+      ],
+      null
+     ]
+    },
+    "texts": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      [
+       "a",
+       "b"
+      ],
+      [
+       "c"
+      ],
+      null,
+      [
+       "d e",
+       "f"
+      ]
+     ]
+    },
+    "mixed": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       1.0,
+       2.5
+      ],
+      [
+       3.0
+      ],
+      [
+       4.25,
+       5.0
+      ],
+      null
+     ]
+    },
+    "booleans": {
+     "type": "IntegerList",
+     "subtype": "Boolean",
+     "values": [
+      [
+       1,
+       0
+      ],
+      [
+       1
+      ],
+      null,
+      null
+     ]
+    },
+    "single": {
+     "type": "Integer",
+     "subtype": "None",
+     "values": [
+      5,
+      6,
+      7,
+      8
+     ]
+    }
+   }
+  },
+  "written_gml3.gml": {
+   "with_xsd": {
+    "ints": {
+     "type": "IntegerList",
+     "subtype": "None",
+     "values": [
+      [
+       1,
+       2
+      ],
+      [
+       3
+      ],
+      null,
+      null
+     ]
+    },
+    "int64s": {
+     "type": "Integer64List",
+     "subtype": "None",
+     "values": [
+      [
+       5000000000,
+       1
+      ],
+      [
+       2
+      ],
+      [
+       -7000000000
+      ],
+      null
+     ]
+    },
+    "reals": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       1.25,
+       2.5
+      ],
+      null,
+      [
+       7.5
+      ],
+      null
+     ]
+    },
+    "texts": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      [
+       "a",
+       "b"
+      ],
+      [
+       "c"
+      ],
+      null,
+      [
+       "d e",
+       "f"
+      ]
+     ]
+    },
+    "mixed": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       1.0,
+       2.5
+      ],
+      [
+       3.0
+      ],
+      [
+       4.25,
+       5.0
+      ],
+      null
+     ]
+    },
+    "booleans": {
+     "type": "IntegerList",
+     "subtype": "Boolean",
+     "values": [
+      [
+       1,
+       0
+      ],
+      [
+       1
+      ],
+      null,
+      null
+     ]
+    },
+    "single": {
+     "type": "IntegerList",
+     "subtype": "None",
+     "values": [
+      [
+       5
+      ],
+      [
+       6
+      ],
+      [
+       7
+      ],
+      [
+       8
+      ]
+     ]
+    }
+   },
+   "without_xsd": {
+    "lowerCorner": {
+     "type": "String",
+     "subtype": "None",
+     "values": [
+      "-33 151",
+      "-34 152",
+      "-35 153",
+      "-36 154"
+     ]
+    },
+    "upperCorner": {
+     "type": "String",
+     "subtype": "None",
+     "values": [
+      "-33 151",
+      "-34 152",
+      "-35 153",
+      "-36 154"
+     ]
+    },
+    "ints": {
+     "type": "IntegerList",
+     "subtype": "None",
+     "values": [
+      [
+       1,
+       2
+      ],
+      [
+       3
+      ],
+      null,
+      null
+     ]
+    },
+    "int64s": {
+     "type": "Integer64List",
+     "subtype": "None",
+     "values": [
+      [
+       5000000000,
+       1
+      ],
+      [
+       2
+      ],
+      [
+       -7000000000
+      ],
+      null
+     ]
+    },
+    "reals": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       1.25,
+       2.5
+      ],
+      null,
+      [
+       7.5
+      ],
+      null
+     ]
+    },
+    "texts": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      [
+       "a",
+       "b"
+      ],
+      [
+       "c"
+      ],
+      null,
+      [
+       "d e",
+       "f"
+      ]
+     ]
+    },
+    "mixed": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       1.0,
+       2.5
+      ],
+      [
+       3.0
+      ],
+      [
+       4.25,
+       5.0
+      ],
+      null
+     ]
+    },
+    "booleans": {
+     "type": "IntegerList",
+     "subtype": "Boolean",
+     "values": [
+      [
+       1,
+       0
+      ],
+      [
+       1
+      ],
+      null,
+      null
+     ]
+    },
+    "single": {
+     "type": "Integer",
+     "subtype": "None",
+     "values": [
+      5,
+      6,
+      7,
+      8
+     ]
+    }
+   }
+  },
+  "written_gml32.gml": {
+   "with_xsd": {
+    "ints": {
+     "type": "IntegerList",
+     "subtype": "None",
+     "values": [
+      [
+       1,
+       2
+      ],
+      [
+       3
+      ],
+      null,
+      null
+     ]
+    },
+    "int64s": {
+     "type": "Integer64List",
+     "subtype": "None",
+     "values": [
+      [
+       5000000000,
+       1
+      ],
+      [
+       2
+      ],
+      [
+       -7000000000
+      ],
+      null
+     ]
+    },
+    "reals": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       1.25,
+       2.5
+      ],
+      null,
+      [
+       7.5
+      ],
+      null
+     ]
+    },
+    "texts": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      [
+       "a",
+       "b"
+      ],
+      [
+       "c"
+      ],
+      null,
+      [
+       "d e",
+       "f"
+      ]
+     ]
+    },
+    "mixed": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       1.0,
+       2.5
+      ],
+      [
+       3.0
+      ],
+      [
+       4.25,
+       5.0
+      ],
+      null
+     ]
+    },
+    "booleans": {
+     "type": "IntegerList",
+     "subtype": "Boolean",
+     "values": [
+      [
+       1,
+       0
+      ],
+      [
+       1
+      ],
+      null,
+      null
+     ]
+    },
+    "single": {
+     "type": "IntegerList",
+     "subtype": "None",
+     "values": [
+      [
+       5
+      ],
+      [
+       6
+      ],
+      [
+       7
+      ],
+      [
+       8
+      ]
+     ]
+    }
+   },
+   "without_xsd": {
+    "lowerCorner": {
+     "type": "String",
+     "subtype": "None",
+     "values": [
+      "-33 151",
+      "-34 152",
+      "-35 153",
+      "-36 154"
+     ]
+    },
+    "upperCorner": {
+     "type": "String",
+     "subtype": "None",
+     "values": [
+      "-33 151",
+      "-34 152",
+      "-35 153",
+      "-36 154"
+     ]
+    },
+    "ints": {
+     "type": "IntegerList",
+     "subtype": "None",
+     "values": [
+      [
+       1,
+       2
+      ],
+      [
+       3
+      ],
+      null,
+      null
+     ]
+    },
+    "int64s": {
+     "type": "Integer64List",
+     "subtype": "None",
+     "values": [
+      [
+       5000000000,
+       1
+      ],
+      [
+       2
+      ],
+      [
+       -7000000000
+      ],
+      null
+     ]
+    },
+    "reals": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       1.25,
+       2.5
+      ],
+      null,
+      [
+       7.5
+      ],
+      null
+     ]
+    },
+    "texts": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      [
+       "a",
+       "b"
+      ],
+      [
+       "c"
+      ],
+      null,
+      [
+       "d e",
+       "f"
+      ]
+     ]
+    },
+    "mixed": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       1.0,
+       2.5
+      ],
+      [
+       3.0
+      ],
+      [
+       4.25,
+       5.0
+      ],
+      null
+     ]
+    },
+    "booleans": {
+     "type": "IntegerList",
+     "subtype": "Boolean",
+     "values": [
+      [
+       1,
+       0
+      ],
+      [
+       1
+      ],
+      null,
+      null
+     ]
+    },
+    "single": {
+     "type": "Integer",
+     "subtype": "None",
+     "values": [
+      5,
+      6,
+      7,
+      8
+     ]
+    }
+   }
+  },
+  "inferred.gml": {
+   "without_xsd": {
+    "scalar_then_list": {
+     "type": "IntegerList",
+     "subtype": "None",
+     "values": [
+      [
+       3
+      ],
+      [
+       1,
+       2
+      ],
+      [
+       4
+      ]
+     ]
+    },
+    "list_then_real": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       1.0,
+       2.0
+      ],
+      [
+       2.5
+      ],
+      null
+     ]
+    },
+    "ints_then_int64": {
+     "type": "Integer64List",
+     "subtype": "None",
+     "values": [
+      [
+       1,
+       2
+      ],
+      [
+       5000000000
+      ],
+      null
+     ]
+    },
+    "int64_then_ints": {
+     "type": "Integer64List",
+     "subtype": "None",
+     "values": [
+      [
+       5000000000
+      ],
+      [
+       1,
+       2
+      ],
+      null
+     ]
+    },
+    "ints_then_text": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      [
+       "1",
+       "2"
+      ],
+      [
+       "x"
+      ],
+      [
+       "3",
+       "4"
+      ]
+     ]
+    },
+    "text_then_ints": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      [
+       "a"
+      ],
+      [
+       "1",
+       "2"
+      ],
+      null
+     ]
+    },
+    "booleans": {
+     "type": "IntegerList",
+     "subtype": "Boolean",
+     "values": [
+      [
+       1,
+       0
+      ],
+      [
+       1,
+       1
+      ],
+      null
+     ]
+    },
+    "boolean_then_booleans": {
+     "type": "IntegerList",
+     "subtype": "Boolean",
+     "values": [
+      [
+       1
+      ],
+      [
+       0,
+       1
+      ],
+      null
+     ]
+    },
+    "dates": {
+     "type": "Date",
+     "subtype": "None",
+     "values": [
+      "2020/01/01",
+      "2020/02/01",
+      null
+     ]
+    },
+    "datetimes": {
+     "type": "DateTime",
+     "subtype": "None",
+     "values": [
+      "2020/01/01 10:00:00+00",
+      null,
+      null
+     ]
+    },
+    "times": {
+     "type": "Time",
+     "subtype": "None",
+     "values": [
+      "10:00:00",
+      "12:00:00",
+      null
+     ]
+    },
+    "date_then_text": {
+     "type": "String",
+     "subtype": "None",
+     "values": [
+      null,
+      null,
+      null
+     ]
+    },
+    "empty_elements": {
+     "type": "IntegerList",
+     "subtype": "None",
+     "values": [
+      [
+       4
+      ],
+      [
+       5,
+       6
+      ],
+      null
+     ]
+    },
+    "blank_first": {
+     "type": "Integer",
+     "subtype": "None",
+     "values": [
+      null,
+      null,
+      null
+     ]
+    },
+    "leading_spaces": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       6.0,
+       7.5
+      ],
+      [
+       8.0
+      ],
+      null
+     ]
+    },
+    "nil_first": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      null,
+      null,
+      null
+     ]
+    },
+    "nil_after": {
+     "type": "Integer",
+     "subtype": "None",
+     "values": [
+      1,
+      null,
+      null
+     ]
+    },
+    "c_numbers": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      [
+       "007",
+       "1e3"
+      ],
+      [
+       "2"
+      ],
+      null
+     ]
+    },
+    "reals_c": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       0.5,
+       1000.0
+      ],
+      null,
+      null
+     ]
+    },
+    "nil_feature": {
+     "type": "IntegerList",
+     "subtype": "None",
+     "values": [
+      [
+       1,
+       2
+      ],
+      null,
+      [
+       3
+      ]
+     ]
+    },
+    "nil_in_list": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      [
+       "1",
+       "___OGR_GML_NULL___",
+       "2"
+      ],
+      null,
+      null
+     ]
+    }
+   }
+  },
+  "declared.gml": {
+   "with_xsd": {
+    "integers": {
+     "type": "IntegerList",
+     "subtype": "None",
+     "values": [
+      [
+       1,
+       2
+      ],
+      [
+       7,
+       8,
+       0,
+       705032704
+      ],
+      [
+       9
+      ]
+     ]
+    },
+    "ints": {
+     "type": "String",
+     "subtype": "None",
+     "values": [
+      "3",
+      "abc",
+      null
+     ]
+    },
+    "shorts": {
+     "type": "IntegerList",
+     "subtype": "None",
+     "values": [
+      [
+       4,
+       5
+      ],
+      null,
+      null
+     ]
+    },
+    "longs": {
+     "type": "Integer64List",
+     "subtype": "None",
+     "values": [
+      [
+       5000000000,
+       1
+      ],
+      [
+       -3
+      ],
+      null
+     ]
+    },
+    "decimals": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       1.5,
+       2.0
+      ],
+      [
+       25.0,
+       0.0
+      ],
+      null
+     ]
+    },
+    "doubles": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       3.25,
+       4.0
+      ],
+      null,
+      [
+       1.0,
+       0.0
+      ]
+     ]
+    },
+    "floats": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       0.5
+      ],
+      null,
+      null
+     ]
+    },
+    "strings": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      [
+       "a",
+       "b"
+      ],
+      [
+       "c",
+       "",
+       "d "
+      ],
+      [
+       "e",
+       "___OGR_GML_NULL___"
+      ]
+     ]
+    },
+    "booleans": {
+     "type": "IntegerList",
+     "subtype": "Boolean",
+     "values": [
+      [
+       1,
+       0,
+       1
+      ],
+      [
+       0,
+       0
+      ],
+      null
+     ]
+    },
+    "dates": {
+     "type": "Date",
+     "subtype": "None",
+     "values": [
+      "2020/01/01",
+      "2020/03/01",
+      null
+     ]
+    },
+    "one_integer": {
+     "type": "Integer",
+     "subtype": "None",
+     "values": [
+      10,
+      null,
+      null
+     ]
+    },
+    "one_string": {
+     "type": "String",
+     "subtype": "None",
+     "values": [
+      "first",
+      null,
+      null
+     ]
+    }
+   },
+   "without_xsd": {
+    "integers": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      [
+       "1",
+       "2"
+      ],
+      [
+       "7",
+       "8x",
+       "",
+       "5000000000"
+      ],
+      [
+       "9"
+      ]
+     ]
+    },
+    "ints": {
+     "type": "String",
+     "subtype": "None",
+     "values": [
+      "3",
+      "abc",
+      null
+     ]
+    },
+    "shorts": {
+     "type": "IntegerList",
+     "subtype": "None",
+     "values": [
+      [
+       4,
+       5
+      ],
+      null,
+      null
+     ]
+    },
+    "longs": {
+     "type": "Integer64List",
+     "subtype": "None",
+     "values": [
+      [
+       5000000000,
+       1
+      ],
+      [
+       -3
+      ],
+      null
+     ]
+    },
+    "decimals": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      [
+       "1.5",
+       "2"
+      ],
+      [
+       "2.5e1",
+       "x"
+      ],
+      null
+     ]
+    },
+    "doubles": {
+     "type": "RealList",
+     "subtype": "None",
+     "values": [
+      [
+       3.25,
+       4.0
+      ],
+      null,
+      [
+       1.0,
+       0.0
+      ]
+     ]
+    },
+    "floats": {
+     "type": "Real",
+     "subtype": "None",
+     "values": [
+      0.5,
+      null,
+      null
+     ]
+    },
+    "strings": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      [
+       "a",
+       "b"
+      ],
+      [
+       "c",
+       "",
+       "d "
+      ],
+      [
+       "e",
+       "___OGR_GML_NULL___"
+      ]
+     ]
+    },
+    "booleans": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      [
+       "true",
+       "0",
+       "1"
+      ],
+      [
+       "false",
+       "yes"
+      ],
+      null
+     ]
+    },
+    "dates": {
+     "type": "Date",
+     "subtype": "None",
+     "values": [
+      "2020/01/01",
+      "2020/03/01",
+      null
+     ]
+    },
+    "one_integer": {
+     "type": "IntegerList",
+     "subtype": "None",
+     "values": [
+      [
+       10,
+       11
+      ],
+      null,
+      null
+     ]
+    },
+    "one_string": {
+     "type": "StringList",
+     "subtype": "None",
+     "values": [
+      [
+       "first",
+       "second"
+      ],
+      null,
+      null
+     ]
+    }
+   }
+  }
+ }
+}

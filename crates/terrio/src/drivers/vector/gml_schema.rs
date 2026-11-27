@@ -5,6 +5,7 @@
 //! External application definitions are never fetched.
 
 use super::super::xml::Element;
+use super::lists::State;
 use crate::{Error, Result};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -63,6 +64,8 @@ pub(crate) struct Property<'a> {
     pub name: &'a str,
     pub namespace: Option<&'a str>,
     pub kind: PropertyKind,
+    /// The list type GDAL gives the property ([`super::lists::schema_list_type`]).
+    pub list: Option<State>,
 }
 
 pub(crate) struct ApplicationSchema<'a> {
@@ -137,6 +140,10 @@ impl<'a> ApplicationSchema<'a> {
             PropertyKind::Scalar(kind) => Some((property.name, kind)),
             _ => None,
         })
+    }
+    /// The list type GDAL gives a property: see [`super::lists::schema_list_type`].
+    pub fn list(&self, name: &str) -> Option<State> {
+        self.index.get(name).and_then(|index| self.properties[*index].list)
     }
     pub fn geometry_hint(&self) -> Option<GeometryType> {
         self.properties
@@ -387,6 +394,7 @@ impl<'a> Resolver<'a> {
                     name,
                     namespace,
                     kind: if name == "location" { PropertyKind::Geometry(None) } else { PropertyKind::Metadata },
+                    list: None,
                 });
             }
             self.local(namespace)?;
@@ -415,6 +423,7 @@ impl<'a> Resolver<'a> {
             path.push(inline);
             self.inline_kind(inline, &path, active)?
         };
-        model.add(Property { name, namespace, kind })
+        let list = matches!(kind, PropertyKind::Scalar(_)).then(|| super::lists::schema_list_type(node, self.root)).flatten();
+        model.add(Property { name, namespace, kind, list })
     }
 }

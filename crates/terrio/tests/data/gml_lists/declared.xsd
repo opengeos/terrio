@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema targetNamespace="http://ogr.maptools.org/" xmlns:ogr="http://ogr.maptools.org/" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:gml="http://www.opengis.net/gml/3.2" elementFormDefault="qualified" version="1.0">
+<xs:import namespace="http://www.opengis.net/gml/3.2" schemaLocation="http://schemas.opengis.net/gml/3.2.1/gml.xsd"/>
+<xs:element name="FeatureCollection" type="ogr:FeatureCollectionType" substitutionGroup="gml:AbstractFeature"/>
+<xs:complexType name="FeatureCollectionType">
+  <xs:complexContent>
+    <xs:extension base="gml:AbstractFeatureType">
+      <xs:sequence minOccurs="0" maxOccurs="unbounded">
+        <xs:element name="featureMember">
+          <xs:complexType>
+            <xs:complexContent>
+              <xs:extension base="gml:AbstractFeatureMemberType">
+                <xs:sequence>
+                  <xs:element ref="gml:AbstractFeature"/>
+                </xs:sequence>
+              </xs:extension>
+            </xs:complexContent>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:extension>
+  </xs:complexContent>
+</xs:complexType>
+<xs:element name="declared" type="ogr:declared_Type" substitutionGroup="gml:AbstractFeature"/>
+<xs:complexType name="declared_Type">
+  <xs:complexContent>
+    <xs:extension base="gml:AbstractFeatureType">
+      <xs:sequence>
+        <xs:element name="geometryProperty" type="gml:PointPropertyType" nillable="true" minOccurs="0" maxOccurs="1"/>
+        <xs:element name="integers" nillable="true" minOccurs="0" maxOccurs="unbounded">
+          <xs:simpleType><xs:restriction base="xs:integer"></xs:restriction></xs:simpleType>
+        </xs:element>
+        <xs:element name="ints" nillable="true" minOccurs="0" maxOccurs="unbounded">
+          <xs:simpleType><xs:restriction base="xs:int"></xs:restriction></xs:simpleType>
+        </xs:element>
+        <xs:element name="shorts" nillable="true" minOccurs="0" maxOccurs="unbounded">
+          <xs:simpleType><xs:restriction base="xs:short"></xs:restriction></xs:simpleType>
+        </xs:element>
+        <xs:element name="longs" nillable="true" minOccurs="0" maxOccurs="unbounded">
+          <xs:simpleType><xs:restriction base="xs:long"></xs:restriction></xs:simpleType>
+        </xs:element>
+        <xs:element name="decimals" nillable="true" minOccurs="0" maxOccurs="unbounded">
+          <xs:simpleType><xs:restriction base="xs:decimal"></xs:restriction></xs:simpleType>
+        </xs:element>
+        <xs:element name="doubles" nillable="true" minOccurs="0" maxOccurs="2">
+          <xs:simpleType><xs:restriction base="xs:double"></xs:restriction></xs:simpleType>
+        </xs:element>
+        <xs:element name="floats" nillable="true" minOccurs="0" maxOccurs="unbounded">
+          <xs:simpleType><xs:restriction base="xs:float"></xs:restriction></xs:simpleType>
+        </xs:element>
+        <xs:element name="strings" nillable="true" minOccurs="0" maxOccurs="unbounded">
+          <xs:simpleType><xs:restriction base="xs:string"></xs:restriction></xs:simpleType>
+        </xs:element>
+        <xs:element name="booleans" nillable="true" minOccurs="0" maxOccurs="unbounded">
+          <xs:simpleType><xs:restriction base="xs:boolean"></xs:restriction></xs:simpleType>
+        </xs:element>
+        <xs:element name="dates" nillable="true" minOccurs="0" maxOccurs="unbounded">
+          <xs:simpleType><xs:restriction base="xs:date"></xs:restriction></xs:simpleType>
+        </xs:element>
+        <xs:element name="one_integer" nillable="true" minOccurs="0" maxOccurs="1">
+          <xs:simpleType><xs:restriction base="xs:integer"></xs:restriction></xs:simpleType>
+        </xs:element>
+        <xs:element name="one_string" nillable="true" minOccurs="0" maxOccurs="1">
+          <xs:simpleType><xs:restriction base="xs:string"></xs:restriction></xs:simpleType>
+        </xs:element>
+      </xs:sequence>
+    </xs:extension>
+  </xs:complexContent>
+</xs:complexType>
+</xs:schema>
