@@ -545,6 +545,14 @@ pub(crate) fn open_native(path: &str) -> Result<Dataset> {
     Ok(ds)
 }
 
+/// Identifies a VRT by its location's filename, excluding remote queries and fragments.
+pub(crate) fn is_vrt_location(path: &str) -> bool {
+    if crate::ops::vrt::subdataset_parts(path).ok().flatten().is_some() {
+        return false;
+    }
+    RasterDriver::for_extension(&vfs::Location::parse(path).file_name()) == Some(RasterDriver::VRT)
+}
+
 fn open_native_unchecked(path: &str) -> Result<Dataset> {
     if let Some(result) = crate::catalog::open_lazy(path) {
         return read_lazy_whole(result?).map(Dataset::Raster);
@@ -554,6 +562,11 @@ fn open_native_unchecked(path: &str) -> Result<Dataset> {
     }
     if let Some(result) = crate::drivers::open_subdataset(path) {
         return result.map(Dataset::Raster);
+    }
+    // Selectors take precedence over extensions. Keep the original VRT location so the
+    // remote source policy and redirect-relative source base survive eager opens.
+    if is_vrt_location(path) {
+        return crate::ops::vrt::read_vrt(path).map(Dataset::Raster);
     }
     if let Some(result) = crate::drivers::open_in_place(path) {
         return result.map(Dataset::Raster);
@@ -637,6 +650,9 @@ fn read_raster_native(path: &str) -> Result<RasterDataset> {
     }
     if let Some(result) = crate::drivers::open_subdataset(path) {
         return result;
+    }
+    if is_vrt_location(path) {
+        return crate::ops::vrt::read_vrt(path);
     }
     if let Some(result) = crate::drivers::open_in_place(path) {
         return result;
@@ -1212,6 +1228,10 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     if path.split_once(':').is_some_and(|(prefix, _)| ["STAC", "STACIT", "STACTA"].iter().any(|name| prefix.eq_ignore_ascii_case(name))) {
         return Err(e);
     }
+    // An opaque VRT parser could follow sources that the remote document policy forbids.
+    if is_vrt_location(path) && crate::stac::AssetReadPolicy::for_document(path)?.is_some() {
+        return Err(e);
+    }
     let retry = match &e {
         Error::InvalidArgument(_) | Error::Http(_) => false,
         error if crate::drivers::vector::geojson::is_crs_refusal(error) => false,
@@ -1230,16 +1250,42 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     if !retry {
         return Err(e);
     }
-    // Keep an asset-policy refusal terminal and visible, rather than replacing it with the
-    // native format error when a remote STAC-selected raster needs the optional backend.
+    // Check consent and transport restrictions before inspecting any remote fallback bytes.
     crate::stac::check_gdal_asset_read()?;
     crate::gdal_backend::check_redirect_policy()?;
+    // GDAL can identify VRTs by content under extensionless or misleading names. Native
+    // refusals of those documents must not hand their sources to a second pointer parser.
+    if !matches!(&e, Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound)
+        && crate::stac::AssetReadPolicy::for_document(path)?.is_some()
+        && crate::formats::remote_may_be_vrt(path)
+    {
+        return Err(e);
+    }
     gdal(path).map_err(|gdal_error| if gdal_error.is_resource_refusal() { gdal_error } else { e })
 }
 
 #[cfg(all(test, feature = "gdal"))]
 mod fallback_tests {
     use super::*;
+
+    #[cfg(remote)]
+    #[test]
+    fn remote_fallback_refuses_unavailable_document_headers() {
+        let (base, seen) = crate::http::test_routes(vec![
+            ("/opaque".into(), 400, Vec::new(), Vec::new()),
+            ("/archive.zip".into(), 400, Vec::new(), Vec::new()),
+        ]);
+        for path in [format!("{base}/opaque"), format!("/vsizip/{{{base}/archive.zip}}/opaque")] {
+            let called = std::cell::Cell::new(false);
+            let result = gdal_fallback(&path, Err(Error::Unsupported("native document refusal".into())), |_| {
+                called.set(true);
+                Ok(())
+            });
+            assert!(!called.get(), "a failed prefix inspection must not invoke an opaque parser");
+            assert!(matches!(result, Err(Error::Unsupported(_))));
+        }
+        assert_eq!(seen.lock().unwrap().len(), 2, "inspect each prefix once, without a fallback request");
+    }
 
     #[test]
     fn named_terminal_parser_refusals_are_not_retried() {
@@ -1588,7 +1634,7 @@ fn option_enabled(key: &str) -> bool {
 }
 
 fn read_raster_local(path: &str) -> Result<RasterDataset> {
-    if RasterDriver::for_extension(path) == Some(RasterDriver::VRT) {
+    if is_vrt_location(path) {
         return crate::ops::vrt::read_vrt(path);
     }
     if let Some(result) = crate::drivers::read(path) {

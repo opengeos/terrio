@@ -113,6 +113,30 @@ geometry-intersection filter.
 
 ## Input isolation and diagnostic privacy
 
+`cargo test -p terrio --lib loaded_definitions_discard_saved_output_targets` checks
+that loaded GDALG definitions discard embedded write/checkpoint destinations.
+`cargo test -p terrio --lib ops::vrt::virtual_raster` checks that direct remote
+VRTs reject local and ambiently credentialed sources. Query-bearing URLs preserve
+provenance, STAC selectors keep their dispatch priority, and public remote subdataset
+sources use the policy of their backing file. Public sources remain lazy;
+consent can be granted and revoked, including for cached source reads. Remote XML
+and decompressed archive members are refused above 64 MiB, including VRTs beneath
+STAC-looking service paths. Remote JSON probes cannot spill VRT content into a
+file-enabled reader, including long prologs, case variants and UTF-16 XML; ordinary
+UTF-16 KML remains readable. These are Terrio host
+policies, rather than GDAL numerical conformance claims. CLI pipeline tests and
+`python/tests/test_pipeline.py` cover saved-output consent and overwrite behavior;
+the Node pipeline tests check the same default and explicit byte-export opt-in.
+The GDAL pipeline comparison explicitly allows saved outputs for its trusted
+named-checkpoint cases, corresponding to GDAL's write-in-stream opt-in.
+`cargo test -p terrio --lib document_caps_bound` checks initial HTTP bodies with
+ignored ranges, large ingestion settings and missing Content-Length: declared
+oversized bodies remain unread and unframed bodies stop after the cap plus one
+sentinel byte. With the optional backend, the remote VRT tests also refuse GDAL
+fallback under extensionless and misleading names, including long XML prologs.
+Failed HTTP and archive-member prefix inspections must also refuse the GDAL
+closure after a native parser refusal, preserving the original error.
+
 `python/tests/test_pyogrio_buffer_routing.py` checks unsupported single-file and
 multi-file ZIPs through paths, bytes, named buffers and open files. Reads and
 layer inspection must name the archive (or `buffer`) rather than extracted or

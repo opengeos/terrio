@@ -186,7 +186,9 @@ impl CatalogInput {
 // Unlike ordinary encoded tiles, a VRT can refer to more inputs after open.
 // Both opening and overwrite inventory must keep supplied bytes in the closed-map
 // opener; using the file-enabled opener here would read the host's files.
-fn virtual_bytes(bytes: &[u8], name: &str) -> Result<Option<LazyRaster>> {
+/// Inspects supplied XML and opens VRT bytes with a closed source map.
+/// Ordinary encoded data returns `None`; malformed XML never reaches a file-enabled opener.
+pub(crate) fn virtual_bytes(bytes: &[u8], name: &str) -> Result<Option<LazyRaster>> {
     let text = std::str::from_utf8(bytes);
     // Inspect the full XML prolog: a bounded format sniff can miss a VRT root behind
     // a long comment. Inconclusive XML must not reach the file-enabled fallback.

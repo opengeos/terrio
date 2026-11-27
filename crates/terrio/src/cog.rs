@@ -722,11 +722,11 @@ impl LazyRaster {
         if let Some(result) = crate::catalog::open_lazy(path) {
             return result;
         }
-        if crate::formats::extension(path).as_deref() == Some("vrt") {
-            return crate::ops::vrt::open_virtual_raster(path);
-        }
         if let Some(result) = crate::stac::open_lazy(path) {
             return result;
+        }
+        if crate::dataset::is_vrt_location(path) {
+            return crate::ops::vrt::open_virtual_raster(path);
         }
         if let Some(result) = crate::drivers::open_lazy(path) {
             return result;

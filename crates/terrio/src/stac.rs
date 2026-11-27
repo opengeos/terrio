@@ -105,7 +105,7 @@ fn fetch_as(loc: &str, link: bool) -> Result<(Vec<u8>, String)> {
 /// Preserve provider authentication for relative Azure targets, only while the wire origin
 /// remains the configured store. Rebase same-origin path redirects within that endpoint.
 #[cfg(remote)]
-fn azure_document_location(location: &str, remote: &crate::http::Remote, response: &str) -> Option<String> {
+pub(crate) fn azure_document_location(location: &str, remote: &crate::http::Remote, response: &str) -> Option<String> {
     let rest = location.strip_prefix("az://").or_else(|| location.strip_prefix("/vsiaz/"))?;
     let crate::http::Remote::Url(asked) = remote else { return None };
     let asked = asked.strip_prefix(crate::http::azure_bearer_prefix()).unwrap_or(asked);
@@ -366,7 +366,12 @@ fn local_backed(loc: &crate::vfs::Location) -> bool {
 /// back to whoever opened it.
 pub(crate) fn names_local_files(doc_loc: &str, href: &str) -> bool {
     let parse = crate::vfs::Location::parse;
-    !local_backed(&parse(doc_loc)) && local_backed(&parse(href))
+    !local_backed(&parse(asset_location(doc_loc))) && local_backed(&parse(asset_location(href)))
+}
+
+/// The backing filename of a supported subdataset selector, or the ordinary asset location.
+fn asset_location(href: &str) -> &str {
+    crate::ops::vrt::subdataset_parts(href).ok().flatten().map_or(href, |(_, file, _)| file)
 }
 
 /// Remote-document provenance retained by deferred raster reads. The original credential
@@ -385,6 +390,19 @@ pub(crate) struct AssetReadPolicy {
 // on another thread must carry the policy explicitly; copying config alone is insufficient.
 thread_local! {
     static ASSET_READ_POLICY: std::cell::RefCell<Option<AssetReadPolicy>> = const { std::cell::RefCell::new(None) };
+    static DOCUMENT_READ_OBSERVER: std::cell::RefCell<Option<AssetReadPolicy>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Observe redirects of caller-selected document transport without granting its contents access.
+pub(crate) struct DocumentReadScope {
+    previous: Option<AssetReadPolicy>,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl Drop for DocumentReadScope {
+    fn drop(&mut self) {
+        DOCUMENT_READ_OBSERVER.with(|p| *p.borrow_mut() = self.previous.take());
+    }
 }
 
 pub(crate) struct AssetReadScope {
@@ -402,6 +420,37 @@ impl Drop for AssetReadScope {
 impl AssetReadPolicy {
     pub(crate) fn current() -> Option<Self> {
         ASSET_READ_POLICY.with(|p| p.borrow().clone())
+    }
+
+    #[cfg(remote)]
+    pub(crate) fn document_observer() -> Option<Self> {
+        DOCUMENT_READ_OBSERVER.with(|p| p.borrow().clone())
+    }
+
+    /// The caller chose this transport, but every redirect crossing constrains later sources.
+    pub(crate) fn observe_transport(&self) -> DocumentReadScope {
+        let previous = DOCUMENT_READ_OBSERVER.with(|p| p.replace(Some(self.clone())));
+        DocumentReadScope { previous, _thread: std::marker::PhantomData }
+    }
+
+    /// The provenance of a directly selected remote document. Its own transport is chosen by
+    /// the caller; datasets named by its contents must obey the remote asset policy.
+    /// An inherited document keeps its original origin and credential requirements.
+    pub(crate) fn for_document(document: &str) -> Result<Option<Self>> {
+        if Self::current().is_some() {
+            return Self::nested(document);
+        }
+        if local_backed(&crate::vfs::Location::parse(document)) {
+            return Ok(None);
+        }
+        let cloud = cloud_aliases(document);
+        Ok(Some(Self {
+            document: document.to_string(),
+            same_origin_allowed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(!(cloud.0 || cloud.1 || cloud.2))),
+            #[cfg(remote)]
+            source: document.to_string(),
+            credentialed: Default::default(),
+        }))
     }
 
     /// A policy for the asset document `document`, credentials already seen as `credentialed`.
@@ -422,7 +471,7 @@ impl AssetReadPolicy {
             Some(Name::Mosaic { source, .. }) => Some(source),
             None => crate::stacta::document_location(href).transpose()?,
         };
-        let href = selected.as_deref().unwrap_or(href);
+        let href = asset_location(selected.as_deref().unwrap_or(href));
         let inherited = Self::current();
         // A nested document must not replace the original catalog's origin and thereby turn
         // a cross-origin authenticated read into a same-origin exemption.
@@ -496,8 +545,13 @@ impl AssetReadPolicy {
     #[cfg(remote)]
     pub(crate) fn observe_response(&self, requested: &str, response: &str) {
         if crate::vfs::url_origin(requested) != crate::vfs::url_origin(response) {
-            self.same_origin_allowed.store(false, std::sync::atomic::Ordering::Relaxed);
+            self.observe_cross_origin();
         }
+    }
+
+    #[cfg(remote)]
+    pub(crate) fn observe_cross_origin(&self) {
+        self.same_origin_allowed.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub(crate) fn enter_nested(path: &str) -> Result<Option<AssetReadScope>> {
@@ -573,6 +627,7 @@ pub(crate) fn check_asset_access(doc_loc: &str, href: &str) -> Result<()> {
 }
 
 fn check_asset_access_with_origin(doc_loc: &str, href: &str, same_origin_allowed: bool) -> Result<()> {
+    let href = asset_location(href);
     #[cfg(not(remote))]
     let _ = same_origin_allowed;
     let redact = crate::vsi::listing::redact_url;
@@ -691,6 +746,7 @@ fn cloud_aliases(href: &str) -> (bool, bool, bool) {
 /// A backing object, including one inside nested zip archives, that would use ambient auth.
 #[cfg(remote)]
 fn asset_uses_credentials_with_origin(doc_loc: &str, href: &str, same_origin_allowed: bool) -> bool {
+    let href = asset_location(href);
     use crate::vfs::Location;
     fn backing(location: &Location) -> &Location {
         match location {
@@ -2148,6 +2204,11 @@ pub(crate) fn may_be_stac(path: &str) -> bool {
     if crate::drivers::vector::wfs::is_feature_request(path) {
         return false;
     }
+    // A named VRT owns its bounded, provenance-aware reader even beneath API-like paths.
+    // Explicit STAC selectors are handled separately, before document probing.
+    if crate::dataset::is_vrt_location(path) {
+        return false;
+    }
     let base = path.split(['?', '#']).next().unwrap_or(path).to_ascii_lowercase();
     if base.ends_with(".json") || base.ends_with(".geojson") {
         return true;
@@ -2200,7 +2261,21 @@ fn probe(path: &str) -> Option<Result<Probe>> {
             Some(Err(Error::InvalidArgument(format!("STAC: invalid remote JSON document; GDAL pointer fallback is disabled ({error})"))))
         }
         _ if loc.is_local() => None,
-        _ => Some(crate::memory::open_bytes(bytes, &loc.file_name()).map(|ds| Probe::Other(Box::new(ds)))),
+        _ => {
+            // Reuse the closed-map XML inspection so long prologs, case variants and
+            // malformed roots cannot spill a remote VRT into the file-enabled GDAL opener.
+            if crate::drivers::vector::citygml::is_xml_prefix(&bytes) {
+                let inspected = crate::drivers::vector::citygml::decode_xml(&bytes)
+                    .and_then(|text| crate::catalog::virtual_bytes(text.as_bytes(), &loc.file_name()));
+                match inspected {
+                    Ok(None) => {}
+                    Ok(Some(_)) => return Some(Err(Error::InvalidArgument("STAC: remote VRT content requires a .vrt location".into()))),
+                    Err(error) if error.is_resource_refusal() => return Some(Err(error)),
+                    Err(error) => return Some(Err(Error::InvalidArgument(format!("STAC: remote XML document refused ({error})")))),
+                }
+            }
+            Some(crate::memory::open_bytes(bytes, &loc.file_name()).map(|ds| Probe::Other(Box::new(ds))))
+        }
     }
 }
 
@@ -2794,6 +2869,27 @@ mod tests {
             assert!(seen.lock().unwrap().iter().all(|(request, _)| !request.contains("/private.tif")));
         });
         crate::http::clear_path_specific_options(Some(&format!("{base}/private.tif")));
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn subdataset_sources_check_the_backing_locations_and_credentials() {
+        let document = "https://catalog.example/root.vrt";
+        crate::config::with_options(&[("GDAL_HTTP_HEADERS", ""), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+            for prefix in ["NETCDF", "HDF5", "ZARR", "GPKG"] {
+                let remote = format!("{prefix}:\"https://public.example/source.nc\":Band1");
+                let local = format!("{prefix}:\"/private/source.nc\":Band1");
+                assert!(check_asset_access(document, &remote).is_ok(), "public subdatasets must remain readable");
+                assert!(check_asset_access(document, &local).is_err(), "local subdatasets must remain forbidden");
+                let policy = AssetReadPolicy::for_tests(document, false);
+                let _scope = policy.enter().unwrap();
+                assert!(AssetReadPolicy::nested(&remote).unwrap().is_some());
+                crate::config::with_options(&[("GDAL_HTTP_HEADERS", "X-Key: synthetic")], || {
+                    let error = check_asset_access(document, &remote).unwrap_err().to_string();
+                    assert!(error.contains("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS"), "{error}");
+                });
+            }
+        });
     }
 
     #[cfg(remote)]
@@ -3552,6 +3648,40 @@ mod tests {
             ],
             || assert!(super::open(&format!("{server}/data.json")).unwrap().is_ok()),
         );
+    }
+
+    /// Uninspectable XML cannot establish that an opaque byte fallback is safe.
+    #[cfg(remote)]
+    #[test]
+    fn remote_non_stac_xml_refuses_unknown_or_malformed_encodings() {
+        for bytes in
+            [br#"<?xml version="1.0" encoding="unknown-encoding"?><kml/>"#.as_slice(), b"\xff\xfe<\0k\0m\0l\0/\0>\0\x00".as_slice()]
+        {
+            let (server, _) = crate::http::test_server(bytes.to_vec());
+            let error = super::open(&format!("{server}/collections/points.json")).unwrap().map(|_| ()).unwrap_err();
+            assert!(matches!(error, Error::InvalidArgument(_)), "{error}");
+            assert!(error.to_string().contains("remote XML document refused"), "{error}");
+        }
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn remote_non_stac_xml_keeps_supported_utf16_readers() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-16"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><Placemark><Point><coordinates>1,2,0</coordinates></Point></Placemark></Document></kml>"#;
+        for little in [true, false] {
+            let mut bytes = if little { vec![0xff, 0xfe] } else { vec![0xfe, 0xff] };
+            bytes.extend(xml.encode_utf16().flat_map(|unit| if little { unit.to_le_bytes() } else { unit.to_be_bytes() }));
+            let (server, _) = crate::http::test_server(bytes);
+            let Dataset::Vector(vector) = crate::open(&format!("{server}/collections/points.kml")).unwrap() else {
+                panic!("expected vector data")
+            };
+            assert_eq!(vector.layers[0].features.len(), 1);
+            let json = crate::drivers::vector::geojson::to_string(&vector.layers[0], &Default::default()).unwrap();
+            let json: Value = serde_json::from_str(&json).unwrap();
+            let point = &json["features"][0]["geometry"]["coordinates"];
+            assert_eq!(point[0].as_f64(), Some(1.0));
+            assert_eq!(point[1].as_f64(), Some(2.0));
+        }
     }
 
     #[cfg(remote)]

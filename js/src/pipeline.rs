@@ -52,6 +52,7 @@ impl PipelineResult {
 struct Options {
     base_file: Option<String>,
     input_kind: Option<String>,
+    allow_saved_outputs: bool,
 }
 
 fn input(value: &JsValue, kind: terrio::ops::pipeline::InputKind) -> Result<PipelineData, JsError> {
@@ -76,12 +77,21 @@ fn input(value: &JsValue, kind: terrio::ops::pipeline::InputKind) -> Result<Pipe
 /// Evaluate a command or GDALG JSON text using aliases from inputs. Values may
 /// be Datasets, uploaded {bytes, filename} objects, Uint8Arrays or GeoJSON.
 /// No files are created; outputBytes() encodes explicit outputs on request.
+/// GDALG destinations are discarded unless allowSavedOutputs explicitly trusts them.
 #[wasm_bindgen]
 pub fn pipeline(command: &str, inputs: JsValue, options: JsValue) -> Result<PipelineResult, JsError> {
     let options: Options = crate::parse_options(&options)?;
     let mut plan = if command.trim_start().starts_with('{') {
-        Pipeline::from_gdalg(command, options.base_file.as_deref())
+        let outputs = if options.allow_saved_outputs {
+            terrio::ops::pipeline::SavedOutputPolicy::Allow
+        } else {
+            terrio::ops::pipeline::SavedOutputPolicy::Discard
+        };
+        Pipeline::from_gdalg_with_output_policy(command, options.base_file.as_deref(), outputs)
     } else {
+        if options.allow_saved_outputs {
+            return Err(JsError::new("allowSavedOutputs requires GDALG JSON"));
+        }
         Pipeline::parse(command)
     }
     .map_err(js_err)?;

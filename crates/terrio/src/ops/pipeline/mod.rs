@@ -26,6 +26,15 @@ pub enum InputKind {
     /// Require vector layers.
     Vector,
 }
+/// Whether a loaded GDALG definition may request filesystem outputs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SavedOutputPolicy {
+    /// Discard writes and named checkpoint destinations, retaining in-memory materialization.
+    #[default]
+    Discard,
+    /// Retain destinations and overwrite/append options from an explicitly trusted definition.
+    Allow,
+}
 impl std::str::FromStr for InputKind {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self> {
@@ -229,8 +238,16 @@ impl Pipeline {
         spec.append = false;
         Ok(self)
     }
-    /// Parses a GDALG definition. Relative paths use `base_file` when the schema requests it.
+    /// Parses a GDALG definition as data, discarding embedded output destinations.
+    /// Relative input paths use `base_file` when the schema requests it. Use
+    /// [`Self::with_output`] to choose an output, or [`Self::from_gdalg_with_output_policy`]
+    /// with [`SavedOutputPolicy::Allow`] for explicitly trusted saved outputs.
     pub fn from_gdalg(text: &str, base_file: Option<&str>) -> Result<Self> {
+        Self::from_gdalg_with_output_policy(text, base_file, SavedOutputPolicy::Discard)
+    }
+    /// Parses a GDALG definition with an explicit policy for its saved output destinations.
+    /// Allowing saved outputs also trusts their overwrite and append options.
+    pub fn from_gdalg_with_output_policy(text: &str, base_file: Option<&str>, outputs: SavedOutputPolicy) -> Result<Self> {
         let doc: serde_json::Value = serde_json::from_str(text).map_err(|e| invalid(&format!("invalid GDALG JSON: {e}")))?;
         if doc.get("type").and_then(|v| v.as_str()) != Some("gdal_streamed_alg") {
             return Err(invalid("GDALG type must be gdal_streamed_alg"));
@@ -242,13 +259,27 @@ impl Pipeline {
             Some(v) => v.as_bool().ok_or_else(|| invalid("relative_paths_relative_to_this_file must be boolean"))?,
         };
         plan.base = base_file.map(str::to_string);
+        if outputs == SavedOutputPolicy::Discard {
+            plan.blocks.retain(|block| !matches!(block.step, Step::Write(_)));
+            for block in &mut plan.blocks {
+                if matches!(block.step, Step::Materialize(Some(_))) {
+                    block.step = Step::Materialize(None);
+                    block.argv = vec!["materialize".into()];
+                }
+            }
+        }
         Ok(plan)
     }
-    /// Loads a local, VSI or remote saved definition, without reading its input pixels.
+    /// Loads a saved definition as data, discarding its embedded output destinations.
+    /// Input pixels are not read while loading.
     pub fn open(path: &str) -> Result<Self> {
+        Self::open_with_output_policy(path, SavedOutputPolicy::Discard)
+    }
+    /// Loads a saved definition with an explicit policy for its output destinations.
+    pub fn open_with_output_policy(path: &str, outputs: SavedOutputPolicy) -> Result<Self> {
         let bytes = crate::vsi::read(path)?;
         let text = std::str::from_utf8(&bytes).map_err(|_| invalid("GDALG must be UTF-8"))?;
-        Self::from_gdalg(text, Some(path))
+        Self::from_gdalg_with_output_policy(text, Some(path), outputs)
     }
     /// Serializes a GDAL-readable definition, omitting a final write step.
     /// With no saved-file base, relative tokens retain current-directory semantics.
@@ -770,6 +801,24 @@ mod tests {
         assert_eq!(result.data.as_ref().unwrap().vectors().unwrap()[0].name, "places");
     }
     #[test]
+    fn loaded_definitions_discard_saved_output_targets() {
+        let definition = serde_json::json!({
+            "type": "gdal_streamed_alg",
+            "command_line": "read alias ! materialize --output checkpoint.geojson --overwrite ! write embedded.geojson --overwrite"
+        });
+        let plan = Pipeline::from_gdalg(&definition.to_string(), None).unwrap();
+        let result = plan.evaluate_with(|_| Ok(vectors().into())).unwrap();
+        assert!(result.output_names().is_empty(), "loaded definitions must not retain embedded destinations");
+        assert_eq!(result.data.unwrap().vectors().unwrap()[0].features.len(), 3);
+        assert!(!plan.to_gdalg().unwrap().contains("checkpoint.geojson"));
+        let trusted = Pipeline::from_gdalg_with_output_policy(&definition.to_string(), None, SavedOutputPolicy::Allow).unwrap();
+        let result = trusted.evaluate_with(|_| Ok(vectors().into())).unwrap();
+        assert_eq!(result.output_names(), ["checkpoint.geojson", "embedded.geojson"]);
+        let plan = plan.with_output("requested.geojson", None, false);
+        let result = plan.evaluate_with(|_| Ok(vectors().into())).unwrap();
+        assert_eq!(result.output_names(), ["requested.geojson"]);
+    }
+    #[test]
     fn final_output_layer_does_not_rename_the_returned_dataset_and_survives_override() {
         let plan =
             Pipeline::parse("read alias ! write old.geojson --output-layer renamed").unwrap().with_output("new.geojson", None, false);
@@ -961,6 +1010,11 @@ mod tests {
         .run()
         .unwrap();
         assert!(output.exists());
+        let outer = Pipeline::from_tokens(&["read".into(), definition.to_string_lossy().into_owned()]).unwrap();
+        let trusted = Pipeline::from_gdalg_with_output_policy(&outer.to_gdalg().unwrap(), None, SavedOutputPolicy::Allow).unwrap();
+        let trusted_output = dir.path().join("trusted.geojson");
+        trusted.with_output(trusted_output.to_str().unwrap(), None, false).run().unwrap();
+        assert!(trusted_output.exists());
         assert_eq!(std::fs::read(protected).unwrap(), b"keep existing bytes");
     }
     #[test]

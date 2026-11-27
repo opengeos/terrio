@@ -329,7 +329,7 @@ geometries yield no features. Output feature IDs restart at one.
 
 ### Chained processing
 
-`terrio.pipeline(command, inputs=None, *, write=False, base_file=None, input_kind=None)` evaluates
+`terrio.pipeline(command, inputs=None, *, write=False, base_file=None, input_kind=None, allow_saved_outputs=False)` evaluates
 supported GDAL-style steps through the Rust pipeline engine. `command` is a step
 string or saved GDALG JSON text. Steps follow POSIX quoting, so a backslash outside
 quotes escapes the next character: quote Windows paths in single quotes
@@ -346,6 +346,11 @@ selected = result.dataset  # Raster or VectorDataset
 payload = result.output_bytes()["selected.gpkg"]  # creates no file
 result.write_outputs()  # explicit persistence, with overwrite checks
 ```
+
+Loaded GDALG definitions discard embedded write and checkpoint destinations by
+default. Set `allow_saved_outputs=True` only for trusted saved definitions to
+retain those destinations and their overwrite/append options. Nested definitions
+used as inputs always discard their saved outputs.
 
 `write=True` persists requested outputs before returning. `output_names` lists
 write and named materialize destinations. A saved-definition output has no final

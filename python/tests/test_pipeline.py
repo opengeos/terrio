@@ -96,6 +96,38 @@ def test_saved_definition_loading_relative_paths_and_no_evaluation(tmp_path):
     assert len(alias.dataset.layers[0]) == 1
 
 
+def test_loaded_definition_requires_saved_output_consent(tmp_path):
+    """Keep saved destinations inactive until the caller explicitly trusts them.
+
+    Args:
+        tmp_path: Temporary directory for protected files and trusted outputs.
+    """
+    checkpoint = tmp_path / "checkpoint.geojson"
+    embedded = tmp_path / "embedded.geojson"
+    protected = b'{"type":"FeatureCollection","features":[]}'
+    for path in (checkpoint, embedded):
+        path.write_bytes(protected)
+    definition = json.dumps(
+        {
+            "type": "gdal_streamed_alg",
+            "command_line": (
+                f"read alias ! materialize --output '{checkpoint}' --overwrite "
+                f"! write '{embedded}' --overwrite"
+            ),
+        }
+    )
+    result = terrio.pipeline(definition, {"alias": points()}, write=True)
+    assert result.output_names == []
+    assert len(result.dataset.layers[0]) == 2
+    assert checkpoint.read_bytes() == embedded.read_bytes() == protected
+    trusted = terrio.pipeline(definition, {"alias": points()}, allow_saved_outputs=True, write=True)
+    assert trusted.output_names == [str(checkpoint), str(embedded)]
+    for path in (checkpoint, embedded):
+        assert len(json.loads(path.read_bytes())["features"]) == 2
+    with pytest.raises(ValueError, match="requires GDALG JSON"):
+        terrio.pipeline("read alias", {"alias": points()}, allow_saved_outputs=True)
+
+
 def test_checkpoint_preflight_and_parser_guards(tmp_path):
     """No output is modified if any requested destination fails preflight."""
     checkpoint, protected = tmp_path / "checkpoint.geojson", tmp_path / "protected.geojson"

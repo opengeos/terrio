@@ -313,6 +313,11 @@ camelCase options. So do `zonalStats`, `makeValid`, `checkGeometry`, `clipVector
 `pipeline`, `retile`, `planRetile`, `rasterIndex`, `vectorIndex`, `rpftocCreate` and `vsiStat`.
 `takeWarnings` returns the warnings collected so far.
 
+`pipeline` discards saved output destinations in GDALG JSON by default, retaining
+in-memory materialization. `{allowSavedOutputs: true}` retains the destinations of
+an explicitly trusted definition for `outputNames` and `outputBytes()`. Explicit
+command strings retain their requested outputs.
+
 `translate` reads the rasters the lazy reader opens (GeoTIFFs, JPEG 2000, GRIB, tile archives, as
 a `Dataset` opened from bytes or the bytes) by window, for the output alone, from the stored
 resolution its `overview` option selects where the reader exposes overviews, as `warp`'s does and

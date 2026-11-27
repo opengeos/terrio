@@ -49,8 +49,9 @@ impl PyPipelineResult {
 
 /// Evaluate a command or GDALG JSON text. Sources may be native paths or aliases
 /// in inputs (Raster, vector objects or paths). Outputs are deferred unless write=True.
+/// Loaded GDALG destinations are discarded unless allow_saved_outputs=True explicitly trusts them.
 #[pyfunction]
-#[pyo3(signature = (command, inputs=None, *, write=false, base_file=None, input_kind=None))]
+#[pyo3(signature = (command, inputs=None, *, write=false, base_file=None, input_kind=None, allow_saved_outputs=false))]
 fn pipeline(
     py: Python<'_>,
     command: &str,
@@ -58,9 +59,22 @@ fn pipeline(
     write: bool,
     base_file: Option<&str>,
     input_kind: Option<&str>,
+    allow_saved_outputs: bool,
 ) -> PyResult<PyPipelineResult> {
-    let mut plan =
-        if command.trim_start().starts_with('{') { Pipeline::from_gdalg(command, base_file) } else { Pipeline::parse(command) }.py()?;
+    let mut plan = if command.trim_start().starts_with('{') {
+        let outputs = if allow_saved_outputs {
+            terrio::ops::pipeline::SavedOutputPolicy::Allow
+        } else {
+            terrio::ops::pipeline::SavedOutputPolicy::Discard
+        };
+        Pipeline::from_gdalg_with_output_policy(command, base_file, outputs)
+    } else {
+        if allow_saved_outputs {
+            return Err(invalid("allow_saved_outputs requires GDALG JSON"));
+        }
+        Pipeline::parse(command)
+    }
+    .py()?;
     if let Some(kind) = input_kind {
         plan = plan.with_kind(kind.parse().py()?);
     }

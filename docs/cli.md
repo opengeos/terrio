@@ -4052,6 +4052,18 @@ input paths to absolute paths; imported relative paths resolve against the
 saved definition unless `relative_paths_relative_to_this_file` is false.
 Nested saved pipelines are limited to 16 levels. Definitions execute supported
 Terrio operations directly and never invoke a shell or external program.
+Loading discards embedded `write` destinations and converts named `materialize`
+checkpoints to in-memory snapshots. Choose a destination with `--output`.
+This also applies when re-saving a loaded definition with `--save`: saved
+checkpoints become in-memory snapshots unless `--allow-saved-outputs` is enabled.
+`--overwrite` alone does not restore a discarded destination; provide `--output`
+or explicitly trust the loaded destinations with `--allow-saved-outputs`.
+For a definition you explicitly trust, `--allow-saved-outputs` retains its saved
+destinations, including overwrite and append options. In that mode `--output`
+replaces the terminal destination while retaining trusted checkpoints. Rust callers
+select `SavedOutputPolicy::Allow` with `Pipeline::from_gdalg_with_output_policy`
+or `Pipeline::open_with_output_policy`; ordinary `from_gdalg` and `open` discard
+saved destinations. Explicit command strings retain their requested outputs.
 
 This is a linear pipeline implementation. It does not expose every option of
 GDAL's individual steps. Raster bounding-box clips must fit inside a north-up
@@ -4098,7 +4110,7 @@ item of the [roadmap](https://github.com/opengeos/terrio/blob/main/ROADMAP.md).
 
 A saved definition used as a nested `read` input contributes its evaluated dataset;
 its checkpoint and write artifacts are discarded. Execute a definition directly
-with `--load` to request its own named checkpoints. Output preflight checks are
+with `--load --allow-saved-outputs` to request its own named checkpoints. Output preflight checks are
 completed before writing, but multi-file writes are not transactional: an
 encoding or I/O failure can leave earlier outputs in place. CLI runs without
 `write`, `--output`, or `--save` print a dataset summary without saving a file.
@@ -4108,9 +4120,9 @@ this value does not retain the source file driver's provenance.
 
 `relative_paths_relative_to_this_file` applies to input paths only. Named
 checkpoint and final output paths resolve against the caller's working directory.
-Executing a definition directly with `--load` executes its write options, including
-explicit `--overwrite`; this is an instruction to run that definition, including
-its requested output writes. Nested `read` definitions continue to discard writes.
+Executing a definition directly with `--load` discards saved destinations and their
+write options unless `--allow-saved-outputs` is enabled. The opt-in trusts saved
+writes, including explicit `--overwrite`. Nested `read` definitions continue to discard writes.
 
 Each Python/JavaScript `dataset` property access creates an independent wrapper;
 vector features are copied on each access and at write/checkpoint snapshots. Keep
@@ -4290,7 +4302,7 @@ for one command and its descendants. Required dataset arguments may be omitted;
 metadata requests open no datasets or output files. The Python package supports
 identical requests with `python -m terrio`.
 
-The payload has `schema_version: "0.1.16"`, `unstable: true`, the program/version,
+The payload has `schema_version: "0.1.17"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,
