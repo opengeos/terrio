@@ -263,6 +263,14 @@ pub(crate) trait WindowSource: Send + Sync {
     fn level_sample_bits(&self, _overview: Option<usize>) -> Option<u16> {
         None
     }
+
+    fn overview_has_color_table(&self, _overview: usize) -> bool {
+        false
+    }
+
+    fn overview_color_table(&mut self, _overview: usize) -> Result<Arc<[[u8; 4]]>> {
+        Ok(Arc::from([]))
+    }
     /// Driver-specific metadata not represented by the shared raster header.
     fn metadata_item(&self, _key: &str, _domain: &str) -> Option<String> {
         None
@@ -441,6 +449,12 @@ impl WindowSource for SharedRaster {
     }
     fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
         self.lock().ok()?.level_sample_bits(overview)
+    }
+    fn overview_has_color_table(&self, overview: usize) -> bool {
+        self.lock().is_ok_and(|reader| reader.level_has_color_table(Some(overview)))
+    }
+    fn overview_color_table(&mut self, overview: usize) -> Result<Arc<[[u8; 4]]>> {
+        self.lock()?.level_color_table(Some(overview))
     }
     fn metadata_item(&self, key: &str, domain: &str) -> Option<String> {
         self.lock().ok()?.metadata_item(key, domain)
@@ -2082,12 +2096,26 @@ impl LazyRaster {
         }
     }
 
-    /// Whether the first band has a color table (a paletted raster), which GDAL resamples by
-    /// nearest neighbour only.
-    pub(crate) fn has_color_table(&self) -> bool {
-        match &self.inner {
-            Inner::Tiff(t) => !t.tags.color_table.is_empty(),
-            Inner::Memory(ds) | Inner::Source(ds, _) => !ds.color_table.is_empty(),
+    /// Whether the first band of the selected level has its own palette.
+    pub(crate) fn level_has_color_table(&self, level: Option<usize>) -> bool {
+        match (&self.inner, level) {
+            (Inner::Tiff(t), None) => !t.tags.color_table.is_empty(),
+            (Inner::Tiff(t), Some(i)) => t.levels.get(i + 1).is_some_and(|l| l.has_color_table),
+            (Inner::Source(_, source), Some(i)) => source.overview_has_color_table(i),
+            (_, None) => !self.color_table().is_empty(),
+            _ => false,
+        }
+    }
+
+    /// Color entries for the selected level. Overview TIFF tables are loaded on demand.
+    pub(crate) fn level_color_table(&mut self, level: Option<usize>) -> Result<Arc<[[u8; 4]]>> {
+        let _scope = self.enter_asset_read()?;
+        match (&mut self.inner, level) {
+            (Inner::Tiff(t), None) => Ok(Arc::from(t.tags.color_table.as_slice())),
+            (Inner::Tiff(t), Some(i)) => t.overview_color_table(i + 1),
+            (Inner::Source(_, source), Some(i)) => source.overview_color_table(i),
+            (Inner::Memory(ds) | Inner::Source(ds, _), None) => Ok(Arc::from(ds.color_table.as_slice())),
+            _ => Ok(Arc::from([])),
         }
     }
 
@@ -2845,6 +2873,9 @@ struct Level {
     storage: Option<Storage>,
     /// Cached GDAL RESAMPLING metadata, including absence, for repeated selection.
     resampling: Option<Option<String>>,
+    /// Presence is known from the directory entry. Its out-of-line contents are loaded on demand.
+    has_color_table: bool,
+    color_table: Option<Arc<[[u8; 4]]>>,
 }
 
 /// How an image's chunks are stored: its PlanarConfiguration and Compression tags.
@@ -3051,6 +3082,8 @@ impl TiffRaster {
             codec: None,
             storage: None,
             resampling: None,
+            has_color_table: !tags.color_table.is_empty(),
+            color_table: None,
         }];
         let mut ifd = 1;
         while dec.more_images() && ifd < MAX_IMAGES {
@@ -3081,6 +3114,12 @@ impl TiffRaster {
                         codec: None,
                         storage: None,
                         resampling: None,
+                        has_color_table: bits <= 16
+                            && dec
+                                .image_ifd()
+                                .find_entry(Tag::ColorMap)
+                                .is_some_and(|entry| entry.field_type() == tiff::tags::Type::SHORT && entry.count() == 3 * (1u64 << bits)),
+                        color_table: None,
                     });
                 }
             }
@@ -3156,6 +3195,8 @@ impl TiffRaster {
                 codec: None,
                 storage: None,
                 resampling: None,
+                has_color_table: l.has_color_table,
+                color_table: None,
             });
         }
         self.levels[1..].sort_by_key(|l| std::cmp::Reverse((l.width, l.height)));
@@ -3196,6 +3237,32 @@ impl TiffRaster {
             (Some(i), Some(ovr)) => ovr.tags_at_level(i),
             _ => &self.tags,
         }
+    }
+
+    fn overview_color_table(&mut self, level: usize) -> Result<Arc<[[u8; 4]]>> {
+        let image = &self.levels[level];
+        if let (Some(i), Some(ovr)) = (image.external, self.ovr.as_mut()) {
+            return ovr.overview_color_table(i);
+        }
+        if level == 0 {
+            return Ok(Arc::from(self.tags.color_table.as_slice()));
+        }
+        if let Some(colors) = &image.color_table {
+            return Ok(colors.clone());
+        }
+        if !image.has_color_table {
+            return Ok(Arc::from([]));
+        }
+        let ifd = image.ifd;
+        let error = self.limits.error();
+        if self.current_ifd != ifd {
+            self.decoder.seek_to_image(ifd).map_err(error)?;
+            self.current_ifd = ifd;
+        }
+        let map = self.decoder.get_tag_u16_vec(Tag::ColorMap).map_err(error)?;
+        let colors: Arc<[[u8; 4]]> = crate::geotiff::decode_color_map(&map).into();
+        self.levels[level].color_table = Some(colors.clone());
+        Ok(colors)
     }
 
     /// One dataset metadata item of a domain, as GDAL's `GetMetadataItem(key, domain)` returns it

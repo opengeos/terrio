@@ -1598,7 +1598,7 @@ def _r_outshape(rio: Any, ctx: Ctx, p: str) -> Any:
     "reads: out_shape bilinear, cubic, average",
     expect="known",
     reason="next to nodata pixels, GDAL 3.12's masked convolution (bilinear, cubic) differs from "
-    "terrio's resampling kernels; GDAL averages the colors of palette rasters; float sums differ "
+    "terrio's resampling kernels; float sums differ "
     "in the last digits",
 )
 def _r_resampled(rio: Any, ctx: Ctx, p: str) -> Any:

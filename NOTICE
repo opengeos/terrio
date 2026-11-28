@@ -57,6 +57,10 @@ Apache-2.0 and Zlib license options.
 GDAL (https://github.com/OSGeo/gdal)
 -------------------------------------------------------------------------------
 
+Palette Average/RMS RasterIO in crates/terrio/src/drivers/gdal_overview.rs is
+adapted from GDAL 3.13.3 gcore/overview.cpp (GDALResampleChunk_AverageOrRMS_T and
+BestColorEntry), by Frank Warmerdam and Even Rouault.
+
 Terrio files derived from GDAL source files (each file's header names them):
   crates/terrio-crs/src/lib.rs
   crates/terrio/src/cog_validate.rs

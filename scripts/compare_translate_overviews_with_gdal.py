@@ -3,7 +3,8 @@
 
 Synthetic levels holding markers check which stored resolution each `-ovr` choice reads; real
 USGS terrain (Float32 with a nodata value) and Landsat RGB (Byte with an internal mask) check the
-resampled pixels, nodata values, types and geotransforms; a real COG served over HTTP checks that
+resampled pixels, nodata values, types and geotransforms. An OPERA water map checks palette
+Average and RMS. A real COG served over HTTP checks that
 an output resized with AUTO transfers less than half the raster bytes NONE does. Run with a
 fetched test-data directory and a built terrio CLI. Writes the same JSON comparison records as
 compare_ops_with_gdal.py for the conformance report.
@@ -94,6 +95,22 @@ def cases(data, tmp):
                        ["-outsize", str(width), str(height), "-r", resampling, "-ovr", choice])
         yield (f"translate external markers {choice} window", external,
                ["-srcwin", "7", "5", "150", "120", "-outsize", "40", "30", "-ovr", choice])
+
+    # Real OPERA water classes: compare palette indices through the base band and AUTO.
+    opera = Path(data) / "OPERA_L3_DSWx_WTR.tif"
+    if not opera.exists():
+        raise FileNotFoundError(f"Missing real-data fixture: {opera}")
+    for resampling in ("average", "rms"):
+        for choice in ("NONE", "AUTO"):
+            for window, coords in (
+                ("integer", ["3560", "700", "97", "83"]),
+                ("fractional", ["3560.25", "700.25", "96.25", "82.25"]),
+            ):
+                yield (
+                    f"translate OPERA palette {resampling} {choice} {window}",
+                    str(opera),
+                    ["-srcwin", *coords, "-outsize", "17", "23", "-r", resampling, "-ovr", choice],
+                )
 
     # Real USGS terrain: Float32 with a nodata value, average overviews.
     terrain = Path(data) / "usgs_dem.tif"
@@ -253,8 +270,9 @@ def main():
                 result = subprocess.run([args.terrio, "translate", source, actual, *terrio_args(options)], capture_output=True, text=True)
                 if result.returncode:
                     raise RuntimeError(result.stderr.strip())
-                record = compare(reference, actual, 1.0)
-                if "default size" in name and record["same_size"]:
+                palette = name.startswith("translate OPERA palette")
+                record = compare(reference, actual, 0.0 if palette else 1.0)
+                if ("default size" in name or palette) and record["same_size"]:
                     expected = got = None
                     try:
                         expected, got = gdal.Open(reference), gdal.Open(actual)
@@ -267,7 +285,21 @@ def main():
                             for b in range(1, expected.RasterCount + 1)
                         )
                         if not record["same_crs"] or not record["same_masks"]:
-                            record["error"] = "default-size output CRS or masks differ"
+                            record["error"] = "output CRS or masks differ"
+                        if palette:
+                            expected_table = expected.GetRasterBand(1).GetRasterColorTable()
+                            actual_table = got.GetRasterBand(1).GetRasterColorTable()
+                            record["same_palette"] = bool(
+                                expected_table is not None
+                                and actual_table is not None
+                                and expected_table.GetCount() == actual_table.GetCount()
+                                and all(
+                                    expected_table.GetColorEntry(i) == actual_table.GetColorEntry(i)
+                                    for i in range(expected_table.GetCount())
+                                )
+                            )
+                            if not record["same_palette"]:
+                                record["error"] = "output palette differs"
                     finally:
                         expected = got = None
             except Exception as error:  # report every case, including CLI errors

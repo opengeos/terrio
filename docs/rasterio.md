@@ -33,8 +33,9 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   bands) are read the same way, as GDAL's JP2OpenJPEG driver reads them: their resolution levels
   are the overviews, and a window decodes only the tiles, precincts and code blocks it covers.
   Reads at a lower resolution go through the overviews as GDAL's would, with GDAL's choice of
-  overview and its nearest-neighbour arithmetic. Other formats terrio reads (ASCII grids, ERDAS
-  Imagine, ENVI, netCDF, Zarr...) are read whole when opened.
+  overview and its nearest-neighbour arithmetic. Average and RMS on paletted bands use the
+  selected level's colors and return the closest palette index. Other formats terrio reads
+  (ASCII grids, ERDAS Imagine, ENVI, netCDF, Zarr...) are read whole when opened.
 - **Georeferencing.** Rotated and south-up transforms are read and written (a GeoTIFF
   `ModelTransformationTag`, as GDAL writes them) and warped as GDAL warps them; GCPs (GeoTIFF tie
   points) are read and written, and warped with GDAL's GCP transformers: a homography from 4 or 5
@@ -182,7 +183,7 @@ tolerance and 15 known differences:
 |---|---|
 | identical | metadata of every GeoTIFF (profile, tags, band metadata, masks' sources, blocks, overviews, color tables); full, windowed, fractional-window, masked, boundless and out-of-range reads; masks; reads at lower resolution through overviews and upsampled (nearest); `out_dtype`; `sample`, `index`, `xy` and window helpers; files written by `terrio.rio` read back by rasterio (12 profiles, with windowed writes, tags, band metadata, color tables, overviews, `r+` updates) and files written by rasterio read by `terrio.rio`; `MemoryFile`; `features.rasterize` (polygons, lines, points, holes, `all_touched`, `add`), `geometry_mask`, `geometry_window`; `features.shapes` (identical polygons and values, compared as sets); `warp.reproject` with nearest neighbour; rotated and south-up files, GCPs (written, read, `xy` and `rowcol` with GCPs), RPCs, internal masks (tiled, striped, `r+`) and per-band nodata from sidecars; `shutil` and `stack`; `WarpedVRT` reads; `merge` (every method and option); `mask`; the remote COG; CRS helpers, transforms and windows |
 | within tolerance | coordinates transformed by terrio's projection code and PROJ, and the output grids of `calculate_default_transform` and `WarpedVRT` (reprojections of rotated, south-up and GCP sources included), differ in the last digits (relative 1e-15), and so do statistics (sums in another order); `reproject` with bilinear, cubic and Lanczos kernels differs next to nodata pixels (under 1% of pixels); overviews built with `average` and `mode` differ by 1 on a few pixels (GDAL's rounding and tie-breaking) |
-| known differences | reads resampled with bilinear, cubic or average kernels (`out_shape` with `resampling`) differ next to nodata pixels: GDAL 3.12's masked convolution is not the one terrio's kernels implement, and GDAL averages the colors of palette rasters; with a `-inf` nodata, rasterio's boundless masked read masks nothing (terrio.rio masks the pixels outside); GDAL warps a VRT window in its own chunks, so its windowed reads differ from its full reads on 0.01% of pixels (terrio.rio cuts windows from the full warp); GDAL identifies an EPSG code in an ESRI `.prj` where terrio keeps the WKT (the same CRS) |
+| known differences | Reads resampled with bilinear, cubic or average kernels (`out_shape` with `resampling`) can differ next to nodata pixels because of GDAL 3.12's masked convolution and floating-point rounding. With a `-inf` nodata, rasterio's boundless masked read masks nothing (terrio.rio masks the pixels outside). GDAL warps a VRT window in its own chunks, so its windowed reads differ from its full reads on 0.01% of pixels (terrio.rio cuts windows from the full warp). GDAL identifies an EPSG code in an ESRI `.prj` where terrio keeps the WKT (the same CRS). |
 
 Run it with:
 
