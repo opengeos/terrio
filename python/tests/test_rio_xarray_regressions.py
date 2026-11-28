@@ -20,6 +20,15 @@ from terrio.rio.vrt import _Grid
 
 
 def _write_gtiff(path, data: np.ndarray, transform: Affine, *, crs="EPSG:4326", nodata=None):
+    """Write a small GeoTIFF fixture through the rasterio-compatible API.
+
+    Args:
+        path: Destination file path.
+        data: Two-dimensional samples or a band-first array.
+        transform: Pixel-to-world affine transform.
+        crs: Coordinate reference system accepted by rio.open.
+        nodata: Optional nodata value for the fixture.
+    """
     if data.ndim == 2:
         data = data[np.newaxis, :, :]
     count, height, width = data.shape

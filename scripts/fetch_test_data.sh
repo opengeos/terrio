@@ -9,7 +9,18 @@ set -euo pipefail
 # the build or disabling a validation check. Preserve explicit GDAL overrides.
 export GDAL_HTTP_MAX_RETRY="${GDAL_HTTP_MAX_RETRY:-3}"
 export GDAL_HTTP_RETRY_DELAY="${GDAL_HTTP_RETRY_DELAY:-2}"
-curl() { command curl --retry 3 --retry-delay 2 --retry-connrefused "$@"; }
+curl() {
+  local status=0 arg
+  command curl --retry 3 --retry-delay 2 --retry-connrefused "$@" || status=$?
+  if [ "$status" -ne 0 ]; then
+    for arg in "$@"; do
+      case "$arg" in
+        http://*|https://*) printf 'Fixture download failed: %s\n' "${arg%%\?*}" >&2 ;;
+      esac
+    done
+  fi
+  return "$status"
+}
 here="$(cd "$(dirname "$0")" && pwd)"
 dir="${1:-$here/../../terrio-data}"
 mkdir -p "$dir"
@@ -48,7 +59,9 @@ for band in 8 4 3 2; do
 done
 [ -e ne_countries.zip ] || curl -sSfL -o ne_countries.zip https://naciscdn.org/naturalearth/110m/cultural/ne_110m_admin_0_countries.zip
 [ -e ne_places.zip ] || curl -sSfL -o ne_places.zip https://naciscdn.org/naturalearth/10m/cultural/ne_10m_populated_places_simple.zip
-[ -e UScounties.fgb ] || curl -sSfL -o UScounties.fgb https://flatgeobuf.org/test/data/UScounties.fgb
+# Use the publisher's pinned repository copy; its website can reject automated downloads.
+[ -e UScounties.fgb ] || curl -sSfL -o UScounties.fgb \
+  https://raw.githubusercontent.com/flatgeobuf/flatgeobuf/3f59f2950ac495332004a1623ce9cf51fc658c2c/test/data/UScounties.fgb
 # Vector formats from other producers: GPX 1.0 and 1.1 (gpxpy test files), KML samples (GDAL test
 # data), US Census KML, TopoJSON (world-atlas, us-atlas) and an OpenStreetMap extract (Geofabrik).
 gpxpy=https://raw.githubusercontent.com/tkrajina/gpxpy/master/test_files
