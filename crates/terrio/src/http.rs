@@ -185,7 +185,13 @@ impl HttpOptions {
     pub fn from_env() -> Self {
         let d = Self::default();
         let var = |terrio: &str, gdal: &str| crate::config::get_any(&[terrio, gdal]).map(|v| v.trim().to_string());
-        let secs = |v: String| v.parse::<f64>().ok().and_then(|s| Duration::try_from_secs_f64(s).ok());
+        let secs = |v: String| {
+            v.parse::<f64>()
+                .ok()
+                .and_then(|s| Duration::try_from_secs_f64(s).ok())
+                // ureq adds configured durations to Instant when computing request deadlines.
+                .filter(|d| std::time::Instant::now().checked_add(*d).is_some())
+        };
         Self {
             timeout: var("TERRIO_HTTP_TIMEOUT", "GDAL_HTTP_TIMEOUT").and_then(secs).filter(|t| !t.is_zero()),
             connect_timeout: var("TERRIO_HTTP_CONNECTTIMEOUT", "GDAL_HTTP_CONNECTTIMEOUT").and_then(secs).unwrap_or(d.connect_timeout),
@@ -7269,17 +7275,19 @@ mod tests {
                 crate::config::pop_scope();
             }
         }
-        crate::config::push_scope(std::collections::HashMap::from([
-            ("TERRIO_HTTP_TIMEOUT".into(), Some("1e30".into())),
-            ("TERRIO_HTTP_CONNECTTIMEOUT".into(), Some("1e30".into())),
-            ("TERRIO_HTTP_RETRY_DELAY".into(), Some("1e30".into())),
-        ]));
-        let _guard = PopScope;
-        let opts = HttpOptions::from_env();
-        let def = HttpOptions::default();
-        assert_eq!(opts.timeout, None);
-        assert_eq!(opts.connect_timeout, def.connect_timeout);
-        assert_eq!(opts.retry_delay, def.retry_delay);
+        for value in ["1e30", "1e19"] {
+            crate::config::push_scope(std::collections::HashMap::from([
+                ("TERRIO_HTTP_TIMEOUT".into(), Some(value.into())),
+                ("TERRIO_HTTP_CONNECTTIMEOUT".into(), Some(value.into())),
+                ("TERRIO_HTTP_RETRY_DELAY".into(), Some(value.into())),
+            ]));
+            let _guard = PopScope;
+            let opts = HttpOptions::from_env();
+            let def = HttpOptions::default();
+            assert_eq!(opts.timeout, None, "{value}");
+            assert_eq!(opts.connect_timeout, def.connect_timeout, "{value}");
+            assert_eq!(opts.retry_delay, def.retry_delay, "{value}");
+        }
     }
 
     #[test]
