@@ -1228,11 +1228,13 @@ mod resource_tests {
 
     #[test]
     fn progressive_oversized_frame_is_a_typed_resource_refusal() {
-        // SOF2 (0xc2) progressive 65535 x 65535 3-component frame falls through to jpeg-decoder.
-        // On 64-bit targets this exercises the `samples > 1 << 31` refusal; on 32-bit/WASM targets
-        // it guards against `usize` multiplication wraparound before that check.
-        let header = [0xff, 0xd8, 0xff, 0xc2, 0, 17, 8, 0xff, 0xff, 0xff, 0xff, 3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0, 0xff, 0xd9];
-        assert!(matches!(super::decode_file(&header), Err(super::DecodeError::Resource(_))));
+        // SOF2 progressive frames fall through to jpeg-decoder. The second height makes the
+        // three-component sample count wrap below the size limit on 32-bit/WASM targets.
+        for height in [65535_u16, 21846] {
+            let mut header = [0xff, 0xd8, 0xff, 0xc2, 0, 17, 8, 0xff, 0xff, 0xff, 0xff, 3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0, 0xff, 0xd9];
+            header[7..9].copy_from_slice(&height.to_be_bytes());
+            assert!(matches!(super::decode_file(&header), Err(super::DecodeError::Resource(_))), "height={height}");
+        }
     }
 
     #[test]
