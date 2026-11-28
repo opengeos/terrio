@@ -347,7 +347,7 @@ def _overview_band_metadata(riods: DatasetReader, raster: Any, level: int) -> di
     Returns:
         dict: `scales`, `offsets`, `descriptions`, `units` and `band_tags`.
     """
-    s = _tiff.default_structure(raster)
+    s = _tiff.default_structure(raster, include_band_metadata=False)
     if riods.driver == "GTiff":
         try:
             ifds = _terrio.tiff_tags(_terrio_path(riods.name)) or []
