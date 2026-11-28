@@ -308,7 +308,7 @@ def default_structure(raster: Any, *, include_band_metadata: bool = True) -> Str
         s.descriptions[b] = md.get("description")
         s.band_tags[b] = dict(md.get("items") or {})
         if md.get("color_interp"):
-            s.colorinterp[b] = ColorInterp[md["color_interp"].lower()]
+            s.colorinterp[b] = color_interp_from_name(md["color_interp"])
     # The color table of band 1 (a paletted PNG's), as GDAL reports it.
     table = getattr(raster, "color_table", None)
     if table:
