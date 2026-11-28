@@ -66,6 +66,7 @@ fn empty_env_segments_do_not_add_cwd_to_grid_search_paths() {
         std::env::set_var("XDG_DATA_HOME", "");
         std::env::set_var("LOCALAPPDATA", "");
         std::env::set_var("HOME", "");
+        std::env::set_var("USERPROFILE", "");
         std::env::set_var("XDG_CACHE_HOME", "");
         std::env::set_var("TERRIO_GRID_CACHE", "");
     }

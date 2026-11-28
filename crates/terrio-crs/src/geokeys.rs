@@ -1163,7 +1163,7 @@ fn angular_unit(k: &GeoKeys) -> std::result::Result<Option<(f64, String)>, ()> {
             if k.key(2055).is_none() {
                 return Ok(None);
             }
-            let Some(radians) = k.double(2055) else {
+            let Some(&[radians]) = k.doubles(2055) else {
                 return Err(());
             };
             if !radians.is_finite() || radians <= 0.0 {
@@ -1854,6 +1854,11 @@ mod tests {
     fn angular_unit_rejects_non_finite_user_defined_size() {
         let keys = [1, 1, 0, 2, 2054, 0, 1, USER_DEFINED, 2055, 34736, 1, 0];
         assert_eq!(angular_unit(&GeoKeys { keys: &keys, doubles: &[], ascii: b"" }), Err(()), "present but unreadable size");
+        for count in [0, 2] {
+            let mut malformed = keys;
+            malformed[10] = count;
+            assert_eq!(angular_unit(&GeoKeys { keys: &malformed, doubles: &[1.0, 2.0], ascii: b"" }), Err(()));
+        }
         for bad in [f64::INFINITY, f64::NAN, f64::MAX, 0.0, -1.0] {
             assert_eq!(angular_unit(&GeoKeys { keys: &keys, doubles: &[bad], ascii: b"" }), Err(()), "r={bad}");
         }
