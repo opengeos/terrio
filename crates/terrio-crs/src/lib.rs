@@ -2002,7 +2002,12 @@ pub(crate) fn vertical_axis(wkt: &str) -> Option<(f64, bool)> {
         .child("UNIT")
         .or_else(|| root.child("LENGTHUNIT"))
         .or_else(|| axis.and_then(|a| a.child("LENGTHUNIT").or_else(|| a.child("UNIT"))));
-    Some((unit.and_then(|u| u.num(1)).unwrap_or(1.0), down))
+    let to_meter = match unit {
+        Some(u) if matches!(u.args.get(1), None | Some(wkt1::Arg::Node(_))) => 1.0,
+        Some(u) => u.num(1).filter(|v| v.is_finite() && *v > 0.0)?,
+        None => 1.0,
+    };
+    Some((to_meter, down))
 }
 
 /// Whether a WKT 2 geographic CRS is 3D, by its `CS` dimension; `None` when it is not one. A
@@ -4706,5 +4711,23 @@ mod gdal_proj4_tests {
         // DMS seconds are no quoted value.
         let tokens = crate::proj_write::tokens(r#"+proj=longlat +pm=2d20'14.025"E +type=crs"#, true);
         assert_eq!(tokens, ["+proj=longlat", r#"+pm=2d20'14.025"E"#, "+type=crs"]);
+    }
+
+    #[test]
+    fn vertical_axis_rejects_non_positive_or_non_finite_units() {
+        for unit in ["0", "-1", "NaN", "inf", "-inf", "\"abc\""] {
+            let wkt2 =
+                format!(r#"VERTCRS["bad",VDATUM["d"],CS[vertical,1],AXIS["gravity-related height (H)",up,LENGTHUNIT["metre",{unit}]]]"#);
+            assert_eq!(crate::vertical_axis(&wkt2), None, "WKT2 unit {unit}");
+            assert!(crate::def::vertical_from_wkt(&wkt2).is_none(), "vertical_from_wkt accepted WKT2 unit {unit}");
+            let wkt1 = format!(r#"VERT_CS["bad",VERT_DATUM["d",2005],UNIT["metre",{unit}],AXIS["Gravity-related height",UP]]"#);
+            assert_eq!(crate::vertical_axis(&wkt1), None, "WKT1 unit {unit}");
+        }
+        let valid = r#"VERTCRS["foot",VDATUM["d"],CS[vertical,1],AXIS["gravity-related height (H)",up,LENGTHUNIT["foot",0.3048]]]"#;
+        assert_eq!(crate::vertical_axis(valid), Some((0.3048, false)));
+        let unitless = r#"VERT_CS["bare",VERT_DATUM["d",2005],AXIS["Gravity-related height",UP]]"#;
+        assert_eq!(crate::vertical_axis(unitless), Some((1.0, false)));
+        let factorless_unit = r#"VERT_CS["bare",VERT_DATUM["d",2005],UNIT["metre"],AXIS["Gravity-related height",UP]]"#;
+        assert_eq!(crate::vertical_axis(factorless_unit), Some((1.0, false)));
     }
 }
