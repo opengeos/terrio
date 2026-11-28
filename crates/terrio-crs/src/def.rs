@@ -1365,7 +1365,10 @@ impl Def {
             // uncut: stored or built WKT
             let h = SpatialRef::from_wkt_text(&horizontal);
             let mut d = Self::new(&h)?;
-            d.vertical = vertical_from_wkt(&vertical).map(Arc::new);
+            let vertical = vertical_from_wkt(&vertical).ok_or_else(|| {
+                Error::Crs("invalid vertical CRS in compound definition; declared linear units must be positive and finite".into())
+            })?;
+            d.vertical = Some(Arc::new(vertical));
             return Ok(d);
         }
         // A WKT 1 extended with its PROJ string (`EXTENSION["PROJ4", ...]`) is that PROJ string,
@@ -2936,6 +2939,7 @@ mod memo_tests {
 
 #[cfg(test)]
 mod vertical_wkt_tests {
+    use super::{Def, SpatialRef};
     /// A vertical CRS identified by its name is its code's, but one with geoid grids of its own
     /// (GDAL's `PROJ4_GRIDS`, in its vertical datum or at its root) is not identified: it is its
     /// grids, of no code, as the PROJ string writes it. PROJ 9.9.0 (pyproj 3.8.0) reads the
@@ -2972,5 +2976,26 @@ mod vertical_wkt_tests {
         }
         assert!(super::Def::from_proj("+proj=longlat +datum=WGS84 +to_deg=0.9").is_ok());
         assert!(super::Def::from_proj_extension("+proj=longlat +datum=WGS84 +to_deg=0.9").is_ok());
+    }
+
+    #[test]
+    fn compound_definitions_do_not_silently_drop_invalid_vertical_units() {
+        let horizontal = SpatialRef::from_epsg(4326).unwrap().to_wkt().unwrap();
+        for (compound, vertical) in [
+            ("COMPD_CS", r#"VERT_CS["height",VERT_DATUM["d",2005],UNIT["metre",UNIT_FACTOR],AXIS["height",UP]]"#),
+            ("COMPOUNDCRS", r#"VERTCRS["height",VDATUM["d"],CS[vertical,1],AXIS["height",up,LENGTHUNIT["metre",UNIT_FACTOR]]]"#),
+        ] {
+            for factor in ["0", "-1", "NaN", "inf", "-inf"] {
+                let vertical = vertical.replace("UNIT_FACTOR", factor);
+                let wkt = format!(r#"{compound}["compound",{horizontal},{vertical}]"#);
+                assert!(Def::from_wkt(&wkt).is_err(), "accepted invalid unit {factor}: {wkt}");
+            }
+            let vertical = vertical.replace("UNIT_FACTOR", "0.3048");
+            let valid = Def::from_wkt(&format!(r#"{compound}["compound",{horizontal},{vertical}]"#)).unwrap();
+            assert_eq!(valid.vertical.as_ref().unwrap().to_meter, 0.3048);
+        }
+        let bare = r#"VERT_CS["height",VERT_DATUM["d",2005],AXIS["height",UP]]"#;
+        let valid = Def::from_wkt(&format!(r#"COMPD_CS["compound",{horizontal},{bare}]"#)).unwrap();
+        assert_eq!(valid.vertical.as_ref().unwrap().to_meter, 1.0);
     }
 }
