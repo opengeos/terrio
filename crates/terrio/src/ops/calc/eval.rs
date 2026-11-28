@@ -1082,13 +1082,50 @@ impl Evaluator<'_> {
                     Data::F(v) => {
                         let dt = a.dt;
                         let r = |x: f64| -> f64 {
-                            if decimals == 0 {
+                            if !x.is_finite() || decimals == 0 {
                                 return x.round_ties_even();
                             }
-                            let f = round_float(10f64.powi(decimals.unsigned_abs() as i32), dt);
-                            let y = if decimals > 0 { round_float(x * f, dt) } else { round_float(x / f, dt) };
-                            let y = y.round_ties_even();
-                            if decimals > 0 { y / f } else { y * f }
+                            let abs = decimals.unsigned_abs();
+                            if decimals > 0 {
+                                if abs > 325 {
+                                    return x;
+                                }
+                                if abs > 308 {
+                                    let f1 = 1e300;
+                                    let f2 = 10f64.powi((abs - 300) as i32);
+                                    let y = (x * f1) * f2;
+                                    if !y.is_finite() {
+                                        return x;
+                                    }
+                                    return (y.round_ties_even() / f2) / f1;
+                                }
+                                let f_dt = round_float(10f64.powi(abs as i32), dt);
+                                if f_dt.is_finite() {
+                                    let y = round_float(x * f_dt, dt);
+                                    if !y.is_finite() {
+                                        return x;
+                                    }
+                                    y.round_ties_even() / f_dt
+                                } else {
+                                    let f = 10f64.powi(abs as i32);
+                                    let y = x * f;
+                                    if !y.is_finite() {
+                                        return x;
+                                    }
+                                    y.round_ties_even() / f
+                                }
+                            } else {
+                                if abs > 308 {
+                                    return 0.0_f64.copysign(x);
+                                }
+                                let f_dt = round_float(10f64.powi(abs as i32), dt);
+                                if f_dt.is_finite() {
+                                    round_float(x / f_dt, dt).round_ties_even() * f_dt
+                                } else {
+                                    let f = 10f64.powi(abs as i32);
+                                    (x / f).round_ties_even() * f
+                                }
+                            }
                         };
                         Arr { dt, data: Data::F(v.iter().map(|x| round_float(r(*x), dt)).collect()) }
                     }
@@ -1103,8 +1140,10 @@ impl Evaluator<'_> {
                                 .map(|&x| {
                                     let q = x.div_euclid(p);
                                     let r = x.rem_euclid(p);
+                                    let half = p / 2;
+                                    let round_up = r > half || (r == half && q.rem_euclid(2) != 0);
                                     let scaled =
-                                        q.checked_add(i128::from(r > p - r)).and_then(|v| v.checked_mul(p)).ok_or_else(int_overflow)?;
+                                        q.checked_add(i128::from(round_up)).and_then(|v| v.checked_mul(p)).ok_or_else(int_overflow)?;
                                     Ok(wrap(scaled, a.dt))
                                 })
                                 .collect::<Result<Vec<_>>>()?
@@ -1396,5 +1435,29 @@ mod tests {
         assert_eq!(promote(U8, F16), F16);
         assert_eq!(promote(I32, F32), F64);
         assert_eq!(promote(Bool, U16), U16);
+    }
+
+    #[test]
+    fn round_handles_large_decimals_and_integer_ties_to_even() {
+        let f64a = arr(DType::F64, &[1.5, -2.5]);
+        let f32a = arr(DType::F32, &[1.5, -2.5]);
+        let i32a = arr(DType::I32, &[5.0, 15.0, 25.0, 35.0, -5.0, -15.0, -25.0]);
+        // Large positive/negative decimals do not overflow to NaN or truncate u128 to i32.
+        check("round(A, 400)", &f64a, &f64a, DType::F64, &[1.5, -2.5]);
+        check("round(A, -400)", &f64a, &f64a, DType::F64, &[0.0, 0.0]);
+        check("round(A, 3000000000)", &f64a, &f64a, DType::F64, &[1.5, -2.5]);
+        check("round(A, 40)", &f32a, &f32a, DType::F32, &[1.5, -2.5]);
+        check("round(A, -40)", &f32a, &f32a, DType::F32, &[0.0, 0.0]);
+        // Small-magnitude f64 at 309 decimals and coarse F16 rounding above midpoint.
+        let tiny = arr(DType::F64, &[1.25e-309]);
+        let Val::Arr(res) = eval("round(A, 309)", &tiny, &tiny).unwrap() else { panic!() };
+        assert!((res.floats()[0] - 1.0e-309).abs() <= 1e-320, "got {}", res.floats()[0]);
+        let f16a = arr(DType::F16, &[40_000.0, 60_000.0]);
+        check("round(A, -5)", &f16a, &f16a, DType::F16, &[0.0, f64::INFINITY]);
+        // Narrow-float intermediate rounding matches NumPy for in-range scales (f32(2.675) -> 2.68).
+        let f32_tie = arr(DType::F32, &[2.675]);
+        check("round(A, 2)", &f32_tie, &f32_tie, DType::F32, &[2.68f32 as f64]);
+        // Integer negative decimals use ties-to-even, matching NumPy and float round().
+        check("round(A, -1)", &i32a, &i32a, DType::I32, &[0.0, 20.0, 20.0, 40.0, 0.0, -20.0, -20.0]);
     }
 }

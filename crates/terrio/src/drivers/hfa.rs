@@ -56,7 +56,10 @@ impl File {
 
     fn node(&self, at: u32) -> Result<Node> {
         let a = at as usize;
-        Ok(Node { next: self.u32(a)?, child: self.u32(a + 12)?, data: self.u32(a + 16)?, kind: self.text(a + 88, 32) })
+        let child_off = a.checked_add(12).ok_or_else(|| bad("truncated"))?;
+        let data_off = a.checked_add(16).ok_or_else(|| bad("truncated"))?;
+        let kind_off = a.checked_add(88).ok_or_else(|| bad("truncated"))?;
+        Ok(Node { next: self.u32(a)?, child: self.u32(child_off)?, data: self.u32(data_off)?, kind: self.text(kind_off, 32) })
     }
 
     /// The children of a node, in order.
@@ -204,12 +207,12 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
         return Err(bad("not an Imagine file"));
     }
     let header = f.u32(16)? as usize;
-    let root = f.node(f.u32(header + 8)?)?;
+    let root = f.node(f.u32(header.checked_add(8).ok_or_else(|| bad("truncated"))?)?)?;
     let layers: Vec<Node> = f.children(&root)?.into_iter().filter(|n| n.kind == "Eimg_Layer").collect();
     let first = layers.first().ok_or_else(|| bad("no raster layer"))?;
     let d = first.data as usize;
-    let (cols, rows) = (f.u32(d)? as usize, f.u32(d + 4)? as usize);
-    let (data_type, _) = pixel_type(f.u16(d + 10)?)?;
+    let (cols, rows) = (f.u32(d)? as usize, f.u32(d.checked_add(4).ok_or_else(|| bad("truncated"))?)? as usize);
+    let (data_type, _) = pixel_type(f.u16(d.checked_add(10).ok_or_else(|| bad("truncated"))?)?)?;
     // What the header declares, before any block is read (see `crate::declared`).
     crate::declared::check(cols, rows, layers.len(), data_type, false)?;
     // Sizes come from the header: a raster no allocator can hold is refused before anything is
@@ -236,9 +239,9 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
         if let Some(nd) = children.iter().find(|c| c.kind == "Eimg_NonInitializedValue") {
             // A pointer (count, offset), then a base data header (rows, columns, type,
             // object type) and the value.
-            let at = nd.data as usize + 8;
-            let (vt, _) = pixel_type(f.u16(at + 8)?)?;
-            let v = at + 12;
+            let at = (nd.data as usize).checked_add(8).ok_or_else(|| bad("truncated"))?;
+            let (vt, _) = pixel_type(f.u16(at.checked_add(8).ok_or_else(|| bad("truncated"))?)?)?;
+            let v = at.checked_add(12).ok_or_else(|| bad("truncated"))?;
             nodata = Some(match vt {
                 DataType::F64 => f.f64(v)?,
                 DataType::F32 => f32::from_bits(f.u32(v)?) as f64,
@@ -246,6 +249,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
                 DataType::U32 => f.u32(v)? as f64,
                 DataType::I16 => f.u16(v)? as i16 as f64,
                 DataType::U16 => f.u16(v)? as f64,
+                DataType::I8 => *f.b.get(v).ok_or_else(|| bad("truncated"))? as i8 as f64,
                 _ => *f.b.get(v).ok_or_else(|| bad("truncated"))? as f64,
             });
         }
@@ -255,7 +259,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
         let dms = children.iter().find(|c| c.kind == "Edms_State").ok_or_else(|| bad("a layer has no block index"))?;
         let s = dms.data as usize;
         let nblocks = f.u32(s)? as usize;
-        let count = f.u32(s + 14)? as usize;
+        let count = f.u32(s.checked_add(14).ok_or_else(|| bad("truncated"))?)? as usize;
         // GDAL 3.13.3's bounds: blocks of 1 to INT_MAX pixels (it reads a block of 46340 x 46340
         // pixels and refuses one of 46341 x 46341).
         let block_len = bw.checked_mul(bh).filter(|n| (1..=i32::MAX as usize).contains(n));
@@ -314,10 +318,12 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
         // pointer (count, offset) followed by its data.
         let mut at = m.data as usize;
         let name_len = f.u32(at)? as usize;
-        at += 8 + name_len;
-        let (ulx, uly) = (f.f64(at + 8)?, f.f64(at + 16)?);
-        at += 24 + 24;
-        let (pw, ph) = (f.f64(at + 8)?, f.f64(at + 16)?);
+        at = at.checked_add(8).and_then(|x| x.checked_add(name_len)).ok_or_else(|| bad("truncated"))?;
+        let (ulx, uly) =
+            (f.f64(at.checked_add(8).ok_or_else(|| bad("truncated"))?)?, f.f64(at.checked_add(16).ok_or_else(|| bad("truncated"))?)?);
+        at = at.checked_add(48).ok_or_else(|| bad("truncated"))?;
+        let (pw, ph) =
+            (f.f64(at.checked_add(8).ok_or_else(|| bad("truncated"))?)?, f.f64(at.checked_add(16).ok_or_else(|| bad("truncated"))?)?);
         gt = [ulx - pw / 2.0, pw, 0.0, uly + ph / 2.0, 0.0, -ph];
     }
     let data = RasterData::from_f64_vec(data_type, values);
@@ -474,5 +480,29 @@ mod tests {
         block.push(9);
         let ds = read_bytes(&imagine(2, 1, 2, 1, 1, &block)).unwrap();
         assert_eq!(ds.raster.data.to_f64_vec(), vec![9.0, 9.0]);
+    }
+
+    #[test]
+    fn signed_i8_nodata_is_decoded_signed() {
+        // A 1 x 1 signed 8-bit Imagine file whose Eimg_NonInitializedValue is -1i8 (0xFF).
+        let mut b = imagine(1, 1, 1, 1, 1, &[0xFE]);
+        // Layer pixel type: 4 = I8; block is uncompressed.
+        b[910..912].copy_from_slice(&4u16.to_le_bytes());
+        b[1022 + 12..1022 + 14].copy_from_slice(&0u16.to_le_bytes());
+        // Link a second child (Eimg_NonInitializedValue) after Edms_State (node at 500).
+        b[500..504].copy_from_slice(&1700u32.to_le_bytes());
+        if b.len() < 2000 {
+            b.resize(2000, 0);
+        }
+        // Node at 1700: data at 1900, kind = "Eimg_NonInitializedValue".
+        b[1716..1720].copy_from_slice(&1900u32.to_le_bytes());
+        let kind = b"Eimg_NonInitializedValue";
+        b[1788..1788 + kind.len()].copy_from_slice(kind);
+        // BaseData at 1908: pixel type 4 (I8) at +8 (1916), value -1i8 (0xFF) at +12 (1920).
+        b[1916..1918].copy_from_slice(&4u16.to_le_bytes());
+        b[1920] = 0xFF;
+        let ds = read_bytes(&b).unwrap();
+        assert_eq!(ds.nodata(), Some(-1.0));
+        assert_eq!(ds.raster.data.to_f64_vec(), vec![-2.0]);
     }
 }

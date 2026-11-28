@@ -2,8 +2,8 @@
 
 use wbvector::{Coord, Geometry, Ring};
 
-/// Decodes WKB as `Geometry::from_wkb` does (the same geometries, and `None` where it fails),
-/// reading from the slice directly and allocating coordinate vectors at their final size.
+/// Decodes supported WKB and EWKB directly, allocating coordinate vectors at their final size.
+/// Unlike `Geometry::from_wkb`, this skips EWKB SRIDs and rejects reserved type bits explicitly.
 pub(crate) fn from_wkb(b: &[u8]) -> Option<Geometry> {
     Wkb { b, pos: 0, depth: 0 }.geometry()
 }
@@ -87,18 +87,29 @@ impl Wkb<'_> {
     fn geometry(&mut self) -> Option<Geometry> {
         let le = self.bytes::<1>()?[0] == 1;
         let raw = self.u32(le)?;
-        // ISO and EWKB type variants.
-        let (base, z, m) = if raw & 0xFFFF_0000 != 0 {
-            (raw & 0x0000_FFFF, raw & 0x8000_0000 != 0, raw & 0x4000_0000 != 0)
-        } else if raw > 3000 {
-            (raw - 3000, true, true)
-        } else if raw > 2000 {
-            (raw - 2000, false, true)
-        } else if raw > 1000 {
-            (raw - 1000, true, false)
+        // ISO and EWKB type variants (including the EWKB SRID flag 0x2000_0000).
+        if raw & 0x1FFF_0000 != 0 {
+            return None;
+        }
+        let has_srid = raw & 0x2000_0000 != 0;
+        let (mut z, mut m) = (raw & 0x8000_0000 != 0, raw & 0x4000_0000 != 0);
+        let low = raw & 0x0000_FFFF;
+        let base = if low > 3000 {
+            z = true;
+            m = true;
+            low - 3000
+        } else if low > 2000 {
+            m = true;
+            low - 2000
+        } else if low > 1000 {
+            z = true;
+            low - 1000
         } else {
-            (raw, false, false)
+            low
         };
+        if has_srid {
+            let _srid = self.u32(le)?;
+        }
         Some(match base {
             1 => Geometry::Point(self.coord(le, z, m)?),
             2 => Geometry::LineString(self.coords(le, z, m)?),
@@ -158,9 +169,20 @@ mod tests {
             for cut in 0..wkb.len() {
                 assert_eq!(from_wkb(&wkb[..cut]), Geometry::from_wkb(&wkb[..cut]).ok(), "{g:?} cut at {cut}");
             }
+            let is_collection = matches!(
+                g,
+                Geometry::MultiPoint(_) | Geometry::MultiLineString(_) | Geometry::MultiPolygon(_) | Geometry::GeometryCollection(_)
+            );
             for at in 0..wkb.len().min(16) {
                 let mut bad = wkb.clone();
                 bad[at] ^= 0xff;
+                // Flipping bytes 3..=4 (outer type high bits) or 12..=13 (first member type high
+                // bits in a Multi*/Collection) sets reserved EWKB bits (0x1FFF_0000) or the SRID
+                // flag (0x2000_0000), which this parser rejects more strictly than wbvector 0.1.6.
+                if (matches!(at, 3 | 4) || (is_collection && matches!(at, 12 | 13))) && Geometry::from_wkb(&bad).is_ok() {
+                    assert_eq!(from_wkb(&bad), None, "{g:?} with reserved EWKB bits at {at}");
+                    continue;
+                }
                 assert_eq!(from_wkb(&bad), Geometry::from_wkb(&bad).ok(), "{g:?} corrupted at {at}");
             }
         }
@@ -193,5 +215,35 @@ mod tests {
         assert!(from_wkb(&nested(MAX_DEPTH as usize)).is_some());
         assert_eq!(from_wkb(&nested(MAX_DEPTH as usize + 1)), None);
         assert_eq!(from_wkb(&nested(100_000)), None);
+    }
+
+    #[test]
+    fn decodes_ewkb_with_srid() {
+        // Little-endian EWKB Point with SRID 4326.
+        let mut pt = vec![1u8];
+        pt.extend((0x2000_0001u32).to_le_bytes());
+        pt.extend(4326u32.to_le_bytes());
+        pt.extend(12.5f64.to_le_bytes());
+        pt.extend((-34.25f64).to_le_bytes());
+        assert_eq!(from_wkb(&pt), Some(Geometry::point(12.5, -34.25)));
+
+        // Big-endian EWKB PointZ with SRID 4326.
+        let mut ptz = vec![0u8];
+        ptz.extend((0xA000_0001u32).to_be_bytes());
+        ptz.extend(4326u32.to_be_bytes());
+        ptz.extend(1.0f64.to_be_bytes());
+        ptz.extend(2.0f64.to_be_bytes());
+        ptz.extend(3.0f64.to_be_bytes());
+        assert_eq!(from_wkb(&ptz), Some(Geometry::Point(Coord::xyz(1.0, 2.0, 3.0))));
+
+        // EWKB LineString with SRID 4326 and two points.
+        let mut ls = vec![1u8];
+        ls.extend((0x2000_0002u32).to_le_bytes());
+        ls.extend(4326u32.to_le_bytes());
+        ls.extend(2u32.to_le_bytes());
+        for v in [0.0f64, 1.0, 2.0, 3.0] {
+            ls.extend(v.to_le_bytes());
+        }
+        assert_eq!(from_wkb(&ls), Some(Geometry::LineString(vec![Coord::xy(0.0, 1.0), Coord::xy(2.0, 3.0)])));
     }
 }

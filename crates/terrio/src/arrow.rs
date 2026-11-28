@@ -951,7 +951,7 @@ fn geometries(a: &dyn Array, encoding: Encoding) -> Result<Vec<Option<Geometry>>
         Encoding::Native(kind) => native_geometries(a, kind),
         Encoding::Wkb => Ok((0..a.len())
             .map(|i| match gp::value(a, i, FieldType::Blob) {
-                FieldValue::Blob(b) => Geometry::from_wkb(&b).ok(),
+                FieldValue::Blob(b) => crate::drivers::vector::wkb::from_wkb(&b),
                 _ => None,
             })
             .collect()),
@@ -1195,5 +1195,31 @@ mod tests {
         let l = layer_from_arrow(&plain, &[batch], "g").unwrap();
         assert_eq!(l.crs_epsg(), None);
         assert_eq!(l.features[0].geometry, Some(Geometry::point(3.0, 4.0)));
+    }
+
+    #[test]
+    fn arrow_wkb_handles_ewkb_srid_and_deep_nesting() {
+        let schema = Arc::new(Schema::new(vec![Field::new("geom", DataType::Binary, true)]));
+        // EWKB Point with SRID 4326.
+        let mut ewkb = vec![1u8];
+        ewkb.extend((0x2000_0001u32).to_le_bytes());
+        ewkb.extend(4326u32.to_le_bytes());
+        ewkb.extend(10.0f64.to_le_bytes());
+        ewkb.extend(20.0f64.to_le_bytes());
+        // Deeply nested GeometryCollection exceeding WKB depth guard.
+        let mut nested = Vec::new();
+        for _ in 0..100 {
+            nested.extend([1, 7, 0, 0, 0, 1, 0, 0, 0]);
+        }
+        nested.extend([1, 1, 0, 0, 0]);
+        nested.extend([0u8; 16]);
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(arrow_array::BinaryArray::from(vec![Some(ewkb.as_slice()), Some(nested.as_slice())]))],
+        )
+        .unwrap();
+        let l = layer_from_arrow(&schema, &[batch], "g").unwrap();
+        assert_eq!(l.features[0].geometry, Some(Geometry::point(10.0, 20.0)));
+        assert_eq!(l.features[1].geometry, None);
     }
 }
