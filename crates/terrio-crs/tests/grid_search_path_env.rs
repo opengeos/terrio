@@ -46,7 +46,17 @@ fn empty_env_segments_do_not_add_cwd_to_grid_search_paths() {
     assert!(defaults.contains(&PathBuf::from("/opt/proj_a")), "valid segment missing: {defaults:?}");
     assert!(defaults.contains(&PathBuf::from("/opt/proj_b")), "valid segment missing: {defaults:?}");
 
-    // Now set only empty search env vars, chdir to a directory containing a grid, confine
+    let src = SpatialRef::parse("+proj=longlat +datum=WGS84 +geoidgrids=cwd_only.gtx +vunits=m").unwrap();
+    let dst = SpatialRef::from_epsg(4979).unwrap();
+
+    // Positive control: the fixture loads and shifts height when its directory is explicitly listed.
+    terrio_crs::set_grid_search_paths(Some(vec![grid_dir.path().to_path_buf()]));
+    terrio_crs::set_network_enabled(Some(false));
+    let t_pos = Transformer::new(&src, &dst).unwrap();
+    let (_, _, z_pos) = t_pos.transform_3d(0.25, 0.5, 100.0).expect("explicitly configured grid directory must load cwd_only.gtx");
+    assert!((z_pos - 100.0).abs() > 1.0, "expected geoid shift from cwd_only.gtx, got {z_pos}");
+
+    // Now set only empty search env vars, chdir to a directory containing the grid, confine
     // search paths, and verify the grid in CWD is NOT loaded.
     // SAFETY: single test in its own binary, no other threads.
     unsafe {
@@ -63,10 +73,10 @@ fn empty_env_segments_do_not_add_cwd_to_grid_search_paths() {
     terrio_crs::set_network_enabled(Some(false));
     terrio_crs::confine_grid_search_paths();
 
-    let src = SpatialRef::parse("+proj=longlat +datum=WGS84 +geoidgrids=cwd_only.gtx +vunits=m").unwrap();
-    let t = Transformer::new(&src, &SpatialRef::from_epsg(4979).unwrap()).unwrap();
+    let t = Transformer::new(&src, &dst).unwrap();
     let result = t.transform_3d(0.25, 0.5, 100.0);
 
     std::env::set_current_dir(prev_cwd).unwrap();
-    assert!(result.is_err(), "empty env vars allowed loading a grid from CWD: {result:?}");
+    let err = result.expect_err("empty env vars allowed loading a grid from CWD");
+    assert!(matches!(err, terrio_crs::Error::Crs(ref msg) if msg.contains("cannot transform")), "unexpected error: {err:?}");
 }

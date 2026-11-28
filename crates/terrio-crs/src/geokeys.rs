@@ -557,7 +557,7 @@ fn user_defined_crs(k: &GeoKeys) -> Option<SpatialRef> {
         2 => {
             // In an angular unit other than the degree, which PROJ strings cannot hold: the WKT
             // GDAL reads, without code (GDAL identifies none: its unit is not the registry's).
-            if let Some((_, unit)) = angular_unit(k) {
+            if let Some((_, unit)) = angular_unit(k).ok()? {
                 let wkt = SpatialRef::from_proj4(&format!("+proj=longlat {}", geographic_proj(k)?)).ok()?.to_wkt()?;
                 let cited =
                     |key: &str| k.text(2049).and_then(|c| c.split('|').find_map(|p| p.trim().strip_prefix(key).map(str::to_string)));
@@ -771,7 +771,7 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
 
     // Angles are in the geographic CRS's angular unit, which libgeotiff (1.7.4 and later)
     // converts to degrees, the azimuth excepted.
-    let to_degrees = angular_unit(k).map_or(1.0, |(d, _)| d);
+    let to_degrees = angular_unit(k).ok()?.map_or(1.0, |(d, _)| d);
     let angle = |ids: &[u16]| k.first(ids).map(|v| v * to_degrees);
     let lon0 = angle(&[NAT_ORIGIN_LONG, FALSE_ORIGIN_LONG, CENTER_LONG, STRAIGHT_VERT_POLE_LONG]).unwrap_or(0.0);
     let lat0 = angle(&[NAT_ORIGIN_LAT, FALSE_ORIGIN_LAT, CENTER_LAT]).unwrap_or(0.0);
@@ -1142,11 +1142,16 @@ fn with_unit(wkt: &str, unit: &str) -> Option<String> {
 
 /// The angular unit of the GeoKeys when it is not the degree, as GDAL reads it: its size in
 /// degrees and its WKT `UNIT` (GeogAngularUnitsGeoKey by the codes libgeotiff knows, else
-/// GeogAngularUnitSizeGeoKey in radians with the `AUnits = ` name of the citation).
-fn angular_unit(k: &GeoKeys) -> Option<(f64, String)> {
+/// GeogAngularUnitSizeGeoKey in radians with the `AUnits = ` name of the citation). Returns
+/// `Ok(None)` for degrees or an absent/unmapped unit key, and `Err(())` when a declared
+/// user-defined angular unit size is invalid or overflows degrees.
+fn angular_unit(k: &GeoKeys) -> std::result::Result<Option<(f64, String)>, ()> {
     const RAD: f64 = 180.0 / std::f64::consts::PI;
-    let (name, degrees): (String, f64) = match k.short(2054)? {
-        9102 | 9107 | 9108 | 9110 | 9122 => return None,
+    let Some(code) = k.short(2054) else {
+        return Ok(None);
+    };
+    let (name, degrees): (String, f64) = match code {
+        9102 | 9107 | 9108 | 9110 | 9122 => return Ok(None),
         9101 => ("radian".into(), RAD),
         9103 => ("arc-minute".into(), 1.0 / 60.0),
         9104 => ("arc-second".into(), 1.0 / 3600.0),
@@ -1154,15 +1159,17 @@ fn angular_unit(k: &GeoKeys) -> Option<(f64, String)> {
         9106 => ("gon".into(), 0.9),
         9109 => ("microradian".into(), RAD / 1e6),
         USER_DEFINED => {
-            let radians = k.double(2055).filter(|r| r.is_finite() && *r > 0.0)?;
+            let Some(radians) = k.double(2055).filter(|r| r.is_finite() && *r > 0.0) else {
+                return Err(());
+            };
             let degrees = radians * RAD;
             if !degrees.is_finite() {
-                return None;
+                return Err(());
             }
             let name = k.text(2049).and_then(|c| c.split('|').find_map(|p| p.trim().strip_prefix("AUnits = ").map(str::to_string)));
             (name.as_deref().unwrap_or("unknown").trim().to_string(), degrees)
         }
-        _ => return None,
+        _ => return Ok(None),
     };
     // GDAL's WKT: the size in radians, and the registry's grad (PROJ names only the degree and
     // the grad by their codes).
@@ -1170,7 +1177,7 @@ fn angular_unit(k: &GeoKeys) -> Option<(f64, String)> {
         "grad" => "UNIT[\"grad\",0.015707963267949,AUTHORITY[\"EPSG\",\"9105\"]]".to_string(),
         _ => format!("UNIT[{},{}]", wkt_quoted(&name), wkt_number(degrees * 0.0174532925199433)),
     };
-    Some((degrees, unit))
+    Ok(Some((degrees, unit)))
 }
 
 /// GeoKeys for a CRS without an EPSG code, as GDAL writes them: from its PROJ string when it has
@@ -1840,9 +1847,16 @@ mod tests {
     fn angular_unit_rejects_non_finite_user_defined_size() {
         let keys = [1, 1, 0, 2, 2054, 0, 1, USER_DEFINED, 2055, 34736, 1, 0];
         for bad in [f64::INFINITY, f64::NAN, f64::MAX] {
-            assert_eq!(angular_unit(&GeoKeys { keys: &keys, doubles: &[bad], ascii: b"" }), None, "r={bad}");
+            assert_eq!(angular_unit(&GeoKeys { keys: &keys, doubles: &[bad], ascii: b"" }), Err(()), "r={bad}");
         }
-        let ok = angular_unit(&GeoKeys { keys: &keys, doubles: &[0.015707963267948967], ascii: b"" }).unwrap();
+        // Invalid user-defined angular size must fail user_defined_crs and projection rather than
+        // falling back to degrees.
+        let geog_keys = [1, 1, 0, 4, 1024, 0, 1, 2, 2050, 0, 1, 6326, 2054, 0, 1, USER_DEFINED, 2055, 34736, 1, 0];
+        assert_eq!(user_defined_crs(&GeoKeys { keys: &geog_keys, doubles: &[f64::MAX], ascii: b"" }), None);
+        let proj_keys =
+            [1, 1, 0, 6, 1024, 0, 1, 1, 2050, 0, 1, 6326, 2054, 0, 1, USER_DEFINED, 2055, 34736, 1, 0, 3075, 0, 1, 1, 3080, 34736, 1, 1];
+        assert_eq!(projection(&GeoKeys { keys: &proj_keys, doubles: &[f64::MAX, 10.0], ascii: b"" }, 1.0), None);
+        let ok = angular_unit(&GeoKeys { keys: &keys, doubles: &[0.015707963267948967], ascii: b"" }).unwrap().unwrap();
         assert!(ok.0.is_finite() && (ok.0 - 0.9).abs() < 1e-9);
     }
 
