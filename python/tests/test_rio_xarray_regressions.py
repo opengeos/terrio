@@ -68,6 +68,24 @@ def test_xarray_merge_arrays_2d_windowed_preserves_window_origin():
     np.testing.assert_array_equal(merged.values, arr[2:4, 2:4])
 
 
+def test_xarray_merge_duck_resizes_a_full_raster_without_a_window():
+    """A full-raster read retains its transform when resizing through reprojection."""
+    xarray = pytest.importorskip("xarray")
+    from terrio.xarray._merge import RasterioDatasetDuck
+
+    data = xarray.DataArray(
+        np.arange(16, dtype=np.float32).reshape(4, 4),
+        dims=("y", "x"),
+        coords={"y": [3.5, 2.5, 1.5, 0.5], "x": [0.5, 1.5, 2.5, 3.5]},
+    )
+    data.terrio.write_crs("EPSG:4326", inplace=True)
+    transform = Affine(1, 0, 0, 0, -1, 4)
+    data.terrio.write_transform(transform, inplace=True)
+    expected = data.terrio.reproject("EPSG:4326", transform=transform, shape=(2, 2))
+    actual = RasterioDatasetDuck(data).read(window=None, out_shape=(1, 2, 2))
+    np.testing.assert_array_equal(actual, expected.values.reshape(1, 2, 2))
+
+
 def test_xarray_merge_arrays_2d_single_row_and_col():
     """Merging 2-D DataArrays resulting in 1-row or 1-col output must preserve 2-D dims."""
     xarray = pytest.importorskip("xarray")

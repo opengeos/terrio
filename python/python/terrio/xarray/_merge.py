@@ -85,7 +85,7 @@ class RasterioDatasetDuck:
         Returns:
             numpy.ma.MaskedArray: The pixels.
         """
-        data_window = self._xds.terrio.isel_window(window)
+        data_window = self._xds if window is None else self._xds.terrio.isel_window(window)
         if out_shape is not None:
             if len(out_shape) == 3:
                 _, out_height, out_width = out_shape
@@ -94,7 +94,11 @@ class RasterioDatasetDuck:
             if data_window.shape[-2:] != (out_height, out_width):
                 data_window = self._xds.terrio.reproject(
                     self._xds.terrio.crs,
-                    transform=windows.transform(window, self.transform),
+                    transform=(
+                        self.transform
+                        if window is None
+                        else windows.transform(window, self.transform)
+                    ),
                     shape=(out_height, out_width),
                 )
         values = np.asarray(data_window.values)
