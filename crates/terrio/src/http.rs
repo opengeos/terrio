@@ -1055,13 +1055,13 @@ impl Client {
             };
             match read {
                 Ok(_) => {}
-                Err(_) if attempt < self.options.max_retry => {
+                Err(ref e) if !is_tls_io(e) && attempt < self.options.max_retry => {
                     self.check_cancelled()?;
                     retry_warning(status, &self.url, self.options.retry_delay, attempt);
                     self.backoff(&mut attempt)?;
                     continue;
                 }
-                Err(e) => return Err(Error::Http(format!("{}: {e}", redact(&self.url)))),
+                Err(e) => return Err(http_io_error(&self.url, e)),
             }
             if limit.is_some_and(|limit| data.len() as u64 > limit) {
                 return Err(Error::Http(format!("{}: the response is larger than the range asked", redact(&self.url))));
@@ -1102,7 +1102,7 @@ impl Client {
         let n = io::copy(&mut body, out);
         let n = match n {
             Ok(n) => n,
-            Err(e) => return Err(Error::Http(format!("{}: {e}", redact(&self.url)))),
+            Err(e) => return Err(http_io_error(&self.url, e)),
         };
         record_fetch(&self.url, &self.stats_name(), n);
         if self.options.log {
@@ -1634,23 +1634,31 @@ fn transient(e: &ureq::Error) -> bool {
 fn is_tls_error(e: &ureq::Error) -> bool {
     match e {
         ureq::Error::Tls(_) | ureq::Error::Rustls(_) => true,
-        ureq::Error::Io(io) => {
-            // ureq 3.5.2 wraps the rustls failure as the io error's payload (its `source()` is
-            // None), so check `get_ref` first, then the source chain for deeper wrapping.
-            if io.get_ref().is_some_and(|inner| inner.is::<rustls::Error>()) {
-                return true;
-            }
-            let mut source: Option<&dyn std::error::Error> = Some(io);
-            while let Some(err) = source {
-                if err.is::<rustls::Error>() {
-                    return true;
-                }
-                source = err.source();
-            }
-            false
-        }
+        ureq::Error::Io(io) => is_tls_io(io),
         _ => false,
     }
+}
+
+/// Finds rustls failures in both I/O payloads and ordinary error source chains.
+fn is_tls_io(io: &io::Error) -> bool {
+    let mut source: Option<&dyn std::error::Error> = Some(io);
+    while let Some(error) = source {
+        if error.is::<rustls::Error>() {
+            return true;
+        }
+        source = error
+            .downcast_ref::<io::Error>()
+            .and_then(io::Error::get_ref)
+            .map(|inner| inner as &dyn std::error::Error)
+            .or_else(|| error.source());
+    }
+    false
+}
+
+/// Preserves TLS failures during streamed response-body reads, with a redacted locator.
+fn http_io_error(url: &str, error: io::Error) -> Error {
+    let message = format!("{}: {error}", redact(url));
+    if is_tls_io(&error) { Error::Tls(message) } else { Error::Http(message) }
 }
 
 /// A ureq request error as a terrio error: a TLS failure keeps its own [`Error::Tls`] variant, so
@@ -2065,12 +2073,7 @@ pub(crate) fn request_response(
             continue;
         }
         let mut data = Vec::new();
-        response
-            .into_body()
-            .into_reader()
-            .take(cap.saturating_add(1))
-            .read_to_end(&mut data)
-            .map_err(|e| Error::Http(format!("{}: {e}", redact(&url))))?;
+        response.into_body().into_reader().take(cap.saturating_add(1)).read_to_end(&mut data).map_err(|e| http_io_error(&url, e))?;
         record_request(asked, &name, data.len() as u64, sent);
         if data.len() as u64 > cap {
             return Err(over_cap(&url, cap));
@@ -3550,6 +3553,17 @@ mod tests {
             assert!(matches!(http_error("https://example.test/x", error), Error::Tls(_)));
         }
         assert!(transient(&ureq::Error::Io(std::io::Error::other("connection reset"))));
+    }
+
+    #[test]
+    fn response_body_tls_failures_preserve_their_variant_and_redact_urls() {
+        for kind in [io::ErrorKind::InvalidData, io::ErrorKind::TimedOut] {
+            let nested = io::Error::new(kind, io::Error::other(rustls::Error::DecryptError));
+            assert!(is_tls_io(&nested));
+            let error = http_io_error("https://example.test/data?signature=secret", nested);
+            assert!(matches!(&error, Error::Tls(message) if message.contains("https://example.test/data") && !message.contains("secret")));
+        }
+        assert!(matches!(http_io_error("https://example.test/data", io::Error::other("connection reset")), Error::Http(_)));
     }
 
     #[test]
