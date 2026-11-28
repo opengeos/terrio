@@ -2,8 +2,8 @@
 
 use wbvector::{Coord, Geometry, Ring};
 
-/// Decodes WKB as `Geometry::from_wkb` does (the same geometries, and `None` where it fails),
-/// reading from the slice directly and allocating coordinate vectors at their final size.
+/// Decodes supported WKB and EWKB directly, allocating coordinate vectors at their final size.
+/// Unlike `Geometry::from_wkb`, this skips EWKB SRIDs and rejects reserved type bits explicitly.
 pub(crate) fn from_wkb(b: &[u8]) -> Option<Geometry> {
     Wkb { b, pos: 0, depth: 0 }.geometry()
 }
