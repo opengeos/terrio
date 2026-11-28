@@ -1143,8 +1143,9 @@ fn with_unit(wkt: &str, unit: &str) -> Option<String> {
 /// The angular unit of the GeoKeys when it is not the degree, as GDAL reads it: its size in
 /// degrees and its WKT `UNIT` (GeogAngularUnitsGeoKey by the codes libgeotiff knows, else
 /// GeogAngularUnitSizeGeoKey in radians with the `AUnits = ` name of the citation). Returns
-/// `Ok(None)` for degrees or an absent/unmapped unit key, and `Err(())` when a declared
-/// user-defined angular unit size is invalid or overflows degrees.
+/// `Ok(None)` for degrees, an absent/unmapped unit key, or a user-defined unit without key 2055
+/// (matching GDAL's default to degrees), and `Err(())` when a supplied user-defined angular unit
+/// size is non-positive, non-finite, or overflows degrees.
 fn angular_unit(k: &GeoKeys) -> std::result::Result<Option<(f64, String)>, ()> {
     const RAD: f64 = 180.0 / std::f64::consts::PI;
     let Some(code) = k.short(2054) else {
@@ -1159,9 +1160,12 @@ fn angular_unit(k: &GeoKeys) -> std::result::Result<Option<(f64, String)>, ()> {
         9106 => ("gon".into(), 0.9),
         9109 => ("microradian".into(), RAD / 1e6),
         USER_DEFINED => {
-            let Some(radians) = k.double(2055).filter(|r| r.is_finite() && *r > 0.0) else {
-                return Err(());
+            let Some(radians) = k.double(2055) else {
+                return Ok(None);
             };
+            if !radians.is_finite() || radians <= 0.0 {
+                return Err(());
+            }
             let degrees = radians * RAD;
             if !degrees.is_finite() {
                 return Err(());
@@ -1849,9 +1853,10 @@ mod tests {
         for bad in [f64::INFINITY, f64::NAN, f64::MAX, 0.0, -1.0] {
             assert_eq!(angular_unit(&GeoKeys { keys: &keys, doubles: &[bad], ascii: b"" }), Err(()), "r={bad}");
         }
-        // Missing GeogAngularUnitSizeGeoKey (2055) with USER_DEFINED (32767) is also rejected.
+        // Missing GeogAngularUnitSizeGeoKey (2055) with USER_DEFINED (32767) defaults to degrees,
+        // matching GDAL.
         let missing_2055 = [1, 1, 0, 1, 2054, 0, 1, USER_DEFINED];
-        assert_eq!(angular_unit(&GeoKeys { keys: &missing_2055, doubles: &[], ascii: b"" }), Err(()));
+        assert_eq!(angular_unit(&GeoKeys { keys: &missing_2055, doubles: &[], ascii: b"" }), Ok(None));
         // Invalid user-defined angular size must fail user_defined_crs and projection rather than
         // falling back to degrees.
         let geog_keys = [1, 1, 0, 4, 1024, 0, 1, 2, 2050, 0, 1, 6326, 2054, 0, 1, USER_DEFINED, 2055, 34736, 1, 0];
