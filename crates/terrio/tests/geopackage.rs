@@ -144,6 +144,9 @@ fn layer_updates_keep_json_declarations_with_their_columns() {
     replacement.add_field(FieldDef::new("payload", FieldType::Text));
     write_vector_with_mode(&[replacement], path, &Default::default(), WriteMode::Overwrite).unwrap();
     let ds = terrio::open_vector(path, &Default::default()).unwrap();
+    let mut names: Vec<_> = ds.layers.iter().map(|layer| layer.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["plain", "points", "second"]);
     for layer in &ds.layers {
         let expected = if layer.name == "second" { "String(JSON)" } else { "String" };
         assert_eq!(ds.ogr_type(layer, 0).to_string(), expected, "{}", layer.name);

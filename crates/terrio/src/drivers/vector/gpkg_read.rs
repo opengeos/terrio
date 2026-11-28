@@ -155,7 +155,7 @@ pub(crate) fn read_db_named(db: &Db, options: &crate::VectorOpenOptions, path: O
 pub(crate) struct JsonColumns(HashMap<String, HashSet<String>>);
 
 impl JsonColumns {
-    /// GDAL 3.13.3 matches the table name in SQL and the MIME type and column name case-insensitively.
+    /// GDAL 3.13.3 matches table names exactly and compares MIME types and column names case-insensitively.
     pub(crate) fn read(db: &impl Tables) -> Result<Self> {
         let mut columns = HashMap::<String, HashSet<String>>::new();
         if let Some(metadata) = db.optional_table("gpkg_data_columns")? {
