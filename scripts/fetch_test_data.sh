@@ -327,7 +327,7 @@ if [ ! -e "$waveform_file" ]; then
     curl -sSfL -o "$waveform_file.partial" \
       https://web.archive.org/web/20220709163954id_/https://nerc-arf-dan.pml.ac.uk/files/full_waveform_tutorial_data.LAS
   fi
-  python - "$waveform_file.partial" <<'PY'
+  python3 - "$waveform_file.partial" <<'PY'
 import hashlib
 import sys
 
