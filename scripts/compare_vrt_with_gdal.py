@@ -17,7 +17,20 @@ gdal.UseExceptions()
 
 
 def compare_resampled_sources(tmp, terrio, env, template, pixels, transform, projection):
-    """Compare the VRT band's own RasterIO and the CLI on USGS terrain with validity edits."""
+    """Compare VRT RasterIO and the CLI on USGS terrain with validity edits.
+
+    Args:
+        tmp: Directory for generated fixtures and comparison outputs.
+        terrio: Path to the Terrio CLI executable.
+        env: Environment used for Terrio subprocesses.
+        template: Source raster used to create the terrain fixtures.
+        pixels: Terrain pixel array to modify for validity cases.
+        transform: Source GDAL geotransform.
+        projection: Source CRS in WKT form.
+
+    Yields:
+        dict: A conformance record for each source layout and resampling kernel.
+    """
     files = []
     for name, nodata, with_mask in [("finite", -9999, False), ("masked", None, True), ("other", -12345, False)]:
         path = tmp / f"resampled-{name}.tif"
@@ -40,6 +53,17 @@ def compare_resampled_sources(tmp, terrio, env, template, pixels, transform, pro
     finite, masked, other = files
 
     def source(path, tag="SimpleSource", extra="", left=None):
+        """Build a source element referencing a generated terrain fixture.
+
+        Args:
+            path: Path to the source raster.
+            tag: VRT source element name.
+            extra: Additional XML inside the source element.
+            left: Optional horizontal destination offset for a mosaic source.
+
+        Returns:
+            str: The source XML element.
+        """
         rect = "" if left is None else (
             '<SrcRect xOff="0" yOff="0" xSize="96" ySize="80"/>'
             f'<DstRect xOff="{left}" yOff="0" xSize="96" ySize="80"/>'
@@ -47,6 +71,20 @@ def compare_resampled_sources(tmp, terrio, env, template, pixels, transform, pro
         return f'<{tag}><SourceFilename relativeToVRT="1">{path.name}</SourceFilename><SourceBand>1</SourceBand>{rect}{extra}</{tag}>'
 
     def compare_case(name, sources, width, window, size, nodata="", kernels=None):
+        """Compare a VRT layout through GDAL RasterIO and Terrio translate.
+
+        Args:
+            name: Case name used for output filenames and labels.
+            sources: Source XML elements for the VRT band.
+            width: Width of the VRT dataset in pixels.
+            window: Source pixel window as x, y, width and height.
+            size: Output width and height.
+            nodata: Optional VRT nodata XML element.
+            kernels: Optional subset of resampling method names.
+
+        Yields:
+            dict: Pixel, validity and georeferencing comparison results.
+        """
         vrt = tmp / f"resampled-{name}.vrt"
         vrt.write_text(
             f'<VRTDataset rasterXSize="{width}" rasterYSize="80"><SRS>{projection}</SRS>'
