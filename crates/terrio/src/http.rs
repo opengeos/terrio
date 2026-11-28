@@ -865,7 +865,7 @@ impl Client {
                     self.backoff(&mut attempt)?;
                     continue;
                 }
-                Err(e) => return Err(Error::Http(format!("{}: {e}", redact(&url)))),
+                Err(e) => return Err(http_error(&url, e)),
             };
             let status = status.unwrap_or_default();
             let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
@@ -1061,13 +1061,13 @@ impl Client {
             };
             match read {
                 Ok(_) => {}
-                Err(_) if attempt < self.options.max_retry => {
+                Err(ref e) if !is_tls_io(e) && attempt < self.options.max_retry => {
                     self.check_cancelled()?;
                     retry_warning(status, &self.url, self.options.retry_delay, attempt);
                     self.backoff(&mut attempt)?;
                     continue;
                 }
-                Err(e) => return Err(Error::Http(format!("{}: {e}", redact(&self.url)))),
+                Err(e) => return Err(http_io_error(&self.url, e)),
             }
             if limit.is_some_and(|limit| data.len() as u64 > limit) {
                 return Err(Error::Http(format!("{}: the response is larger than the range asked", redact(&self.url))));
@@ -1108,7 +1108,7 @@ impl Client {
         let n = io::copy(&mut body, out);
         let n = match n {
             Ok(n) => n,
-            Err(e) => return Err(Error::Http(format!("{}: {e}", redact(&self.url)))),
+            Err(e) => return Err(http_io_error(&self.url, e)),
         };
         record_fetch(&self.url, &self.stats_name(), n);
         if self.options.log {
@@ -1630,7 +1630,57 @@ fn retry_warning(code: u16, url: &str, delay: Duration, attempt: u32) {
 
 /// Whether a request error is worth retrying.
 fn transient(e: &ureq::Error) -> bool {
-    matches!(e, ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed | ureq::Error::Protocol(_))
+    !is_tls_error(e) && matches!(e, ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed | ureq::Error::Protocol(_))
+}
+
+/// Whether a ureq error is a TLS failure: `ureq::Error::Tls` itself, or an I/O error whose source
+/// chain holds a `rustls::Error`. ureq 3.5.2 wraps handshake and TLS alert failures that way
+/// (observed: a refused self-signed certificate arrives as `Error::Io` carrying
+/// `rustls::Error::InvalidCertificate`).
+fn is_tls_error(e: &ureq::Error) -> bool {
+    match e {
+        ureq::Error::Tls(_) | ureq::Error::Rustls(_) => true,
+        ureq::Error::Io(io) => is_tls_io(io),
+        _ => false,
+    }
+}
+
+/// Finds rustls failures in both I/O payloads and ordinary error source chains.
+fn is_tls_io(io: &io::Error) -> bool {
+    let mut source: Option<&dyn std::error::Error> = Some(io);
+    while let Some(error) = source {
+        if error.is::<rustls::Error>() {
+            return true;
+        }
+        source = error
+            .downcast_ref::<io::Error>()
+            .and_then(io::Error::get_ref)
+            .map(|inner| inner as &dyn std::error::Error)
+            .or_else(|| error.source());
+    }
+    false
+}
+
+/// Preserves TLS failures during streamed response-body reads, with a redacted locator.
+fn http_io_error(url: &str, error: io::Error) -> Error {
+    let message = format!("{}: {error}", redact(url));
+    if is_tls_io(&error) { Error::Tls(message) } else { Error::Http(message) }
+}
+
+/// A ureq request error as a terrio error: a TLS failure keeps its own [`Error::Tls`] variant, so
+/// callers can tell a certificate or handshake failure from another HTTP failure.
+pub(crate) fn http_error(url: &str, e: ureq::Error) -> Error {
+    let message = format!("{}: {e}", redact(url));
+    if is_tls_error(&e) && valid_tls_hostname(url) { Error::Tls(message) } else { Error::Http(message) }
+}
+
+/// Checks URL host syntax, independently of certificate name verification.
+fn valid_tls_hostname(url: &str) -> bool {
+    url.parse::<ureq::http::Uri>().is_ok_and(|uri| {
+        let Some(host) = uri.host() else { return false };
+        let host = host.strip_prefix('[').and_then(|value| value.strip_suffix(']')).unwrap_or(host);
+        rustls::pki_types::ServerName::try_from(host.to_owned()).is_ok()
+    })
 }
 
 /// The absolute URL a `Location` header points to.
@@ -2009,7 +2059,7 @@ pub(crate) fn request_response(
                 backoff(&mut attempt);
                 continue;
             }
-            Err(e) => return Err(Error::Http(format!("{}: {e}", redact(&url)))),
+            Err(e) => return Err(http_error(&url, e)),
         };
         let status = response.status().as_u16();
         // A POST follows only 307 and 308, which keep the method and body.
@@ -2052,12 +2102,7 @@ pub(crate) fn request_response(
             continue;
         }
         let mut data = Vec::new();
-        response
-            .into_body()
-            .into_reader()
-            .take(cap.saturating_add(1))
-            .read_to_end(&mut data)
-            .map_err(|e| Error::Http(format!("{}: {e}", redact(&url))))?;
+        response.into_body().into_reader().take(cap.saturating_add(1)).read_to_end(&mut data).map_err(|e| http_io_error(&url, e))?;
         record_request(asked, &name, data.len() as u64, sent);
         if data.len() as u64 > cap {
             return Err(over_cap(&url, cap));
@@ -3519,6 +3564,44 @@ pub(crate) fn test_routes_with(make_routes: impl FnOnce(&str) -> Vec<TestRoute>)
 mod tests {
     use super::*;
     use crate::vsi::listing::{xml_elements, xml_unescape};
+
+    #[test]
+    fn tls_failures_keep_their_own_error_variant() {
+        let e = http_error("https://example.test/x", ureq::Error::Tls("certificate verify failed"));
+        assert!(
+            matches!(&e, crate::Error::Tls(m) if m.contains("certificate verify failed") && m.contains("https://example.test/x")),
+            "{e}"
+        );
+        assert!(matches!(http_error("https://example.test/x", ureq::Error::Io(std::io::Error::other("reset"))), crate::Error::Http(_)));
+        assert!(matches!(http_error("https://example.test/x", ureq::Error::StatusCode(500)), crate::Error::Http(_)));
+        for error in [
+            ureq::Error::Rustls(rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer)),
+            ureq::Error::Io(std::io::Error::other(rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer))),
+        ] {
+            assert!(!transient(&error), "deterministic TLS errors must not retry: {error}");
+            assert!(matches!(http_error("https://example.test/x", error), Error::Tls(_)));
+        }
+        assert!(transient(&ureq::Error::Io(std::io::Error::other("connection reset"))));
+    }
+
+    #[test]
+    fn response_body_tls_failures_preserve_their_variant_and_redact_urls() {
+        for kind in [io::ErrorKind::InvalidData, io::ErrorKind::TimedOut] {
+            let nested = io::Error::new(kind, io::Error::other(rustls::Error::DecryptError));
+            assert!(is_tls_io(&nested));
+            let error = http_io_error("https://example.test/data?signature=secret", nested);
+            assert!(matches!(&error, Error::Tls(message) if message.contains("https://example.test/data") && !message.contains("secret")));
+        }
+        assert!(matches!(http_io_error("https://example.test/data", io::Error::other("connection reset")), Error::Http(_)));
+    }
+
+    #[test]
+    fn malformed_url_hosts_are_http_errors_even_from_the_default_tls_connector() {
+        assert!(matches!(http_error("https://bad..example/data", ureq::Error::Tls("invalid dns name")), Error::Http(_)));
+        for url in ["https://example.test/data", "https://127.0.0.1/data", "https://[::1]/data"] {
+            assert!(matches!(http_error(url, ureq::Error::Tls("certificate refused")), Error::Tls(_)), "{url}");
+        }
+    }
 
     #[test]
     fn object_fetcher_uses_creation_options_without_inheriting_another_scope() {
@@ -7265,6 +7348,87 @@ mod tests {
         let stats = fetch_stats_by_host().into_iter().find(|(host, _)| host == host_of(&base)).unwrap().1;
         assert_eq!(stats.requests, 1);
         assert_eq!(stats.bytes, crate::inspection::IDENTIFICATION_HEADER_BYTES as u64);
+    }
+
+    /// A self-signed certificate for `localhost`/`127.0.0.1` (openssl req -x509, 100-year,
+    /// RSA-2048, no passphrase), embedded so the test needs no key generation. It is not a trust
+    /// anchor anywhere, which is the point.
+    const SELF_SIGNED_CERT: &str = "-----BEGIN CERTIFICATE-----\nMIIDJzCCAg+gAwIBAgIUW+E7bqN6MDhOcuCum/n0CRWi9BIwDQYJKoZIhvcNAQEL\nBQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTEyNzE0MTIxOFoYDzIxMjYx\nMTAzMTQxMjE4WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEB\nAQUAA4IBDwAwggEKAoIBAQDPeor+RXgraMj7+yhn4sC+PJn/pt7OEo11aTUgSMj4\nQMgowj0/KSEx5MxEGOvvEiSPjcZ4DAXMi3y3WNLArSiKKjBguyI5Ui6NUgLlG9Dg\nYDf3Voo99IGYf5MAZ7T9LEVmn/d9Hnc9t3gqnoPBDYM0YiZBQCliHSRXA4Zxq+nj\nytIdKJVQNPunP83XaqHE6BiJ6QUrrX3Z7/i+SVTGWlvuMTMQMiR23+vhg/VLlwRS\nnuNptjpZJ3MYzWwfMN/1IzWyNR6MbQMplFecAWdOwTrqG640dRITzA2ek2ujS1hi\n9EMc4V/JaBNKDy60T6LuZgLCXB32xX4Ts48Btm5VkdrzAgMBAAGjbzBtMB0GA1Ud\nDgQWBBQsZu8FLTmhN3RZ0wLO6389WYdGLzAfBgNVHSMEGDAWgBQsZu8FLTmhN3RZ\n0wLO6389WYdGLzAPBgNVHRMBAf8EBTADAQH/MBoGA1UdEQQTMBGCCWxvY2FsaG9z\ndIcEfwAAATANBgkqhkiG9w0BAQsFAAOCAQEAg6MK+WDWN9MOuhlL8n1BW1gqgBwU\nJ7cvfCQ09uSA0IqPVF14kcxhJ3ro1YPIQCDvM/GCaDR4L77AtS+SqixXdSHuTcjm\nIjxe68kDuluoJ4TOBfZEdLvy/w1eJ5q8DxQeYXeysAuLJTOVY+jlEc/6Tfp8NEah\noEeXMq6GGAJYpwQEWbRQ8/4r/yYOYJCy9WBYScsg4/rS2edtcgePSJxenVMiVAPv\n/55oPdweHB/iq0GZ5nI5G7QE7j1K6cAeNDDXPP/5n8MYRiraAG/wqHpTGlOGoR0f\ngPkQWlPfG1y3c8OuCT/Y8Pnq88hYL6N5eNYhkqu8EhkFg7x7mk3lwlzdZA==\n-----END CERTIFICATE-----\n";
+    const SELF_SIGNED_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDPeor+RXgraMj7\n+yhn4sC+PJn/pt7OEo11aTUgSMj4QMgowj0/KSEx5MxEGOvvEiSPjcZ4DAXMi3y3\nWNLArSiKKjBguyI5Ui6NUgLlG9DgYDf3Voo99IGYf5MAZ7T9LEVmn/d9Hnc9t3gq\nnoPBDYM0YiZBQCliHSRXA4Zxq+njytIdKJVQNPunP83XaqHE6BiJ6QUrrX3Z7/i+\nSVTGWlvuMTMQMiR23+vhg/VLlwRSnuNptjpZJ3MYzWwfMN/1IzWyNR6MbQMplFec\nAWdOwTrqG640dRITzA2ek2ujS1hi9EMc4V/JaBNKDy60T6LuZgLCXB32xX4Ts48B\ntm5VkdrzAgMBAAECggEAUgzeudbEQrqCPTBils7UNYdmyXT3CNzKZ4PPODDAlXid\nD41dRkSgNYiLhWSrrVRp9AF32xK6Gl2RWTq9wefYr+cmUaK/0pZfBZFIxs08yfcT\nOvPU4NJ4i9Pr0Q2yRCsFWSPq7maldlk/ou8kIK0U1Zr5EPXsR7pJnEWvHfYEHYpq\nQrKaxxb8VDXRrfDZgSwG6NKl2VnvdEQbBOzxHX5TbNeFZL4EooIoo4lAesc+wBv3\nKuz7OQTe0yVwrK0BKw34zwWdD3eqkNAX71FO1jC3SjWIKk01yqP119giostYoYa4\nNjvoBLEeVpeQbqHZfDKaIqva85HRO5EJ73859yy/wQKBgQDrCrXJVf0LLXO9DReM\nwfjpNba3uKV+UN5Cc1YB3M9yASRPzlbCO4UUvgW1PSaZIkfw65Aau7WwO3QWBA5I\nfXjw1UnPQwjryjmKe0o35wTuPIjc20pUu5FNDhdqZUqQegAKYVjY3VaOC4BxVZ4X\neSKPnqVMbnGZTODvKhKgH+21QQKBgQDh+qZh20teg5qhOzgWYRiew2qh17l9I/9D\nVpJdsHOHlDuAktLcU8s3F3ak9vA36UdfZKsfXPaSExhBW2+UEu2XJcL0UvM9lrYn\n4hM1FHFrHcOMtM/EWCXi2yYKjCiuiTP5OwfmWQBE5niVkk9/5Budj4bvpRLRVsFD\nwQxmD+v/MwKBgQCjduhk5Qu+mVbUFWXafBDryHKSJbXbOszI9EPNuc8AX7DsW/nU\nzeZJPbrkiGnuuHvGH14yaXf73+1lXl68pZ7WB9B0eA+dRSBtoj9Ez8OLGMiqqUxx\nz51HNNSuJ1ILVv3uOjO7Z3xJ/8/NgpkXhCS4M8KMfIc+8cvCKcWYXXxJwQKBgD7x\nH5K2EAIdSd6Krg6dsMvXxkWZ3pJaimjpHg92bFdhFEm1m4G+3SVVJbjBBxuroDOT\nyI4NyKfbJbBelW967i5hWDHRQOrwpX/qWks4jHa3bZYtbolTvAm53JinfVVP5egP\nZx3jwE1wnDmc7QPEN2Tla0IoiltAfMgwZxGucZ89AoGAAuZ/3UbUdJB7fyG99zC2\ncNHgDCzc1/5o8S6BoXL5BsccFUucd1Qc7a8ASzEGbtT3IDLxKiAZft/Ppbg/0Wkk\nNX23GfPshEi7ipDp72UT+Aa5QRcZTf/tjei6BLEYa37q3+W1hn9bdV4E/5/ZXBTx\nhCHOW9TxjMniEPuPLdb1IRI=\n-----END PRIVATE KEY-----\n";
+
+    /// Serves `body` over TLS on a local port with the embedded self-signed certificate.
+    /// Returns the URL.
+    fn serve_tls_self_signed(body: Vec<u8>) -> String {
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+        let mut certs = Vec::new();
+        let mut key = None;
+        for item in ureq::tls::parse_pem(format!("{SELF_SIGNED_CERT}{SELF_SIGNED_KEY}").as_bytes()) {
+            match item.unwrap() {
+                ureq::tls::PemItem::Certificate(c) => certs.push(CertificateDer::from(c.der().to_vec())),
+                // The embedded key is PKCS#8 ("BEGIN PRIVATE KEY").
+                ureq::tls::PemItem::PrivateKey(k) => {
+                    key = Some(PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(k.der().to_vec())))
+                }
+                _ => {}
+            }
+        }
+        let provider = tls::crypto_provider().expect("TLS cryptography for the test server");
+        let config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(certs, key.unwrap())
+            .unwrap();
+        let config = std::sync::Arc::new(config);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("https://{}/data", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let config = config.clone();
+                let body = body.clone();
+                std::thread::spawn(move || {
+                    let mut conn = rustls::ServerConnection::new(config).unwrap();
+                    while conn.is_handshaking() {
+                        if conn.complete_io(&mut stream).is_err() {
+                            return;
+                        }
+                    }
+                    let mut request = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    loop {
+                        match conn.reader().read(&mut chunk) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                request.extend_from_slice(&chunk[..n]);
+                                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                    let _ = conn.writer().write_all(head.as_bytes());
+                    let _ = conn.writer().write_all(&body);
+                    let _ = conn.complete_io(&mut stream);
+                });
+            }
+        });
+        url
+    }
+
+    /// A real certificate failure from ureq 3.5.2 (the version in Cargo.lock) surfaces as
+    /// `Error::Tls`, not `Error::Http`: the default agent refuses the self-signed server's
+    /// certificate during the handshake.
+    #[test]
+    fn a_real_certificate_failure_is_error_tls() {
+        if tls::crypto_provider().is_err() {
+            eprintln!("TLS certificate integration check skipped: no TLS cryptography on this CPU");
+            return;
+        }
+        let url = serve_tls_self_signed(b"x".to_vec());
+        let err = get(&Remote::Url(url)).unwrap_err();
+        assert!(matches!(err, Error::Tls(_)), "{err}");
     }
 
     #[test]

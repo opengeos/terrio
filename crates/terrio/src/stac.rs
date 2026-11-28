@@ -688,7 +688,7 @@ fn check_declared_assets(doc: &Value, location: &str, checked: &mut std::collect
 pub(crate) fn keep_remote_refusal<T>(location: &str, result: Result<T>) -> Result<T> {
     result.map_err(|error| {
         if local_backed(&crate::vfs::Location::parse(location))
-            || matches!(error, Error::InvalidArgument(_) | Error::Http(_))
+            || matches!(error, Error::InvalidArgument(_) | Error::Http(_) | Error::Tls(_))
             || error.is_resource_refusal()
         {
             error
@@ -3314,6 +3314,26 @@ mod tests {
                 assert!(!error.to_string().contains("pointer fallback"), "{error}");
             },
         );
+    }
+
+    /// A TLS failure on a remote document keeps its own variant, like an HTTP failure, instead of
+    /// being rewrapped as a native-reader refusal.
+    #[test]
+    fn remote_tls_failure_keeps_its_variant() {
+        for (error, expected) in [
+            (Error::Http("https://catalog.example/item.json: status 503".into()), "HTTP"),
+            (Error::Tls("certificate expired".into()), "TLS"),
+        ] {
+            let result: Result<()> = keep_remote_refusal("https://catalog.example/item.json", Err(error));
+            let kept = result.unwrap_err();
+            let variant = match &kept {
+                Error::Http(_) => "HTTP",
+                Error::Tls(_) => "TLS",
+                other => panic!("{other}"),
+            };
+            assert_eq!(variant, expected, "{kept}");
+            assert!(!kept.to_string().contains("pointer fallback"), "{kept}");
+        }
     }
 
     #[test]

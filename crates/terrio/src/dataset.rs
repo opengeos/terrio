@@ -1240,7 +1240,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
         return Err(e);
     }
     let retry = match &e {
-        Error::InvalidArgument(_) | Error::Http(_) => false,
+        Error::InvalidArgument(_) | Error::Http(_) | Error::Tls(_) => false,
         error if crate::drivers::vector::geojson::is_crs_refusal(error) => false,
         Error::InvalidData(message) if message.ends_with(crate::drivers::vector::kml::AMBIGUOUS_KMZ) => false,
         Error::InvalidData(message) if message.ends_with(vfs::AMBIGUOUS_ZIP) => false,
@@ -1248,6 +1248,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
         e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
         Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => vfs::is_gdal_name(path),
+        Error::Io(io) if crate::error::is_http_io(io) => false,
         error if crate::drivers::vector::is_document_error(error) => false,
         // VFS uses the same leading words for archives containing only unsupported formats.
         // Those remain eligible for GDAL (for example a zipped File Geodatabase).
@@ -1273,6 +1274,16 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
 
 #[cfg(all(test, feature = "gdal"))]
 mod fallback_tests {
+    #[test]
+    fn wrapped_http_and_tls_refusals_do_not_reopen_through_gdal() {
+        for cause in [super::Error::Http("network refused".into()), super::Error::Tls("certificate refused".into())] {
+            let result: super::Result<()> = super::gdal_fallback("input.tif", Err(std::io::Error::other(cause).into()), |_| {
+                panic!("wrapped transport refusal retried through GDAL")
+            });
+            assert!(matches!(result, Err(super::Error::Io(_))));
+        }
+    }
+
     use super::*;
 
     #[cfg(remote)]

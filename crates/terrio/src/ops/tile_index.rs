@@ -346,6 +346,7 @@ fn index_source_error(path: &str, error: Error) -> Error {
         Error::Io(e) => Error::Io(std::io::Error::new(e.kind(), message)),
         Error::Crs(_) => Error::Crs(message),
         Error::Http(_) => Error::Http(message),
+        Error::Tls(_) => Error::Tls(message),
         Error::Unsupported(_) => Error::Unsupported(message),
         Error::InvalidArgument(_) => Error::InvalidArgument(message),
         Error::ResourceLimit(_) => Error::ResourceLimit(message),
