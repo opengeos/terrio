@@ -838,6 +838,9 @@ pub(crate) fn src_dst_window(
         fyo = 0.0;
         mod_y = true;
     }
+    if fxo >= size.0 as f64 || fyo >= size.1 as f64 {
+        return None;
+    }
     const EPSILON: f64 = 1e-10;
     let fractional = [sxo, syo, dxo, dyo].iter().any(|v| (v - v.round()).abs() > EPSILON);
     let (mut ixo, mut iyo) =
@@ -853,7 +856,7 @@ pub(crate) fn src_dst_window(
     let mut ixs = ((fxs + 0.5).floor() as i64).max(1);
     let mut iys = ((fys + 0.5).floor() as i64).max(1);
     let (w, h) = (size.0 as i64, size.1 as i64);
-    if ixo + ixs > w {
+    if ixo.saturating_add(ixs) > w {
         ixs = w - ixo;
         mod_x = true;
     }
@@ -861,7 +864,7 @@ pub(crate) fn src_dst_window(
         fxs = w as f64 - fxo;
         mod_x = true;
     }
-    if iyo + iys > h {
+    if iyo.saturating_add(iys) > h {
         iys = h - iyo;
         mod_y = true;
     }

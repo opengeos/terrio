@@ -2888,6 +2888,23 @@ or mode output can come from the next source pixel (the request rounded to the l
 terrio reads the output in one request, as rasterio does. The suite's outputs stay within one
 swath and block for those methods.
 
+### Resampled VRT source validity (#1386)
+
+The native VRT regressions compare the issue's Float32 fixture with GDAL 3.13.2
+for Average, RMS, Mode, Bilinear, Cubic, Cubic Spline and Lanczos. They check
+fill values, band metadata, the output grid, nearest and 1:1 reads, and a
+mosaic whose sources have different nodata values. The mosaic covers both
+GDAL's source-overview path and its full-resolution compositing path. The
+window tests count source reads and HTTP range bytes, including zero requests
+to a disjoint source and a one-window read of the intersecting overview.
+
+The `vrt` conformance suite compares the same seven kernels on real USGS
+terrain with injected nodata regions and a GeoTIFF mask. It also checks
+all-invalid cells, declared VRT nodata, and mosaics with and without overviews.
+Each case compares pixel values, data type, nodata, mask, geotransform and CRS.
+The suite reports exact pixel agreement separately from its `1e-5` absolute
+tolerance on these cases.
+
 ## File management (#289)
 
 `scripts/compare_vsi_with_gdal.py` (the `vsi` conformance suite) compares `terrio vsi` with

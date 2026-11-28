@@ -16,6 +16,135 @@ from compare_dem_calc_with_gdal import compare, same_value
 gdal.UseExceptions()
 
 
+def compare_resampled_sources(tmp, terrio, env, template, pixels, transform, projection):
+    """Compare VRT RasterIO and the CLI on USGS terrain with validity edits.
+
+    Args:
+        tmp: Directory for generated fixtures and comparison outputs.
+        terrio: Path to the Terrio CLI executable.
+        env: Environment used for Terrio subprocesses.
+        template: Source raster used to create the terrain fixtures.
+        pixels: Terrain pixel array to modify for validity cases.
+        transform: Source GDAL geotransform.
+        projection: Source CRS in WKT form.
+
+    Yields:
+        dict: A conformance record for each source layout and resampling kernel.
+    """
+    files = []
+    for name, nodata, with_mask in [("finite", -9999, False), ("masked", None, True), ("other", -12345, False)]:
+        path = tmp / f"resampled-{name}.tif"
+        ds = gdal.Translate(str(path), str(template))
+        band = ds.GetRasterBand(1)
+        values = pixels.copy()
+        values[0:8, 0:12] = -9999 if nodata is None else nodata
+        if nodata is None:
+            band.DeleteNoDataValue()
+        else:
+            band.SetNoDataValue(nodata)
+        band.WriteArray(values)
+        if with_mask:
+            band.CreateMaskBand(gdal.GMF_PER_DATASET)
+            valid = np.full(values.shape, 255, dtype=np.uint8)
+            valid[0:8, 0:12] = 0
+            band.GetMaskBand().WriteArray(valid)
+        files.append(path)
+        band = ds = None
+    finite, masked, other = files
+
+    def source(path, tag="SimpleSource", extra="", left=None):
+        """Build a source element referencing a generated terrain fixture.
+
+        Args:
+            path: Path to the source raster.
+            tag: VRT source element name.
+            extra: Additional XML inside the source element.
+            left: Optional horizontal destination offset for a mosaic source.
+
+        Returns:
+            str: The source XML element.
+        """
+        rect = "" if left is None else (
+            '<SrcRect xOff="0" yOff="0" xSize="96" ySize="80"/>'
+            f'<DstRect xOff="{left}" yOff="0" xSize="96" ySize="80"/>'
+        )
+        return f'<{tag}><SourceFilename relativeToVRT="1">{path.name}</SourceFilename><SourceBand>1</SourceBand>{rect}{extra}</{tag}>'
+
+    def compare_case(name, sources, width, window, size, nodata="", kernels=None):
+        """Compare a VRT layout through GDAL RasterIO and Terrio translate.
+
+        Args:
+            name: Case name used for output filenames and labels.
+            sources: Source XML elements for the VRT band.
+            width: Width of the VRT dataset in pixels.
+            window: Source pixel window as x, y, width and height.
+            size: Output width and height.
+            nodata: Optional VRT nodata XML element.
+            kernels: Optional subset of resampling method names.
+
+        Yields:
+            dict: Pixel, validity and georeferencing comparison results.
+        """
+        vrt = tmp / f"resampled-{name}.vrt"
+        vrt.write_text(
+            f'<VRTDataset rasterXSize="{width}" rasterYSize="80"><SRS>{projection}</SRS>'
+            f'<GeoTransform>{",".join(map(str, transform))}</GeoTransform>'
+            f'<VRTRasterBand dataType="Float32" band="1">{nodata}{sources}</VRTRasterBand></VRTDataset>'
+        )
+        ds = gdal.Open(str(vrt))
+        band = ds.GetRasterBand(1)
+        algs = {"average": gdal.GRIORA_Average, "rms": gdal.GRIORA_RMS, "mode": gdal.GRIORA_Mode, "bilinear": gdal.GRIORA_Bilinear,
+                "cubic": gdal.GRIORA_Cubic, "cubicspline": gdal.GRIORA_CubicSpline, "lanczos": gdal.GRIORA_Lanczos}
+        for method in algs if kernels is None else kernels:
+            label = f"VRT resampled {name} {method}"
+            reference = tmp / f"resampled-{name}-{method}-gdal.tif"
+            actual = tmp / f"resampled-{name}-{method}-terrio.tif"
+            try:
+                array = band.ReadAsArray(*window, buf_xsize=size[0], buf_ysize=size[1], resample_alg=algs[method])
+                ref = gdal.GetDriverByName("GTiff").Create(str(reference), *size, 1, gdal.GDT_Float32)
+                x, y, w, h = window
+                sx, sy = w / size[0], h / size[1]
+                a, b, c, d, e, f = transform
+                ref.SetGeoTransform((a + x*b + y*c, b*sx, c*sy, d + x*e + y*f, e*sx, f*sy))
+                ref.SetProjection(projection)
+                if (nd := band.GetNoDataValue()) is not None:
+                    ref.GetRasterBand(1).SetNoDataValue(nd)
+                ref.GetRasterBand(1).WriteArray(array)
+                ref = None
+                cmd = [terrio, "translate", str(vrt), str(actual), "--srcwin", *map(str, window),
+                       "--outsize", *map(str, size), "-r", method]
+                process = subprocess.run(cmd, capture_output=True, text=True, env=env)
+                if process.returncode:
+                    raise RuntimeError(process.stderr)
+                record = compare(str(reference), str(actual), 1e-5)
+                expected, observed = (gdal.Open(str(p)) for p in (reference, actual))
+                record["same_mask"] = bool(np.array_equal(expected.GetRasterBand(1).GetMaskBand().ReadAsArray(),
+                                                          observed.GetRasterBand(1).GetMaskBand().ReadAsArray()))
+                record["same_crs"] = bool(expected.GetSpatialRef().IsSame(observed.GetSpatialRef()))
+                if not (record["same_mask"] and record["same_crs"]):
+                    record["error"] = "resized validity mask or CRS differs"
+            except Exception as error:
+                record = {"error": str(error)}
+            yield {"name": label, **record}
+
+    crop = (0, 0, 61, 47)
+    size = (17, 23)
+    use_mask = "<UseMaskBand>true</UseMaskBand>"
+    yield from compare_case("simple-nodata", source(finite), 96, crop, size)
+    yield from compare_case("complex-nodata", source(finite, "ComplexSource", use_mask), 96, crop, size)
+    yield from compare_case("simple-mask", source(masked), 96, crop, size)
+    yield from compare_case("complex-mask", source(masked, "ComplexSource", use_mask), 96, crop, size)
+    yield from compare_case("declared-nodata", source(finite), 96, crop, size, "<NoDataValue>-9999</NoDataValue>")
+    yield from compare_case("fully-invalid-source", source(finite), 96, (0, 0, 8, 4), (2, 2), kernels=["average", "rms", "mode"])
+    mosaic = source(finite, "ComplexSource", use_mask, 0) + source(other, "ComplexSource", use_mask, 96)
+    yield from compare_case("mosaic-composited", mosaic, 192, (0, 0, 192, 80), (48, 20))
+    for path in [finite, other]:
+        ds = gdal.Open(str(path), gdal.GA_Update)
+        ds.BuildOverviews("AVERAGE", [2])
+        ds = None
+    yield from compare_case("mosaic-overviews", mosaic, 192, (0, 0, 192, 80), (48, 20))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data")
@@ -144,6 +273,7 @@ def main():
         run("VRT source mask", write("mask-band", f'<VRTRasterBand dataType="Byte">{mask_source}</VRTRasterBand>'))
         complex_source = source_xml("ComplexSource", "masked.tif", "<UseMaskBand>true</UseMaskBand>")
         run("VRT complex mask", write("complex-mask", f'<VRTRasterBand dataType="Float32"><NoDataValue>-9999</NoDataValue>{complex_source}</VRTRasterBand>'))
+        records.extend(compare_resampled_sources(tmp, args.terrio, env, source, pixels, transform, projection))
         for kind, coefs in [("full", "1 2 1 2 4 2 1 2 1"), ("separable", "1 2 1")]:
             extra = f'<Kernel normalized="1"><Size>3</Size><Coefs>{coefs}</Coefs></Kernel>'
             kernel = source_xml("KernelFilteredSource", "masked.tif", extra)

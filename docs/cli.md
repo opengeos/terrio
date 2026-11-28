@@ -1485,6 +1485,18 @@ can be larger odd squares, matching GDAL. Their work per pixel grows with the
 number of coefficients. Explicit dataset masks, `SourceBand mask,N`
 and `ComplexSource` with `UseMaskBand` are read lazily.
 
+When a read changes the buffer size with Average, RMS, Mode, or an interpolating
+kernel, ordinary `SimpleSource` and `ComplexSource` bands can delegate the
+request to the contributing source bands. Their nodata or mask then supplies
+the sample weights, even if the VRT band declares no nodata. The VRT band
+keeps its declared metadata. A direct source read with no valid samples
+uses the source kernel's fill. `ComplexSource` can leave that output pixel to
+an earlier source or the VRT background through `<NODATA>` or `<UseMaskBand>`.
+When both dimensions are reduced across source boundaries and no contributing
+source has an overview available, GDAL composites at VRT resolution first.
+On that path, `ComplexSource` controls which source pixels are drawn and the
+VRT band's own nodata or mask controls resampling of the composite.
+
 A source reads only the pixels that meet its `SrcRect` and writes only inside its `DstRect`,
 whatever their offsets. Its window is copied one for one only at the same scale and on whole-pixel
 offsets; otherwise it is resampled by the source's method, `nearest` taking the pixel nearest each

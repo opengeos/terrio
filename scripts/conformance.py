@@ -1191,7 +1191,7 @@ def suite_vrt(ctx):
     return suite_json_ops(
         ctx, "vrt", "compare_vrt_with_gdal.py", "VRT interoperability",
         "GDAL VRT driver, gdalwarp and gdal_translate",
-        "Real USGS pixels through derived bands, kernel filters, masks and warped VRTs, "
+        "Real USGS pixels through derived bands, kernel filters, masks, source-aware resampling and warped VRTs, "
         "including polynomial GCPs, TPS, homographies and RPCs. Whole and cropped reads "
         "must preserve types, nodata, georeferencing and values; Terrio-authored warped "
         "descriptions are also read by GDAL. Datum grid availability is matched.",
