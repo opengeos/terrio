@@ -597,8 +597,14 @@ fn write_request_with(
             continue;
         }
         let mut body = Vec::new();
-        let _ = response.into_body().into_reader().take(1 << 20).read_to_end(&mut body);
+        let read = response.into_body().into_reader().take(1 << 20).read_to_end(&mut body);
         super::record_request(&counted, &name, body.len() as u64, length);
+        // Status diagnostics remain best-effort, but TLS protocol failures are never swallowed.
+        if let Err(error) = read
+            && super::is_tls_io(&error)
+        {
+            return Err(super::http_io_error(&url, error));
+        }
         if (200..300).contains(&status)
             || (accept == Accept::Missing && status == 404)
             || (accept == Accept::Unimplemented && matches!(status, 400 | 405 | 501))

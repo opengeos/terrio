@@ -224,8 +224,8 @@ pub(super) fn without_verification(config: ureq::config::Config, provider: Provi
     agent_with_tls(config, tls, error)
 }
 
-/// Skips certificate-chain and hostname verification while validating handshake signatures: `NoVerify` is only installed by
-/// [`without_verification`], for `TERRIO_HTTP_UNSAFESSL=YES`.
+/// Skips certificate-chain and hostname verification while validating handshake signatures.
+/// `NoVerify` is only installed by [`without_verification`], for `TERRIO_HTTP_UNSAFESSL=YES`.
 #[derive(Debug)]
 struct NoVerify {
     provider: Arc<CryptoProvider>,
