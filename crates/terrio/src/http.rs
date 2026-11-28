@@ -192,7 +192,13 @@ impl HttpOptions {
     pub fn from_env() -> Self {
         let d = Self::default();
         let var = |terrio: &str, gdal: &str| crate::config::get_any(&[terrio, gdal]).map(|v| v.trim().to_string());
-        let secs = |v: String| v.parse::<f64>().ok().filter(|s| s.is_finite() && *s >= 0.0).map(Duration::from_secs_f64);
+        let secs = |v: String| {
+            v.parse::<f64>()
+                .ok()
+                .and_then(|s| Duration::try_from_secs_f64(s).ok())
+                // ureq adds configured durations to Instant when computing request deadlines.
+                .filter(|d| std::time::Instant::now().checked_add(*d).is_some())
+        };
         Self {
             timeout: var("TERRIO_HTTP_TIMEOUT", "GDAL_HTTP_TIMEOUT").and_then(secs).filter(|t| !t.is_zero()),
             connect_timeout: var("TERRIO_HTTP_CONNECTTIMEOUT", "GDAL_HTTP_CONNECTTIMEOUT").and_then(secs).unwrap_or(d.connect_timeout),
@@ -1701,16 +1707,30 @@ fn valid_tls_hostname(url: &str) -> bool {
 
 /// The absolute URL a `Location` header points to.
 fn resolve_redirect(from: &str, location: &str) -> String {
-    if location.contains("://") {
+    let has_scheme = location.split_once("://").is_some_and(|(s, _)| {
+        let mut bytes = s.bytes();
+        bytes.next().is_some_and(|b| b.is_ascii_alphabetic()) && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+    });
+    if has_scheme {
         return location.to_string();
     }
     let (scheme, rest) = from.split_once("://").unwrap_or(("https", from));
+    if location.starts_with("//") {
+        return format!("{scheme}:{location}");
+    }
     let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     if location.starts_with('/') {
         format!("{scheme}://{host}{location}")
+    } else if location.starts_with('?') {
+        let path = from.split(['?', '#']).next().unwrap_or(from);
+        format!("{path}{location}")
     } else {
         let base = from.split(['?', '#']).next().unwrap_or(from);
-        format!("{}/{location}", base.rsplit_once('/').map_or(base, |(b, _)| b))
+        if base.split_once("://").is_some_and(|(_, r)| !r.contains('/')) {
+            format!("{base}/{location}")
+        } else {
+            format!("{}/{location}", base.rsplit_once('/').map_or(base, |(b, _)| b))
+        }
     }
 }
 
@@ -7480,5 +7500,47 @@ mod tests {
         let url = serve_tls_self_signed(b"x".to_vec());
         let err = get(&Remote::Url(url)).unwrap_err();
         assert!(matches!(err, Error::Tls(_)), "{err}");
+    }
+
+    #[test]
+    fn from_env_ignores_overflowing_finite_timeouts() {
+        struct PopScope;
+        impl Drop for PopScope {
+            fn drop(&mut self) {
+                crate::config::pop_scope();
+            }
+        }
+        for value in ["1e30", "1e19"] {
+            crate::config::push_scope(std::collections::HashMap::from([
+                ("TERRIO_HTTP_TIMEOUT".into(), Some(value.into())),
+                ("TERRIO_HTTP_CONNECTTIMEOUT".into(), Some(value.into())),
+                ("TERRIO_HTTP_RETRY_DELAY".into(), Some(value.into())),
+            ]));
+            let _guard = PopScope;
+            let opts = HttpOptions::from_env();
+            let def = HttpOptions::default();
+            assert_eq!(opts.timeout, None, "{value}");
+            assert_eq!(opts.connect_timeout, def.connect_timeout, "{value}");
+            assert_eq!(opts.retry_delay, def.retry_delay, "{value}");
+        }
+    }
+
+    #[test]
+    fn resolve_redirect_handles_protocol_relative_and_query_scheme() {
+        assert_eq!(resolve_redirect("https://origin.example/a/b", "//cdn.example/tile.tif"), "https://cdn.example/tile.tif");
+        assert_eq!(
+            resolve_redirect("https://origin.example/a/b", "/download?next=https://other.example/x"),
+            "https://origin.example/download?next=https://other.example/x"
+        );
+        assert_eq!(
+            resolve_redirect("https://origin.example/a/b", "next?url=https://other.example/x"),
+            "https://origin.example/a/next?url=https://other.example/x"
+        );
+        assert_eq!(
+            resolve_redirect("https://origin.example/a/b", "?next=https://other.example/x"),
+            "https://origin.example/a/b?next=https://other.example/x"
+        );
+        assert_eq!(resolve_redirect("https://origin.example", "next"), "https://origin.example/next");
+        assert_eq!(resolve_redirect("https://origin.example/a/b", "https://cdn.example/c"), "https://cdn.example/c");
     }
 }
