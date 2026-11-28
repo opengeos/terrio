@@ -1345,8 +1345,10 @@ mod tests {
         assert!(x_end > x, "expected positive clipped interval, got x={x}, x_end={x_end}");
 
         // End-to-end rasterization of a steep line exiting y >= ny on a 10 x 10 grid.
-        // Pixel coords for grid(10, 10): x_px = x, y_px = 10 - y.
-        let line = Geometry::line_string(vec![Coord::xy(0.0, 10.0), Coord::xy(1.0, 10.0 - 1_000_000.0)]);
+        // Pixel coords for grid(10, 10): x_px = x, y_px = 10 - y. With the old sign bug,
+        // x_end grew past nx and looped ~2e9 times over out-of-bounds rows; with the fix,
+        // clipping stops at y == ny in 10 steps.
+        let line = Geometry::line_string(vec![Coord::xy(0.0, 10.0), Coord::xy(1.0, 10.0 - 2_000_000_000.0)]);
         let o = RasterizeOptions { burn_values: vec![1.0], grid: Some(grid(10, 10)), all_touched: true, ..Default::default() };
         let r = rasterize(&[layer(vec![line])], &o).unwrap();
         let px = pixels(&r);

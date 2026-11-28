@@ -1648,7 +1648,11 @@ fn resolve_redirect(from: &str, location: &str) -> String {
         format!("{path}{location}")
     } else {
         let base = from.split(['?', '#']).next().unwrap_or(from);
-        format!("{}/{location}", base.rsplit_once('/').map_or(base, |(b, _)| b))
+        if base.split_once("://").is_some_and(|(_, r)| !r.contains('/')) {
+            format!("{base}/{location}")
+        } else {
+            format!("{}/{location}", base.rsplit_once('/').map_or(base, |(b, _)| b))
+        }
     }
 }
 
@@ -7293,6 +7297,7 @@ mod tests {
             resolve_redirect("https://origin.example/a/b", "?next=https://other.example/x"),
             "https://origin.example/a/b?next=https://other.example/x"
         );
+        assert_eq!(resolve_redirect("https://origin.example", "next"), "https://origin.example/next");
         assert_eq!(resolve_redirect("https://origin.example/a/b", "https://cdn.example/c"), "https://cdn.example/c");
     }
 }
