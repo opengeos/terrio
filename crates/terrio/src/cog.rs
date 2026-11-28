@@ -991,7 +991,8 @@ impl LazyRaster {
     }
 
     /// The description and metadata of each band, including a GeoTIFF's `GDAL_METADATA` band
-    /// items and color interpretations, as its driver's eager read reports them.
+    /// items and color interpretations, as its driver's eager read reports them. Complex
+    /// rasters have one entry per stored complex sample, shared by its real/imaginary components.
     pub fn band_metadata(&self) -> &[crate::BandMetadata] {
         match &self.inner {
             Inner::Memory(ds) | Inner::Source(ds, _) => &ds.band_metadata,
@@ -1033,10 +1034,7 @@ impl LazyRaster {
         if let Some(tag) = &t.tags.rpc {
             return crate::ops::rpc::Rpc::from_tiff_tag(tag).map(Some);
         }
-        match &t.file {
-            Some(path) => crate::ops::rpc::rpc_sidecar(path),
-            None => Ok(None),
-        }
+        t.sidecar_rpc()
     }
 
     /// Whether the pixels are read on demand (a GeoTIFF), rather than already in memory.
@@ -2855,6 +2853,8 @@ struct TiffRaster {
     _local: Option<vfs::LocalPath>,
     /// The local file path, used for output alias checks and sidecar discovery.
     file: Option<std::path::PathBuf>,
+    /// The opening scope's sidecar permission, retained when the reader moves to a worker.
+    sidecars_allowed: bool,
     /// Reopening and native archive alias information for an in-place ZIP member.
     zip: Option<crate::vsi::sozip::MemberReopen>,
     /// The decoders' limits.
@@ -2949,6 +2949,17 @@ pub(crate) fn open_ovr(
 }
 
 impl TiffRaster {
+    /// Reads a local RPC sidecar lazily, without broadening the opening scope's permission.
+    fn sidecar_rpc(&self) -> Result<Option<crate::ops::rpc::Rpc>> {
+        if !self.sidecars_allowed || crate::config::sidecars_disabled() {
+            return Ok(None);
+        }
+        match &self.file {
+            Some(path) => crate::ops::rpc::rpc_sidecar(path),
+            None => Ok(None),
+        }
+    }
+
     /// Opens a TIFF; without the CRS engine (`ENGINE` false), its CRS is only the EPSG code its
     /// GeoKeys name.
     fn new<const ENGINE: bool>(mut source: Source, local: Option<vfs::LocalPath>, limits: TiffReadLimits) -> Result<Self> {
@@ -3069,6 +3080,7 @@ impl TiffRaster {
             current_ifd: 0,
             _local: local,
             file: None,
+            sidecars_allowed: !crate::config::sidecars_disabled(),
             zip,
             limits,
             file_len: len,
@@ -3166,11 +3178,7 @@ impl TiffRaster {
                 _ => None,
             }
         } else if domain.eq_ignore_ascii_case("RPC") {
-            let sidecar = if self.tags.rpc.is_none() && !crate::config::sidecars_disabled() {
-                self.file.as_ref().and_then(|path| crate::ops::rpc::rpc_sidecar(path).ok().flatten()).map(|rpc| rpc.to_tiff_tag())
-            } else {
-                None
-            };
+            let sidecar = if self.tags.rpc.is_none() { self.sidecar_rpc().ok().flatten().map(|rpc| rpc.to_tiff_tag()) } else { None };
             let rpc = self.tags.rpc.as_ref().or(sidecar.as_ref())?;
             crate::ops::compare::rpc_items(rpc).into_iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v)
         } else {
@@ -6147,7 +6155,16 @@ mod tests {
         crate::config::push_scope(std::collections::HashMap::from([("TERRIO_DISABLE_READDIR_ON_OPEN".into(), Some("EMPTY_DIR".into()))]));
         assert_eq!(retained.metadata_item("HEIGHT_OFF", "RPC"), Some("100".into()));
         assert_eq!(shared.metadata_item("HEIGHT_OFF", "RPC"), Some("100".into()));
+        let mut restricted = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
         crate::config::pop_scope();
+        assert!(restricted.rpc().unwrap().is_some());
+        let worker = restricted.shared();
+        std::thread::spawn(move || {
+            assert_eq!(restricted.metadata_item("HEIGHT_OFF", "RPC"), Some("100".into()));
+            assert_eq!(worker.metadata_item("HEIGHT_OFF", "RPC"), Some("100".into()));
+        })
+        .join()
+        .unwrap();
 
         // The same dataset in memory: default-domain items, and NBITS from its IMAGE_STRUCTURE
         // domain (set_sample_bits keeps only widths narrower than the unsigned type).
@@ -6287,7 +6304,16 @@ mod tests {
             for handle in [&source, &shared] {
                 assert_eq!(handle.metadata_item("HEIGHT_OFF", "RPC"), None);
             }
+            let mut restricted = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
             crate::config::pop_scope();
+            assert!(restricted.rpc().unwrap().is_none());
+            let worker = restricted.shared();
+            std::thread::spawn(move || {
+                assert_eq!(restricted.metadata_item("HEIGHT_OFF", "RPC"), None);
+                assert_eq!(worker.metadata_item("HEIGHT_OFF", "RPC"), None);
+            })
+            .join()
+            .unwrap();
         }
     }
 

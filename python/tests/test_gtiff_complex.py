@@ -27,6 +27,38 @@ COMPRESSIONS = ["NONE", "DEFLATE", "LZW", "PACKBITS", "ZSTD"]
 TYPES = {"complex_int16": np.complex64, "complex64": np.complex64, "complex128": np.complex128}
 
 
+def test_complex_band_metadata_uses_logical_bands(tmp_path):
+    """Complex components share the metadata of their logical sample.
+
+    Args:
+        tmp_path: Temporary directory.
+    """
+    from terrio import open_raster
+    from terrio.rio import _tiff
+
+    path = tmp_path / "complex-metadata.tif"
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=2,
+        height=2,
+        count=2,
+        dtype="complex64",
+        transform=from_origin(10, 46, 1, 1),
+    ) as dst:
+        dst.write(np.ones((2, 2, 2), dtype="complex64"))
+        for band, name in [(1, "first"), (2, "second")]:
+            dst.set_band_description(band, name)
+            dst.update_tags(band, OWNER=name)
+    raster = open_raster(str(path), lazy=True)
+    assert raster.count == 2
+    assert [item["description"] for item in raster.band_metadata] == ["first", "second"]
+    structure = _tiff.default_structure(raster)
+    assert structure.descriptions == ["first", "second"]
+    assert [items["OWNER"] for items in structure.band_tags] == ["first", "second"]
+
+
 def _write(path, dtype, layout, compress, bands=2, interleave="pixel", nodata=None):
     """A GeoTIFF GDAL writes, and the values written."""
     rng = np.random.default_rng(len(dtype) + bands)
