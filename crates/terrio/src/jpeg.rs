@@ -1228,13 +1228,18 @@ mod resource_tests {
 
     #[test]
     fn progressive_oversized_frame_is_a_typed_resource_refusal() {
-        // SOF2 progressive frames fall through to jpeg-decoder. The second height makes the
-        // three-component sample count wrap below the size limit on 32-bit/WASM targets.
-        for height in [65535_u16, 21846] {
-            let mut header = [0xff, 0xd8, 0xff, 0xc2, 0, 17, 8, 0xff, 0xff, 0xff, 0xff, 3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0, 0xff, 0xd9];
-            header[7..9].copy_from_slice(&height.to_be_bytes());
-            assert!(matches!(super::decode_file(&header), Err(super::DecodeError::Resource(_))), "height={height}");
-        }
+        // SOF2 progressive frames fall through to jpeg-decoder.
+        let header = [0xff, 0xd8, 0xff, 0xc2, 0, 17, 8, 0xff, 0xff, 0xff, 0xff, 3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0, 0xff, 0xd9];
+        assert!(matches!(super::decode_file(&header), Err(super::DecodeError::Resource(_))));
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn progressive_wrapped_sample_count_is_a_typed_resource_refusal() {
+        // 65535 * 21846 * 3 wraps to 65534 only on 32-bit targets, including WebAssembly.
+        assert_eq!(65535_u32.wrapping_mul(21846).wrapping_mul(3), 65534);
+        let header = [0xff, 0xd8, 0xff, 0xc2, 0, 17, 8, 0x55, 0x56, 0xff, 0xff, 3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0, 0xff, 0xd9];
+        assert!(matches!(super::decode_file(&header), Err(super::DecodeError::Resource(_))));
     }
 
     #[test]

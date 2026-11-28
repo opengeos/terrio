@@ -1314,6 +1314,7 @@ mod tests {
     #[cfg(remote)]
     #[test]
     fn remote_gdalg_enforces_size_limit_and_isolates_local_inputs() {
+        let _stats = crate::http::stats_test_guard();
         let dir = tempfile::tempdir().unwrap();
         let local_input = dir.path().join("local.geojson");
         std::fs::write(
@@ -1326,19 +1327,36 @@ mod tests {
             "command_line": format!("gdal vector pipeline read {}", local_input.display()),
             "relative_paths_relative_to_this_file": false
         });
-        let (base, _) = crate::http::test_server(doc.to_string().into_bytes());
+        let body = doc.to_string().into_bytes();
+        let expected_bytes = body.len() as u64;
+        let (base, requests) = crate::http::test_server(body);
         let url = format!("{base}/remote.gdalg.json");
         let plan = Pipeline::open(&url).unwrap();
         assert!(plan.run().is_err(), "remote GDALG must not read local files via run()");
         assert!(plan.evaluate_with(PipelineInput::open).is_err(), "remote GDALG must not read local files via evaluate_with()");
+        let stats_for = |base: &str| {
+            crate::http::fetch_stats_by_host()
+                .into_iter()
+                .find(|(host, _)| Some(host.as_str()) == base.strip_prefix("http://"))
+                .map(|(_, stats)| stats)
+                .unwrap_or_default()
+        };
+        let valid_stats = stats_for(&base);
+        assert_eq!(requests.lock().unwrap().len(), 1, "running the refused plan must not refetch its definition");
+        assert_eq!((valid_stats.requests, valid_stats.bytes), (1, expected_bytes));
+        eprintln!("remote GDALG definition: 1 request, {} recorded body bytes", valid_stats.bytes);
 
         // Remote GDALG definitions larger than 16 MiB are rejected before parsing.
         let prefix = br#"{"type":"gdal_streamed_alg","command_line":"gdal vector pipeline read a.geojson"}"#;
         let mut oversized = Vec::with_capacity((16 << 20) + 128);
         oversized.extend_from_slice(prefix);
         oversized.resize((16 << 20) + 64, b' ');
-        let (big_base, _) = crate::http::test_server(oversized);
+        let (big_base, big_requests) = crate::http::test_server(oversized);
         let big_url = format!("{big_base}/oversized.gdalg.json");
         assert!(Pipeline::open(&big_url).is_err(), "oversized remote GDALG must be rejected");
+        assert_eq!(big_requests.lock().unwrap().len(), 1);
+        let oversized_stats = stats_for(&big_base);
+        assert_eq!(oversized_stats.bytes, 0, "the Content-Length refusal must precede body reading");
+        eprintln!("oversized remote GDALG: 1 request, {} recorded body bytes", oversized_stats.bytes);
     }
 }
