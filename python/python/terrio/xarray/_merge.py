@@ -19,6 +19,7 @@ from typing import Any
 
 import numpy as np
 import xarray
+from affine import Affine
 
 from terrio.rio import windows
 from terrio.rio.merge import merge as _rio_merge
@@ -92,13 +93,14 @@ class RasterioDatasetDuck:
             else:
                 out_height, out_width = out_shape
             if data_window.shape[-2:] != (out_height, out_width):
+                source_width = self._xds.terrio.width if window is None else window.width
+                source_height = self._xds.terrio.height if window is None else window.height
+                target_transform = (
+                    self.transform if window is None else windows.transform(window, self.transform)
+                ) * Affine.scale(source_width / out_width, source_height / out_height)
                 data_window = self._xds.terrio.reproject(
                     self._xds.terrio.crs,
-                    transform=(
-                        self.transform
-                        if window is None
-                        else windows.transform(window, self.transform)
-                    ),
+                    transform=target_transform,
                     shape=(out_height, out_width),
                 )
         values = np.asarray(data_window.values)

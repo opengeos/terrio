@@ -81,9 +81,28 @@ def test_xarray_merge_duck_resizes_a_full_raster_without_a_window():
     data.terrio.write_crs("EPSG:4326", inplace=True)
     transform = Affine(1, 0, 0, 0, -1, 4)
     data.terrio.write_transform(transform, inplace=True)
-    expected = data.terrio.reproject("EPSG:4326", transform=transform, shape=(2, 2))
+    expected = data.terrio.reproject(
+        "EPSG:4326", transform=transform * Affine.scale(2, 2), shape=(2, 2)
+    )
     actual = RasterioDatasetDuck(data).read(window=None, out_shape=(1, 2, 2))
     np.testing.assert_array_equal(actual, expected.values.reshape(1, 2, 2))
+
+
+def test_xarray_merge_duck_resizes_window_preserving_extent():
+    """Resizing a window samples its entire extent rather than its upper-left corner."""
+    xarray = pytest.importorskip("xarray")
+    from terrio.rio.windows import Window
+    from terrio.xarray._merge import RasterioDatasetDuck
+
+    data = xarray.DataArray(
+        np.arange(36, dtype=np.float32).reshape(6, 6),
+        dims=("y", "x"),
+        coords={"y": np.arange(5.5, 0, -1), "x": np.arange(0.5, 6)},
+    )
+    data.terrio.write_crs("EPSG:4326", inplace=True)
+    data.terrio.write_transform(Affine(1, 0, 0, 0, -1, 6), inplace=True)
+    actual = RasterioDatasetDuck(data).read(window=Window(1, 1, 4, 4), out_shape=(1, 2, 2))
+    np.testing.assert_array_equal(actual, [[[14, 16], [26, 28]]])
 
 
 def test_xarray_merge_arrays_2d_single_row_and_col():

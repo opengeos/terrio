@@ -130,7 +130,14 @@ def _pixel_geometry(geom: dict[str, Any], inv: Affine) -> dict[str, Any]:
 
 
 def _geojson_geometry(geom: dict[str, Any]) -> dict[str, Any]:
-    """Normalizes non-GeoJSON geometry types accepted by rasterio (`LinearRing`)."""
+    """Normalize non-GeoJSON geometry types accepted by rasterio (`LinearRing`).
+
+    Args:
+        geom: A geometry mapping, possibly containing nested geometry collections.
+
+    Returns:
+        dict: The mapping with LinearRing geometries represented as LineString.
+    """
     kind = geom["type"]
     if kind == "GeometryCollection":
         return {
