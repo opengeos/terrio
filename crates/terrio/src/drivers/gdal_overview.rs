@@ -31,7 +31,8 @@
 //     gcore/gdal_cpp_functions.h
 //     gcore/gdalsse_priv.h
 //   GDAL v3.13.3, for resampled reads (`ResampledRead`) and mode nodata:
-//     gcore/overview.cpp (GDALResampleConvolutionHorizontalWithMask: NaN values carry no weight)
+//     gcore/overview.cpp (GDALResampleConvolutionHorizontalWithMask, palette branch of
+//       GDALResampleChunk_AverageOrRMS_T, BestColorEntry)
 //     gcore/rasterio.cpp (GDALRasterBand::RasterIOResampled: the NBITS clamp)
 //     gcore/gdal_misc.cpp (GDALIsValueInRange)
 
@@ -1385,6 +1386,85 @@ fn rms4_f64(v: [f64; 4]) -> f64 {
     }
 }
 
+/// GDAL 3.13.3's Average/RMS footprint along one axis.
+fn average_span(start: f64, end: f64, min: i64, max: i64) -> (i64, i64) {
+    let first = ((start + 1e-8) as i64).max(min);
+    let mut last = (end - 1e-8).ceil() as i64;
+    if last == first {
+        last += 1;
+    }
+    (first, last.min(max))
+}
+
+/// GDAL 3.13.3's palette branch of `GDALResampleChunk_AverageOrRMS_T`.
+///
+/// Each intersecting pixel contributes equally. Alpha zero and the declared nodata
+/// index exclude an entry from both the footprint and the RGB nearest-color search.
+fn average_palette<T: AvgSrc>(rms: bool, a: &Args, chunk: &[T], palette: &[[u8; 4]]) -> Vec<f64> {
+    let nodata = a.nodata.map(T::cast).map(AvgSrc::d);
+    let excluded = nodata.filter(|_| a.nodata.is_some_and(|v| v >= 0.0)).map(|v| v as usize);
+    let fill = nodata.unwrap_or_else(|| palette.iter().position(|entry| entry[3] == 0).unwrap_or(0) as f64);
+    let usable = |index: usize, entry: &[u8; 4]| entry[3] != 0 && excluded != Some(index);
+    let spans = |dst: i64, offset: f64, ratio: f64, min: i64, len: i64| {
+        let (first, last) = average_span(offset + dst as f64 * ratio, offset + (dst + 1) as f64 * ratio, min, min + len);
+        (first - min) as usize..(last - min) as usize
+    };
+    let cols: Vec<_> = (a.dx0..a.dx1).map(|x| spans(x, a.sdx, a.rx, a.cx0, a.cxn)).collect();
+    let mut out = Vec::with_capacity(cols.len() * (a.dy1 - a.dy0) as usize);
+    for y in a.dy0..a.dy1 {
+        let rows = spans(y, a.sdy, a.ry, a.cy0, a.cyn);
+        for cols in &cols {
+            let mut sums = [0u64; 3];
+            let mut count = 0u64;
+            for row in rows.clone() {
+                let start = row * a.cxn as usize;
+                for sample in &chunk[start + cols.start..start + cols.end] {
+                    let value = sample.d();
+                    if !(0.0..palette.len() as f64).contains(&value) {
+                        continue;
+                    }
+                    let index = value as usize;
+                    let entry = &palette[index];
+                    if usable(index, entry) {
+                        for (sum, &channel) in sums.iter_mut().zip(entry) {
+                            let channel = u64::from(channel);
+                            *sum += if rms { channel * channel } else { channel };
+                        }
+                        count += 1;
+                    }
+                }
+            }
+            if count == 0 {
+                out.push(fill);
+                continue;
+            }
+            let rgb = sums.map(|sum| {
+                if rms {
+                    // GDAL divides the integer sum of squares before taking its root.
+                    ((sum / count) as f64).sqrt().round() as i32
+                } else {
+                    ((sum + count / 2) / count) as i32
+                }
+            });
+            // Search every eligible entry, including colors absent from the footprint.
+            // A strict comparison preserves the first index on duplicate colors or ties.
+            let (mut best, mut best_distance) = (0, i32::MAX);
+            for (index, entry) in palette.iter().enumerate().filter(|(i, entry)| usable(*i, entry)) {
+                let distance = rgb.iter().zip(entry).map(|(&target, &channel)| (target - i32::from(channel)).pow(2)).sum();
+                if distance < best_distance {
+                    best = index;
+                    best_distance = distance;
+                    if distance == 0 {
+                        break;
+                    }
+                }
+            }
+            out.push(T::cast(best as f64).d());
+        }
+    }
+    out
+}
+
 /// `GDALResampleChunk_AverageOrRMS_T`: the values of the destination block, in the work type.
 fn average<T: AvgSrc>(rms: bool, a: &Args, chunk: &[T]) -> Vec<f64> {
     let has_nd = a.nodata.is_some();
@@ -1402,18 +1482,8 @@ fn average<T: AvgSrc>(rms: bool, a: &Args, chunk: &[T]) -> Vec<f64> {
     let mut last = -1i64;
     for xd in a.dx0..a.dx1 {
         let f0 = a.sdx + xd as f64 * a.rx;
-        let mut s0 = (f0 + 1e-8) as i64;
         let f1 = a.sdx + (xd + 1) as f64 * a.rx;
-        let mut s1 = (f1 - 1e-8).ceil() as i64;
-        if s0 < a.cx0 {
-            s0 = a.cx0;
-        }
-        if s1 == s0 {
-            s1 += 1;
-        }
-        if s1 > right {
-            s1 = right;
-        }
+        let (s0, s1) = average_span(f0, f1, a.cx0, right);
         let lw = if s1 == s0 + 1 { 1.0 } else { 1.0 - (f0 - s0 as f64) };
         let rw = 1.0 - (s1 as f64 - f1);
         let mut full = lw;
@@ -1432,18 +1502,8 @@ fn average<T: AvgSrc>(rms: bool, a: &Args, chunk: &[T]) -> Vec<f64> {
     rows_in_pieces(&mut out, None, dst_w, a.pieces, (), move |_, i, row, _| {
         let yd = a.dy0 + i as i64;
         let f0 = a.sdy + yd as f64 * a.ry;
-        let mut s0 = (f0 + 1e-8) as i64;
-        if s0 < a.cy0 {
-            s0 = a.cy0;
-        }
         let f1 = a.sdy + (yd + 1) as f64 * a.ry;
-        let mut s1 = (f1 - 1e-8).ceil() as i64;
-        if s1 == s0 {
-            s1 += 1;
-        }
-        if s1 > bottom {
-            s1 = bottom;
-        }
+        let (s0, s1) = average_span(f0, f1, a.cy0, bottom);
         if two && s1 == s0 + 2 && a.mask.is_none() {
             // A factor of 2 with regular spacing and no nodata: GDAL's optimized cases. The two
             // source rows are sliced to the row's columns first, so that each index is checked
@@ -1772,9 +1832,10 @@ fn as_work<T: Sample, W: Copy + 'static>(win: &Vec<T>, f: impl Fn(&T) -> W) -> s
 
 /// Resamples one destination block of one band from its source window (`win`, in the source
 /// type), as the job of `GDALRegenerateOverviewsMultiBand` does.
-fn resample_block<T: Sample>(method: Method, a: &Args, win: &Vec<T>) -> Vec<T> {
-    fn run<W: ConvSrc + AvgSrc>(m: Method, a: &Args, w: &[W]) -> Vec<f64> {
+fn resample_block<T: Sample>(method: Method, a: &Args, win: &Vec<T>, palette: &[[u8; 4]]) -> Vec<T> {
+    fn run<W: ConvSrc + AvgSrc>(m: Method, a: &Args, w: &[W], palette: &[[u8; 4]]) -> Vec<f64> {
         match m {
+            Method::Average | Method::Rms if !palette.is_empty() => average_palette(m == Method::Rms, a, w, palette),
             Method::Average => average(false, a, w),
             Method::Rms => average(true, a, w),
             _ => convolution(m, a, w),
@@ -1788,10 +1849,10 @@ fn resample_block<T: Sample>(method: Method, a: &Args, win: &Vec<T>) -> Vec<T> {
         return gauss(a, &as_work(win, |v| v.to_f64())).into_iter().map(|v| T::from_work(v, false)).collect();
     }
     let mut vals = match wt {
-        Work::U8 => run(method, a, &as_work(win, |v| v.to_f64() as u8)),
-        Work::U16 => run(method, a, &as_work(win, |v| v.to_f64() as u16)),
-        Work::F32 => run(method, a, &as_work(win, |v| v.to_f64() as f32)),
-        Work::F64 => run(method, a, &as_work(win, |v| v.to_f64())),
+        Work::U8 => run(method, a, &as_work(win, |v| v.to_f64() as u8), palette),
+        Work::U16 => run(method, a, &as_work(win, |v| v.to_f64() as u16), palette),
+        Work::F32 => run(method, a, &as_work(win, |v| v.to_f64() as f32), palette),
+        Work::F64 => run(method, a, &as_work(win, |v| v.to_f64()), palette),
     };
     // Kernels that overshoot (bilinear does not) are kept within the samples' bits.
     if let Some(max) = a.max
@@ -1998,7 +2059,7 @@ fn block_row_t<T: Sample>(
                 Pieces::Exactly(n) => n,
             },
         };
-        resample_block(plan.method, &args, &win)
+        resample_block(plan.method, &args, &win, &[])
     });
     let n = ys.dst_n;
     let mut out = vec![T::default(); bands * n * dw];
@@ -2067,6 +2128,13 @@ pub(crate) struct ResampledRead {
     pub(crate) max: Option<f64>,
     /// Whether NaN values of a masked floating-point chunk carry no weight, as in GDAL 3.13.
     pub(crate) nan_aware: bool,
+}
+
+/// Extra inputs of a single band's kernel. A shared dataset kernel leaves both empty.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct BandResampling<'a> {
+    pub(crate) nodata: Option<f64>,
+    pub(crate) palette: &'a [[u8; 4]],
 }
 
 /// One block of a resampled read: its buffer pixels and the source window read for it.
@@ -2202,7 +2270,7 @@ impl ResampledRead {
         masks: &[Option<Vec<u8>>],
         nodata: Option<f64>,
     ) -> RasterData {
-        self.read_rows(src, region, bands, masks, nodata, 0..self.buf.1)
+        self.read_rows(src, region, bands, masks, BandResampling { nodata, palette: &[] }, 0..self.buf.1)
     }
 
     /// Resamples the buffer's rows `rows`, whole blocks of rows of [`ResampledRead::row_blocks`],
@@ -2214,10 +2282,10 @@ impl ResampledRead {
         region: (usize, usize, usize, usize),
         bands: usize,
         masks: &[Option<Vec<u8>>],
-        nodata: Option<f64>,
+        inputs: BandResampling<'_>,
         rows: std::ops::Range<usize>,
     ) -> RasterData {
-        crate::pixel::map_data!(src, v => self.read_t(v, region, bands, masks, nodata, rows.clone()))
+        crate::pixel::map_data!(src, v => self.read_t(v, region, bands, masks, inputs, rows.clone()))
     }
 
     fn read_t<T: Sample>(
@@ -2226,13 +2294,13 @@ impl ResampledRead {
         region: (usize, usize, usize, usize),
         bands: usize,
         masks: &[Option<Vec<u8>>],
-        nodata: Option<f64>,
+        inputs: BandResampling<'_>,
         rows: std::ops::Range<usize>,
     ) -> Vec<T> {
         let g = self.geometry();
         let (bw, bh) = self.buf;
         let (rx0, ry0, rw, rh) = region;
-        let nodata = if self.dataset { None } else { nodata };
+        let nodata = if self.dataset { None } else { inputs.nodata };
         // A fully masked block: the nodata value (0 without), as `GDALCopyWords` converts it.
         let fill = if self.dataset { T::default() } else { T::from_work(nodata.unwrap_or(0.0), false) };
         let blocks: Vec<ReadBlock> = g.blocks.iter().filter(|k| rows.contains(&k.dy0)).copied().collect();
@@ -2283,7 +2351,9 @@ impl ResampledRead {
                 ovr: (g.vx.unwrap_or(0) + bw as i64, g.vy.unwrap_or(0) + bh as i64),
                 pieces: 1,
             };
-            resample_block(self.method, &args, &win)
+            // GDAL's palette branch uses palette alpha even when the surrounding
+            // RasterIO block has a mixed mask. The fully masked block shortcut above still applies.
+            resample_block(self.method, &args, &win, inputs.palette)
         });
         let n = rows.len();
         let mut out = vec![T::default(); bands * bw * n];

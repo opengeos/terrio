@@ -1294,7 +1294,9 @@ def suite_translate_overviews(ctx):
         "NONE and forced levels; real USGS "
         "terrain (Float32, nodata) and Landsat RGB (Byte, internal mask) check every resampling. Pixels, "
         "types, nodata and geotransforms must match; differences of one value are reported within "
-        "tolerance (arm64 GDAL builds round fused multiply-adds). A real COG served over HTTP must "
+        "tolerance (arm64 GDAL builds round fused multiply-adds). OPERA palette Average and RMS "
+        "compare exact indices, color entries, masks, nodata, type, CRS and geotransform at integer "
+        "and fractional windows. A real COG served over HTTP must "
         "transfer less than half as many raster bytes with AUTO as NONE.",
         2,
     )

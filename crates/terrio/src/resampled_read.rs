@@ -28,7 +28,7 @@
 
 use crate::cog::{MAX_PREFETCH_CHUNKS, read_bands};
 use crate::dataset::fallible;
-use crate::drivers::gdal_overview::{Method, ResampledRead, Sample, nbits_max};
+use crate::drivers::gdal_overview::{BandResampling, Method, ResampledRead, Sample, nbits_max};
 use crate::ops::Resampling;
 use crate::ops::overview::OverviewSelection;
 use crate::ops::translate::round_if_close;
@@ -70,7 +70,8 @@ pub struct ResampledReadOptions {
     pub size: (usize, usize),
     /// Nearest neighbour (the default), bilinear, cubic, cubic spline, Lanczos, average, RMS or
     /// mode. As in GDAL, a paletted band is read by nearest neighbour rather than with the
-    /// bilinear, cubic, cubic spline or Lanczos kernels.
+    /// bilinear, cubic, cubic spline or Lanczos kernels. Average and RMS use the chosen level's
+    /// palette colors and return indices into that palette, as GDAL 3.13.3 does.
     pub resampling: Resampling,
     /// The stored resolution read, as `gdal_translate -ovr` takes it. `Auto`, the default, is
     /// `RasterIO`'s choice when the output is smaller than the window: the overview whose
@@ -233,15 +234,15 @@ impl LazyRaster {
     ///   with bilinear, cubic, cubic spline or Lanczos kernels, together as
     ///   `GDALDataset::RasterIOResampled` does, a strip of the source at a time. Invalid pixels
     ///   (masked out by the level's mask, their band's nodata value or an alpha band) carry no
-    ///   weight. As in GDAL, an overview without a mask of its own is all valid.
+    ///   weight. As in GDAL, an overview without a mask of its own is all valid. For palette
+    ///   Average and RMS, the color table determines which indices contribute.
     ///
     /// # Errors
     ///
     /// When a band does not exist, the output is empty, the window is empty or not within the
     /// raster (reads past its edges are not supported, but for less than an output pixel past its
     /// right or bottom edge), the method is one only warps use (min, max, median, quartiles, sum),
-    /// the bands are complex and the method is not nearest neighbour, average and RMS reads of a
-    /// paletted band at full resolution (GDAL averages its colors), or the read fails.
+    /// the bands are complex and the method is not nearest neighbour, or the read fails.
     ///
     /// ```no_run
     /// use terrio::ResampledReadOptions;
@@ -765,12 +766,11 @@ impl LazyRaster {
     }
 
     /// How `GDALRasterBand::IRasterIO` reads a band from a level: a copy, by nearest neighbour
-    /// (for nearest neighbour, and a paletted band with an interpolating kernel at full
-    /// resolution: GDAL's GeoTIFF overviews report no color table), or resampled.
+    /// (for nearest neighbour, and a paletted band with an interpolating kernel), or resampled.
     fn band_how(&self, read: &Read, request: Request) -> How {
         if request.is_copy(read.buf) {
             How::Copy
-        } else if read.resampling == Resampling::Nearest || (interpolates(read.resampling) && self.paletted_at(request.level)) {
+        } else if read.resampling == Resampling::Nearest || (interpolates(read.resampling) && self.level_has_color_table(request.level)) {
             How::Nearest
         } else {
             How::Kernel { dataset: false }
@@ -781,7 +781,7 @@ impl LazyRaster {
     /// one type, without a color table, sharing a mask band (the dataset's mask, an alpha band)
     /// or all valid, a nodata mask ending them.
     fn shared_bands(&mut self, read: &Read, kinds: &[MaskKind], level: Option<usize>) -> usize {
-        let paletted = self.paletted_at(level);
+        let paletted = self.level_has_color_table(level);
         let mut first: Option<(LevelMask, DataType)> = None;
         let mut count = 0;
         for (k, &b) in read.bands.iter().enumerate() {
@@ -803,12 +803,6 @@ impl LazyRaster {
             count += 1;
         }
         count
-    }
-
-    /// Whether the first band has a color table at a level: at full resolution, GDAL's GeoTIFF
-    /// overviews reporting none.
-    fn paletted_at(&self, level: Option<usize>) -> bool {
-        level.is_none() && self.has_color_table()
     }
 
     /// Where a band's validity comes from at a level whose band has mask band `kind` at full
@@ -908,12 +902,14 @@ impl LazyRaster {
                 sample_by_blocks(&cols, &rows, block, &mut |w| Ok(self.read_window(w, &options)?.raster.data))
             }
             How::Kernel { dataset } => {
-                if matches!(read.resampling, Resampling::Average | Resampling::Rms) && bands.contains(&1) && self.paletted_at(request.level)
+                let colors = if matches!(read.resampling, Resampling::Average | Resampling::Rms)
+                    && bands.contains(&1)
+                    && self.level_has_color_table(request.level)
                 {
-                    return Err(Error::Unsupported(
-                        "average and RMS reads of a paletted band are not supported (GDAL averages its colors): use nearest or mode".into(),
-                    ));
-                }
+                    Some(self.level_color_table(request.level)?)
+                } else {
+                    None
+                };
                 let mut resampled = self.resampled_read(read, request, dataset);
                 let maxima: Option<Vec<Option<f64>>> = self.dataset().map(|ds| {
                     bands
@@ -932,7 +928,8 @@ impl LazyRaster {
                 let working_type = read.working_type;
                 let source_bytes = self.band_data_type(bands[0]).size_bytes();
                 let sample_bytes = working_type.map_or(source_bytes, |dtype| source_bytes + dtype.size_bytes());
-                resample(&resampled, &nodata, maxima.as_deref(), sample_bytes, &mut |w| {
+                let palette = colors.as_deref().map(|table| (bands.as_slice(), table));
+                resample(&resampled, &nodata, maxima.as_deref(), palette, sample_bytes, &mut |w| {
                     let mut data = self.read_window_for_resampling(w, &options)?;
                     let masks = self.weights(w, request.level, &bands, kinds, &nodata, &data)?;
                     if let Some(dtype) = working_type.filter(|&dtype| dtype != data.data_type()) {
@@ -1182,7 +1179,7 @@ impl LazyRaster {
             self.prefetch_mask_band_window(Window::new(x, y, w, h), request.level)?;
             let max = self.mask_band_bits().and_then(|bits| nbits_max(u32::from(bits), DataType::U8));
             let resampled = resampled_read(read, request, false, block.0, max);
-            resample(&resampled, &[None], None, 1, &mut |w| {
+            resample(&resampled, &[None], None, None, 1, &mut |w| {
                 Ok((RasterData::U8(self.read_mask_band(w, request.level, sampling)?), vec![None]))
             })?
         };
@@ -1231,7 +1228,7 @@ impl LazyRaster {
             self.prefetch_window(Window::new(x, y, w, h), &options)?;
             let block_width = self.level_block_size(request.level).map_or(request.size.0, |b| b.0);
             let resampled = resampled_read(read, request, false, block_width, None);
-            resample(&resampled, &[None], None, 1, &mut |w| Ok((rescaled(self, w)?, vec![None])))?
+            resample(&resampled, &[None], None, None, 1, &mut |w| Ok((rescaled(self, w)?, vec![None])))?
         };
         Ok(alpha_mask(&data))
     }
@@ -1564,6 +1561,7 @@ fn resample(
     resampled: &ResampledRead,
     nodata: &[Option<f64>],
     maxima: Option<&[Option<f64>]>,
+    palette: Option<(&[usize], &[[u8; 4]])>,
     sample_bytes: usize,
     read: &mut dyn FnMut(Window) -> Result<Weighted>,
 ) -> Result<RasterData> {
@@ -1590,7 +1588,7 @@ fn resample(
         let region = (x, y, w, end - y);
         let (src, masks) = read(window)?;
         let part = if resampled.dataset {
-            resampled.read_rows(&src, region, bands, &masks, None, rows.clone())
+            resampled.read_rows(&src, region, bands, &masks, BandResampling::default(), rows.clone())
         } else {
             let n = w * (end - y);
             let parts: Vec<RasterData> = (0..bands)
@@ -1599,7 +1597,9 @@ fn resample(
                     if let Some(maxima) = maxima {
                         request.max = maxima[b];
                     }
-                    request.read_rows(&band_of(&src, b, n), region, 1, &masks[b..b + 1], nodata[b], rows.clone())
+                    let palette = palette.filter(|(ids, _)| ids[b] == 1).map_or(&[][..], |(_, colors)| colors);
+                    let band = BandResampling { nodata: nodata[b], palette };
+                    request.read_rows(&band_of(&src, b, n), region, 1, &masks[b..b + 1], band, rows.clone())
                 })
                 .collect();
             concat(parts)
@@ -1986,20 +1986,54 @@ mod tests {
         assert!(r.read_resampled(&ResampledReadOptions { window: Some((0.0, 0.0, 7.5, 4.0)), ..o.clone() }).is_ok());
         assert!(r.read_resampled(&ResampledReadOptions { window: Some((-0.5, 0.0, 2.0, 2.0)), ..o.clone() }).is_ok());
         assert!(read(&mut r, ResampledReadOptions { window: Some((0.0, 0.0, 8.0, 4.0)), ..o.clone() }).contains("not within"));
-        // GDAL averages the colors of a paletted band at full resolution.
+    }
+
+    /// GDAL 3.13.3's palette branch matches RGB distances in index order and ignores alpha zero.
+    #[test]
+    fn resampled_palette_colors_return_palette_indices() {
         let mut ds = RasterDataset::new(
             crate::pixel::raster_from_data(
-                wbraster::RasterConfig { cols: 4, rows: 4, bands: 1, data_type: DataType::U8, ..Default::default() },
-                RasterData::U8(vec![0; 16]),
+                wbraster::RasterConfig { cols: 12, rows: 1, bands: 2, data_type: DataType::U8, ..Default::default() },
+                RasterData::U8([vec![1, 7, 4, 4, 0, 2, 0, 1, 2, 7, 9, 9], [10, 20].repeat(6)].concat()),
             )
             .unwrap(),
             false,
         );
-        ds.color_table = vec![[0, 0, 0, 255], [255, 255, 255, 255]];
+        ds.color_table = vec![
+            [240, 240, 240, 0],
+            [20, 20, 20, 127],
+            [100, 100, 100, 255],
+            [60, 60, 60, 255],
+            [60, 60, 60, 255],
+            [72, 72, 72, 255],
+            [0, 0, 0, 255],
+            [100, 100, 100, 255],
+        ];
+        ds.band_nodata = vec![Some(2.0), None];
+        let mut transparent = ds.clone();
+        transparent.band_nodata.clear();
+        transparent.color_table[6][3] = 0;
+        let mut transparent_fill = LazyRaster::from(transparent);
         let mut paletted = LazyRaster::from(ds);
-        let err = read(&mut paletted, ResampledReadOptions { resampling: Resampling::Average, ..o.clone() });
-        assert!(err.contains("paletted"), "{err}");
-        // Interpolating kernels read a paletted band by nearest neighbour.
-        assert!(paletted.read_resampled(&ResampledReadOptions { resampling: Resampling::Cubic, ..o }).is_ok());
+        for (resampling, numeric, indices) in [(Resampling::Average, 15, [3, 3, 2, 1, 7, 2]), (Resampling::Rms, 16, [5, 3, 2, 1, 7, 2])] {
+            let options = ResampledReadOptions { bands: vec![2, 1, 1], size: (6, 1), resampling, ..Default::default() };
+            let (out, masks) = paletted.read_resampled_with_masks(&options).unwrap();
+            assert_eq!(read_values_u8(&out.raster.data), [[numeric; 6], indices, indices].concat());
+            assert_eq!(masks, [[255; 6], [255, 255, 0, 255, 255, 0], [255, 255, 0, 255, 255, 0]].concat());
+        }
+        let options = ResampledReadOptions { bands: vec![1], size: (6, 1), ..Default::default() };
+        let nearest = paletted.read_resampled(&options).unwrap();
+        for resampling in [Resampling::Bilinear, Resampling::Cubic, Resampling::CubicSpline, Resampling::Lanczos] {
+            let out = paletted.read_resampled(&ResampledReadOptions { resampling, ..options.clone() }).unwrap();
+            assert_eq!(read_values_u8(&out.raster.data), read_values_u8(&nearest.raster.data));
+        }
+
+        // A transparent palette fill never adds a nodata declaration to the output.
+        let options =
+            ResampledReadOptions { window: Some((10.0, 0.0, 2.0, 1.0)), size: (1, 1), resampling: Resampling::Average, ..options };
+        let (out, mask) = transparent_fill.read_resampled_with_masks(&options).unwrap();
+        assert_eq!(read_values_u8(&out.raster.data), [0]);
+        assert_eq!(out.nodata(), None);
+        assert_eq!(mask, [255]);
     }
 }

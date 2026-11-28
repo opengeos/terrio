@@ -488,8 +488,7 @@ fn read_geo_tags_impl<const ENGINE: bool, R: Read + Seek>(
     if photometric == 3
         && let Some(map) = shorts(320)
     {
-        let n = map.len() / 3;
-        out.color_table = (0..n).map(|i| [(map[i] / 257) as u8, (map[n + i] / 257) as u8, (map[2 * n + i] / 257) as u8, 255]).collect();
+        out.color_table = decode_color_map(map);
     }
     let samples = shorts(277).and_then(|s| s.first()).copied().unwrap_or(1) as usize;
     let jpeg = shorts(259).and_then(|s| s.first()).copied() == Some(7);
@@ -832,6 +831,12 @@ fn palette_offset_in_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: 
     }
     skip_remaining_ifd_entries(f, count, entry_len)?;
     read_offset(f, big, le)
+}
+
+/// TIFF stores separate red, green and blue maps of 16-bit values.
+pub(crate) fn decode_color_map(map: &[u16]) -> Vec<[u8; 4]> {
+    let n = map.len() / 3;
+    (0..n).map(|i| [(map[i] / 257) as u8, (map[n + i] / 257) as u8, (map[2 * n + i] / 257) as u8, 255]).collect()
 }
 
 pub(crate) fn parse_nodata(s: &str) -> Option<f64> {

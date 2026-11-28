@@ -187,8 +187,8 @@ def write_files(gdal: Any) -> list[dict[str, Any]]:
     ds = tiff("paletted.tif", gdal.GDT_Byte, pal, colors=ct)
     ds.BuildOverviews("NEAREST", [2])
     ds = None
-    # From the overview (which has no color table in GDAL), and at full resolution, where GDAL's
-    # average of colors is refused.
+    # These historical cases use the palette-free overview and the original set of full-resolution
+    # methods. Live palette Average/RMS comparisons are in test_palette_resampled_reads.py.
     for m in ("nearest", "bilinear", "cubic", "average", "mode"):
         cases.append(case("paletted.tif", (17, 13), resampling=m))
     for m in ("nearest", "bilinear", "cubic", "mode"):

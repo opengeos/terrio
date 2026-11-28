@@ -2858,7 +2858,8 @@ The fixtures pin GDAL's behaviour where it is not obvious:
   overviews, else none, and is then resampled from full resolution.
 - Cubic, cubic spline and Lanczos results are clamped to the band's `NBITS`: a GeoTIFF's internal
   mask (1 bit) reads as 0 and 1 with those kernels.
-- An overview of a paletted GeoTIFF reports no color table, so its bands are interpolated.
+- An overview without a color table resamples its stored values. An overview with its own
+  table uses that table for Average and RMS.
 - GDAL 3.13 skips NaN values of a masked floating-point chunk (GDAL 3.12 sums them as NaN).
   Resampled reads follow the release `TERRIO_GDAL_COMPAT` selects (3.12 by default, as
   `terrio.rio`'s rasterio parity tests expect), and the test selects 3.13; overviews follow 3.12.
@@ -2879,6 +2880,9 @@ nodata and geotransforms, and the HTTP bytes of a real COG resized with `AUTO` a
 Default-size source and georeferenced windows check that `AUTO-n` keeps the full-resolution
 output size while explicit level numbers reduce it, including real terrain with nodata.
 These default-size cases also compare equivalent CRSs and exact validity masks.
+The OPERA water-class cases compare Average and RMS at integer and fractional windows,
+with automatic overview selection and at full resolution. They require exact indices,
+palette entries, masks, nodata, type, CRS and geotransform.
 The HTTP comparison records bytes and request counts for a 400 x 300 source window
 with `NONE` and `AUTO-1`, checking the actual pixels at the unchanged output size.
 `gdal_translate` reads its output in swaths of 128 rows (into a GeoTIFF of default layout), and in
@@ -2887,6 +2891,17 @@ blocks of 128 x 128 pixels when its bands are not the source's first ones in ord
 or mode output can come from the next source pixel (the request rounded to the level), where
 terrio reads the output in one request, as rasterio does. The suite's outputs stay within one
 swath and block for those methods.
+
+### Resampled palette reads (#1387)
+
+`python -m pytest python/tests/test_palette_resampled_reads.py` compares native Python
+and `terrio.rio` window reads with GDAL 3.13. It covers the issue's Byte TIFF, a
+UInt16 TIFF, PNG palette alpha, duplicate and unused entries, nodata, and TIFF
+overviews with and without color tables. The translation comparisons also check
+palette retention for GeoTIFF and PNG inputs. Palette Average and RMS count intersecting
+pixels equally, skip entries with zero alpha and the nodata index, and search the
+whole palette for the closest RGB color. The native unit test also checks duplicate
+band requests, exact lowest-index ties and the implicit transparent fill.
 
 ### Resampled VRT source validity (#1386)
 

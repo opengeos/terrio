@@ -492,6 +492,11 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
         bands.iter().map(|&b| ds.band_metadata.get(b - 1).cloned().unwrap_or_default()).collect()
     };
     if out_type == r.data_type && o.scale.is_none() && o.exponent.is_none() {
+        // A copy of palette indices retains their color table. The lazy translation's
+        // second pass is such a copy after RasterIO has finished resampling.
+        if nearest && bands == [1] {
+            res.color_table.clone_from(&ds.color_table);
+        }
         res.metadata_domains = crate::dataset::selected_nbits(&ds.metadata_domains, &bands);
         // Aggregations such as SUM can leave the source's packed domain.
         // Inherit a width only when every output sample in that band still fits.
@@ -555,8 +560,8 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
 /// Rescaling, an output type other than the source's with resampling other than nearest
 /// neighbour (which GDAL resamples in the output type), a window past the raster's edges, a
 /// destination window of a fraction of a pixel (`-tr` with resampling other than nearest
-/// neighbour) and a raster in memory are translated as [`translate`] translates them, from the
-/// window's level read whole.
+/// neighbour) fall back to [`translate`] from the window's level read whole. In-memory
+/// palettes use the window reader for Average and RMS. Other in-memory rasters use [`translate`].
 ///
 /// # Errors
 ///
@@ -838,7 +843,8 @@ fn plan_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelec
         covers.then(|| (s[0] - d[0] * rx, s[1] - d[1] * ry, ow as f64 * rx, oh as f64 * ry))
     });
     let source_type = src.data_type();
-    let lazy = src.is_lazy()
+    let palette_read = matches!(resampling, Resampling::Average | Resampling::Rms) && src.level_has_color_table(level);
+    let lazy = (src.is_lazy() || palette_read)
         && request.is_some()
         && o.scale.is_none()
         && o.exponent.is_none()
