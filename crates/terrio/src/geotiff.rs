@@ -180,10 +180,11 @@ pub(crate) fn compression_name(code: u16) -> Option<&'static str> {
         34676 => "SGILOG",
         34677 => "SGILOG24",
         34712 => "JP2000",
+        34887 => "LERC",
         34925 => "LZMA",
         50000 => "ZSTD",
         50001 => "WEBP",
-        50002 => "JXL",
+        50002 | 52546 => "JXL",
         _ => return None,
     })
 }

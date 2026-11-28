@@ -1582,6 +1582,20 @@ pub(crate) fn to_bytes(
 mod tests {
     use super::*;
 
+    /// Eager JPEG 2000 reads retain their precision metadata (GDAL 3.13.3 NBITS).
+    #[test]
+    fn eager_packed_precision_survives_memory_and_translation() {
+        let components = [Component { precision: 12, signed: false, data: vec![3000; 16 * 16] }];
+        let bytes = encode(16, 16, &components, false, &EncodingOptions::from_creation_options(&[]).unwrap()).unwrap();
+        let eager = read_bytes(&bytes).unwrap();
+        let mut source = crate::LazyRaster::from(eager);
+        assert_eq!(source.sample_bits(), Some(12));
+        let out =
+            crate::ops::translate::translate_lazy(&mut source, &Default::default(), crate::ops::overview::OverviewSelection::Auto).unwrap();
+        assert_eq!(out.band_sample_bits(0), Some(12));
+        assert_eq!(out.raster.data.to_f64_vec(), vec![3000.0; 16 * 16]);
+    }
+
     /// Stored unsigned width copy policy; metadata vocabulary follows GDAL 3.13.3.
     #[test]
     fn windows_keep_stored_precision_when_copied_to_tiff() {

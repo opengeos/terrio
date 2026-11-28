@@ -63,7 +63,7 @@ fn packed_samples_report_their_bits() {
     let (r, got) = read(tiff(2, 1, 12, 1, &[0xAB, 0xC1, 0x23]));
     assert_eq!((r.data_type(), r.sample_bits()), (DataType::U16, Some(12)));
     assert_eq!(got, [2748.0, 291.0]);
-    // An in-memory raster has no stored sample size.
+    // Eager TIFF metadata retains a homogeneous packed sample width in memory.
     let ds = terrio::memory::open_raster_bytes(tiff(2, 1, 12, 1, &[0xAB, 0xC1, 0x23]), "a.tif").unwrap();
-    assert_eq!(LazyRaster::from(ds).sample_bits(), None);
+    assert_eq!(LazyRaster::from(ds).sample_bits(), Some(12));
 }

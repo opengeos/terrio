@@ -276,13 +276,15 @@ def _first(v: Any, default: int = 0) -> int:
     return default
 
 
-def default_structure(raster: Any) -> Structure:
+def default_structure(raster: Any, *, include_band_metadata: bool = True) -> Structure:
     """The structure of a raster terrio read whole: one-row blocks, gray then undefined bands.
 
     Its geolocation arrays are GDAL's `GEOLOCATION` metadata domain.
 
     Args:
         raster: A `terrio.Raster`.
+        include_band_metadata: Include the raster's base-band descriptions and items.
+            Disable when building the default structure for an overview directory.
 
     Returns:
         Structure: The structure.
@@ -301,7 +303,8 @@ def default_structure(raster: Any) -> Structure:
     if geolocation:
         s.namespaces["GEOLOCATION"] = dict(geolocation)
     # Descriptions and metadata of formats that report them per band (GRIB).
-    for b, md in enumerate((getattr(raster, "band_metadata", None) or [])[:n]):
+    band_metadata = (getattr(raster, "band_metadata", None) or []) if include_band_metadata else []
+    for b, md in enumerate(band_metadata[:n]):
         s.descriptions[b] = md.get("description")
         s.band_tags[b] = dict(md.get("items") or {})
         if md.get("color_interp"):

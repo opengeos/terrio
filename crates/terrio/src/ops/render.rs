@@ -321,7 +321,10 @@ fn plan(source: &LazyRaster, options: &RenderOptions) -> Result<Plan> {
     let colors = bands.len();
     let alpha = band_with("Alpha").filter(|a| !bands.contains(a));
     bands.extend(alpha);
-    let alpha_max = alpha.map_or(255.0, |band| alpha_max(source.band_data_type(band), source.sample_bits()));
+    let alpha_max = alpha.map_or(255.0, |band| {
+        let bits = source.band_metadata_item(band, "NBITS", "IMAGE_STRUCTURE").and_then(|value| value.parse().ok());
+        alpha_max(source.band_data_type(band), bits)
+    });
     Ok(Plan { bands, colors, alpha_max, mode })
 }
 
@@ -1341,5 +1344,24 @@ mod tests {
         assert_eq!(alpha_max(DataType::U16, Some(16)), 65535.0, "full width: the container's max");
         assert_eq!(alpha_max(DataType::U8, None), 255.0);
         assert_eq!(alpha_max(DataType::I16, None), 32767.0);
+    }
+
+    #[test]
+    fn alpha_scaling_uses_the_alpha_bands_own_nbits() {
+        let cfg = wbraster::RasterConfig { cols: 1, rows: 1, bands: 2, data_type: DataType::U16, ..Default::default() };
+        let mut ds = crate::RasterDataset::new(
+            wbraster::Raster::from_data_native(cfg, crate::raster::RasterData::U16(vec![100, 2000])).unwrap(),
+            false,
+        );
+        ds.band_metadata = vec![
+            crate::BandMetadata { color_interp: Some("Gray".into()), ..Default::default() },
+            crate::BandMetadata { color_interp: Some("Alpha".into()), ..Default::default() },
+        ];
+        ds.metadata_domains = vec![(Some(0), "IMAGE_STRUCTURE".into(), vec![("NBITS".into(), "9".into())])];
+        let source = LazyRaster::from(ds.clone());
+        assert_eq!(plan(&source, &RenderOptions::default()).unwrap().alpha_max, 65535.0);
+        ds.metadata_domains.push((Some(1), "IMAGE_STRUCTURE".into(), vec![("NBITS".into(), "12".into())]));
+        let source = LazyRaster::from(ds);
+        assert_eq!(plan(&source, &RenderOptions::default()).unwrap().alpha_max, 4095.0);
     }
 }

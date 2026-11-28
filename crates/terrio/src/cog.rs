@@ -263,6 +263,14 @@ pub(crate) trait WindowSource: Send + Sync {
     fn level_sample_bits(&self, _overview: Option<usize>) -> Option<u16> {
         None
     }
+    /// Driver-specific metadata not represented by the shared raster header.
+    fn metadata_item(&self, _key: &str, _domain: &str) -> Option<String> {
+        None
+    }
+    /// Driver-specific band metadata, numbered from one including complex components.
+    fn band_metadata_item(&self, _band: usize, _key: &str, _domain: &str) -> Option<String> {
+        None
+    }
     /// A selected overview dataset's nodata, when it carries its own band metadata.
     fn overview_band_nodata(&self, _overview: usize, _bands: &[usize], _base: &RasterDataset) -> Option<Vec<Option<f64>>> {
         None
@@ -424,6 +432,12 @@ impl WindowSource for SharedRaster {
     }
     fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
         self.lock().ok()?.level_sample_bits(overview)
+    }
+    fn metadata_item(&self, key: &str, domain: &str) -> Option<String> {
+        self.lock().ok()?.metadata_item(key, domain)
+    }
+    fn band_metadata_item(&self, band: usize, key: &str, domain: &str) -> Option<String> {
+        self.lock().ok()?.band_metadata_item(band, key, domain)
     }
     fn overview_band_nodata(&self, overview: usize, bands: &[usize], _base: &RasterDataset) -> Option<Vec<Option<f64>>> {
         Some(self.lock().ok()?.level_band_nodata(bands, Some(overview)))
@@ -1104,7 +1118,9 @@ impl LazyRaster {
     }
 
     /// The bits of a sample as stored (a TIFF's `BitsPerSample`; for an in-memory raster its
-    /// `IMAGE_STRUCTURE` `NBITS`, when narrower than the type); `None` when unknown. Samples may
+    /// `IMAGE_STRUCTURE` `NBITS`, when narrower than the type); `None` when unknown.
+    /// In-memory bands with different widths have no single stored width; their metadata
+    /// remains available through [`LazyRaster::band_metadata_item`]. Samples may
     /// be read as a wider [`LazyRaster::data_type`], as GDAL reads them: Float16 (16 bits, read
     /// as Float32; GDAL's Float16) and unsigned samples of 1 to 7 or 9 to 31 bits (GDAL's
     /// `NBITS`).
@@ -1112,7 +1128,10 @@ impl LazyRaster {
         match &self.inner {
             Inner::Tiff(t) => Some(t.bits),
             Inner::Source(_, source) => source.level_sample_bits(None),
-            Inner::Memory(ds) => ds.band_sample_bits(0),
+            Inner::Memory(ds) => {
+                let bits = ds.band_sample_bits(0)?;
+                (1..ds.raster.bands).all(|band| ds.band_sample_bits(band) == Some(bits)).then_some(bits)
+            }
         }
     }
 
@@ -1275,6 +1294,11 @@ impl LazyRaster {
     /// polynomial coefficients (`HEIGHT_OFF`, `LINE_NUM_COEFF`, ...), and any other domain the
     /// driver reports. Keys and domains match case-insensitively; `None` when absent.
     pub fn metadata_item(&self, key: &str, domain: &str) -> Option<String> {
+        if let Inner::Source(_, source) = &self.inner
+            && let Some(value) = source.metadata_item(key, domain)
+        {
+            return Some(value);
+        }
         match &self.inner {
             Inner::Tiff(t) => t.metadata_item(key, domain),
             Inner::Memory(ds) | Inner::Source(ds, _) => {
@@ -1299,17 +1323,23 @@ impl LazyRaster {
         if band == 0 || band > self.band_count() {
             return None;
         }
+        if let Inner::Source(_, source) = &self.inner
+            && let Some(value) = source.band_metadata_item(band, key, domain)
+        {
+            return Some(value);
+        }
+        let index = if self.is_complex() { (band - 1) / 2 } else { band - 1 };
         match &self.inner {
             Inner::Tiff(t) => t.band_metadata_item(band, key, domain),
             Inner::Memory(ds) | Inner::Source(ds, _) => {
                 if domain.is_empty() {
                     ds.band_metadata
-                        .get(band - 1)
+                        .get(index)
                         .and_then(|b| b.items.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.clone()))
                 } else {
                     ds.metadata_domains
                         .iter()
-                        .find(|(b, d, _)| *b == Some(band - 1) && d.eq_ignore_ascii_case(domain))
+                        .find(|(b, d, _)| *b == Some(index) && d.eq_ignore_ascii_case(domain))
                         .and_then(|(_, _, items)| items.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.clone()))
                 }
             }
@@ -2810,6 +2840,8 @@ struct TiffRaster {
     bits: u16,
     /// The full-resolution image's Compression tag code (1 when the tag is absent).
     compression: u16,
+    /// The full-resolution image's PhotometricInterpretation tag.
+    photometric: u16,
     /// Whether the full-resolution image is band-interleaved (PlanarConfiguration 2).
     planar: bool,
     geo_transform: [f64; 6],
@@ -3016,6 +3048,7 @@ impl TiffRaster {
         let geo_transform = tags.corner_geo_transform().unwrap_or([0.0, 1.0, 0.0, h as f64, 0.0, -1.0]);
         // The decoder is back on the first image here.
         let compression = dec.find_tag_unsigned::<u16>(Tag::Compression).map_err(tiff_err)?.unwrap_or(1);
+        let photometric = dec.find_tag_unsigned::<u16>(Tag::PhotometricInterpretation).map_err(tiff_err)?.unwrap_or(1);
         let planar = dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).map_err(tiff_err)? == Some(2);
         Ok(Self {
             decoder: dec,
@@ -3028,6 +3061,7 @@ impl TiffRaster {
             complex,
             bits,
             compression,
+            photometric,
             planar,
             geo_transform,
             levels,
@@ -3125,13 +3159,19 @@ impl TiffRaster {
             self.tags.metadata.iter().chain(&self.tags.tiff_tag_items).find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.clone())
         } else if domain.eq_ignore_ascii_case("IMAGE_STRUCTURE") {
             match key.to_ascii_uppercase().as_str() {
+                "COMPRESSION" if self.compression == 7 && self.photometric == 6 => Some("YCbCr JPEG".into()),
                 "COMPRESSION" => crate::geotiff::compression_name(self.compression).map(str::to_string),
                 // GDAL reports BAND for a band-interleaved image and for a single-band one.
                 "INTERLEAVE" => Some(if self.planar || self.samples == 1 { "BAND" } else { "PIXEL" }.to_string()),
                 _ => None,
             }
         } else if domain.eq_ignore_ascii_case("RPC") {
-            let rpc = self.tags.rpc.as_ref()?;
+            let sidecar = if self.tags.rpc.is_none() && !crate::config::sidecars_disabled() {
+                self.file.as_ref().and_then(|path| crate::ops::rpc::rpc_sidecar(path).ok().flatten()).map(|rpc| rpc.to_tiff_tag())
+            } else {
+                None
+            };
+            let rpc = self.tags.rpc.as_ref().or(sidecar.as_ref())?;
             crate::ops::compare::rpc_items(rpc).into_iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v)
         } else {
             None
@@ -3141,17 +3181,17 @@ impl TiffRaster {
     /// One band metadata item of a domain, as GDAL's band `GetMetadataItem(key, domain)` returns
     /// it (GDAL 3.13.3; band from 1): the default domain holds the `GDAL_METADATA` tag's band
     /// items, `IMAGE_STRUCTURE` the stored width (`NBITS`, when the samples are narrower than
-    /// their unsigned type) and `PIXELTYPE` (`SIGNEDBYTE` for 8-bit signed samples).
+    /// their unsigned type). Signed 8-bit bands use `DataType::I8`, as GDAL 3.13.3 does.
     fn band_metadata_item(&self, band: usize, key: &str, domain: &str) -> Option<String> {
         if domain.is_empty() {
-            self.tags.band_metadata.iter().find(|(b, k, _)| *b == band - 1 && k.eq_ignore_ascii_case(key)).map(|(_, _, v)| v.clone())
+            let index = if self.complex { (band - 1) / 2 } else { band - 1 };
+            self.tags.band_metadata.iter().find(|(b, k, _)| *b == index && k.eq_ignore_ascii_case(key)).map(|(_, _, v)| v.clone())
         } else if domain.eq_ignore_ascii_case("IMAGE_STRUCTURE") {
             match key.to_ascii_uppercase().as_str() {
                 "NBITS" => {
                     let width = self.data_type.size_bytes() as u16 * 8;
                     (crate::dataset::nbits_capable(self.data_type) && self.bits > 0 && self.bits < width).then(|| self.bits.to_string())
                 }
-                "PIXELTYPE" => (self.data_type == DataType::I8).then(|| "SIGNEDBYTE".to_string()),
                 _ => None,
             }
         } else {
@@ -6097,6 +6137,18 @@ mod tests {
         assert_eq!(r.sample_bits(), Some(12));
         assert_eq!(r.band_data_type(1), DataType::U16);
 
+        let mut retained = r;
+        let shared = retained.shared();
+        for handle in [&retained, &shared] {
+            assert_eq!(handle.metadata_item("COMPRESSION", "IMAGE_STRUCTURE"), Some("DEFLATE".into()));
+            assert_eq!(handle.metadata_item("HEIGHT_OFF", "RPC"), Some("100".into()));
+            assert_eq!(handle.metadata_item("Software", ""), Some("terrio-test".into()));
+        }
+        crate::config::push_scope(std::collections::HashMap::from([("TERRIO_DISABLE_READDIR_ON_OPEN".into(), Some("EMPTY_DIR".into()))]));
+        assert_eq!(retained.metadata_item("HEIGHT_OFF", "RPC"), Some("100".into()));
+        assert_eq!(shared.metadata_item("HEIGHT_OFF", "RPC"), Some("100".into()));
+        crate::config::pop_scope();
+
         // The same dataset in memory: default-domain items, and NBITS from its IMAGE_STRUCTURE
         // domain (set_sample_bits keeps only widths narrower than the unsigned type).
         let mut mem = ds.clone();
@@ -6135,7 +6187,8 @@ mod tests {
         assert_eq!(r.band_metadata_item(1, "NBITS", "IMAGE_STRUCTURE"), None, "full type width: no NBITS");
         let r = write(DataType::I8);
         assert_eq!(r.data_type(), DataType::I8);
-        assert_eq!(r.band_metadata_item(1, "PIXELTYPE", "IMAGE_STRUCTURE"), Some("SIGNEDBYTE".to_string()));
+        assert_eq!(r.band_data_type(1), DataType::I8);
+        assert_eq!(r.band_metadata_item(1, "PIXELTYPE", "IMAGE_STRUCTURE"), None);
         assert_eq!(r.band_metadata_item(1, "NBITS", "IMAGE_STRUCTURE"), None);
     }
 
@@ -6170,6 +6223,90 @@ mod tests {
             .and_then(|(_, _, items)| items.iter().find(|(k, _)| k == "NBITS"))
             .map(|(_, v)| v.clone());
         assert_eq!(nbits.as_deref(), Some("12"), "{:?}", out.metadata_domains);
+    }
+
+    #[test]
+    fn memory_windows_preserve_each_selected_bands_nbits() {
+        let cfg = wbraster::RasterConfig { cols: 2, rows: 1, bands: 2, data_type: DataType::U16, ..Default::default() };
+        let mut ds = RasterDataset::new(wbraster::Raster::from_data_native(cfg, RasterData::U16(vec![1, 2, 3000, 3001])).unwrap(), false);
+        ds.metadata_domains = vec![
+            (Some(0), "IMAGE_STRUCTURE".into(), vec![("NBITS".into(), "9".into())]),
+            (Some(1), "IMAGE_STRUCTURE".into(), vec![("NBITS".into(), "12".into())]),
+        ];
+        let mut original = LazyRaster::from(ds);
+        assert_eq!(original.sample_bits(), None, "heterogeneous widths have no single sample width");
+        let shared = original.shared();
+        for mut source in [original, shared] {
+            let out = source.read_window(Window::full(2, 1), &WindowOptions { bands: vec![2], ..Default::default() }).unwrap();
+            assert_eq!(out.band_sample_bits(0), Some(12));
+            assert_eq!(out.raster.data.to_f64_vec(), [3000.0, 3001.0]);
+        }
+    }
+
+    #[test]
+    fn complex_components_use_their_owning_band_metadata() {
+        let cfg = wbraster::RasterConfig { cols: 1, rows: 1, bands: 4, data_type: DataType::I16, ..Default::default() };
+        let mut ds = RasterDataset::new(wbraster::Raster::from_data_native(cfg, RasterData::I16(vec![1, 2, 3, 4])).unwrap(), false);
+        ds.complex = true;
+        ds.band_metadata =
+            ["first", "second"].map(|name| crate::BandMetadata { items: vec![("OWNER".into(), name.into())], ..Default::default() }).into();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("complex-metadata.tif");
+        crate::write_raster_dataset(&ds, path.to_str().unwrap(), &Default::default()).unwrap();
+        for mut source in [LazyRaster::from(ds), crate::open_raster_lazy(path.to_str().unwrap()).unwrap()] {
+            let shared = source.shared();
+            for handle in [&source, &shared] {
+                for (band, owner) in ["first", "first", "second", "second"].iter().enumerate() {
+                    assert_eq!(handle.band_metadata_item(band + 1, "OWNER", ""), Some((*owner).into()));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rpc_metadata_uses_a_local_sidecar_without_an_embedded_tag() {
+        let cfg = wbraster::RasterConfig { cols: 1, rows: 1, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let ds = RasterDataset::new(wbraster::Raster::from_data_native(cfg, RasterData::U8(vec![1])).unwrap(), false);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sidecar.tif");
+        crate::write_raster_dataset(&ds, path.to_str().unwrap(), &Default::default()).unwrap();
+        let mut text = "LINE_OFF: 50\nSAMP_OFF: 50\nLAT_OFF: 45\nLONG_OFF: 10\nHEIGHT_OFF: 123\n".to_string();
+        for name in ["LINE_NUM_COEFF", "LINE_DEN_COEFF", "SAMP_NUM_COEFF", "SAMP_DEN_COEFF"] {
+            for index in 1..=20 {
+                text.push_str(&format!("{name}_{index}: {}\n", u8::from(index == 1)));
+            }
+        }
+        std::fs::write(dir.path().join("sidecar_RPC.TXT"), text).unwrap();
+        let mut source = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        let shared = source.shared();
+        for handle in [&source, &shared] {
+            assert_eq!(handle.metadata_item("HEIGHT_OFF", "RPC"), Some("123".into()));
+        }
+        for option in ["TERRIO_DISABLE_READDIR_ON_OPEN", "GDAL_DISABLE_READDIR_ON_OPEN"] {
+            crate::config::push_scope(std::collections::HashMap::from([(option.into(), Some("EMPTY_DIR".into()))]));
+            for handle in [&source, &shared] {
+                assert_eq!(handle.metadata_item("HEIGHT_OFF", "RPC"), None);
+            }
+            crate::config::pop_scope();
+        }
+    }
+
+    #[test]
+    fn compression_metadata_distinguishes_ycbcr_jpeg() {
+        let cfg = wbraster::RasterConfig { cols: 16, rows: 16, bands: 3, data_type: DataType::U8, ..Default::default() };
+        let ds = RasterDataset::new(wbraster::Raster::from_data_native(cfg, RasterData::U8(vec![100; 16 * 16 * 3])).unwrap(), false);
+        let dir = tempfile::tempdir().unwrap();
+        for (photometric, expected) in [("RGB", "JPEG"), ("YCBCR", "YCbCr JPEG")] {
+            let path = dir.path().join(format!("{photometric}.tif"));
+            let options = crate::RasterWriteOptions {
+                compression: Some("JPEG".into()),
+                creation_options: vec![("PHOTOMETRIC".into(), photometric.into())],
+                ..Default::default()
+            };
+            crate::write_raster_dataset(&ds, path.to_str().unwrap(), &options).unwrap();
+            let source = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+            assert_eq!(source.metadata_item("COMPRESSION", "IMAGE_STRUCTURE"), Some(expected.into()));
+        }
     }
 
     /// One shared NBITS rule for reading and writing: only the unsigned Byte/UInt16/UInt32

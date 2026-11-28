@@ -74,7 +74,7 @@ pub struct RasterDataset {
 pub type MetadataDomain = (Option<usize>, String, Vec<(String, String)>);
 
 /// Whether samples of `data_type` can be stored packed narrower than the type and report `NBITS`
-/// (GDAL 3.13.3): the unsigned Byte, UInt16 and UInt32 containers — the ones the GeoTIFF writer's
+/// (GDAL 3.13.3): the unsigned Byte, UInt16 and UInt32 containers, the ones the GeoTIFF writer's
 /// `NBITS` supports too, so reading and writing agree (a UInt64 container never reports NBITS).
 pub(crate) fn nbits_capable(data_type: wbraster::DataType) -> bool {
     matches!(data_type, wbraster::DataType::U8 | wbraster::DataType::U16 | wbraster::DataType::U32)
