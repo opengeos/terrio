@@ -380,6 +380,11 @@ pub(crate) trait WindowSource: Send + Sync {
     fn read_resampled(&mut self, _options: &crate::ResampledReadOptions) -> Result<Option<RasterData>> {
         Ok(None)
     }
+    /// Forwards a read in the caller's working type when supported. Unsupported typed reads
+    /// use the generic kernel path rather than rounding to the source's native type first.
+    fn read_resampled_as(&mut self, options: &crate::ResampledReadOptions, working_type: Option<DataType>) -> Result<Option<RasterData>> {
+        if working_type.is_some() { Ok(None) } else { self.read_resampled(options) }
+    }
     /// Reads the pixels at columns `cols` of rows `rows` of a level (see
     /// [`LazyRaster::read_sampled`]), when the source reads them from the blocks that hold them
     /// alone; `None` for a source that would read the window spanning them.
@@ -440,6 +445,9 @@ impl WindowSource for SharedRaster {
     }
     fn read_resampled(&mut self, options: &crate::ResampledReadOptions) -> Result<Option<RasterData>> {
         self.lock()?.source_read_resampled(options)
+    }
+    fn read_resampled_as(&mut self, options: &crate::ResampledReadOptions, working_type: Option<DataType>) -> Result<Option<RasterData>> {
+        self.lock()?.source_read_resampled_as(options, working_type)
     }
     fn alpha_band(&self) -> Option<usize> {
         self.alpha
@@ -2347,8 +2355,17 @@ impl LazyRaster {
 
     /// [`WindowSource::read_resampled`] of a raster another driver reads; `None` for others.
     pub(crate) fn source_read_resampled(&mut self, options: &crate::ResampledReadOptions) -> Result<Option<RasterData>> {
+        self.source_read_resampled_as(options, None)
+    }
+
+    /// Forwards the caller's kernel working type through virtual and shared sources.
+    pub(crate) fn source_read_resampled_as(
+        &mut self,
+        options: &crate::ResampledReadOptions,
+        working_type: Option<DataType>,
+    ) -> Result<Option<RasterData>> {
         match &mut self.inner {
-            Inner::Source(_, source) => source.read_resampled(options),
+            Inner::Source(_, source) => source.read_resampled_as(options, working_type),
             _ => Ok(None),
         }
     }

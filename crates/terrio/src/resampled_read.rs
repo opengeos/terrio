@@ -591,7 +591,7 @@ impl LazyRaster {
             if vrt && read.resampling != Resampling::Nearest {
                 // A VRT decides whether to forward the read to its sources for each band.
                 if read.bands.len() == 1 {
-                    if let Some(data) = self.source_read_resampled(&options)? {
+                    if let Some(data) = self.source_read_resampled_as(&options, read.working_type)? {
                         return Ok(data);
                     }
                 } else {
@@ -599,7 +599,7 @@ impl LazyRaster {
                     for &band in &read.bands {
                         options.bands.clear();
                         options.bands.push(band);
-                        forwarded.push(self.source_read_resampled(&options)?);
+                        forwarded.push(self.source_read_resampled_as(&options, read.working_type)?);
                     }
                     if forwarded.iter().any(Option::is_some) {
                         let mut parts = Vec::with_capacity(read.bands.len());
@@ -620,7 +620,7 @@ impl LazyRaster {
                         return Ok(concat(parts));
                     }
                 }
-            } else if !vrt && let Some(data) = self.source_read_resampled(&options)? {
+            } else if !vrt && let Some(data) = self.source_read_resampled_as(&options, read.working_type)? {
                 return Ok(data);
             }
         }

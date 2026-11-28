@@ -1417,6 +1417,10 @@ impl WindowSource for Reader {
     }
 
     fn read_resampled(&mut self, options: &ResampledReadOptions) -> Result<Option<RasterData>> {
+        self.read_resampled_as(options, None)
+    }
+
+    fn read_resampled_as(&mut self, options: &ResampledReadOptions, working_type: Option<DataType>) -> Result<Option<RasterData>> {
         let (Some(request), &[band]) = (options.window, options.bands.as_slice()) else { return Ok(None) };
         let description = self.description.clone();
         if description.warped || options.resampling == Resampling::Nearest {
@@ -1427,7 +1431,7 @@ impl WindowSource for Reader {
             return Ok(None);
         }
         let _depth = ReadDepth::enter()?;
-        self.read_resampled_band(&description.layout.bands[band - 1], element, request, options)
+        self.read_resampled_band(&description.layout.bands[band - 1], element, request, options, working_type)
     }
 }
 
@@ -1472,6 +1476,29 @@ fn valid_source_rect(rect: [f64; 4]) -> bool {
     rect.iter().all(|v| v.is_finite()) && rect[2] > 0. && rect[3] > 0.
 }
 
+/// Whether a conversion loses range or precision (GDAL 3.13.2 source-buffer policy).
+fn conversion_lossy(source: DataType, destination: DataType) -> bool {
+    if source == destination {
+        return false;
+    }
+    match destination {
+        DataType::F64 => matches!(source, DataType::I64 | DataType::U64),
+        DataType::F32 => !matches!(source, DataType::U8 | DataType::I8 | DataType::U16 | DataType::I16 | DataType::F32),
+        _ if !crate::ops::is_integer(source) => true,
+        _ => {
+            let (lo, hi) = crate::ops::type_range(source);
+            let (dest_lo, dest_hi) = crate::ops::type_range(destination);
+            lo < dest_lo || hi > dest_hi
+        }
+    }
+}
+
+/// SimpleSource preserves fractional working samples but clamps a lossy declared band range.
+fn clamp_band_range(value: f64, band_type: DataType) -> f64 {
+    let (lo, hi) = if band_type == DataType::F32 { (-f64::from(f32::MAX), f64::from(f32::MAX)) } else { crate::ops::type_range(band_type) };
+    value.clamp(lo, hi)
+}
+
 fn source_transform(src: &VrtSource, v: f64, source_type: DataType, output_type: DataType) -> f64 {
     let value = if let Some((offset, ratio)) = src.scale {
         let value = v * ratio + offset;
@@ -1504,7 +1531,9 @@ impl Reader {
         element: &xml::Element,
         request: (f64, f64, f64, f64),
         options: &ResampledReadOptions,
+        working_type: Option<DataType>,
     ) -> Result<Option<RasterData>> {
+        let output_type = working_type.unwrap_or(band.data_type);
         let elements = element.children.iter().filter(|e| is_source_element(e));
         let (x, y, w, h) = request;
         let (bw, bh) = options.size;
@@ -1566,7 +1595,7 @@ impl Reader {
         }
 
         let n = fallible::len(&[bw, bh], "a resampled VRT band")?;
-        let mut out = crate::resampled_read::filled_bands(band.data_type, n, &[band.nodata])?;
+        let mut out = crate::resampled_read::filled_bands(output_type, n, &[band.nodata])?;
         for (src, xml, window, resampling) in jobs {
             let source = self.source(&src.filename, src.relative_to_vrt)?;
             let read = ResampledReadOptions {
@@ -1584,18 +1613,37 @@ impl Reader {
             let nodata = src.nodata.filter(|_| src.complex);
             let nodata = if use_mask && !source.has_mask() { source.band_nodata(src.band).or(nodata) } else { nodata };
             let source_type = if mask_band { DataType::U8 } else { source.band_data_type(src.band) };
-            let working_type = match (source_type, band.data_type) {
-                (DataType::F32 | DataType::F64, _) => None,
-                (_, DataType::F32 | DataType::F64) => Some(band.data_type),
-                _ if src.complex && (src.scale.is_some() || src.lut.is_some()) => {
-                    Some(if super::is_float_working(source_type) || super::is_float_working(band.data_type) {
-                        DataType::F64
-                    } else {
-                        DataType::F32
-                    })
+            let typed = output_type != band.data_type;
+            let nodata_only = src.complex
+                && src.nodata.is_some()
+                && !uses_source_mask(xml)
+                && ["ScaleOffset", "ScaleRatio", "LUT"].iter().all(|tag| xml.child(tag).is_none());
+            let typed_nodata = nodata_only
+                && source_type != output_type
+                && matches!(output_type, DataType::F32 | DataType::F64)
+                && crate::ops::common_type([source_type, output_type]) == output_type;
+            let generic_complex = typed && src.complex && !typed_nodata;
+            let working_type = if generic_complex {
+                Some(if super::is_float_working(source_type) || super::is_float_working(band.data_type) {
+                    DataType::F64
+                } else {
+                    DataType::F32
+                })
+            } else {
+                match (source_type, output_type) {
+                    (DataType::F32 | DataType::F64, _) => None,
+                    (_, DataType::F32 | DataType::F64) => Some(output_type),
+                    _ if src.complex && (src.scale.is_some() || src.lut.is_some()) => {
+                        Some(if super::is_float_working(source_type) || super::is_float_working(output_type) {
+                            DataType::F64
+                        } else {
+                            DataType::F32
+                        })
+                    }
+                    _ => None,
                 }
-                _ => None,
-            };
+            }
+            .filter(|&dtype| dtype != source_type);
             let data = if mask_band {
                 RasterData::U8(source.read_resampled_masks_in(&read, WindowSampling::Fractional, Some(integer))?)
             } else {
@@ -1613,8 +1661,15 @@ impl Reader {
                     for (col, dst) in line.iter_mut().enumerate() {
                         let value = samples.get(row * ow + col);
                         if nodata.is_none_or(|nd| !crate::ops::is_nodata(value, nd)) && mask.as_ref().is_none_or(|m| m[row * ow + col] != 0) {
-                            let value = source_transform(src, value, working_type.unwrap_or(source_type), band.data_type);
-                            *dst = crate::ops::convert_value(value, band.data_type) as _;
+                            let work_type = working_type.unwrap_or(source_type);
+                            let transform_type = if generic_complex { band.data_type } else { output_type };
+                            let mut value = source_transform(src, value, work_type, transform_type);
+                            if generic_complex && conversion_lossy(work_type, band.data_type) && !conversion_lossy(band.data_type, output_type) {
+                                value = crate::ops::convert_value(value, band.data_type);
+                            } else if typed && !generic_complex && conversion_lossy(if typed_nodata { work_type } else { source_type }, band.data_type) {
+                                value = clamp_band_range(value, band.data_type);
+                            }
+                            *dst = crate::ops::convert_value(value, output_type) as _;
                         }
                     }
                 }
@@ -2931,6 +2986,99 @@ mod tests {
                 .unwrap();
             let opts = ResampledReadOptions { size: (2, 1), resampling: Resampling::Average, ..Default::default() };
             assert_eq!(vrt.read_resampled(&opts).unwrap().raster.data.to_f64_vec(), expected);
+        }
+    }
+
+    /// Reference: GDAL 3.13.2 forwards the requested floating buffer type through nested VRTs.
+    #[test]
+    fn resampled_nested_vrt_preserves_fractional_working_samples() {
+        let grid = Grid { width: 4, height: 2, geo_transform: [0., 1., 0., 2., 0., -1.] };
+        let raster = crate::ops::build_raster(
+            grid,
+            vec![vec![0., 1., 2., 3., 0., 1., 2., 3.]],
+            DataType::I16,
+            None,
+            &Default::default(),
+            crate::ops::convert_value,
+        )
+        .unwrap();
+        let options = ResampledReadOptions { size: (2, 1), resampling: Resampling::Average, ..Default::default() };
+        for shared in [false, true] {
+            for (name, dtype) in [("Float32", DataType::F32), ("Float64", DataType::F64)] {
+                let xml = format!(
+                    "<VRTDataset rasterXSize=\"4\" rasterYSize=\"2\"><VRTRasterBand dataType=\"Int16\">{}</VRTRasterBand></VRTDataset>",
+                    source("SimpleSource", "")
+                );
+                let mut inner = VirtualRaster::from_xml(&xml)
+                    .unwrap()
+                    .into_lazy(Path::new(""), HashMap::from([("source.tif".into(), LazyRaster::from(raster.clone()))]))
+                    .unwrap();
+                assert_eq!(inner.read_resampled(&options).unwrap().raster.data.to_f64_vec(), [1., 3.]);
+                let inner = if shared { inner.shared() } else { inner };
+                let xml = format!(
+                    "<VRTDataset rasterXSize=\"4\" rasterYSize=\"2\"><VRTRasterBand dataType=\"{name}\">{}</VRTRasterBand></VRTDataset>",
+                    source("SimpleSource", "").replace("source.tif", "inner.vrt")
+                );
+                let mut outer =
+                    VirtualRaster::from_xml(&xml).unwrap().into_lazy(Path::new(""), HashMap::from([("inner.vrt".into(), inner)])).unwrap();
+                let result = outer.read_resampled(&options).unwrap();
+                assert_eq!(result.raster.data.data_type(), dtype);
+                assert_eq!(result.raster.data.to_f64_vec(), [0.5, 2.5], "{name}, shared={shared}");
+            }
+        }
+    }
+
+    /// Reference: GDAL 3.13.2 retains declared-band range and ComplexSource conversions when
+    /// an outer VRT requests floating samples from an inner band.
+    #[test]
+    fn resampled_nested_vrt_retains_declared_band_conversions() {
+        let grid = Grid { width: 4, height: 2, geo_transform: [0., 1., 0., 2., 0., -1.] };
+        for (source_type, inner_type, outer_type, tag, extra, row, expected) in [
+            (DataType::I32, "Int16", "Float32", "SimpleSource", "", [40000.; 4], [32767.; 2]),
+            (DataType::I16, "Int16", "Float32", "ComplexSource", "<ScaleRatio>3</ScaleRatio>", [0., 1., 2., 3.], [2., 8.]),
+            (DataType::I16, "Int16", "Float32", "ComplexSource", "<NODATA>-99</NODATA>", [0., 1., 2., 3.], [0.5, 2.5]),
+            (
+                DataType::I16,
+                "Int16",
+                "Float32",
+                "ComplexSource",
+                "<NODATA>-99</NODATA><ScaleOffset>0</ScaleOffset>",
+                [0., 1., 2., 3.],
+                [1., 3.],
+            ),
+            (
+                DataType::I16,
+                "Int16",
+                "Float32",
+                "ComplexSource",
+                "<NODATA>-99</NODATA><ScaleRatio>1</ScaleRatio>",
+                [0., 1., 2., 3.],
+                [1., 3.],
+            ),
+            (DataType::I16, "Int16", "Float32", "ComplexSource", "<UseMaskBand>true</UseMaskBand>", [0., 1., 2., 3.], [1., 3.]),
+            (DataType::I16, "Int16", "Float32", "ComplexSource", "", [0., 1., 2., 3.], [1., 3.]),
+            (DataType::I32, "Float32", "Float64", "SimpleSource", "", [16777217.; 4], [16777217.; 2]),
+            (DataType::I32, "Float32", "Float64", "ComplexSource", "", [16777217.; 4], [16777216.; 2]),
+        ] {
+            let raster =
+                crate::ops::build_raster(grid, vec![row.repeat(2)], source_type, None, &Default::default(), crate::ops::convert_value)
+                    .unwrap();
+            let xml = format!(
+                "<VRTDataset rasterXSize=\"4\" rasterYSize=\"2\"><VRTRasterBand dataType=\"{inner_type}\">{}</VRTRasterBand></VRTDataset>",
+                source(tag, extra)
+            );
+            let inner = VirtualRaster::from_xml(&xml)
+                .unwrap()
+                .into_lazy(Path::new(""), HashMap::from([("source.tif".into(), LazyRaster::from(raster))]))
+                .unwrap();
+            let xml = format!(
+                "<VRTDataset rasterXSize=\"4\" rasterYSize=\"2\"><VRTRasterBand dataType=\"{outer_type}\">{}</VRTRasterBand></VRTDataset>",
+                source("SimpleSource", "").replace("source.tif", "inner.vrt")
+            );
+            let mut outer =
+                VirtualRaster::from_xml(&xml).unwrap().into_lazy(Path::new(""), HashMap::from([("inner.vrt".into(), inner)])).unwrap();
+            let options = ResampledReadOptions { size: (2, 1), resampling: Resampling::Average, ..Default::default() };
+            assert_eq!(outer.read_resampled(&options).unwrap().raster.data.to_f64_vec(), expected, "{tag}, {extra}, {inner_type}");
         }
     }
 
