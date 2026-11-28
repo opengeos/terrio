@@ -234,11 +234,13 @@ pub(crate) fn read_world_file(path: &Path) -> Option<[f64; 6]> {
     if crate::config::sidecars_disabled() {
         return None;
     }
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    let (first, last) = (ext.chars().next()?, ext.chars().last()?);
-    let short = format!("{first}{last}w");
-    let long = format!("{ext}w");
-    let text = ["wld", short.as_str(), long.as_str()].iter().find_map(|e| std::fs::read_to_string(common::sibling(path, e)).ok())?;
+    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    let mut candidates = vec!["wld".to_string()];
+    if let (Some(first), Some(last)) = (ext.chars().next(), ext.chars().last()) {
+        candidates.push(format!("{first}{last}w"));
+        candidates.push(format!("{ext}w"));
+    }
+    let text = candidates.iter().find_map(|e| std::fs::read_to_string(common::sibling(path, e)).ok())?;
     let v: Vec<f64> = text.split_whitespace().filter_map(|s| s.parse().ok()).collect();
     if v.len() < 6 {
         return None;
@@ -665,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn read_world_file_handles_non_ascii_extension() {
+    fn read_world_file_handles_non_ascii_and_empty_extensions() {
         let dir = tempfile::tempdir().unwrap();
         let img = dir.path().join("map.é");
         std::fs::write(&img, b"").unwrap();
@@ -673,5 +675,10 @@ mod tests {
         let img2 = dir.path().join("map.图");
         std::fs::write(&img2, b"").unwrap();
         assert_eq!(read_world_file(&img2), None);
+        // Empty extension still resolves a sibling `.wld` file.
+        let empty_ext = dir.path().join("emptyext.");
+        std::fs::write(&empty_ext, b"").unwrap();
+        std::fs::write(dir.path().join("emptyext.wld"), "1.0\n0.0\n0.0\n-1.0\n10.5\n20.5\n").unwrap();
+        assert_eq!(read_world_file(&empty_ext), Some([10.0, 1.0, 0.0, 21.0, 0.0, -1.0]));
     }
 }

@@ -1086,19 +1086,32 @@ impl Evaluator<'_> {
                                 return x.round_ties_even();
                             }
                             let abs = decimals.unsigned_abs();
-                            if abs > 308 {
-                                return if decimals > 0 { x } else { 0.0_f64.copysign(x) };
+                            if decimals > 0 {
+                                if abs > 325 {
+                                    return x;
+                                }
+                                if abs > 308 {
+                                    let f1 = 1e300;
+                                    let f2 = 10f64.powi((abs - 300) as i32);
+                                    let y = (x * f1) * f2;
+                                    if !y.is_finite() {
+                                        return x;
+                                    }
+                                    return (y.round_ties_even() / f2) / f1;
+                                }
+                                let f = 10f64.powi(abs as i32);
+                                let y = x * f;
+                                if !y.is_finite() {
+                                    return x;
+                                }
+                                y.round_ties_even() / f
+                            } else {
+                                if abs > 308 {
+                                    return 0.0_f64.copysign(x);
+                                }
+                                let f = 10f64.powi(abs as i32);
+                                (x / f).round_ties_even() * f
                             }
-                            let f = round_float(10f64.powi(abs as i32), dt);
-                            if !f.is_finite() {
-                                return if decimals > 0 { x } else { 0.0_f64.copysign(x) };
-                            }
-                            let y = if decimals > 0 { round_float(x * f, dt) } else { round_float(x / f, dt) };
-                            if !y.is_finite() {
-                                return x;
-                            }
-                            let y = y.round_ties_even();
-                            if decimals > 0 { y / f } else { y * f }
                         };
                         Arr { dt, data: Data::F(v.iter().map(|x| round_float(r(*x), dt)).collect()) }
                     }
@@ -1115,7 +1128,8 @@ impl Evaluator<'_> {
                                     let r = x.rem_euclid(p);
                                     let half = p / 2;
                                     let round_up = r > half || (r == half && q.rem_euclid(2) != 0);
-                                    let scaled = q.checked_add(i128::from(round_up)).and_then(|v| v.checked_mul(p)).ok_or_else(int_overflow)?;
+                                    let scaled =
+                                        q.checked_add(i128::from(round_up)).and_then(|v| v.checked_mul(p)).ok_or_else(int_overflow)?;
                                     Ok(wrap(scaled, a.dt))
                                 })
                                 .collect::<Result<Vec<_>>>()?
@@ -1420,6 +1434,12 @@ mod tests {
         check("round(A, 3000000000)", &f64a, &f64a, DType::F64, &[1.5, -2.5]);
         check("round(A, 40)", &f32a, &f32a, DType::F32, &[1.5, -2.5]);
         check("round(A, -40)", &f32a, &f32a, DType::F32, &[0.0, 0.0]);
+        // Small-magnitude f64 at 309 decimals and coarse F16 rounding above midpoint.
+        let tiny = arr(DType::F64, &[1.25e-309]);
+        let Val::Arr(res) = eval("round(A, 309)", &tiny, &tiny).unwrap() else { panic!() };
+        assert!((res.floats()[0] - 1.0e-309).abs() <= 1e-320, "got {}", res.floats()[0]);
+        let f16a = arr(DType::F16, &[40_000.0, 60_000.0]);
+        check("round(A, -5)", &f16a, &f16a, DType::F16, &[0.0, f64::INFINITY]);
         // Integer negative decimals use ties-to-even, matching NumPy and float round().
         check("round(A, -1)", &i32a, &i32a, DType::I32, &[0.0, 20.0, 20.0, 40.0, 0.0, -20.0, -20.0]);
     }

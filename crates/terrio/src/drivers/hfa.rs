@@ -319,15 +319,11 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
         let mut at = m.data as usize;
         let name_len = f.u32(at)? as usize;
         at = at.checked_add(8).and_then(|x| x.checked_add(name_len)).ok_or_else(|| bad("truncated"))?;
-        let (ulx, uly) = (
-            f.f64(at.checked_add(8).ok_or_else(|| bad("truncated"))?)?,
-            f.f64(at.checked_add(16).ok_or_else(|| bad("truncated"))?)?,
-        );
+        let (ulx, uly) =
+            (f.f64(at.checked_add(8).ok_or_else(|| bad("truncated"))?)?, f.f64(at.checked_add(16).ok_or_else(|| bad("truncated"))?)?);
         at = at.checked_add(48).ok_or_else(|| bad("truncated"))?;
-        let (pw, ph) = (
-            f.f64(at.checked_add(8).ok_or_else(|| bad("truncated"))?)?,
-            f.f64(at.checked_add(16).ok_or_else(|| bad("truncated"))?)?,
-        );
+        let (pw, ph) =
+            (f.f64(at.checked_add(8).ok_or_else(|| bad("truncated"))?)?, f.f64(at.checked_add(16).ok_or_else(|| bad("truncated"))?)?);
         gt = [ulx - pw / 2.0, pw, 0.0, uly + ph / 2.0, 0.0, -ph];
     }
     let data = RasterData::from_f64_vec(data_type, values);

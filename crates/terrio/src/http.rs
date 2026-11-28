@@ -1631,8 +1631,7 @@ fn transient(e: &ureq::Error) -> bool {
 fn resolve_redirect(from: &str, location: &str) -> String {
     let has_scheme = location.split_once("://").is_some_and(|(s, _)| {
         let mut bytes = s.bytes();
-        bytes.next().is_some_and(|b| b.is_ascii_alphabetic())
-            && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+        bytes.next().is_some_and(|b| b.is_ascii_alphabetic()) && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
     });
     if has_scheme {
         return location.to_string();
@@ -1644,6 +1643,9 @@ fn resolve_redirect(from: &str, location: &str) -> String {
     let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     if location.starts_with('/') {
         format!("{scheme}://{host}{location}")
+    } else if location.starts_with('?') {
+        let path = from.split(['?', '#']).next().unwrap_or(from);
+        format!("{path}{location}")
     } else {
         let base = from.split(['?', '#']).next().unwrap_or(from);
         format!("{}/{location}", base.rsplit_once('/').map_or(base, |(b, _)| b))
@@ -7278,10 +7280,7 @@ mod tests {
 
     #[test]
     fn resolve_redirect_handles_protocol_relative_and_query_scheme() {
-        assert_eq!(
-            resolve_redirect("https://origin.example/a/b", "//cdn.example/tile.tif"),
-            "https://cdn.example/tile.tif"
-        );
+        assert_eq!(resolve_redirect("https://origin.example/a/b", "//cdn.example/tile.tif"), "https://cdn.example/tile.tif");
         assert_eq!(
             resolve_redirect("https://origin.example/a/b", "/download?next=https://other.example/x"),
             "https://origin.example/download?next=https://other.example/x"
@@ -7291,8 +7290,9 @@ mod tests {
             "https://origin.example/a/next?url=https://other.example/x"
         );
         assert_eq!(
-            resolve_redirect("https://origin.example/a/b", "https://cdn.example/c"),
-            "https://cdn.example/c"
+            resolve_redirect("https://origin.example/a/b", "?next=https://other.example/x"),
+            "https://origin.example/a/b?next=https://other.example/x"
         );
+        assert_eq!(resolve_redirect("https://origin.example/a/b", "https://cdn.example/c"), "https://cdn.example/c");
     }
 }

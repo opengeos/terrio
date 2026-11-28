@@ -263,11 +263,19 @@ fn rasterize_new(layers: &[Layer], options: &RasterizeOptions) -> Result<RasterD
     Ok(RasterDataset::new(raster, true))
 }
 
+fn validate_grid_dimensions(grid: &Grid) -> Result<()> {
+    if i32::try_from(grid.cols).is_err() || i32::try_from(grid.rows).is_err() {
+        return Err(Error::InvalidArgument("the output grid dimensions exceed the rasterizer limit".into()));
+    }
+    Ok(())
+}
+
 /// Burns the layers' geometries into band buffers of type `T` (the output data type `dtype`),
 /// band-major.
 fn burn<T: Pixel>(layers: &[Layer], options: &RasterizeOptions, grid: &Grid, bands: usize, dtype: DataType) -> Result<Vec<T>> {
+    validate_grid_dimensions(grid)?;
     let n = crate::dataset::fallible::len(&[grid.cols, grid.rows], "the rasterized output")?;
-    let _ = crate::dataset::fallible::len(&[n, bands], "the rasterized output")?;
+    crate::dataset::fallible::len(&[n, bands], "the rasterized output")?;
     let mut bufs: Vec<Vec<T>> = (0..bands)
         .map(|b| {
             let init = options.init.get(b).or(options.init.last()).copied().or(options.nodata).unwrap_or(0.0);
@@ -280,9 +288,7 @@ fn burn<T: Pixel>(layers: &[Layer], options: &RasterizeOptions, grid: &Grid, ban
 
 fn burn_into<T: Pixel>(layers: &[Layer], options: &RasterizeOptions, grid: &Grid, dtype: DataType, bufs: &mut [Vec<T>]) -> Result<()> {
     let bands = bufs.len();
-    if i32::try_from(grid.cols).is_err() || i32::try_from(grid.rows).is_err() {
-        return Err(Error::InvalidArgument("the output grid dimensions exceed the rasterizer limit".into()));
-    }
+    validate_grid_dimensions(grid)?;
     let [g0, g1, g2, g3, g4, g5] = grid.geo_transform;
     if g2 != 0.0 || g4 != 0.0 {
         return Err(Error::Unsupported("rotated grids are not supported".into()));
@@ -958,7 +964,7 @@ fn image_line_all_touched<T: Pixel>(b: &mut Burner<T>, nx: i32, ny: i32, p: &Par
 }
 
 /// Clips a left-to-right sloped segment to the raster bounds `[0, nxf] x [0, nyf]`,
-/// matching GDAL's `GDALdllImageLineAllTouched`.
+/// matching GDAL 3.13.3's `GDALdllImageLineAllTouched`.
 fn clip_all_touched_segment(mut x: f64, mut y: f64, mut x_end: f64, mut y_end: f64, nxf: f64, nyf: f64, slope: f64) -> (f64, f64, f64) {
     if x_end > nxf {
         y_end -= (x_end - nxf) * slope;
@@ -974,7 +980,7 @@ fn clip_all_touched_segment(mut x: f64, mut y: f64, mut x_end: f64, mut y_end: f
             y = 0.0;
         }
         if y_end >= nyf {
-            x_end -= (y_end - nyf) / slope;
+            x_end = x + (nyf - y) / slope;
             if x_end > nxf {
                 x_end = nxf;
             }
@@ -1333,6 +1339,10 @@ mod tests {
         let (x, y, x_end) = clip_all_touched_segment(0.0, 0.0, 5.0, 50.0, 10.0, 10.0, 10.0);
         assert_eq!((x, y), (0.0, 0.0));
         assert!((x_end - 1.0).abs() < 1e-12, "expected x_end=1.0, got {x_end}");
+        // Short visible interval near bottom edge stays positive even with huge y_end.
+        let slope = (2_000_000_000.0 - 9.999999999) / 1.0;
+        let (x, _, x_end) = clip_all_touched_segment(0.0, 9.999999999, 1.0, 2_000_000_000.0, 10.0, 10.0, slope);
+        assert!(x_end > x, "expected positive clipped interval, got x={x}, x_end={x_end}");
 
         // End-to-end rasterization of a steep line exiting y >= ny on a 10 x 10 grid.
         // Pixel coords for grid(10, 10): x_px = x, y_px = 10 - y.
