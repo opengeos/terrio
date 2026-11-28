@@ -306,8 +306,10 @@ impl FormatReader for E57File {
         let (cr, ca, ce) = (col("spherical_range"), col("spherical_azimuth"), col("spherical_elevation"));
         let mut row = vec![0.0; self.dims.len()];
         let raw = self.reader.pointcloud_raw(&scan).map_err(|e| Error::InvalidData(format!("E57: {e}")))?;
+        let mut read = 0_u64;
         for values in raw {
             let values = values.map_err(|e| Error::InvalidData(format!("E57: {e}")))?;
+            read += 1;
             row.iter_mut().for_each(|v| *v = 0.0);
             for ((v, r), target) in values.iter().zip(&scan.prototype).zip(&plan.targets) {
                 if let Some((k, factor)) = target {
@@ -357,7 +359,6 @@ impl FormatReader for E57File {
                 Dimension::new(name, values)
             })
             .collect();
-        let read = dims.first().map_or(0, |d| d.values.len()) as u64;
         let first = c.done;
         c.done += read;
         c.scan += 1;
@@ -571,6 +572,26 @@ impl Drop for E57StreamWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scan_cursor_counts_records_without_selected_dimensions() {
+        let cloud = PointCloud::new(
+            vec![
+                Dimension::new("x", Values::F64(vec![1.0, 2.0])),
+                Dimension::new("y", Values::F64(vec![3.0, 4.0])),
+                Dimension::new("z", Values::F64(vec![5.0, 6.0])),
+            ],
+            crate::crs::SpatialRef::default(),
+        );
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        write_e57(&cloud, &mut bytes, &PointWriteOptions::default()).unwrap();
+        let mut file = E57File::new(Source::Memory(std::io::Cursor::new(bytes.into_inner())), None).unwrap();
+        // A scan containing only unrecognized fields has no output columns, but still has rows.
+        file.dims.clear();
+        file.start(&PointReadOptions::default(), 1024).unwrap();
+        assert!(file.next_chunk().unwrap().unwrap().is_empty());
+        assert_eq!(file.cursor.as_ref().unwrap().done, 2);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

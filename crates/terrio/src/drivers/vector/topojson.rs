@@ -28,6 +28,25 @@ pub fn read(path: &str) -> Result<Vec<Layer>> {
 /// Maximum bytes of emitted coordinates per TopoJSON parse (a fixed cap, independent of host memory).
 const MAX_COORD_BYTES: usize = 256 * 1024 * 1024;
 
+#[cfg(test)]
+#[test]
+fn atlas_fixtures_remain_below_the_expansion_limit() {
+    let Ok(dir) = std::env::var("TERRIO_TEST_DATA") else { return };
+    for (name, features) in [("world-110m.topojson", 178), ("us-states-10m.topojson", 57)] {
+        let path = std::path::Path::new(&dir).join(name);
+        let layers = read(path.to_str().unwrap()).unwrap();
+        assert_eq!(layers.iter().map(Layer::len).sum::<usize>(), features, "{name}");
+        let coords: usize = layers
+            .iter()
+            .flat_map(|layer| &layer.features)
+            .filter_map(|feature| feature.geometry.as_ref())
+            .map(crate::vector::coord_count)
+            .sum();
+        eprintln!("{name}: {coords} expanded coordinates");
+        assert!(coords > 0 && coords <= MAX_COORD_BYTES / std::mem::size_of::<Coord>());
+    }
+}
+
 struct Topology {
     arcs: Vec<Vec<Coord>>,
     transform: Option<([f64; 2], [f64; 2])>,
