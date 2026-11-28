@@ -132,7 +132,8 @@ def stack(
         use_highest_res: Use the finest resolution of the sources.
         masked: Return a masked array (nodata masked).
         dst_path: A path (or a dataset open for writing) to write to instead of returning the
-            array.
+            array. When an already-open `DatasetWriter` is passed, the caller retains ownership
+            and must close it to flush output.
         dst_kwds: Creation options and profile items for the output file.
 
     Returns:

@@ -162,7 +162,7 @@ def test_rio_setenv_none_unsets_os_environ(monkeypatch):
 
 
 def test_rio_features_rasterize_accepts_linear_ring_north_up():
-    """rio.features.rasterize handles LinearRing on north-up transforms."""
+    """rio.features.rasterize burns LinearRing as a LineString boundary on north-up transforms."""
     ring = {
         "type": "LinearRing",
         "coordinates": [(0.5, 0.5), (3.5, 0.5), (3.5, 3.5), (0.5, 3.5), (0.5, 0.5)],
@@ -174,7 +174,16 @@ def test_rio_features_rasterize_accepts_linear_ring_north_up():
         fill=0,
         dtype="uint8",
     )
-    assert int(out.max()) == 7
+    expected = np.array(
+        [
+            [7, 7, 7, 7],
+            [7, 0, 0, 7],
+            [7, 0, 0, 7],
+            [7, 7, 7, 7],
+        ],
+        dtype=np.uint8,
+    )
+    np.testing.assert_array_equal(out, expected)
 
 
 def test_pyogrio_write_linear_ring_and_multipoint_with_empty_member():
