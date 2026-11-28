@@ -1366,7 +1366,9 @@ impl Def {
             let h = SpatialRef::from_wkt_text(&horizontal);
             let mut d = Self::new(&h)?;
             let vertical = vertical_from_wkt(&vertical).ok_or_else(|| {
-                Error::Crs("invalid vertical CRS in compound definition; declared linear units must be positive and finite".into())
+                Error::Crs(
+                    "invalid or unsupported vertical CRS in compound definition (declared linear units must be positive and finite)".into(),
+                )
             })?;
             d.vertical = Some(Arc::new(vertical));
             return Ok(d);

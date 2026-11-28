@@ -1160,8 +1160,11 @@ fn angular_unit(k: &GeoKeys) -> std::result::Result<Option<(f64, String)>, ()> {
         9106 => ("gon".into(), 0.9),
         9109 => ("microradian".into(), RAD / 1e6),
         USER_DEFINED => {
-            let Some(radians) = k.double(2055) else {
+            if k.key(2055).is_none() {
                 return Ok(None);
+            }
+            let Some(radians) = k.double(2055) else {
+                return Err(());
             };
             if !radians.is_finite() || radians <= 0.0 {
                 return Err(());
@@ -1850,6 +1853,7 @@ mod tests {
     #[test]
     fn angular_unit_rejects_non_finite_user_defined_size() {
         let keys = [1, 1, 0, 2, 2054, 0, 1, USER_DEFINED, 2055, 34736, 1, 0];
+        assert_eq!(angular_unit(&GeoKeys { keys: &keys, doubles: &[], ascii: b"" }), Err(()), "present but unreadable size");
         for bad in [f64::INFINITY, f64::NAN, f64::MAX, 0.0, -1.0] {
             assert_eq!(angular_unit(&GeoKeys { keys: &keys, doubles: &[bad], ascii: b"" }), Err(()), "r={bad}");
         }
