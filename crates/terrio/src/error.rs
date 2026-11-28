@@ -27,8 +27,9 @@ pub enum Error {
     #[error("HTTP: {0}")]
     Http(String),
     /// A TLS protocol failure during an HTTPS request, including certificate verification,
-    /// handshakes and record processing. Hostname problems and TLS configuration errors,
-    /// such as an unreadable CA bundle, are `Error::Http`.
+    /// handshakes and record processing. Missing or malformed URL hosts and TLS configuration
+    /// errors, such as an unreadable CA bundle, are `Error::Http`. A certificate name mismatch
+    /// is a TLS verification failure.
     #[error("TLS: {0}")]
     Tls(String),
     /// The dataset's format is not recognized, or the operation is not supported for it.
