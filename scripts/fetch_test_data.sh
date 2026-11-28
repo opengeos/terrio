@@ -318,8 +318,28 @@ for f in bunnyDouble.e57 bunnyFloat.e57 bunnyInt19.e57 bunnyInt32.e57 tinyCartes
   integer_intensity.e57 scaled_integer_intensity.e57; do
   [ -e "pointcloud/e57/$f" ] || curl -sSfL -o "pointcloud/e57/$f" "$e57rs/$f"
 done
-[ -e pointcloud/waveform/full_waveform_tutorial_data.las ] || curl -sSfL -o pointcloud/waveform/full_waveform_tutorial_data.las \
-  https://nerc-arf-dan.pml.ac.uk/files/full_waveform_tutorial_data.LAS
+waveform_file=pointcloud/waveform/full_waveform_tutorial_data.las
+if [ ! -e "$waveform_file" ]; then
+  # The publisher can return 403. The immutable archive capture preserves the same fixture;
+  # its CDX payload digest is checked before the temporary download becomes visible.
+  if ! curl -sSfL -o "$waveform_file.partial" \
+    https://nerc-arf-dan.pml.ac.uk/files/full_waveform_tutorial_data.LAS; then
+    curl -sSfL -o "$waveform_file.partial" \
+      https://web.archive.org/web/20220709163954id_/https://nerc-arf-dan.pml.ac.uk/files/full_waveform_tutorial_data.LAS
+  fi
+  python - "$waveform_file.partial" <<'PY'
+import hashlib
+import sys
+
+digest = hashlib.sha1()
+with open(sys.argv[1], "rb") as source:
+    while block := source.read(1 << 20):
+        digest.update(block)
+if digest.hexdigest() != "6e9f451162e7e11dd877618a578f4c4de1c87284":
+    raise SystemExit("The waveform fixture does not match the archived payload digest")
+PY
+  mv "$waveform_file.partial" "$waveform_file"
+fi
 
 if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
   [ -e countries.gpkg ] || ogr2ogr -f GPKG countries.gpkg countries.geojson -nln countries
