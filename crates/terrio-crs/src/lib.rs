@@ -2003,6 +2003,7 @@ pub(crate) fn vertical_axis(wkt: &str) -> Option<(f64, bool)> {
         .or_else(|| root.child("LENGTHUNIT"))
         .or_else(|| axis.and_then(|a| a.child("LENGTHUNIT").or_else(|| a.child("UNIT"))));
     let to_meter = match unit {
+        Some(u) if matches!(u.args.get(1), None | Some(wkt1::Arg::Node(_))) => 1.0,
         Some(u) => u.num(1).filter(|v| v.is_finite() && *v > 0.0)?,
         None => 1.0,
     };
@@ -4726,5 +4727,7 @@ mod gdal_proj4_tests {
         assert_eq!(crate::vertical_axis(valid), Some((0.3048, false)));
         let unitless = r#"VERT_CS["bare",VERT_DATUM["d",2005],AXIS["Gravity-related height",UP]]"#;
         assert_eq!(crate::vertical_axis(unitless), Some((1.0, false)));
+        let factorless_unit = r#"VERT_CS["bare",VERT_DATUM["d",2005],UNIT["metre"],AXIS["Gravity-related height",UP]]"#;
+        assert_eq!(crate::vertical_axis(factorless_unit), Some((1.0, false)));
     }
 }

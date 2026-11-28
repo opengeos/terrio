@@ -1846,9 +1846,12 @@ mod tests {
     #[test]
     fn angular_unit_rejects_non_finite_user_defined_size() {
         let keys = [1, 1, 0, 2, 2054, 0, 1, USER_DEFINED, 2055, 34736, 1, 0];
-        for bad in [f64::INFINITY, f64::NAN, f64::MAX] {
+        for bad in [f64::INFINITY, f64::NAN, f64::MAX, 0.0, -1.0] {
             assert_eq!(angular_unit(&GeoKeys { keys: &keys, doubles: &[bad], ascii: b"" }), Err(()), "r={bad}");
         }
+        // Missing GeogAngularUnitSizeGeoKey (2055) with USER_DEFINED (32767) is also rejected.
+        let missing_2055 = [1, 1, 0, 1, 2054, 0, 1, USER_DEFINED];
+        assert_eq!(angular_unit(&GeoKeys { keys: &missing_2055, doubles: &[], ascii: b"" }), Err(()));
         // Invalid user-defined angular size must fail user_defined_crs and projection rather than
         // falling back to degrees.
         let geog_keys = [1, 1, 0, 4, 1024, 0, 1, 2, 2050, 0, 1, 6326, 2054, 0, 1, USER_DEFINED, 2055, 34736, 1, 0];
