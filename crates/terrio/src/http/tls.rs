@@ -245,7 +245,8 @@ impl<In: Transport> Connector<In> for AdditionalRootsConnector {
         if !details.needs_tls() || transport.is_tls() {
             return Ok(Some(transport.boxed()));
         }
-        let config = self.0.as_ref().ok_or(ureq::Error::Tls("additional CA configuration is unavailable"))?;
+        let config =
+            self.0.as_ref().ok_or_else(|| ureq::Error::Other(Box::new(io::Error::other("additional CA configuration is unavailable"))))?;
         // A missing or malformed host is a URL problem, not a TLS one: it stays an HTTP-class error.
         let host = details
             .uri

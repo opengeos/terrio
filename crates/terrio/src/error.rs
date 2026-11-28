@@ -27,8 +27,8 @@ pub enum Error {
     #[error("HTTP: {0}")]
     Http(String),
     /// A TLS failure on an HTTPS request: a handshake or certificate verification failure (the
-    /// `ureq::Error::Tls` cases), or the custom TLS configuration being unavailable. Hostname
-    /// problems are URL errors and stay `Error::Http`.
+    /// `ureq::Error::Tls` cases and direct or I/O-wrapped rustls errors). Hostname problems and
+    /// TLS configuration errors, such as an unreadable CA bundle, are `Error::Http`.
     #[error("TLS: {0}")]
     Tls(String),
     /// The dataset's format is not recognized, or the operation is not supported for it.
