@@ -170,10 +170,7 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
         Some((pair("scale")?, pair("translate")?))
     });
     let crs = super::geojson::read_crs_member(doc.get("crs"), "TopoJSON")?;
-    let max_bytes = crate::dataset::fallible::usable_memory()
-        .and_then(|m| usize::try_from(m / 2).ok())
-        .map_or(MAX_COORD_BYTES, |half| MAX_COORD_BYTES.min(half));
-    let max_coords = (max_bytes / std::mem::size_of::<Coord>()).max(1);
+    let max_coords = (MAX_COORD_BYTES / std::mem::size_of::<Coord>()).max(1);
     let mut topo = Topology { arcs: Vec::new(), transform, coords: 0, max_coords };
     // Quantized arcs are delta-encoded.
     for arc in doc["arcs"].as_array().into_iter().flatten() {

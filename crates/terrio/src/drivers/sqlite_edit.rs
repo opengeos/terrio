@@ -1318,6 +1318,9 @@ fn recover_with_sync(file: &mut File, path: &Path, mut sync_directory: impl FnMu
     let journal_path = with_suffix(path, "-journal");
     let Some(journal) = read_journal(path)? else { return Ok(()) };
     let Some((original, page_size, pages)) = journal_pages(&journal) else {
+        if journal.len() >= 28 && journal[..8] == JOURNAL_MAGIC {
+            return Err(bad("invalid SQLite journal header"));
+        }
         // An empty or zeroed journal is not hot.
         let _ = std::fs::remove_file(&journal_path);
         return Ok(());
@@ -2031,6 +2034,12 @@ mod tests {
         recover_with_sync(&mut file, &path, |_| Ok(())).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), original);
         assert!(!journal_path.exists());
+
+        // A journal with valid magic but non-power-of-two page size is refused without deleting it.
+        std::fs::write(&journal_path, make_header(1, 1000)).unwrap();
+        let err = recover_with_sync(&mut file, &path, |_| Ok(())).unwrap_err();
+        assert!(matches!(err, Error::InvalidData(_)), "{err:?}");
+        assert!(journal_path.exists());
 
         // A journal declaring an original size above db_len + 512 MiB is refused before set_len.
         let huge_pages = ((original.len() as u64 + MAX_JOURNAL_REPLAY_BYTES) / u64::from(db_page_size) + 10) as u32;
