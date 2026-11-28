@@ -1601,12 +1601,8 @@ fn decode_chunk(
             _ => runs.push((k, k + 1, w.1)),
         }
     }
-    let run_limit = (MAX_CHUNK_BYTES as u64).max(max_run as u64);
     for &(s, _, to) in &runs {
         let span = to - chosen[s].0;
-        if !allow_big && span > run_limit {
-            return Err(limited(format!("Zarr shard range of {span} bytes exceeds {run_limit} byte limit")));
-        }
         crate::dataset::fallible::check_usable(usize::try_from(span).ok(), || format!("cannot fetch Zarr shard range of {span} bytes"))
             .map_err(limited)?;
     }

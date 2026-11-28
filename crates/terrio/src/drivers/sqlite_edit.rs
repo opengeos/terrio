@@ -1235,6 +1235,9 @@ pub(crate) fn journal_pages(journal: &[u8]) -> Option<JournalPages<'_>> {
     Some((original, page_size, pages))
 }
 
+/// Cap hot-journal image expansion so a small journal cannot claim gigabytes of zero-filled pages.
+const MAX_JOURNAL_REPLAY_BYTES: u64 = 512 << 20;
+
 /// A database file's bytes as they were before a transaction a hot journal says was
 /// interrupted (or is under way), without changing the file: what SQLite readers see.
 pub(crate) fn read_consistent(path: &Path) -> Result<Vec<u8>> {
@@ -1247,9 +1250,7 @@ pub(crate) fn read_consistent(path: &Path) -> Result<Vec<u8>> {
         let orig_bytes = (original as usize)
             .checked_mul(page_size)
             .ok_or_else(|| Error::InvalidData("SQLite journal original size overflows".into()))?;
-        // Cap hot-journal image expansion so a small journal cannot claim gigabytes of zero-filled pages.
-        const MAX_JOURNAL_REPLAY_BYTES: usize = 512 << 20;
-        let max_replay = data.len().max(MAX_JOURNAL_REPLAY_BYTES);
+        let max_replay = data.len().max(usize::try_from(MAX_JOURNAL_REPLAY_BYTES).unwrap_or(usize::MAX));
         if orig_bytes > max_replay {
             return Err(Error::ResourceLimit(format!("SQLite journal declared size {orig_bytes} exceeds {max_replay} byte replay limit")));
         }
@@ -1314,7 +1315,6 @@ fn recover(file: &mut File, path: &Path) -> Result<()> {
 }
 
 fn recover_with_sync(file: &mut File, path: &Path, mut sync_directory: impl FnMut(&Path) -> std::io::Result<()>) -> Result<()> {
-    const MAX_JOURNAL_REPLAY_BYTES: u64 = 512 << 20;
     let journal_path = with_suffix(path, "-journal");
     let Some(journal) = read_journal(path)? else { return Ok(()) };
     let Some((original, page_size, pages)) = journal_pages(&journal) else {
@@ -1323,25 +1323,12 @@ fn recover_with_sync(file: &mut File, path: &Path, mut sync_directory: impl FnMu
         return Ok(());
     };
     let db_len = file.metadata()?.len();
-    if db_len >= 100 {
-        let mut header = [0u8; 100];
-        file.seek(SeekFrom::Start(0))?;
-        file.read_exact(&mut header)?;
-        if header.starts_with(b"SQLite format 3\0") {
-            let db_page_size = match u16::from_be_bytes([header[16], header[17]]) {
-                1 => 65536,
-                p if p >= 512 && p.is_power_of_two() => usize::from(p),
-                _ => return Err(bad("invalid database page size in header")),
-            };
-            if page_size != db_page_size {
-                return Err(bad(format!("journal page size {page_size} does not match database page size {db_page_size}")));
-            }
-        }
-    }
     let orig_bytes = u64::from(original)
         .checked_mul(page_size as u64)
         .ok_or_else(|| Error::InvalidData("SQLite journal original size overflows".into()))?;
-    let max_replay = db_len.max(MAX_JOURNAL_REPLAY_BYTES);
+    // Allow databases of any size to roll back a shrinking transaction by up to
+    // MAX_JOURNAL_REPLAY_BYTES while preventing small files from expanding by gigabytes.
+    let max_replay = db_len.saturating_add(MAX_JOURNAL_REPLAY_BYTES);
     if orig_bytes > max_replay {
         return Err(Error::ResourceLimit(format!("SQLite journal declared size {orig_bytes} exceeds {max_replay} byte replay limit")));
     }
@@ -2024,20 +2011,29 @@ mod tests {
         let path = dir.path().join("recover.db");
         let original = sample(3);
         let db_page_size = u16::from_be_bytes([original[16], original[17]]) as u32;
-        let mismatched = if db_page_size == 4096 { 512 } else { 4096 };
-        std::fs::write(&path, &original).unwrap();
+        let orig_pages = (original.len() / db_page_size as usize) as u32;
 
-        // A journal whose page size differs from the database header is refused before mutation.
+        // A torn page-1 header on disk (corrupted page-size bytes) must still recover from a valid
+        // hot journal containing page 1.
+        let mut torn = original.clone();
+        torn[16..18].copy_from_slice(&512u16.to_be_bytes());
+        std::fs::write(&path, &torn).unwrap();
         let journal_path = with_suffix(&path, "-journal");
-        std::fs::write(&journal_path, make_header(1, mismatched)).unwrap();
+        let mut torn_journal = make_header(orig_pages, db_page_size);
+        torn_journal[8..12].copy_from_slice(&1u32.to_be_bytes());
+        let nonce = 1u32;
+        let page1 = &original[..db_page_size as usize];
+        torn_journal.extend_from_slice(&1u32.to_be_bytes());
+        torn_journal.extend_from_slice(page1);
+        torn_journal.extend_from_slice(&checksum(nonce, page1).to_be_bytes());
+        std::fs::write(&journal_path, &torn_journal).unwrap();
         let mut file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
-        let err = recover_with_sync(&mut file, &path, |_| Ok(())).unwrap_err();
-        assert!(err.to_string().contains("page size"), "{err}");
+        recover_with_sync(&mut file, &path, |_| Ok(())).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), original);
-        assert!(journal_path.exists());
+        assert!(!journal_path.exists());
 
-        // A journal declaring an original size above the 512 MiB replay limit is refused before set_len.
-        let huge_pages = ((512u64 << 20) / u64::from(db_page_size) + 10) as u32;
+        // A journal declaring an original size above db_len + 512 MiB is refused before set_len.
+        let huge_pages = ((original.len() as u64 + MAX_JOURNAL_REPLAY_BYTES) / u64::from(db_page_size) + 10) as u32;
         std::fs::write(&journal_path, make_header(huge_pages, db_page_size)).unwrap();
         let err = recover_with_sync(&mut file, &path, |_| Ok(())).unwrap_err();
         assert!(matches!(err, Error::ResourceLimit(_)), "{err:?}");
