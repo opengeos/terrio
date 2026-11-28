@@ -1019,11 +1019,12 @@ fn open_gpkg(
     }
     let names: Vec<&str> = layers.iter().map(|c| c.name.as_str()).collect();
     let selected = crate::dataset::layer_selection(&options.layers, &names, Some(path), true)?;
+    let json_columns = gpkg_read::JsonColumns::read(&db)?;
     crate::crs::prefetch();
     let mut out = Vec::new();
     for c in layers.iter().zip(selected).filter_map(|(c, keep)| keep.then_some(c)) {
         let db = open()?;
-        let def = gpkg_read::layer_def(&db, c)?;
+        let def = gpkg_read::layer_def(&db, c, &json_columns)?;
         let (root, sql) = db.table_root(&c.name)?;
         let columns = crate::drivers::sqlite::column_types(&sql).len();
         let rowid_col = crate::drivers::sqlite::rowid_column(&sql);

@@ -1083,8 +1083,12 @@ fn declared_schema(d: &crate::drivers::vector::gpkg_read::DeclaredLayer) -> Sche
     let fields = d
         .columns
         .iter()
-        .map(|c| {
-            let (t, width) = declared_type(&c.decl);
+        .zip(d.layer.schema.fields())
+        .map(|(c, field)| {
+            let (mut t, width) = declared_type(&c.decl);
+            if field.field_type == FieldType::Json {
+                t.subtype = OgrFieldSubType::Json;
+            }
             SchemaField {
                 name: Some(c.name.clone()),
                 field_type: Some(t.field_type.name().into()),

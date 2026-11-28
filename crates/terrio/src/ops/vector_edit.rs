@@ -25,7 +25,7 @@
 use crate::crs::SpatialRef;
 use crate::formats::VectorDriver;
 use crate::{Error, Result};
-use wbvector::{GeometryType, Layer};
+use wbvector::{FieldType, GeometryType, Layer};
 
 // ------------------------------------------------------------------------------------------------
 // Layer names
@@ -707,6 +707,14 @@ pub(crate) enum KeyValue {
     Text(String),
 }
 
+/// JSON fields use the same stored text as ordinary string keys.
+pub(crate) fn key_field_type(field_type: FieldType) -> FieldType {
+    match field_type {
+        FieldType::Json => FieldType::Text,
+        _ => field_type,
+    }
+}
+
 /// The key of a field value (`None` for null values and other types).
 pub(crate) fn key_of_field(v: &wbvector::FieldValue) -> Option<KeyValue> {
     use wbvector::FieldValue as V;
@@ -749,7 +757,8 @@ pub fn update_layer(dst: &mut Layer, src: &Layer, o: &UpdateOptions) -> Result<U
             .iter()
             .position(|f| f.name.eq_ignore_ascii_case(k))
             .ok_or_else(|| Error::InvalidArgument(format!("cannot find field '{k}' in input layer")))?;
-        if !matches!(sf[si].field_type, wbvector::FieldType::Integer | wbvector::FieldType::Float | wbvector::FieldType::Text) {
+        let source_type = key_field_type(sf[si].field_type);
+        if !matches!(source_type, FieldType::Integer | FieldType::Float | FieldType::Text) {
             return Err(Error::Unsupported(format!(
                 "type of field '{k}' is not one of those supported for a key field: String, Integer, Integer64, Real"
             )));
@@ -758,7 +767,7 @@ pub fn update_layer(dst: &mut Layer, src: &Layer, o: &UpdateOptions) -> Result<U
             .iter()
             .position(|f| f.name.eq_ignore_ascii_case(k))
             .ok_or_else(|| Error::InvalidArgument(format!("cannot find field '{k}' in output layer")))?;
-        if df[di].field_type != sf[si].field_type {
+        if key_field_type(df[di].field_type) != source_type {
             return Err(Error::Unsupported(format!("type of field '{k}' is not the same in input and output layers")));
         }
         keys.push((si, di));
@@ -829,11 +838,11 @@ pub fn update_layer(dst: &mut Layer, src: &Layer, o: &UpdateOptions) -> Result<U
 
 /// Updates an existing dataset from the layer of an input, as `gdal vector update` does: each
 /// input feature is matched with the output feature of the same feature id, or of the same
-/// values of the `key` fields (String, Integer or Real fields of the same type in both
-/// layers; features with a null key match nothing and are appended unless update-only; a key matching several features matches
-/// none). Matched features take the input's geometry and the values of the fields both layers
-/// have (fields only the output has are kept, those only the input has are not added);
-/// unmatched features are appended with new feature ids. `mode` keeps only updates or only
+/// values of the `key` fields (String, Integer or Real fields of the same type in both layers).
+/// String keys include the JSON subtype and match on the stored text. Null keys and keys
+/// matching several features are unmatched. Matched features take the input's geometry and
+/// the values of the fields both layers have. Fields unique to the output are kept.
+/// Unmatched features are appended with new feature ids. `mode` keeps only updates or only
 /// appends. No reprojection is done. GeoPackages are changed in place; other formats are
 /// rewritten, the new files replacing the old ones once complete.
 pub fn update(src: &[Layer], output: &str, o: &UpdateOptions) -> Result<UpdateCounts> {
@@ -1062,6 +1071,34 @@ mod tests {
             let counts = update_layer(&mut target, &null_source, &UpdateOptions { mode, ..o.clone() }).unwrap();
             assert_eq!(counts.updated, 0);
             assert_eq!(counts.appended, usize::from(mode != UpdateMode::UpdateOnly));
+        }
+    }
+
+    #[test]
+    fn matches_json_and_text_update_keys_by_their_stored_strings() {
+        use wbvector::{Feature, FieldDef, FieldType, FieldValue, Geometry};
+
+        let options = UpdateOptions { key: vec!["key".into()], mode: UpdateMode::UpdateOnly, ..Default::default() };
+        for (source_type, destination_type) in
+            [(FieldType::Json, FieldType::Text), (FieldType::Text, FieldType::Json), (FieldType::Json, FieldType::Json)]
+        {
+            let original = Some(Geometry::point(0.0, 0.0));
+            let replacement = Some(Geometry::point(1.0, 1.0));
+            let key = FieldValue::Text("[1, 2]".into());
+            let mut destination = Layer::new("destination");
+            destination.add_field(FieldDef::new("key", destination_type));
+            destination.push(Feature { fid: 1, geometry: original.clone(), attributes: vec![key.clone()] });
+            destination.push(Feature { fid: 2, geometry: original.clone(), attributes: vec![FieldValue::Text("[1,2]".into())] });
+            let mut source = Layer::new("source");
+            source.add_field(FieldDef::new("key", source_type));
+            source.push(Feature { fid: 3, geometry: replacement.clone(), attributes: vec![key.clone()] });
+
+            let counts = update_layer(&mut destination, &source, &options).unwrap();
+            assert_eq!(counts, UpdateCounts { updated: 1, appended: 0, unchanged: 0 });
+            assert_eq!(destination.schema.fields()[0].field_type, destination_type);
+            assert_eq!(destination.features[0].geometry, replacement);
+            assert_eq!(destination.features[0].attributes, [key]);
+            assert_eq!(destination.features[1].geometry, original);
         }
     }
 }

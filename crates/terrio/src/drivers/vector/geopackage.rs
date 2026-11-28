@@ -159,6 +159,10 @@ const COVERAGE_SQL: &str = "CREATE TABLE gpkg_2d_gridded_coverage_ancillary (id 
 const TILE_ANCILLARY_SQL: &str = "CREATE TABLE gpkg_2d_gridded_tile_ancillary (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,tpudt_name TEXT NOT NULL,tpudt_id INTEGER NOT NULL,scale REAL NOT NULL DEFAULT 1.0,offset REAL NOT NULL DEFAULT 0.0,min REAL DEFAULT NULL,max REAL DEFAULT NULL,mean REAL DEFAULT NULL,std_dev REAL DEFAULT NULL,CONSTRAINT fk_g2dgtat_name FOREIGN KEY (tpudt_name) REFERENCES gpkg_contents(table_name),UNIQUE (tpudt_name, tpudt_id))";
 const COVERAGE_EXTENSION: &str = "http://docs.opengeospatial.org/is/17-066r1/17-066r1.html";
 pub(super) const METADATA_EXTENSION: &str = "http://www.geopackage.org/spec120/#extension_metadata";
+pub(super) const DATA_COLUMNS_SQL: &str = "CREATE TABLE gpkg_data_columns (table_name TEXT NOT NULL,column_name TEXT NOT NULL,name TEXT,title TEXT,description TEXT,mime_type TEXT,constraint_name TEXT,PRIMARY KEY (table_name,column_name),UNIQUE (table_name,name))";
+pub(super) const DATA_COLUMN_CONSTRAINTS_SQL: &str = "CREATE TABLE gpkg_data_column_constraints (constraint_name TEXT NOT NULL,constraint_type TEXT NOT NULL,value TEXT,min NUMERIC,min_is_inclusive BOOLEAN,max NUMERIC,max_is_inclusive BOOLEAN,description TEXT,UNIQUE (constraint_name,constraint_type,value))";
+pub(super) const JSON_MIME_TYPE: &str = "application/json";
+const SCHEMA_EXTENSION: &str = "http://www.geopackage.org/spec121/#extension_schema";
 
 /// The triggers that keep `gpkg_tile_matrix` valid, as GDAL creates them.
 fn tile_matrix_triggers() -> Vec<SchemaObject> {
@@ -488,6 +492,7 @@ pub(crate) struct LayerColumns {
     pub m_hint: i64,
     fid_field: Option<usize>,
     kept: Vec<usize>,
+    json_columns: Vec<String>,
 }
 
 impl LayerColumns {
@@ -594,6 +599,7 @@ pub(crate) struct Builder {
     tile_matrix: Vec<Vec<Value>>,
     metadata: Vec<Vec<Value>>,
     metadata_reference: Vec<Vec<Value>>,
+    data_columns: Vec<Vec<Value>>,
     coverage: Vec<Vec<Value>>,
     tile_ancillary: Vec<Vec<Value>>,
     tables: Vec<Table>,
@@ -653,6 +659,7 @@ impl Builder {
             tile_matrix: Vec::new(),
             metadata: Vec::new(),
             metadata_reference: Vec::new(),
+            data_columns: Vec::new(),
             coverage: Vec::new(),
             tile_ancillary: Vec::new(),
             tables: Vec::new(),
@@ -826,6 +833,7 @@ impl Builder {
         let fields = layer.schema.fields();
         let mut col_names: Vec<String> = vec![self.fid_column.clone()];
         let mut kept = Vec::new();
+        let mut json_columns = Vec::new();
         let mut sql =
             format!("CREATE TABLE {} ( {} INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL", quote(&layer.name), quote(&self.fid_column));
         if spatial {
@@ -852,15 +860,18 @@ impl Builder {
                 FieldType::Date => "DATE".into(),
                 FieldType::DateTime => "DATETIME".into(),
                 FieldType::Blob => "BLOB".into(),
-                FieldType::Text if f.width > 0 => format!("TEXT({})", f.width),
+                FieldType::Text | FieldType::Json if f.width > 0 => format!("TEXT({})", f.width),
                 _ => "TEXT".into(),
             };
             sql.push_str(&format!(", {} {t}", quote(&name)));
+            if f.field_type == FieldType::Json {
+                json_columns.push(name.clone());
+            }
             col_names.push(name);
             kept.push(i);
         }
         sql.push(')');
-        LayerColumns { sql, spatial, srs_id, type_name, z_hint: i64::from(has_z), m_hint: 0, fid_field, kept }
+        LayerColumns { sql, spatial, srs_id, type_name, z_hint: i64::from(has_z), m_hint: 0, fid_field, kept, json_columns }
     }
 
     /// Records a layer's table and its metadata: `gpkg_contents` with the extent,
@@ -878,6 +889,25 @@ impl Builder {
         table: LayerTable,
         mut write: Option<&mut WriteTable>,
     ) -> Result<()> {
+        if !cols.json_columns.is_empty() {
+            if self.data_columns.is_empty() {
+                for table in ["gpkg_data_columns", "gpkg_data_column_constraints"] {
+                    self.claim(table)?;
+                    self.extension(Some(table), None, "gpkg_schema", SCHEMA_EXTENSION, "read-write");
+                }
+            }
+            self.data_columns.extend(cols.json_columns.iter().map(|column| {
+                vec![
+                    Value::Text(name.into()),
+                    Value::Text(column.clone()),
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Text(JSON_MIME_TYPE.into()),
+                    Value::Null,
+                ]
+            }));
+        }
         let b = extent.bounds.map(|b| b.map(Value::Real)).unwrap_or([Value::Null, Value::Null, Value::Null, Value::Null]);
         let [min_x, min_y, max_x, max_y] = b;
         let (spatial, srs_id) = (cols.spatial, cols.srs_id);
@@ -1095,6 +1125,7 @@ impl Builder {
             geometry_columns: self.geometry_columns,
             ogr_contents: self.ogr_contents,
             extensions: self.extensions,
+            data_columns: self.data_columns,
             tables: self.tables,
             objects: self.objects.into_iter().filter(|o| o.table != "gpkg_tile_matrix").collect(),
             sequence: self.sequence,
@@ -1145,6 +1176,10 @@ impl Builder {
             tables.push(table("gpkg_metadata", METADATA_SQL, numbered(self.metadata), vec![]));
             tables.push(table("gpkg_metadata_reference", METADATA_REFERENCE_SQL, numbered(self.metadata_reference), vec![]));
         }
+        if !self.data_columns.is_empty() {
+            tables.push(table("gpkg_data_columns", DATA_COLUMNS_SQL, numbered(self.data_columns), vec![vec![0, 1], vec![0, 2]]));
+            tables.push(table("gpkg_data_column_constraints", DATA_COLUMN_CONSTRAINTS_SQL, vec![], vec![vec![0, 1, 2]]));
+        }
         if !self.coverage.is_empty() {
             sequence.push(("gpkg_2d_gridded_coverage_ancillary".into(), self.coverage.len() as i64));
             sequence.push(("gpkg_2d_gridded_tile_ancillary".into(), self.tile_ancillary.len() as i64));
@@ -1168,6 +1203,7 @@ pub(crate) struct LayerParts {
     pub geometry_columns: Vec<Vec<Value>>,
     pub ogr_contents: Vec<Vec<Value>>,
     pub extensions: Vec<Vec<Value>>,
+    pub data_columns: Vec<Vec<Value>>,
     pub tables: Vec<Table>,
     pub objects: Vec<SchemaObject>,
     pub sequence: Vec<(String, i64)>,

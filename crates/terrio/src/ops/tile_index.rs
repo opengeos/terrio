@@ -1381,9 +1381,10 @@ fn read_vector_index_headers(path: &str) -> Result<Vec<Layer>> {
         let db = crate::drivers::sqlite_edit::open_consistent(std::path::Path::new(path))?;
         let (contents, _) = gp::contents(&db)?;
         let table = db.table("gpkg_contents")?;
+        let json_columns = gp::JsonColumns::read(&db)?;
         let mut layers = Vec::new();
         for content in contents {
-            let mut layer = gp::layer_def(&db, &content)?.layer;
+            let mut layer = gp::layer_def(&db, &content, &json_columns)?.layer;
             layer.extent =
                 table.rows.iter().find(|r| table.get(r, "table_name").and_then(Value::as_str) == Some(content.name.as_str())).and_then(
                     |r| {
