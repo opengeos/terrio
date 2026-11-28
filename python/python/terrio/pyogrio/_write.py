@@ -193,16 +193,18 @@ def _geometry(g) -> str:
             + ", ".join(_geometry(p) for p in g.geoms)
             + " ] }"
         )
+    if kind == "LinearRing":
+        kind = "LineString"
     if g.is_empty:
         body = "[ ]"
     elif kind == "Point":
         body = _coords(g.coords[0])
-    elif kind == "LineString" or kind == "LinearRing":
+    elif kind == "LineString":
         body = _ring(g.coords)
     elif kind == "Polygon":
         body = "[ " + ", ".join(_ring(r.coords) for r in [g.exterior, *g.interiors]) + " ]"
     elif kind == "MultiPoint":
-        body = "[ " + ", ".join(_coords(p.coords[0]) for p in g.geoms) + " ]"
+        body = "[ " + ", ".join(_coords(p.coords[0]) for p in g.geoms if not p.is_empty) + " ]"
     elif kind == "MultiLineString":
         body = "[ " + ", ".join(_ring(line.coords) for line in g.geoms) + " ]"
     elif kind == "MultiPolygon":

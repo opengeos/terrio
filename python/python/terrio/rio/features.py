@@ -126,10 +126,27 @@ def _pixel_geometry(geom: dict[str, Any], inv: Affine) -> dict[str, Any]:
             "type": "GeometryCollection",
             "geometries": [_pixel_geometry(g, inv) for g in geom["geometries"]],
         }
-    out = {"type": geom["type"], "coordinates": tr(geom["coordinates"])}
-    if out["type"] == "LinearRing":
-        out["type"] = "LineString"
-    return out
+    return {"type": geom["type"], "coordinates": tr(geom["coordinates"])}
+
+
+def _geojson_geometry(geom: dict[str, Any]) -> dict[str, Any]:
+    """Normalize non-GeoJSON geometry types accepted by rasterio (`LinearRing`).
+
+    Args:
+        geom: A geometry mapping, possibly containing nested geometry collections.
+
+    Returns:
+        dict: The mapping with LinearRing geometries represented as LineString.
+    """
+    kind = geom["type"]
+    if kind == "GeometryCollection":
+        return {
+            "type": "GeometryCollection",
+            "geometries": [_geojson_geometry(g) for g in geom["geometries"]],
+        }
+    if kind == "LinearRing":
+        return {"type": "LineString", "coordinates": geom["coordinates"]}
+    return geom
 
 
 def _north_up(transform: Affine) -> bool:
@@ -161,6 +178,7 @@ def _burn(
         numpy.ndarray: The burnt values, float64 (for `add`) or of type `ot`.
     """
     h, w = shape
+    geoms = [_geojson_geometry(g) for g in geoms]
     if _north_up(transform):
         # Map coordinates on the exact grid of the transform.
         grid = transform.to_gdal()

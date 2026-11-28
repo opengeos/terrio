@@ -512,18 +512,22 @@ fn computed_inverse_flattening(k: &GeoKeys) -> Option<f64> {
     if k.text(2049).is_some_and(|c| c.contains("Ellipsoid = ")) {
         return None;
     }
-    let a = k.double(2057).filter(|a| *a > 0.0)?;
+    let a = k.double(2057).filter(|a| a.is_finite() && *a > 0.0)?;
     // libgeotiff's GTIFGetDefn: the inverse flattening overrides the semi-minor axis.
     let b = match (k.double(2059), k.double(2058)) {
+        (Some(rf), _) if !rf.is_finite() => return None,
         (Some(rf), _) if rf != 0.0 => a * (1.0 - 1.0 / rf),
         (Some(_), _) => a,
-        (None, Some(b)) => b,
-        (None, None) => return None,
+        (None, Some(b)) if b.is_finite() => b,
+        (None, _) => return None,
     };
-    if (a - b).abs() < 0.1 || b <= 0.0 || b > a {
+    if !b.is_finite() || (a - b).abs() < 0.1 || b <= 0.0 || b > a {
         return None;
     }
     let rf = a / (a - b);
+    if !rf.is_finite() {
+        return None;
+    }
     Some(if (a - 6_378_137.0).abs() < 1e-10 && (rf - 298.257_223_563).abs() < 1e-10 { 298.257_223_563 } else { rf })
 }
 
@@ -553,19 +557,20 @@ fn user_defined_crs(k: &GeoKeys) -> Option<SpatialRef> {
         2 => {
             // In an angular unit other than the degree, which PROJ strings cannot hold: the WKT
             // GDAL reads, without code (GDAL identifies none: its unit is not the registry's).
-            if let Some((_, unit)) = angular_unit(k) {
+            if let Some((_, unit)) = angular_unit(k).ok()? {
                 let wkt = SpatialRef::from_proj4(&format!("+proj=longlat {}", geographic_proj(k)?)).ok()?.to_wkt()?;
                 let cited =
                     |key: &str| k.text(2049).and_then(|c| c.split('|').find_map(|p| p.trim().strip_prefix(key).map(str::to_string)));
-                let mut wkt = renamed(&without_code(&with_unit(&wkt, &unit)?), cited("GCS Name = ").as_deref().unwrap_or("unknown"))?;
-                // The datum and ellipsoid named by the citation, as GDAL names them
-                // (`GetGeogCSFromCitation`), and its axes in the registry's order, as GDAL builds
-                // a geographic CRS from GeoKeys.
-                for (node, key) in [("DATUM[", "Datum = "), ("SPHEROID[", "Ellipsoid = ")] {
+                let mut wkt = without_code(&with_unit(&wkt, &unit)?);
+                // The ellipsoid and datum named by the citation, as GDAL names them
+                // (`GetGeogCSFromCitation`), renamed inside-out before `GCS Name` so citation
+                // text containing `DATUM[` or `SPHEROID[` cannot corrupt outer or inner nodes.
+                for (node, key) in [("SPHEROID[", "Ellipsoid = "), ("DATUM[", "Datum = ")] {
                     if let (Some(name), Some(i)) = (cited(key), wkt.find(node)) {
                         wkt = format!("{}{}", &wkt[..i], renamed(&wkt[i..], &name)?);
                     }
                 }
+                let wkt = renamed(&wkt, cited("GCS Name = ").as_deref().unwrap_or("unknown"))?;
                 let wkt =
                     wkt.replace(",AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]", ",AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST]");
                 return Some(SpatialRef { epsg: None, wkt: Some(wkt), proj4: None, esri: None });
@@ -766,7 +771,7 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
 
     // Angles are in the geographic CRS's angular unit, which libgeotiff (1.7.4 and later)
     // converts to degrees, the azimuth excepted.
-    let to_degrees = angular_unit(k).map_or(1.0, |(d, _)| d);
+    let to_degrees = angular_unit(k).ok()?.map_or(1.0, |(d, _)| d);
     let angle = |ids: &[u16]| k.first(ids).map(|v| v * to_degrees);
     let lon0 = angle(&[NAT_ORIGIN_LONG, FALSE_ORIGIN_LONG, CENTER_LONG, STRAIGHT_VERT_POLE_LONG]).unwrap_or(0.0);
     let lat0 = angle(&[NAT_ORIGIN_LAT, FALSE_ORIGIN_LAT, CENTER_LAT]).unwrap_or(0.0);
@@ -1137,11 +1142,17 @@ fn with_unit(wkt: &str, unit: &str) -> Option<String> {
 
 /// The angular unit of the GeoKeys when it is not the degree, as GDAL reads it: its size in
 /// degrees and its WKT `UNIT` (GeogAngularUnitsGeoKey by the codes libgeotiff knows, else
-/// GeogAngularUnitSizeGeoKey in radians with the `AUnits = ` name of the citation).
-fn angular_unit(k: &GeoKeys) -> Option<(f64, String)> {
+/// GeogAngularUnitSizeGeoKey in radians with the `AUnits = ` name of the citation). Returns
+/// `Ok(None)` for degrees, an absent/unmapped unit key, or a user-defined unit without key 2055
+/// (matching GDAL's default to degrees), and `Err(())` when a supplied user-defined angular unit
+/// size is non-positive, non-finite, or overflows degrees.
+fn angular_unit(k: &GeoKeys) -> std::result::Result<Option<(f64, String)>, ()> {
     const RAD: f64 = 180.0 / std::f64::consts::PI;
-    let (name, degrees): (String, f64) = match k.short(2054)? {
-        9102 | 9107 | 9108 | 9110 | 9122 => return None,
+    let Some(code) = k.short(2054) else {
+        return Ok(None);
+    };
+    let (name, degrees): (String, f64) = match code {
+        9102 | 9107 | 9108 | 9110 | 9122 => return Ok(None),
         9101 => ("radian".into(), RAD),
         9103 => ("arc-minute".into(), 1.0 / 60.0),
         9104 => ("arc-second".into(), 1.0 / 3600.0),
@@ -1149,11 +1160,23 @@ fn angular_unit(k: &GeoKeys) -> Option<(f64, String)> {
         9106 => ("gon".into(), 0.9),
         9109 => ("microradian".into(), RAD / 1e6),
         USER_DEFINED => {
-            let radians = k.double(2055).filter(|r| *r > 0.0)?;
+            if k.key(2055).is_none() {
+                return Ok(None);
+            }
+            let Some(&[radians]) = k.doubles(2055) else {
+                return Err(());
+            };
+            if !radians.is_finite() || radians <= 0.0 {
+                return Err(());
+            }
+            let degrees = radians * RAD;
+            if !degrees.is_finite() {
+                return Err(());
+            }
             let name = k.text(2049).and_then(|c| c.split('|').find_map(|p| p.trim().strip_prefix("AUnits = ").map(str::to_string)));
-            (name.as_deref().unwrap_or("unknown").trim().to_string(), radians * RAD)
+            (name.as_deref().unwrap_or("unknown").trim().to_string(), degrees)
         }
-        _ => return None,
+        _ => return Ok(None),
     };
     // GDAL's WKT: the size in radians, and the registry's grad (PROJ names only the degree and
     // the grad by their codes).
@@ -1161,7 +1184,7 @@ fn angular_unit(k: &GeoKeys) -> Option<(f64, String)> {
         "grad" => "UNIT[\"grad\",0.015707963267949,AUTHORITY[\"EPSG\",\"9105\"]]".to_string(),
         _ => format!("UNIT[{},{}]", wkt_quoted(&name), wkt_number(degrees * 0.0174532925199433)),
     };
-    Some((degrees, unit))
+    Ok(Some((degrees, unit)))
 }
 
 /// GeoKeys for a CRS without an EPSG code, as GDAL writes them: from its PROJ string when it has
@@ -1809,5 +1832,64 @@ mod tests {
         for code in [5800, 4978, 5773, 9707, 32767, 999999] {
             assert_eq!(horizontal_geokey(code), None, "{code}");
         }
+    }
+
+    #[test]
+    fn computed_inverse_flattening_rejects_non_finite_geokeys() {
+        let keys_a_rf = [1, 1, 0, 2, 2057, 34736, 1, 0, 2059, 34736, 1, 1];
+        for doubles in
+            [[f64::INFINITY, 298.257_223_563], [6_378_137.0, f64::NAN], [6_378_137.0, f64::INFINITY], [6_378_137.0, f64::NEG_INFINITY]]
+        {
+            assert_eq!(computed_inverse_flattening(&GeoKeys { keys: &keys_a_rf, doubles: &doubles, ascii: b"" }), None, "a/rf={doubles:?}");
+        }
+        let keys_a_b = [1, 1, 0, 2, 2057, 34736, 1, 0, 2058, 34736, 1, 1];
+        for doubles in [[6_378_137.0, f64::NAN], [6_378_137.0, f64::INFINITY], [f64::INFINITY, 6_356_752.314]] {
+            assert_eq!(computed_inverse_flattening(&GeoKeys { keys: &keys_a_b, doubles: &doubles, ascii: b"" }), None, "a/b={doubles:?}");
+        }
+        let grs80 = computed_inverse_flattening(&GeoKeys { keys: &keys_a_rf, doubles: &[6_378_137.0, 298.257_222_101], ascii: b"" });
+        assert!(grs80.is_some_and(|rf| rf.is_finite() && (rf - 298.257_222_101).abs() < 1e-6));
+    }
+
+    #[test]
+    fn angular_unit_rejects_non_finite_user_defined_size() {
+        let keys = [1, 1, 0, 2, 2054, 0, 1, USER_DEFINED, 2055, 34736, 1, 0];
+        assert_eq!(angular_unit(&GeoKeys { keys: &keys, doubles: &[], ascii: b"" }), Err(()), "present but unreadable size");
+        for count in [0, 2] {
+            let mut malformed = keys;
+            malformed[10] = count;
+            assert_eq!(angular_unit(&GeoKeys { keys: &malformed, doubles: &[1.0, 2.0], ascii: b"" }), Err(()));
+        }
+        for bad in [f64::INFINITY, f64::NAN, f64::MAX, 0.0, -1.0] {
+            assert_eq!(angular_unit(&GeoKeys { keys: &keys, doubles: &[bad], ascii: b"" }), Err(()), "r={bad}");
+        }
+        // Missing GeogAngularUnitSizeGeoKey (2055) with USER_DEFINED (32767) defaults to degrees,
+        // matching GDAL.
+        let missing_2055 = [1, 1, 0, 1, 2054, 0, 1, USER_DEFINED];
+        assert_eq!(angular_unit(&GeoKeys { keys: &missing_2055, doubles: &[], ascii: b"" }), Ok(None));
+        // Invalid user-defined angular size must fail user_defined_crs and projection rather than
+        // falling back to degrees.
+        let geog_keys = [1, 1, 0, 4, 1024, 0, 1, 2, 2050, 0, 1, 6326, 2054, 0, 1, USER_DEFINED, 2055, 34736, 1, 0];
+        assert_eq!(user_defined_crs(&GeoKeys { keys: &geog_keys, doubles: &[f64::MAX], ascii: b"" }), None);
+        let proj_keys =
+            [1, 1, 0, 6, 1024, 0, 1, 1, 2050, 0, 1, 6326, 2054, 0, 1, USER_DEFINED, 2055, 34736, 1, 0, 3075, 0, 1, 1, 3080, 34736, 1, 1];
+        assert_eq!(projection(&GeoKeys { keys: &proj_keys, doubles: &[f64::MAX, 10.0], ascii: b"" }, 1.0), None);
+        let ok = angular_unit(&GeoKeys { keys: &keys, doubles: &[0.015707963267948967], ascii: b"" }).unwrap().unwrap();
+        assert!(ok.0.is_finite() && (ok.0 - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn user_defined_geographic_citation_keywords_do_not_corrupt_wkt() {
+        let ascii = b"GCS Name = Bad DATUM[x] SPHEROID[y]|Datum = My Datum SPHEROID[z]|Ellipsoid = My Ellipsoid DATUM[w]|";
+        let keys =
+            [1, 1, 0, 5, 1024, 0, 1, 2, 2048, 0, 1, USER_DEFINED, 2049, 34737, ascii.len() as u16, 0, 2050, 0, 1, 6326, 2054, 0, 1, 9105];
+        let crs = user_defined_crs(&GeoKeys { keys: &keys, doubles: &[], ascii }).unwrap();
+        let wkt = crs.wkt.unwrap();
+        let root = crate::parsed::tree(&wkt).unwrap_or_else(|| panic!("invalid WKT: {wkt}"));
+        assert_eq!(root.key, "GEOGCS", "{wkt}");
+        assert_eq!(root.name(), Some("Bad DATUM[x] SPHEROID[y]"), "{wkt}");
+        let datum = root.child("DATUM").unwrap_or_else(|| panic!("missing DATUM: {wkt}"));
+        assert_eq!(datum.name(), Some("My Datum SPHEROID[z]"), "{wkt}");
+        let spheroid = datum.child("SPHEROID").unwrap_or_else(|| panic!("missing SPHEROID: {wkt}"));
+        assert_eq!(spheroid.name(), Some("My Ellipsoid DATUM[w]"), "{wkt}");
     }
 }

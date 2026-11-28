@@ -184,6 +184,9 @@ def hasenv() -> bool:
 def setenv(**options: Any) -> None:
     """Sets options in the active environment (or the process environment).
 
+    A value of `None` unsets the option (in the active `Env` scope, or in `os.environ` when no
+    `Env` is active).
+
     Args:
         **options: GDAL configuration options.
     """
@@ -198,7 +201,10 @@ def setenv(**options: Any) -> None:
         _terrio.config_push(env._scope())
         return
     for k, v in options.items():
-        os.environ[k] = Env._value(v)
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = Env._value(v)
 
 
 def defenv(**options: Any) -> None:

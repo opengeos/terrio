@@ -576,6 +576,46 @@ def compare_schemas(name, mine, ref, known=()):
     return {"name": name, "status": status, "detail": "; ".join(problems + notes), "fields": fields}
 
 
+def gpkg_json_cases(terrio, work):
+    """Compare JSON subtype, field values and schema extension validity with GDAL."""
+    source = work / "json-columns.gpkg"
+    copy = work / "json-columns-copy.gpkg"
+    ds = ogr.GetDriverByName("GPKG").CreateDataSource(str(source), options=["VERSION=1.4"])
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(4326)
+    layer = ds.CreateLayer("places", srs, ogr.wkbPoint)
+    for name in ("payload", "plain", "all_null"):
+        field = ogr.FieldDefn(name, ogr.OFTString)
+        if name != "plain":
+            field.SetSubType(ogr.OFSTJSON)
+        layer.CreateField(field)
+    for x, y, value in ((151.2, -33.9, "[9007199254740993, 2]"), (150.9, -34.0, '{"name": "Wollongong"}')):
+        feature = ogr.Feature(layer.GetLayerDefn())
+        feature.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT ({x} {y})"))
+        feature.SetField("payload", value)
+        feature.SetField("plain", value)
+        layer.CreateFeature(feature)
+    ds.Close()
+    reference_schema = gdal_schema(source)
+    ref = read_fields(source)
+    assert ref["payload"][:2] == ("String", "JSON")
+    assert ref["plain"][:2] == ("String", "None")
+    assert ref["all_null"] == ("String", "JSON", [None, None])
+    yield compare_schemas("export-schema-gpkg-json", terrio_schema(terrio, source), reference_schema)
+    run([terrio, "convert", source, copy])
+    yield compare_schemas("export-schema-gpkg-json-copy", terrio_schema(terrio, copy), reference_schema)
+    yield compare_dumps("convert-gpkg-json", dump(copy), dump(source))
+    yield compare_features("convert-gpkg-json-values", read_fields(copy), ref)
+    error = validate_gpkg(copy)
+    with sqlite3.connect(copy) as sql:
+        integrity = sql.execute("PRAGMA integrity_check").fetchone()[0]
+    yield {
+        "name": "convert-gpkg-json-valid",
+        "status": IDENTICAL if not error and integrity == "ok" else DIFFERS,
+        "detail": error or f"SQLite integrity check: {integrity}",
+    }
+
+
 # ------------------------------------------------------------------------------------------------
 # set-field-type edge matrix
 # ------------------------------------------------------------------------------------------------
@@ -623,11 +663,10 @@ def make_matrix_source(path):
     ds = None
 
 
-# Known differences: terrio stores these subtypes in its own types (see the module docstring;
-# GeoPackage JSON fields are written as TEXT without their gpkg_data_columns MIME type);
+# Known differences: terrio stores these numeric subtypes in its own types (see the module docstring).
 # GDAL keeps Integer values unchanged when only the subtype changes (Integer to Boolean or
 # Int16), while terrio's booleans hold 0 or 1 and its Int16 values are clamped.
-KNOWN_TYPES = ("Integer(Int16)", "Real(Float32)", "String(JSON)")
+KNOWN_TYPES = ("Integer(Int16)", "Real(Float32)")
 
 
 def main():
@@ -686,6 +725,8 @@ def main():
             # GeoParquet int64 columns are Integer64 in GDAL whatever their values.
             known = (("*", "*", "type"),)
         case(compare_schemas(f"export-schema-{path.name}", terrio_schema(t, path), gdal_schema(path), known))
+    for comparison in gpkg_json_cases(t, work):
+        case(comparison)
     # GeoJSON properties GDAL types as lists (and the JSON and scalars around them), from the
     # repository's fixtures, and their values after a conversion by terrio, read back by GDAL.
     for path in sorted(LISTS.glob("cases.geojson*")):

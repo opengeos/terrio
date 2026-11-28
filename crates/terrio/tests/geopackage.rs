@@ -72,6 +72,90 @@ fn appends_to_a_gdal_file_as_ogr2ogr() {
     assert_eq!(open(out, None).len(), 176);
 }
 
+fn layer_with_json_columns() -> Layer {
+    let mut layer = Layer::new("points").with_epsg(4326);
+    layer.geom_type = Some(terrio::GeometryType::Point);
+    layer.add_field(FieldDef::new("payload", FieldType::Json).width(80));
+    layer.add_field(FieldDef::new("plain", FieldType::Text));
+    // The writer already reserves "fid" for the SQLite rowid.
+    layer.add_field(FieldDef::new("fid", FieldType::Json));
+    let text = FieldValue::Text("[9007199254740993, 2]".into());
+    layer.push(Feature { fid: 1, geometry: Some(Geometry::point(151.2, -33.9)), attributes: vec![text.clone(), text, FieldValue::Null] });
+    layer
+}
+
+/// GDAL 3.13.3 recognizes the schema-extension MIME type even for an all-null field.
+#[test]
+fn json_subtype_survives_memory_and_streaming_copies() {
+    use terrio::ops::vector_schema::{OgrSchema, export_schema_bytes, export_schema_path};
+
+    let layer = layer_with_json_columns();
+    let bytes = terrio::memory::write_vector_bytes(std::slice::from_ref(&layer), "source.gpkg", &Default::default()).unwrap();
+    let dataset = terrio::memory::open_vector_bytes(bytes.clone(), "source.gpkg", &Default::default()).unwrap();
+    let read = &dataset.layers[0];
+    let types = ["String(JSON)", "String", "String(JSON)"];
+    assert_eq!(types, std::array::from_fn(|i| dataset.ogr_type(read, i).to_string()));
+    assert_eq!(read.features[0].attributes, layer.features[0].attributes);
+    assert_eq!(read.schema.fields()[2].name, "fid_1");
+
+    let assert_schema = |schema: OgrSchema| {
+        let fields = &schema.layers[0].fields;
+        assert_eq!(fields[0].sub_type.as_deref(), Some("JSON"));
+        assert_eq!(fields[0].width, Some(80));
+        assert_eq!(fields[1].sub_type, None);
+        assert_eq!(fields[2].name.as_deref(), Some("fid_1"));
+        assert_eq!(fields[2].sub_type.as_deref(), Some("JSON"));
+    };
+    assert_schema(export_schema_bytes(bytes.clone(), "source.gpkg", None).unwrap());
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.gpkg");
+    let copy = dir.path().join("copy.gpkg");
+    std::fs::write(&source, bytes).unwrap();
+    let source = source.to_str().unwrap();
+    let copy = copy.to_str().unwrap();
+    let mut reader = terrio::stream::open_layers(source, &Default::default(), 1).unwrap().remove(0);
+    assert_eq!(types, std::array::from_fn(|i| reader.ogr_type(i).to_string()));
+    assert_eq!(reader.next().unwrap().unwrap().attributes, layer.features[0].attributes);
+    drop(reader);
+
+    terrio::stream::convert(source, copy, &Default::default()).unwrap();
+    assert_schema(export_schema_path(copy, &[]).unwrap());
+    assert_eq!(open(copy, None).features[0].attributes, layer.features[0].attributes);
+}
+
+#[test]
+fn layer_updates_keep_json_declarations_with_their_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("updates.gpkg");
+    let path = path.to_str().unwrap();
+    let mut plain = Layer::new("plain");
+    plain.add_field(FieldDef::new("payload", FieldType::Text));
+    terrio::write_vector(&[plain], path, &Default::default()).unwrap();
+
+    let layer = layer_with_json_columns();
+    let mut second = layer.clone();
+    second.name = "second".into();
+    write_vector_with_mode(std::slice::from_ref(&layer), path, &Default::default(), WriteMode::Append).unwrap();
+    write_vector_with_mode(std::slice::from_ref(&second), path, &Default::default(), WriteMode::Append).unwrap();
+    write_vector_with_mode(&[second], path, &Default::default(), WriteMode::Append).unwrap();
+
+    let mut replacement = Layer::new("points");
+    replacement.add_field(FieldDef::new("payload", FieldType::Text));
+    write_vector_with_mode(&[replacement], path, &Default::default(), WriteMode::Overwrite).unwrap();
+    let ds = terrio::open_vector(path, &Default::default()).unwrap();
+    let mut names: Vec<_> = ds.layers.iter().map(|layer| layer.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["plain", "points", "second"]);
+    for layer in &ds.layers {
+        let expected = if layer.name == "second" { "String(JSON)" } else { "String" };
+        assert_eq!(ds.ogr_type(layer, 0).to_string(), expected, "{}", layer.name);
+        if layer.name == "second" {
+            assert_eq!(layer.features.len(), 2);
+        }
+    }
+}
+
 const SOURCE_POINTS: &str = r#"{"type":"FeatureCollection","features":[
   {"type":"Feature","id":91,"properties":{},"geometry":{"type":"Point","coordinates":[0,0]}},
   {"type":"Feature","id":205,"properties":{},"geometry":{"type":"Point","coordinates":[1,1]}}

@@ -190,20 +190,21 @@ impl Source {
         }
         match &self.values {
             Values::Null => Some(0.0),
-            Values::Mem(v) => v.get(sample)?.get(y * self.width + x).copied(),
+            Values::Mem(v) => v.get(sample)?.get(y.checked_mul(self.width)?.checked_add(x)?).copied(),
             Values::Tiff(img) => {
                 let row = if img.bottom_up { y } else { self.height - 1 - y };
                 let (bx, ox) = (x / img.block_w, x % img.block_w);
                 let (by, oy) = (row / img.block_h, row % img.block_h);
-                let mut id = (by * img.blocks_per_row + bx) as u32;
+                let mut block_idx = by.checked_mul(img.blocks_per_row)?.checked_add(bx)?;
                 if img.planar {
-                    id += (sample * img.blocks) as u32;
+                    block_idx = block_idx.checked_add(sample.checked_mul(img.blocks)?)?;
                 }
+                let id = u32::try_from(block_idx).ok()?;
                 let block = img.block(id)?;
                 let (w, data) = (&block.0, &block.1);
-                let mut off = ox + oy * w;
+                let mut off = oy.checked_mul(*w)?.checked_add(ox)?;
                 if !img.planar {
-                    off = off * self.samples + sample;
+                    off = off.checked_mul(self.samples)?.checked_add(sample)?;
                 }
                 let raw = *data.get(off)?;
                 match self.scale_offset.get(sample) {
@@ -527,7 +528,10 @@ fn parse_gdal_metadata(text: &str) -> HashMap<(i32, String), String> {
             let q = tag[p..].find('"')?;
             Some(tag[p..p + q].to_string())
         };
-        let Some(name) = attr("name") else { break };
+        let Some(name) = attr("name") else {
+            rest = &item[end_value + 1..];
+            continue;
+        };
         let sample = attr("sample").and_then(|s| s.parse().ok()).unwrap_or(-1);
         let value = value.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"");
         out.insert((sample, name), value);
@@ -550,6 +554,11 @@ fn grid_tiff_limits() -> tiff::decoder::Limits {
     limits
 }
 
+/// Maximum samples per pixel accepted in a GeoTIFF grid. PROJ grids carry 1 to 4 samples
+/// (vertical, horizontal, 3D or velocity shifts); capping bounds per-sample tables on malformed
+/// TIFFs.
+const MAX_GRID_SAMPLES: usize = 64;
+
 /// Reads the images of a PROJ GeoTIFF grid, as PROJ's `GTiffDataset::nextGrid`.
 fn read_tiff(reader: GridReader) -> Option<GridFile> {
     use tiff::decoder::Decoder;
@@ -560,16 +569,26 @@ fn read_tiff(reader: GridReader) -> Option<GridFile> {
     let mut ifd = 0usize;
     loop {
         let num = |dec: &mut TiffDecoder, t: Tag| dec.find_tag(t).ok().flatten().and_then(|v| v.into_u64().ok());
-        let width = num(&mut dec, Tag::ImageWidth)? as usize;
-        let height = num(&mut dec, Tag::ImageLength)? as usize;
-        let samples = num(&mut dec, Tag::SamplesPerPixel).unwrap_or(1) as usize;
+        let width = usize::try_from(num(&mut dec, Tag::ImageWidth)?).ok()?;
+        let height = usize::try_from(num(&mut dec, Tag::ImageLength)?).ok()?;
+        let samples = usize::try_from(num(&mut dec, Tag::SamplesPerPixel).unwrap_or(1)).ok()?;
+        if samples == 0 || samples > MAX_GRID_SAMPLES {
+            return None;
+        }
         let planar = num(&mut dec, Tag::PlanarConfiguration).unwrap_or(1) == 2 && samples > 1;
-        let subfile_type = num(&mut dec, Tag::NewSubfileType).unwrap_or(0) as u32;
+        let subfile_type = u32::try_from(num(&mut dec, Tag::NewSubfileType).unwrap_or(0)).unwrap_or(0);
         let (block_w, block_h) = match num(&mut dec, Tag::TileWidth) {
-            Some(tw) => (tw as usize, num(&mut dec, Tag::TileLength)? as usize),
-            None => (width, (num(&mut dec, Tag::RowsPerStrip).unwrap_or(height as u64) as usize).min(height)),
+            Some(tw) => (usize::try_from(tw).ok()?, usize::try_from(num(&mut dec, Tag::TileLength)?).ok()?),
+            None => {
+                let rows_per_strip = match num(&mut dec, Tag::RowsPerStrip) {
+                    Some(0) => return None,
+                    Some(r) => usize::try_from(r).unwrap_or(height).min(height),
+                    None => height,
+                };
+                (width, rows_per_strip)
+            }
         };
-        if width == 0 || height == 0 || samples == 0 || block_w == 0 || block_h == 0 {
+        if width == 0 || height == 0 || block_w == 0 || block_h == 0 {
             return None;
         }
         let geokeys = dec.find_tag(Tag::GeoKeyDirectoryTag).ok().flatten().and_then(|v| v.into_u16_vec().ok()).unwrap_or_default();
@@ -634,14 +653,7 @@ fn read_tiff(reader: GridReader) -> Option<GridFile> {
             .and_then(|v| v.into_string().ok())
             .and_then(|s| s.trim_matches(char::from(0)).trim().parse::<f64>().ok())
             .map(|v| v as f32);
-        let mut scale_offset = Vec::new();
-        for smp in 0..samples {
-            let (scale, offset) = (role_value(&text, smp as i32, "scale"), role_value(&text, smp as i32, "offset"));
-            if scale.is_some() || offset.is_some() {
-                scale_offset.resize(samples, (1.0, 0.0));
-                scale_offset[smp] = (scale.unwrap_or(1.0), offset.unwrap_or(0.0));
-            }
-        }
+        let scale_offset = parse_scale_offset(&text, samples);
         let blocks_per_row = width.div_ceil(block_w);
         let blocks = blocks_per_row.checked_mul(height.div_ceil(block_h))?;
         // The chunks the file has: no more blocks than these can be decoded, whatever its size
@@ -728,20 +740,45 @@ fn read_tiff(reader: GridReader) -> Option<GridFile> {
     Some(GridFile { sources: out, format: Format::Tiff })
 }
 
-/// The value of the `GDAL_METADATA` item of a sample with a role (`scale`, `offset`).
-fn role_value(text: &str, sample: i32, role: &str) -> Option<f64> {
+/// Parses per-sample `scale` and `offset` items from `GDAL_METADATA` in a single pass.
+/// Keeps the first parseable value for each `(sample, role)`.
+fn parse_scale_offset(text: &str, samples: usize) -> Vec<(f64, f64)> {
+    let mut scales: Vec<Option<f64>> = vec![None; samples];
+    let mut offsets: Vec<Option<f64>> = vec![None; samples];
+    let mut any = false;
     let mut rest = text;
     while let Some(start) = rest.find("<Item ") {
         let item = &rest[start..];
-        let end_tag = item.find('>')?;
-        let end_value = item[end_tag..].find('<')? + end_tag;
+        let Some(end_tag) = item.find('>') else { break };
+        let Some(end_value) = item[end_tag..].find('<').map(|i| i + end_tag) else { break };
         let tag = &item[..end_tag];
-        if tag.contains(&format!("sample=\"{sample}\"")) && tag.contains(&format!("role=\"{role}\"")) {
-            return item[end_tag + 1..end_value].trim().parse().ok();
+        let attr = |name: &str| {
+            let p = tag.find(&format!("{name}=\""))? + name.len() + 2;
+            let q = tag[p..].find('"')?;
+            Some(&tag[p..p + q])
+        };
+        if let (Some(sample), Some(role)) = (attr("sample").and_then(|s| s.parse::<usize>().ok()), attr("role"))
+            && sample < samples
+            && let Ok(v) = item[end_tag + 1..end_value].trim().parse::<f64>()
+        {
+            match role {
+                "scale" if scales[sample].is_none() => {
+                    scales[sample] = Some(v);
+                    any = true;
+                }
+                "offset" if offsets[sample].is_none() => {
+                    offsets[sample] = Some(v);
+                    any = true;
+                }
+                _ => {}
+            }
         }
         rest = &item[end_value + 1..];
     }
-    None
+    if !any {
+        return Vec::new();
+    }
+    (0..samples).map(|i| (scales[i].unwrap_or(1.0), offsets[i].unwrap_or(0.0))).collect()
 }
 
 fn read_file(name: &str, bytes: Arc<[u8]>) -> Option<GridFile> {
@@ -935,20 +972,20 @@ pub(crate) fn network_enabled() -> bool {
 
 #[cfg(not(target_family = "wasm"))]
 fn home() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(Into::into)
+    std::env::var_os("HOME").filter(|v| !v.is_empty()).or_else(|| std::env::var_os("USERPROFILE").filter(|v| !v.is_empty())).map(Into::into)
 }
 
 /// The directory downloaded grids are kept in.
 #[cfg(not(target_family = "wasm"))]
 pub(crate) fn cache_dir() -> Option<std::path::PathBuf> {
-    if let Some(d) = std::env::var_os("TERRIO_GRID_CACHE") {
+    if let Some(d) = std::env::var_os("TERRIO_GRID_CACHE").filter(|d| !d.is_empty()) {
         return Some(d.into());
     }
-    if let Some(d) = std::env::var_os("XDG_CACHE_HOME") {
+    if let Some(d) = std::env::var_os("XDG_CACHE_HOME").filter(|d| !d.is_empty()) {
         return Some(std::path::PathBuf::from(d).join("terrio").join("grids"));
     }
     if cfg!(windows)
-        && let Some(d) = std::env::var_os("LOCALAPPDATA")
+        && let Some(d) = std::env::var_os("LOCALAPPDATA").filter(|d| !d.is_empty())
     {
         return Some(std::path::PathBuf::from(d).join("terrio").join("grids"));
     }
@@ -965,7 +1002,9 @@ fn search_dirs() -> Vec<std::path::PathBuf> {
     // download cache), which change the transformations PROJ and terrio pick: their results are
     // those of a machine without grids. Tests needing grids set the search paths or register them.
     if cfg!(test) {
-        std::env::var_os("TERRIO_GRID_DIR").map(|v| std::env::split_paths(&v).collect()).unwrap_or_default()
+        std::env::var_os("TERRIO_GRID_DIR")
+            .map(|v| std::env::split_paths(&v).filter(|p| !p.as_os_str().is_empty()).collect())
+            .unwrap_or_default()
     } else {
         machine_search_dirs()
     }
@@ -978,14 +1017,14 @@ fn machine_search_dirs() -> Vec<std::path::PathBuf> {
     let mut dirs = Vec::new();
     for var in ["TERRIO_GRID_DIR", "PROJ_DATA", "PROJ_LIB"] {
         if let Some(v) = std::env::var_os(var) {
-            dirs.extend(std::env::split_paths(&v));
+            dirs.extend(std::env::split_paths(&v).filter(|p| !p.as_os_str().is_empty()));
         }
     }
     // PROJ's user writable directory, where projsync and PROJ's network cache put grids.
-    if let Some(d) = std::env::var_os("XDG_DATA_HOME") {
+    if let Some(d) = std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
         dirs.push(std::path::PathBuf::from(d).join("proj"));
     } else if cfg!(windows) {
-        if let Some(d) = std::env::var_os("LOCALAPPDATA") {
+        if let Some(d) = std::env::var_os("LOCALAPPDATA").filter(|d| !d.is_empty()) {
             dirs.push(std::path::PathBuf::from(d).join("proj"));
         }
     } else if let Some(h) = home() {
@@ -2651,7 +2690,7 @@ mod tests {
         assert_eq!(m.get(&(-1, "TYPE".into())).map(String::as_str), Some("HORIZONTAL_OFFSET"));
         assert_eq!(m.get(&(0, "DESCRIPTION".into())).map(String::as_str), Some("latitude_offset"));
         assert_eq!(m.get(&(1, "UNITTYPE".into())).map(String::as_str), Some("arc-second"));
-        assert_eq!(role_value(r#"<Item name="x" sample="2" role="scale">0.5</Item>"#, 2, "scale"), Some(0.5));
+        assert_eq!(parse_scale_offset(r#"<Item name="x" sample="2" role="scale">0.5</Item>"#, 3), vec![(1.0, 0.0), (1.0, 0.0), (0.5, 0.0)]);
     }
 
     #[test]
@@ -2927,5 +2966,148 @@ mod tests {
     #[test]
     fn null_grid_is_obtainable_without_a_file() {
         assert!(obtainable("null"));
+    }
+
+    #[test]
+    fn gdal_metadata_skips_nameless_items_before_named_items() {
+        let m = parse_gdal_metadata(
+            r#"<GDALMetadata><Item sample="0" role="scale">0.5</Item><Item name="TYPE">HORIZONTAL_OFFSET</Item><Item name="DESCRIPTION" sample="0" role="description">latitude_offset</Item></GDALMetadata>"#,
+        );
+        assert_eq!(m.get(&(-1, "TYPE".into())).map(String::as_str), Some("HORIZONTAL_OFFSET"));
+        assert_eq!(m.get(&(0, "DESCRIPTION".into())).map(String::as_str), Some("latitude_offset"));
+    }
+
+    #[test]
+    fn geotiff_grids_reject_excessive_samples_per_pixel() {
+        use std::io::Cursor;
+        use tiff::encoder::{TiffEncoder, colortype::Gray32Float};
+        use tiff::tags::Tag;
+        let mut output = Cursor::new(Vec::new());
+        {
+            let mut encoder = TiffEncoder::new(&mut output).unwrap();
+            let mut image = encoder.new_image::<Gray32Float>(2, 2).unwrap();
+            image.encoder().write_tag(Tag::ModelPixelScaleTag, &[1.0f64, 1.0, 0.0][..]).unwrap();
+            image.encoder().write_tag(Tag::ModelTiepointTag, &[0.0f64, 0.0, 0.0, 0.0, 1.0, 0.0][..]).unwrap();
+            image
+                .encoder()
+                .write_tag(
+                    Tag::Unknown(42112),
+                    r#"<GDALMetadata><Item name="TYPE">VERTICAL_OFFSET</Item><Item sample="0" role="scale">0.5</Item><Item sample="0" role="offset">10.0</Item></GDALMetadata>"#,
+                )
+                .unwrap();
+            image.write_data(&[4.0f32; 4]).unwrap();
+        }
+        let valid_bytes = output.into_inner();
+        let valid = read_tiff(GridReader::Bytes(Cursor::new(valid_bytes.clone().into()))).unwrap();
+        let src = &valid.sources[0].1;
+        assert_eq!(src.meta("TYPE", -1), "VERTICAL_OFFSET");
+        assert_eq!(src.value(0, 0, 0), Some(12.0));
+
+        // Patch SamplesPerPixel (tag 277) in the IFD to 65 (above MAX_GRID_SAMPLES).
+        let mut huge_samples = valid_bytes;
+        let ifd = u32::from_le_bytes(huge_samples[4..8].try_into().unwrap()) as usize;
+        let entries = u16::from_le_bytes(huge_samples[ifd..ifd + 2].try_into().unwrap()) as usize;
+        let spp = (0..entries).map(|i| ifd + 2 + 12 * i).find(|&e| huge_samples[e..e + 2] == 277u16.to_le_bytes()).unwrap();
+        huge_samples[spp + 8..spp + 10].copy_from_slice(&65u16.to_le_bytes());
+        assert!(read_tiff(GridReader::Bytes(Cursor::new(huge_samples.into()))).is_none());
+    }
+
+    #[test]
+    fn tiff_source_value_rejects_overflowing_chunk_and_sample_indices() {
+        use std::io::Cursor;
+        use tiff::decoder::Decoder;
+        use tiff::encoder::{TiffEncoder, colortype::Gray32Float};
+        let mut bytes = Cursor::new(Vec::new());
+        {
+            let mut encoder = TiffEncoder::new(&mut bytes).unwrap();
+            let image = encoder.new_image::<Gray32Float>(2, 2).unwrap();
+            image.write_data(&[1.0f32; 4]).unwrap();
+        }
+        let dec = Decoder::new(GridReader::Bytes(Cursor::new(bytes.into_inner().into()))).unwrap();
+        let file = Arc::new(TiffFile { decoder: Mutex::new((dec, 0)) });
+
+        let make_cache = |w: usize| {
+            let lock = OnceLock::new();
+            let _ = lock.set((w, vec![42.0]));
+            vec![lock]
+        };
+
+        // Planar index overflow: sample * blocks + by * blocks_per_row wraps or panics without checked arithmetic.
+        let planar_overflow = Source {
+            values: Values::Tiff(TiffImage {
+                file: file.clone(),
+                ifd: 0,
+                block_w: 1,
+                block_h: 1,
+                blocks_per_row: 1,
+                blocks: usize::MAX,
+                planar: true,
+                bottom_up: true,
+                cache: make_cache(1),
+            }),
+            width: 2,
+            height: 2,
+            samples: 2,
+            meta: HashMap::new(),
+            nodata: None,
+            scale_offset: Vec::new(),
+            first: None,
+            subfile_type: 0,
+            format: Format::Tiff,
+        };
+        assert_eq!(planar_overflow.value(1, 0, 1), None);
+
+        // Interleaved sample offset overflow: off * samples + sample wraps or panics without checked arithmetic.
+        let sample_overflow = Source {
+            values: Values::Tiff(TiffImage {
+                file: file.clone(),
+                ifd: 0,
+                block_w: 2,
+                block_h: 2,
+                blocks_per_row: 1,
+                blocks: 1,
+                planar: false,
+                bottom_up: true,
+                cache: make_cache(2),
+            }),
+            width: 2,
+            height: 2,
+            samples: usize::MAX,
+            meta: HashMap::new(),
+            nodata: None,
+            scale_offset: Vec::new(),
+            first: None,
+            subfile_type: 0,
+            format: Format::Tiff,
+        };
+        assert_eq!(sample_overflow.value(1, 1, 0), None);
+
+        // On 64-bit targets, a chunk index of 2^32 would truncate to 0 with `as u32` and read cache[0].
+        #[cfg(target_pointer_width = "64")]
+        {
+            let truncating = Source {
+                values: Values::Tiff(TiffImage {
+                    file,
+                    ifd: 0,
+                    block_w: 1,
+                    block_h: 1,
+                    blocks_per_row: (u32::MAX as usize) + 1,
+                    blocks: 1,
+                    planar: false,
+                    bottom_up: true,
+                    cache: make_cache(1),
+                }),
+                width: 2,
+                height: 2,
+                samples: 1,
+                meta: HashMap::new(),
+                nodata: None,
+                scale_offset: Vec::new(),
+                first: None,
+                subfile_type: 0,
+                format: Format::Tiff,
+            };
+            assert_eq!(truncating.value(0, 0, 1), None);
+        }
     }
 }

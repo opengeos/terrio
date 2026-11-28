@@ -262,8 +262,26 @@ pub(super) fn call(name: &str, args: &[Expr], ctx: &Context<'_>) -> Result<Value
     if name == "quote" {
         return Ok(Value::Text(match &values[0] {
             Value::Null => "NULL".into(),
-            Value::Text(s) => format!("'{}'", s.split('\0').next().unwrap_or_default().replace('\'', "''")),
-            Value::Blob(b) => format!("X'{}'", b.iter().map(|b| format!("{b:02X}")).collect::<String>()),
+            Value::Text(s) => {
+                let prefix = s.split('\0').next().unwrap_or_default();
+                let quotes = prefix.bytes().filter(|&b| b == b'\'').count();
+                let total = prefix.len().saturating_add(quotes).saturating_add(2);
+                if total > MAX_VALUE_BYTES {
+                    return Err(Error::ResourceLimit(format!(
+                        "SQLite expression: quote result ({total} bytes) exceeds {MAX_VALUE_BYTES} byte limit"
+                    )));
+                }
+                format!("'{}'", prefix.replace('\'', "''"))
+            }
+            Value::Blob(b) => {
+                let total = b.len().saturating_mul(2).saturating_add(3);
+                if total > MAX_VALUE_BYTES {
+                    return Err(Error::ResourceLimit(format!(
+                        "SQLite expression: quote result ({total} bytes) exceeds {MAX_VALUE_BYTES} byte limit"
+                    )));
+                }
+                format!("X'{}'", b.iter().map(|b| format!("{b:02X}")).collect::<String>())
+            }
             v => text(v)?,
         }));
     }
@@ -279,6 +297,12 @@ pub(super) fn call(name: &str, args: &[Expr], ctx: &Context<'_>) -> Result<Value
             Value::Blob(b) => b.clone(),
             v => text(v)?.into_bytes(),
         };
+        let total = bytes.len().saturating_mul(2);
+        if total > MAX_VALUE_BYTES {
+            return Err(Error::ResourceLimit(format!(
+                "SQLite expression: hex result ({total} bytes) exceeds {MAX_VALUE_BYTES} byte limit"
+            )));
+        }
         return Ok(Value::Text(bytes.iter().map(|b| format!("{b:02X}")).collect()));
     }
     if name == "json_valid" {
@@ -365,7 +389,22 @@ pub(super) fn call(name: &str, args: &[Expr], ctx: &Context<'_>) -> Result<Value
             let a = text(&values[0])?;
             let b = text(&values[1])?;
             let c = text(&values[2])?;
-            Value::Text(if b.is_empty() { a } else { a.replace(&b, &c) })
+            Value::Text(if b.is_empty() {
+                a
+            } else {
+                let matches = a.match_indices(&b).count();
+                let result_len = if c.len() >= b.len() {
+                    a.len().saturating_add(matches.saturating_mul(c.len() - b.len()))
+                } else {
+                    a.len() - matches * (b.len() - c.len())
+                };
+                if result_len > MAX_VALUE_BYTES {
+                    return Err(Error::ResourceLimit(format!(
+                        "SQLite expression: replace result ({result_len} bytes) exceeds {MAX_VALUE_BYTES} byte limit"
+                    )));
+                }
+                a.replace(&b, &c)
+            })
         }
         "unicode" => text(&values[0])?.chars().next().map_or(Value::Null, |c| Value::Int(c as i64)),
         "unhex" => {

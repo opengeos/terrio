@@ -224,7 +224,7 @@ and nested native raster sources are checked too. Cached readers retain the orig
 requirement, even after credentials are removed or unsigned reads are enabled. Export, overview
 metadata and resampled reads enforce it before source I/O; parallel readers carry the policy and
 the options in effect when the read starts. Native object fetchers keep the headers, credentials
-and endpoints captured when they are created; a later `terrio.Env` scope does not replace those
+and endpoints captured when they are created; a later `terrio.rio.Env` scope does not replace those
 request settings. STAC credential consent remains a read-time decision: an active read's
 `TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS` setting can grant or revoke permission without changing
 the captured credentials. Sharing uses owned alpha metadata rather than seeking the TIFF again. Azure URI documents retain provider authentication for relative targets within the
@@ -468,7 +468,7 @@ decoded once. A `TERRIO_CACHEMAX` larger than those values keeps them whole.
 | `TERRIO_CACHEMAX` (bytes; `K`, `M`, `G` suffixes; 0 turns the cache off) | `GDAL_CACHEMAX` (a plain integer below 100000 is megabytes; a `%` value is ignored) | 64 MiB |
 
 The size is read from the process environment at first use. Options set for one thread (Python's
-`terrio.Env`) do not change it.
+`terrio.rio.Env`) do not change it.
 
 `terrio::block_cache::set_max_bytes` and `clear` change the size and empty the cache at run time.
 The chunks belong to the open reader that decoded them. On Unix, a local GRIB file's bands belong

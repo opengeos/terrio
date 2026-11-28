@@ -31,7 +31,7 @@ use crate::crs::SpatialRef;
 use crate::drivers::common::{xml_escape as escape, xml_unescape as unescape};
 use crate::drivers::sqlite::{self as r, Db};
 pub(crate) use crate::ops::vector_edit::UpdateCounts;
-use crate::ops::vector_edit::{KeyValue, key_of_field};
+use crate::ops::vector_edit::{KeyValue, key_field_type, key_of_field};
 use crate::{Error, Result};
 use wbvector::Layer;
 
@@ -624,7 +624,7 @@ pub(crate) fn update_features(d: &mut Database, name: &str, src: &Layer, keys: &
             .iter()
             .position(|f| eq(&f.name, k))
             .ok_or_else(|| Error::InvalidArgument(format!("cannot find field '{k}' in input layer")))?;
-        let st = fields[si].field_type;
+        let st = key_field_type(fields[si].field_type);
         if !matches!(st, wbvector::FieldType::Integer | wbvector::FieldType::Float | wbvector::FieldType::Text) {
             return Err(Error::Unsupported(format!(
                 "type of field '{k}' is not one of those supported for a key field: String, Integer, Integer64, Real"

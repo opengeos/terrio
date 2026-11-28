@@ -164,6 +164,42 @@ impl GcpTransformer {
             }
         }
     }
+
+    /// The residuals of `gcps` under this transformer: for each GCP, as `(dx, dy)`, the
+    /// georeferenced position its pixel/line maps to minus the GCP's own `(x, y)`, model minus
+    /// observed, in the GCPs' georeferenced units. This checks the forward (pixel/line to geo)
+    /// model only. This is a fit check: for methods that
+    /// interpolate their GCPs exactly (TPS, a homography fitted to 4 GCPs, a polynomial with as
+    /// many coefficients as GCPs), every residual is zero by construction; only an
+    /// over-determined fit (a higher-order polynomial, a 5+-GCP homography) gives a meaningful
+    /// error. The underlying transformer behavior is referenced to GDAL 3.12.2; this helper
+    /// computes residuals in georeferenced units, not a GDAL-reported pixel-space fit statistic.
+    pub fn residuals(&self, gcps: &[Gcp]) -> Vec<(f64, f64)> {
+        gcps.iter()
+            .map(|g| {
+                let (x, y) = self.to_geo(g.pixel, g.line);
+                (x - g.x, y - g.y)
+            })
+            .collect()
+    }
+
+    /// The RMS of [`Self::residuals`]: `sqrt(mean(dx² + dy²))` over `gcps`, in georeferenced
+    /// units. `None` when `gcps` is empty, any residual is non-finite (a homography is
+    /// undefined where its denominator vanishes), or the RMS is not representable as `f64`.
+    pub fn rms(&self, gcps: &[Gcp]) -> Option<f64> {
+        let r = self.residuals(gcps);
+        if r.is_empty() || r.iter().any(|(dx, dy)| !dx.is_finite() || !dy.is_finite()) {
+            return None;
+        }
+        // Scaling protects large and tiny residuals from intermediate square overflow or underflow.
+        let scale = r.iter().fold(0.0_f64, |scale, (dx, dy)| scale.max(dx.abs()).max(dy.abs()));
+        if scale == 0.0 {
+            return Some(0.0);
+        }
+        let sum: f64 = r.iter().map(|(dx, dy)| (dx / scale).powi(2) + (dy / scale).powi(2)).sum();
+        let rms = scale * (sum / r.len() as f64).sqrt();
+        rms.is_finite().then_some(rms)
+    }
 }
 
 /// Applies a homography (GDAL's 9 coefficients). Non-finite where its denominator vanishes.
@@ -684,5 +720,57 @@ mod tests {
             assert!((p - 15.0).abs() < 1e-6 && (l - 7.0).abs() < 1e-6, "{p} {l}");
         }
         assert!(GcpTransformer::polynomial(&gcps[..5], 2).is_err());
+    }
+
+    #[test]
+    fn residuals_vanish_for_an_exact_fit_and_rms_matches_the_perturbation() {
+        // An exact affine map: order-1 polynomial and TPS both interpolate, so every residual
+        // is zero by construction (a fit check, not a GDAL comparison).
+        let exact: Vec<Gcp> = vec![gcp(0.0, 0.0, 1000.0, 500.0), gcp(10.0, 0.0, 1020.0, 502.0), gcp(0.0, 10.0, 1005.0, 480.0)];
+        for t in [GcpTransformer::polynomial(&exact, 1).unwrap(), GcpTransformer::tps(&exact).unwrap()] {
+            let r = t.residuals(&exact);
+            assert_eq!(r.len(), 3);
+            assert!(r.iter().all(|(dx, dy)| dx.abs() < 1e-9 && dy.abs() < 1e-9), "{r:?}");
+            assert!(t.rms(&exact).unwrap() < 1e-9);
+        }
+        assert!(GcpTransformer::polynomial(&exact, 1).unwrap().rms(&[]).is_none());
+
+        // One GCP moved 3 units off the affine fit: the least-squares polynomial spreads the
+        // error over all four GCPs, so every residual is non-zero and the RMS is positive and
+        // bounded by 3.
+        let mut perturbed = exact.clone();
+        perturbed.push(gcp(10.0, 10.0, 1025.0 + 3.0, 482.0));
+        let t = GcpTransformer::polynomial(&perturbed, 1).unwrap();
+        let r = t.residuals(&perturbed);
+        assert_eq!(r.len(), 4);
+        assert!(r.iter().all(|(dx, dy)| dx * dx + dy * dy > 1e-6), "{r:?}");
+        let rms = t.rms(&perturbed).unwrap();
+        assert!(rms > 0.0 && rms <= 3.0, "{rms}");
+        // rms equals sqrt(mean(dx^2 + dy^2)) over the residuals.
+        let expect = (r.iter().map(|(dx, dy)| dx * dx + dy * dy).sum::<f64>() / 4.0).sqrt();
+        assert!((rms - expect).abs() < 1e-12);
+    }
+
+    #[test]
+    fn rms_is_none_when_a_residual_is_not_finite() {
+        // A homography whose denominator vanishes at a GCP maps it to NaN (see apply_homography).
+        let h = [0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0];
+        let t = GcpTransformer::Homography(Box::new((h, h)));
+        let gcps = vec![gcp(0.0, 0.0, 5.0, 6.0), gcp(1.0, 0.0, 1.0, 0.0), gcp(0.0, 1.0, 0.0, 1.0)];
+        let r = t.residuals(&gcps);
+        assert!(r[0].0.is_nan() && r[0].1.is_nan(), "{r:?}");
+        assert_eq!(t.rms(&gcps), None);
+    }
+
+    #[test]
+    fn rms_preserves_representable_extreme_residuals() {
+        let identity = [0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0];
+        let t = GcpTransformer::Homography(Box::new((identity, identity)));
+        for scale in [1e155, 1e-300] {
+            let gcps = [gcp(0.0, 0.0, -scale, 0.0), gcp(0.0, 0.0, 0.0, -scale)];
+            let rms = t.rms(&gcps).unwrap();
+            assert!((rms / scale - 1.0).abs() < 1e-14, "{rms} != {scale}");
+        }
+        assert!(t.rms(&[gcp(0.0, 0.0, -f64::MAX, -f64::MAX)]).is_none());
     }
 }

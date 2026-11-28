@@ -71,6 +71,12 @@ and drivers below.
 - [x] Overview creation progress and cancellation in Rust/Python, and external overview
       add/refresh/delete beside read-only GeoTIFFs (#612, #618). Cancellation preserves
       the source and any existing sidecar.
+- [x] Rust warp progress callbacks and cancellation between chunks or input sources
+      ([#1397](https://github.com/opengeos/terrio/pull/1397)).
+- [ ] Python and JavaScript warp progress/cancellation callbacks, including callback
+      exception handling and partial-output cleanup
+      ([#1404](https://github.com/opengeos/terrio/issues/1404)). CLI displays and MCP
+      progress notifications require their own command/protocol integration.
 - [x] Overview-aware warping: explicit source overview selection, automatic selection for
       downsampling and a full-resolution override, reducing remote COG reads. Implemented in
       [#242](https://github.com/opengeos/terrio/pull/242), through Rust, CLI/MCP, Python and JavaScript.

@@ -308,6 +308,7 @@ impl LasHeader {
         }
         // The EVLRs.
         if evlr_count > 0 && h.start_of_first_evlr > 0 {
+            let file_len = r.seek(SeekFrom::End(0))?;
             let mut at = h.start_of_first_evlr;
             for _ in 0..evlr_count {
                 r.seek(SeekFrom::Start(at))?;
@@ -316,9 +317,12 @@ impl LasHeader {
                     break;
                 }
                 let len = u64_at(&vh, 20);
-                if len > (1 << 32) {
+                if len > u64::from(u32::MAX) {
                     return Err(Error::InvalidData(format!("EVLR of {len} bytes")));
                 }
+                let data_start =
+                    at.checked_add(EVLR_HEADER_LEN as u64).ok_or_else(|| Error::InvalidData("EVLR offset overflows".into()))?;
+                let next_at = data_start.checked_add(len).ok_or_else(|| Error::InvalidData("EVLR offset overflows".into()))?;
                 // The COPC hierarchy is read page by page when needed, and the waveform packets
                 // when points that refer to them are read, not here.
                 let user_id = c_str(&vh[2..18]);
@@ -329,10 +333,22 @@ impl LasHeader {
                     h.start_of_waveform_data = at;
                     h.waveform_data_size = len;
                 }
-                let mut data = vec![0u8; if skip { 0 } else { len as usize }];
-                r.read_exact(&mut data)?;
+                let data = if skip {
+                    Vec::new()
+                } else {
+                    let remaining = file_len.saturating_sub(data_start);
+                    if len > remaining {
+                        return Err(Error::InvalidData(format!("EVLR of {len} bytes exceeds remaining file length ({remaining} bytes)")));
+                    }
+                    let len_usize = usize::try_from(len).map_err(|_| Error::InvalidData(format!("EVLR of {len} bytes")))?;
+                    crate::dataset::fallible::check_usable(Some(len_usize), || format!("LAS EVLR of {len} bytes"))
+                        .map_err(Error::ResourceLimit)?;
+                    let mut data = crate::dataset::fallible::filled(len_usize, 0u8, "a LAS EVLR")?;
+                    r.read_exact(&mut data)?;
+                    data
+                };
                 h.evlrs.push(Vlr { user_id, record_id, description: c_str(&vh[28..60]), data });
-                at += EVLR_HEADER_LEN as u64 + len;
+                at = next_at;
             }
         } else if version == (1, 3) && h.start_of_waveform_data > 0 {
             // LAS 1.3: the waveform data packet record, the only record after the points, in the
@@ -1025,5 +1041,31 @@ mod tests {
                 .unwrap();
             assert_eq!(end, standard_record_length(f), "format {f}");
         }
+    }
+
+    #[test]
+    fn evlr_rejects_length_past_eof_and_offset_overflow() {
+        let h = LasHeader { version: (1, 4), header_size: 375, offset_to_point_data: 375, start_of_first_evlr: 375, ..Default::default() };
+        let mut base = Vec::new();
+        h.write(&mut base).unwrap();
+        // Set evlr_count = 1 at byte offset 243..247.
+        base[243..247].copy_from_slice(&1u32.to_le_bytes());
+
+        // Case 1: EVLR claims 64 MiB in a 435-byte file -> rejected as InvalidData before reading/allocating.
+        let mut truncated = base.clone();
+        let mut evlr = [0u8; EVLR_HEADER_LEN];
+        evlr[2..6].copy_from_slice(b"test");
+        evlr[18..20].copy_from_slice(&1u16.to_le_bytes());
+        evlr[20..28].copy_from_slice(&(64u64 << 20).to_le_bytes());
+        truncated.extend_from_slice(&evlr);
+        let err = LasHeader::read(&mut std::io::Cursor::new(&truncated)).unwrap_err();
+        assert!(matches!(err, Error::InvalidData(_)), "expected InvalidData before allocation, got: {err:?}");
+
+        // Case 2: EVLR length == 1 << 32 (exceeds u32::MAX) is rejected without allocating.
+        let mut huge = base;
+        evlr[20..28].copy_from_slice(&(1u64 << 32).to_le_bytes());
+        huge.extend_from_slice(&evlr);
+        let err = LasHeader::read(&mut std::io::Cursor::new(&huge)).unwrap_err();
+        assert!(matches!(err, Error::InvalidData(_)), "expected InvalidData for 4 GiB EVLR, got: {err:?}");
     }
 }

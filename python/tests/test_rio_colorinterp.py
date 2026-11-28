@@ -16,6 +16,8 @@ count (JPEG 2000, PNG, WebP, Zarr and GRIB each their own): a new dataset report
 file reads back when none is set.
 """
 
+import struct
+
 import numpy as np
 import pytest
 
@@ -212,6 +214,40 @@ def test_jpeg_ycbcr_bands_read_back_red_green_and_blue(tmp_path, colorinterp):
     path = tmp_path / "a.tif"
     before = _write(path, "GTiff", colorinterp, exact=False, compress="jpeg", photometric="ycbcr")
     assert before == ((R, G, B) if colorinterp is None else colorinterp)
+    assert _read_back(path) == (R, G, B)
+
+
+def test_non_jpeg_ycbcr_bands_use_supported_color_interpretations(tmp_path):
+    """Non-JPEG YCbCr TIFF metadata maps GDAL component names to rio enum members."""
+    import terrio
+    from terrio.rio._tiff import default_structure
+
+    path = tmp_path / "ycbcr.tif"
+    # A real uncompressed 2x2 YCbCr TIFF with 1x1 chroma subsampling. Terrio's writer
+    # only emits YCbCr with JPEG, so construct this supported input format directly.
+    tags = [
+        (256, 4, 1, 2),
+        (257, 4, 1, 2),
+        (258, 3, 3, 146),
+        (259, 3, 1, 1),
+        (262, 3, 1, 6),
+        (273, 4, 1, 152),
+        (277, 3, 1, 3),
+        (278, 4, 1, 2),
+        (279, 4, 1, 12),
+        (284, 3, 1, 1),
+        (530, 3, 2, 0x00010001),
+    ]
+    path.write_bytes(
+        b"II"
+        + struct.pack("<HIH", 42, 8, len(tags))
+        + b"".join(struct.pack("<HHII", *tag) for tag in tags)
+        + struct.pack("<IHHH", 0, 8, 8, 8)
+        + bytes([100, 128, 128] * 4)
+    )
+    native = terrio.open_raster(str(path))
+    assert default_structure(native).colorinterp == [ColorInterp.Y, ColorInterp.Cb, ColorInterp.Cr]
+    # The rio TIFF layer advertises the decoded RGB output after reading the native metadata.
     assert _read_back(path) == (R, G, B)
 
 

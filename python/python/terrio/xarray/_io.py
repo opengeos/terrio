@@ -347,7 +347,7 @@ def _overview_band_metadata(riods: DatasetReader, raster: Any, level: int) -> di
     Returns:
         dict: `scales`, `offsets`, `descriptions`, `units` and `band_tags`.
     """
-    s = _tiff.default_structure(raster)
+    s = _tiff.default_structure(raster, include_band_metadata=False)
     if riods.driver == "GTiff":
         try:
             ifds = _terrio.tiff_tags(_terrio_path(riods.name)) or []
@@ -1338,7 +1338,7 @@ def open_rasterio(
             name = f"band_{band}"
             opts = dict(common, parse_coordinates=band == 1 and parse_coordinates)
             da = _build(src, [band], band_only=True, default_name=name, **opts)
-            data_vars[name] = da.squeeze().drop_vars("band")
+            data_vars[name] = da.squeeze(da.dims[0], drop=True)
         dataset = xarray.Dataset(data_vars, attrs=_parse_tags(src.tags))
         dataset.set_close(src.pool.close)
         return dataset

@@ -97,7 +97,9 @@ impl PyCogWriter {
         let mut raster = terrio::Raster::new(cfg);
         raster.cols = width;
         raster.rows = height;
-        raster.bands = count * if complex { 2 } else { 1 };
+        raster.bands = count
+            .checked_mul(if complex { 2 } else { 1 })
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("band count overflows"))?;
         raster.data = RasterData::new_filled(data_type, 0, 0.0);
         let mut header = RasterDataset::new(raster, nodata.is_some());
         header.complex = complex;

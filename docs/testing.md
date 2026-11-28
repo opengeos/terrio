@@ -52,6 +52,16 @@ separate layers, buffered writes and atomic refusal of conflicting IDs.
 declaration, rowid aliases and R-tree integrity with SQLite. The `gpkg` conformance
 suite compares explicit feature IDs on create and append with `ogr2ogr -preserve_fid`.
 
+## GeoPackage JSON fields
+
+`cargo test -p terrio --test merged geopackage::` checks the OGR JSON subtype
+through memory and streaming reads, schema export, streamed copies, and layer
+updates. The `vector-dataset` suite compares a GDAL-written GeoPackage and a
+Terrio-written copy with GDAL, including exact schema, JSON text, nulls, and
+geometry. SQLite and GDAL also validate the copy. JSON subtype selection uses
+the schema extension's `application/json` declaration, including for all-null
+columns. Unmarked text with identical content remains an ordinary string.
+
 ## Grid confinement and diagnostics
 
 `python -m pytest python/tests/test_grid_policy.py` checks the Python confinement
@@ -1133,7 +1143,7 @@ rule rather than treating the outputs as pixel-identical or excluding edge pixel
 | Coverage cleaning | `scripts/compare_coverage_clean_with_gdal.py` (`coverage-clean`) | GDAL 3.13.3 / GEOS 3.14.1: real projected Tennessee counties, overlapping boundaries, duplicates, contained features, enclosed gaps/inlets, snapping and all four overlap merge strategies. Schema, attributes, IDs, feature types and CRS; exact normalized WKB when equal, otherwise relative symmetric-difference area tolerance 1e-8. GDAL independently checks output coverage validity. Ordering-dependent results are reported separately: exact equivalent cyclic-input references or independent legal greedy-merge witnesses on GDAL-polygonized faces, with unchanged union and output correspondence. These cases do not claim per-feature geometry equality. |
 | Vector topology | `scripts/compare_topology_with_gdal.py` | Tennessee county polygons and Las Vegas roads projected to metre-based CRSs: buffer, all four polygon overlays, dissolve, validity, repair of a deliberately corrupted county boundary and snap cleanup against GDAL/GEOS; attributes, source IDs and CRS, with relative symmetric-difference area tolerance 1e-7 (5e-4 for buffer curves). Registered in conformance as `topology`. |
 | Analysis bindings | `scripts/compare_analysis_bindings_with_gdal.py` | Direct Python and Node APIs on real DEM contours (levels, counts, Z, pixel-scaled Hausdorff distance and length), Landsat union/intersection footprints, county/road buffers, grouped dissolve, invalid-county diagnostics and repair. CRS and attributes are checked; relative symmetric-difference area limits are 5e-4 for buffer, 1e-7 for dissolve/repair and 1e-12 for footprints. Registered as `analysis-bindings`; optional Node checks require `js/pkg-node/terrio.js`. |
-| Vector dataset commands | `scripts/compare_vector_dataset_with_gdal.py` | `concat` (all modes, source-layer fields, intersection, reprojection; also `ogrmerge.py -single`), `partition` (Hive and flat, string and integer fields, feature limits, patterns), `set-field-type` (a 77-conversion matrix of edge values, every type to every type, and conversions of real fields), `make-point` (GPS trace, places with Z), `create` (`--like`, `--schema`, fields) and `export-schema` (GeoPackage, Shapefile, GeoJSON, FlatGeobuf, GeoParquet) plus `rename-layer`, `edit` and `update`, against GDAL 3.13.3's vector commands/API, OGRLayer::Rename and `ogrinfo -json`; GeoPackage validity and R-tree checks: values exact, coordinates within 1e-9 degrees (or 1e-6 metres) after reprojection; Int16, Float32 and JSON subtypes are reported within tolerance. Registered in conformance as `vector-dataset`. |
+| Vector dataset commands | `scripts/compare_vector_dataset_with_gdal.py` | `concat` (all modes, source-layer fields, intersection, reprojection; also `ogrmerge.py -single`), `partition` (Hive and flat, string and integer fields, feature limits, patterns), `set-field-type` (a 77-conversion matrix of edge values, every type to every type, and conversions of real fields), `make-point` (GPS trace, places with Z), `create` (`--like`, `--schema`, fields) and `export-schema` (GeoPackage, Shapefile, GeoJSON, FlatGeobuf, GeoParquet) plus `rename-layer`, `edit` and `update`, against GDAL 3.13.3's vector commands/API, OGRLayer::Rename and `ogrinfo -json`; GeoPackage validity and R-tree checks, with exact JSON subtype, text and nulls; values exact, coordinates within 1e-9 degrees (or 1e-6 metres) after reprojection; Int16 and Float32 subtypes are reported within tolerance. Registered in conformance as `vector-dataset`. |
 | Terrain and raster algebra | `scripts/compare_dem_calc_with_gdal.py` | every `gdaldem` mode and option, `gdal_calc.py` expressions, types, nodata and extents, `gdal_proximity.py`, `gdal_sieve.py` |
 | STAC and GeoZarr | `scripts/compare_stac_geozarr.py` (`stac`, `stacta`, `geozarr`) | STACIT subdatasets, mosaic sizes, geotransforms, CRSs and windows on Earth Search; STACTA items (GDAL's test data and pyramids `gdal raster tile` writes from real rasters, local, over HTTP and with a missing tile): summaries, subdatasets, metadata, whole rasters, windows and overviews vs GDAL's STACTA driver; STAC footprint fields vs `ogrinfo`; GeoZarr stores read by GDAL and rioxarray, overviews vs `gdaladdo` |
 | Remote Zarr stores | `scripts/compare_remote_zarr.py` | public cloud stores read in place (EOPF Sentinel-2 Zarr v2, EOPF GeoZarr v3 with shards and value codecs, NOAA HRRR on S3, CMIP6 on Google Cloud Storage, Daymet on Azure, a sharded store on a local port): sizes, geotransforms, nodata vs `gdalinfo` (`/vsicurl/`, `/vsis3/`, `/vsigs/`, `/vsiaz/`), windows vs `gdal_translate` and xarray, overviews vs xarray, bytes and requests fetched |
@@ -2877,6 +2887,23 @@ blocks of 128 x 128 pixels when its bands are not the source's first ones in ord
 or mode output can come from the next source pixel (the request rounded to the level), where
 terrio reads the output in one request, as rasterio does. The suite's outputs stay within one
 swath and block for those methods.
+
+### Resampled VRT source validity (#1386)
+
+The native VRT regressions compare the issue's Float32 fixture with GDAL 3.13.2
+for Average, RMS, Mode, Bilinear, Cubic, Cubic Spline and Lanczos. They check
+fill values, band metadata, the output grid, nearest and 1:1 reads, and a
+mosaic whose sources have different nodata values. The mosaic covers both
+GDAL's source-overview path and its full-resolution compositing path. The
+window tests count source reads and HTTP range bytes, including zero requests
+to a disjoint source and a one-window read of the intersecting overview.
+
+The `vrt` conformance suite compares the same seven kernels on real USGS
+terrain with injected nodata regions and a GeoTIFF mask. It also checks
+all-invalid cells, declared VRT nodata, and mosaics with and without overviews.
+Each case compares pixel values, data type, nodata, mask, geotransform and CRS.
+The suite reports exact pixel agreement separately from its `1e-5` absolute
+tolerance on these cases.
 
 ## File management (#289)
 

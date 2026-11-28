@@ -23,6 +23,9 @@ use super::*;
 pub(super) use rows::RowEvaluator;
 use std::cmp::Ordering;
 
+/// Maximum byte length of a text value produced by expression evaluation.
+pub(super) const MAX_VALUE_BYTES: usize = 16 << 20;
+
 fn bad(message: &str) -> Error {
     Error::InvalidData(format!("SQLite expression: {message}"))
 }
@@ -482,7 +485,18 @@ fn evaluate(expr: &Expr, ctx: &Context<'_>) -> Result<Operand> {
                     if matches!(left.value, Value::Null) || matches!(right.value, Value::Null) {
                         Value::Null
                     } else {
-                        Value::Text(format!("{}{}", text(&left.value)?, text(&right.value)?))
+                        let a = text(&left.value)?;
+                        let b = text(&right.value)?;
+                        let total = a.len().saturating_add(b.len());
+                        if total > MAX_VALUE_BYTES {
+                            return Err(Error::ResourceLimit(format!(
+                                "SQLite expression: string concatenation ({total} bytes) exceeds {MAX_VALUE_BYTES} byte limit"
+                            )));
+                        }
+                        let mut out = String::with_capacity(total);
+                        out.push_str(&a);
+                        out.push_str(&b);
+                        Value::Text(out)
                     }
                 }
                 "=" | "==" | "<>" | "!=" | "<" | ">" | "<=" | ">=" | "IS" | "IS NOT" => {

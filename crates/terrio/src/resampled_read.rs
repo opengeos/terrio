@@ -32,10 +32,24 @@ use crate::drivers::gdal_overview::{Method, ResampledRead, Sample, nbits_max};
 use crate::ops::Resampling;
 use crate::ops::overview::OverviewSelection;
 use crate::ops::translate::round_if_close;
+use crate::pixel::Pixel;
 use crate::{Error, LazyRaster, RasterDataset, Result, Window, WindowOptions};
 use std::ops::Range;
 use wbraster::DataType;
 use wbraster::raster::RasterData;
+
+/// GDAL 3.13.2 keeps physical kernel precision separate from the requested buffer type.
+pub(crate) fn kernel_working_type(source: DataType, buffer: DataType, resampling: Resampling) -> Option<DataType> {
+    if !matches!(buffer, DataType::F32 | DataType::F64) || matches!(resampling, Resampling::Nearest | Resampling::Mode) {
+        return None;
+    }
+    match source {
+        DataType::F32 | DataType::F64 => None,
+        DataType::U8 | DataType::U16 if matches!(resampling, Resampling::Average | Resampling::Rms) => None,
+        DataType::U8 | DataType::I8 | DataType::U16 | DataType::I16 => Some(DataType::F32),
+        DataType::I32 | DataType::U32 | DataType::I64 | DataType::U64 => Some(DataType::F64),
+    }
+}
 
 /// What [`LazyRaster::read_resampled`] reads: bands of a source window, into an output of a given
 /// size, as GDAL's `RasterIO` reads them, which `gdal_translate -outsize` and rasterio's
@@ -180,6 +194,7 @@ struct Read {
     resampling: Resampling,
     fixed: Option<Option<usize>>,
     window_sampling: WindowSampling,
+    working_type: Option<DataType>,
 }
 
 impl Read {
@@ -292,8 +307,20 @@ impl LazyRaster {
         options: &ResampledReadOptions,
         window_sampling: WindowSampling,
     ) -> Result<Vec<u8>> {
+        self.read_resampled_masks_in(options, window_sampling, None)
+    }
+
+    pub(crate) fn read_resampled_masks_in(
+        &mut self,
+        options: &ResampledReadOptions,
+        window_sampling: WindowSampling,
+        window: Option<(usize, usize, usize, usize)>,
+    ) -> Result<Vec<u8>> {
         let _scope = self.enter_asset_read()?;
-        let read = self.check_resampled(options, window_sampling, false)?;
+        let mut read = self.check_resampled(options, window_sampling, false)?;
+        if let Some(window) = window {
+            read.full.window = window;
+        }
         let kinds = self.read_mask_kinds(&read);
         self.check_resampled_mask_buffers(&read, &kinds, false)?;
         // A nodata mask band reads its band band by band, as a read of that band alone does.
@@ -381,6 +408,25 @@ impl LazyRaster {
         self.resampled_dataset(&read, data)
     }
 
+    /// Resamples a VRT source into its working buffer. Build validity from the source's own
+    /// samples before widening integer samples for a floating-point buffer.
+    pub(crate) fn read_vrt_source(
+        &mut self,
+        options: &ResampledReadOptions,
+        window: (usize, usize, usize, usize),
+        working_type: Option<DataType>,
+    ) -> Result<RasterData> {
+        let _scope = self.enter_asset_read()?;
+        let mut read = self.check_resampled(options, WindowSampling::Fractional, true)?;
+        if let Some(dtype) = working_type {
+            Self::check_resampled_buffer(read.buf, 1, dtype.size_bytes(), "a VRT source read")?;
+        }
+        read.full.window = window;
+        read.working_type = working_type;
+        let kinds = self.mask_kinds(&read.bands);
+        self.resample_bands(&read, &kinds)
+    }
+
     /// Checks a read and resolves its bands and windows.
     fn check_resampled(&self, o: &ResampledReadOptions, window_sampling: WindowSampling, pixels: bool) -> Result<Read> {
         let bands = read_bands(&o.bands, self.band_count())?;
@@ -444,8 +490,12 @@ impl LazyRaster {
         let (xi, yi) = (x.max(0.0) as usize, y.max(0.0) as usize);
         let window = (xi, yi, (xs.max(1.0) as usize).min(w - xi), (ys.max(1.0) as usize).min(h - yi));
         let full = Request { level: None, size: (w, h), window, fwindow };
-        let fixed = fixed_level(o.overview, &self.overviews(), bw);
-        Ok(Read { bands, full, buf: o.size, resampling: o.resampling, fixed, window_sampling })
+        let fixed = match o.overview {
+            OverviewSelection::Auto | OverviewSelection::AutoOffset(0) => None,
+            OverviewSelection::None => Some(None),
+            selection => fixed_level(selection, &self.overviews(), bw),
+        };
+        Ok(Read { bands, full, buf: o.size, resampling: o.resampling, fixed, window_sampling, working_type: None })
     }
 
     /// The output masks and the buffers retained while producing them. All-valid masks
@@ -542,19 +592,62 @@ impl LazyRaster {
 
     /// The pixels of a read, `(bands, rows, cols)`.
     fn resample_bands(&mut self, read: &Read, kinds: &[MaskKind]) -> Result<RasterData> {
-        // A source of several files (a STAC mosaic) reads each from the overview it chooses.
-        if read.fixed.is_none() && !read.full.is_copy(read.buf) {
-            let options = ResampledReadOptions {
+        let vrt = self.driver() == crate::formats::RasterDriver::VRT;
+        if !read.full.is_copy(read.buf) && (read.fixed.is_none() || (vrt && read.fixed == Some(None))) {
+            let mut options = ResampledReadOptions {
                 bands: read.bands.clone(),
                 window: Some(read.full.fwindow),
                 size: read.buf,
                 resampling: read.resampling,
-                overview: OverviewSelection::Auto,
+                overview: if read.fixed.is_none() { OverviewSelection::Auto } else { OverviewSelection::None },
             };
-            if let Some(data) = self.source_read_resampled(&options)? {
+            if vrt && read.resampling != Resampling::Nearest {
+                // A VRT decides whether to forward the read to its sources for each band.
+                if read.bands.len() == 1 {
+                    if let Some(data) = self.source_read_resampled_as(&options, read.working_type)? {
+                        return Ok(data);
+                    }
+                } else {
+                    let mut forwarded = Vec::with_capacity(read.bands.len());
+                    for &band in &read.bands {
+                        options.bands.clear();
+                        options.bands.push(band);
+                        forwarded.push(self.source_read_resampled_as(&options, read.working_type)?);
+                    }
+                    if forwarded.iter().any(Option::is_some) {
+                        let mut parts = Vec::with_capacity(read.bands.len());
+                        for (i, data) in forwarded.into_iter().enumerate() {
+                            parts.push(match data {
+                                Some(data) => data,
+                                None => {
+                                    self.read_resampled_parts(&Read { bands: vec![read.bands[i]], ..read.clone() }, &kinds[i..i + 1])?
+                                }
+                            });
+                        }
+                        let data_type = crate::ops::common_type(parts.iter().map(RasterData::data_type));
+                        for data in &mut parts {
+                            if data.data_type() != data_type {
+                                *data = RasterData::from_f64_vec(data_type, data.to_f64_vec());
+                            }
+                        }
+                        return Ok(concat(parts));
+                    }
+                }
+            } else if !vrt && let Some(data) = self.source_read_resampled_as(&options, read.working_type)? {
                 return Ok(data);
             }
         }
+        self.read_resampled_parts(read, kinds)
+    }
+
+    fn read_resampled_parts(&mut self, read: &Read, kinds: &[MaskKind]) -> Result<RasterData> {
+        // Derived and composited VRTs may decline typed forwarding. Their native samples still
+        // use native kernel precision before the caller converts the resulting buffer.
+        let adjusted = read.working_type.and_then(|buffer| {
+            let working_type = kernel_working_type(self.band_data_type(read.bands[0]), buffer, read.resampling);
+            (working_type != read.working_type).then(|| Read { working_type, ..read.clone() })
+        });
+        let read = adjusted.as_ref().unwrap_or(read);
         let parts = self.plan(read, kinds);
         let n = read.buf.0 * read.buf.1;
         let mut out: Option<RasterData> = None;
@@ -836,10 +929,26 @@ impl LazyRaster {
                 let kinds: Vec<MaskKind> =
                     kinds[part.bands.clone()].iter().zip(&bands).map(|(&k, &b)| self.kind_at(k, b, request.level)).collect();
                 let kinds = &kinds;
-                let sample_bytes = self.band_data_type(bands[0]).size_bytes();
+                let working_type = read.working_type;
+                let source_bytes = self.band_data_type(bands[0]).size_bytes();
+                let sample_bytes = working_type.map_or(source_bytes, |dtype| source_bytes + dtype.size_bytes());
                 resample(&resampled, &nodata, maxima.as_deref(), sample_bytes, &mut |w| {
-                    let data = self.read_window(w, &options)?.raster.data;
+                    let mut data = self.read_window_for_resampling(w, &options)?;
                     let masks = self.weights(w, request.level, &bands, kinds, &nodata, &data)?;
+                    if let Some(dtype) = working_type.filter(|&dtype| dtype != data.data_type()) {
+                        let what = "a VRT source kernel working buffer";
+                        data = if dtype == DataType::F32 {
+                            let mut samples = Vec::new();
+                            fallible::reserve(&mut samples, data.len(), what)?;
+                            crate::pixel::with_data!(&data, values => samples.extend(values.iter().map(|&v| v.to_f64() as f32)));
+                            RasterData::F32(samples)
+                        } else {
+                            let mut samples = Vec::new();
+                            fallible::reserve(&mut samples, data.len(), what)?;
+                            crate::pixel::with_data!(&data, values => samples.extend(values.iter().copied().map(Pixel::to_f64)));
+                            RasterData::F64(samples)
+                        };
+                    }
                     Ok((data, masks))
                 })
             }
@@ -1509,7 +1618,7 @@ fn resample(
 /// Fill selected bands directly in the output type, preserving the empty-window nodata
 /// policy without a full Float64 temporary. Casts match RasterData::from_f64_vec.
 /// Reference: GDAL 3.13.3 RasterIO empty-window nodata fills.
-fn filled_bands(data_type: DataType, n: usize, nodata: &[Option<f64>]) -> Result<RasterData> {
+pub(crate) fn filled_bands(data_type: DataType, n: usize, nodata: &[Option<f64>]) -> Result<RasterData> {
     let what = "an empty resampled window";
     let len = fallible::len(&[n, nodata.len()], what)?;
     macro_rules! fill {

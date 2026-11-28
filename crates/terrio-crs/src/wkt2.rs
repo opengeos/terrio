@@ -291,11 +291,16 @@ pub(crate) fn geocentric_unit(root: &Node, cs: &Node) -> Result<f64> {
         .map(|a| {
             // Or the CS's, after the axes: `LENGTHUNIT`, or a bare `UNIT` as PROJ's
             // simplified WKT 2 writes it.
-            a.child("LENGTHUNIT")
+            let unit = a
+                .child("LENGTHUNIT")
                 .or_else(|| root.child("LENGTHUNIT"))
                 .or_else(|| root.child("UNIT"))
                 .and_then(|u| u.num(1))
-                .ok_or_else(|| bad("geocentric axis needs a linear unit"))
+                .ok_or_else(|| bad("geocentric axis needs a linear unit"))?;
+            if !unit.is_finite() || unit <= 0.0 {
+                return Err(bad("geocentric axis linear unit must be positive and finite"));
+            }
+            Ok(unit)
         })
         .collect::<Result<Vec<_>>>()?;
     let unit = units[0];
@@ -1448,5 +1453,29 @@ pub(crate) fn helmert_writable(t: &Node) -> bool {
         HelmertKind::Seven | HelmertKind::TimeDependent => !v.method.exact && v.given == 0b111_1111,
         HelmertKind::Translations => !v.unapplied && v.given & 0b111 == 0b111,
         HelmertKind::Badekas => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn geocentric_unit_rejects_non_positive_or_non_finite_units() {
+        let make = |u: &str| {
+            format!(
+                r#"GEODCRS["c",DATUM["d",ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[Cartesian,3],AXIS["(X)",geocentricX,ORDER[1],LENGTHUNIT["metre",{u}]],AXIS["(Y)",geocentricY,ORDER[2],LENGTHUNIT["metre",{u}]],AXIS["(Z)",geocentricZ,ORDER[3],LENGTHUNIT["metre",{u}]]]"#
+            )
+        };
+        for bad in ["0", "-1", "NaN", "inf", "-inf"] {
+            let wkt = make(bad);
+            let root = crate::parsed::tree(&wkt).unwrap();
+            let cs = root.child("CS").unwrap();
+            assert!(geocentric_unit(&root, cs).is_err(), "geocentric_unit accepted {bad}");
+            assert!(crate::model::wkt2_to_proj(&wkt).is_err(), "wkt2_to_proj accepted {bad}");
+        }
+        let ok = make("0.3048");
+        let root = crate::parsed::tree(&ok).unwrap();
+        assert_eq!(geocentric_unit(&root, root.child("CS").unwrap()).unwrap(), 0.3048);
     }
 }

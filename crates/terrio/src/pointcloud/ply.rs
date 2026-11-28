@@ -418,8 +418,10 @@ impl FormatReader for PlyReader {
         if props.is_empty() && n > 0 {
             return Err(Error::InvalidData("PLY: vertex element has no scalar properties".into()));
         }
-        let k = ((n - c.done) as usize).min(c.chunk);
-        let mut cols: Vec<Values> = self.dims.iter().map(|(_, t)| Values::with_capacity(*t, k)).collect();
+        let k = (n - c.done).min(c.chunk as u64) as usize;
+        let row_bytes: usize = self.dims.iter().map(|(_, t)| t.size()).sum::<usize>().max(1);
+        let cap = k.min(4096).min((1 << 20) / row_bytes);
+        let mut cols: Vec<Values> = self.dims.iter().map(|(_, t)| Values::with_capacity(*t, cap)).collect();
         let mut word = Vec::new();
         let mut b = [0u8; 8];
         let big = self.encoding == Encoding::Be;
@@ -577,4 +579,41 @@ pub(crate) fn write_ply<W: Write + Seek>(cloud: &PointCloud, w: &mut W, options:
     let mut pw = PlyStreamWriter::new(w, cloud, options)?;
     pw.write_cloud(cloud)?;
     pw.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ply_truncated_header_does_not_preallocate_unbounded_columns() {
+        crate::par::alone(30, || {
+            let status = std::fs::read_to_string("/proc/self/status").unwrap();
+            let vm_kb = status
+                .lines()
+                .find_map(|l| l.strip_prefix("VmSize:"))
+                .and_then(|v| v.split_whitespace().next())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            // SAFETY: valid pointers; constrains only this isolated child process's virtual address space.
+            unsafe {
+                assert_eq!(libc::getrlimit(libc::RLIMIT_AS, &mut limit), 0);
+                let cap = vm_kb.saturating_mul(1024).saturating_add(512 << 20);
+                limit.rlim_cur = limit.rlim_max.min(cap);
+                assert_eq!(libc::setrlimit(libc::RLIMIT_AS, &limit), 0);
+            }
+            // 1000 double properties x 1_000_000 declared vertices would preallocate ~8 GiB if unbounded.
+            let mut header = String::from(
+                "ply\nformat binary_little_endian 1.0\nelement vertex 1000000\nproperty double x\nproperty double y\nproperty double z\n",
+            );
+            for i in 0..997 {
+                header.push_str(&format!("property double p{i}\n"));
+            }
+            header.push_str("end_header\n");
+            assert!(PlyReader::new(Source::Memory(std::io::Cursor::new(header.into_bytes())), None).is_err());
+            true
+        });
+    }
 }

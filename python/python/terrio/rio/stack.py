@@ -132,7 +132,8 @@ def stack(
         use_highest_res: Use the finest resolution of the sources.
         masked: Return a masked array (nodata masked).
         dst_path: A path (or a dataset open for writing) to write to instead of returning the
-            array.
+            array. When an already-open `DatasetWriter` is passed, the caller retains ownership
+            and must close it to flush output.
         dst_kwds: Creation options and profile items for the output file.
 
     Returns:
@@ -308,11 +309,14 @@ def stack(
 
         if dst is None:
             if masked:
-                dest = np.ma.masked_equal(dest, nodataval, copy=False)
+                if nodataval is not None and cmath.isnan(nodataval):
+                    dest = np.ma.masked_where(np.isnan(dest), dest, copy=False)
+                    dest.set_fill_value(nodataval)
+                else:
+                    dest = np.ma.masked_equal(dest, nodataval, copy=False)
             return dest, output_transform
         if first_colormap:
             dst.write_colormap(1, first_colormap)
-        dst.close()
         return None
 
 

@@ -514,8 +514,11 @@ impl<'a> BandView<'a> {
     /// Band `band` (from 0) of a raster.
     pub(crate) fn of(r: &'a Raster, band: usize) -> Self {
         let n = r.rows * r.cols;
-        let s = band * n..(band + 1) * n;
-        match &r.data {
+        Self::of_samples(&r.data, band * n..(band + 1) * n)
+    }
+
+    pub(crate) fn of_samples(data: &'a RasterData, s: std::ops::Range<usize>) -> Self {
+        match data {
             wbraster::raster::RasterData::U8(v) => Self::U8(&v[s]),
             wbraster::raster::RasterData::I8(v) => Self::I8(&v[s]),
             wbraster::raster::RasterData::U16(v) => Self::U16(&v[s]),

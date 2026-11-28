@@ -123,6 +123,7 @@ Terrio files derived from GDAL source files (each file's header names them):
   crates/terrio/src/ops/vector_grid.rs
   crates/terrio/src/ops/viewshed.rs
   crates/terrio/src/ops/vrt.rs
+  crates/terrio/src/ops/vrt/virtual_raster.rs
   crates/terrio/src/ops/warp.rs
   crates/terrio/src/ops/xyz.rs
   crates/terrio/src/pointcloud/filters/overlay.rs
