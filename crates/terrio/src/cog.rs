@@ -369,6 +369,10 @@ pub(crate) trait WindowSource: Send + Sync {
     /// Reads a window of some bands (numbered from 1) of a level (0 for full resolution, `i + 1`
     /// for overview `i`), band after band.
     fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData>;
+    /// Reads a window to be resampled by a non-nearest kernel.
+    fn read_for_resampling(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
+        self.read(level, window, bands)
+    }
     /// Reads a window of some bands resampled to another size (from overviews `RasterIO`
     /// chooses), as GDAL reads a virtual dataset of several sources: each source read for its
     /// part of the output, from the overview it chooses itself. `None` for a source without such
@@ -490,6 +494,9 @@ impl WindowSource for SharedRaster {
     }
     fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
         Ok(self.lock()?.read_window(window, &WindowOptions { bands: bands.into(), overview: level.checked_sub(1) })?.raster.data)
+    }
+    fn read_for_resampling(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
+        self.lock()?.read_window_for_resampling(window, &WindowOptions { bands: bands.to_vec(), overview: level.checked_sub(1) })
     }
     fn read_sampled(&mut self, level: usize, cols: &[usize], rows: &[usize], bands: &[usize]) -> Result<Option<RasterData>> {
         self.lock()?.read_sampled(cols, rows, &WindowOptions { bands: bands.into(), overview: level.checked_sub(1) })
@@ -1137,15 +1144,16 @@ impl LazyRaster {
     /// A width preserving a copied level and all its descendants (GDAL 3.13.3).
     /// An unknown candidate width leaves inheritance disabled.
     pub fn copy_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
+        // A VRT derives overview dimensions from a source header. An unknown sample width
+        // already disables inheritance, so there is no need to discover its overviews.
+        let bits = self.level_sample_bits(overview)?;
         let count = self.overviews().len();
         let first = match overview {
             Some(index) if index < count => index + 1,
             Some(_) => return None,
             None => 0,
         };
-        std::iter::once(overview)
-            .chain((first..count).map(Some))
-            .try_fold(0u16, |widest, level| self.level_sample_bits(level).map(|bits| widest.max(bits)))
+        (first..count).try_fold(bits, |widest, level| self.level_sample_bits(Some(level)).map(|bits| widest.max(bits)))
     }
 
     /// Selects an inherited copy width for a selected level and its descendants (GDAL 3.13.3).
@@ -1759,6 +1767,14 @@ impl LazyRaster {
     /// cannot hold (more than [`crate::usable_memory`]) is refused with [`Error::ResourceLimit`]
     /// before it is allocated.
     pub fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {
+        self.read_window_impl(window, options, false)
+    }
+
+    pub(crate) fn read_window_for_resampling(&mut self, window: Window, options: &WindowOptions) -> Result<RasterData> {
+        Ok(self.read_window_impl(window, options, true)?.raster.data)
+    }
+
+    fn read_window_impl(&mut self, window: Window, options: &WindowOptions, resampling: bool) -> Result<RasterDataset> {
         let _scope = self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
         let (lw, lh) = self.level_size(options.overview)?;
         window.check(lw, lh)?;
@@ -1783,7 +1799,10 @@ impl LazyRaster {
                 }
                 cut(r, window, &bands)
             }
-            Inner::Source(_, s) => s.read(options.overview.map_or(0, |i| i + 1), window, &bands)?,
+            Inner::Source(_, s) => {
+                let level = options.overview.map_or(0, |i| i + 1);
+                if resampling { s.read_for_resampling(level, window, &bands)? } else { s.read(level, window, &bands)? }
+            }
         };
         let (x, y) = (window.x as f64, window.y as f64);
         let geo_transform = [gt[0] + x * gt[1] + y * gt[2], gt[1], gt[2], gt[3] + x * gt[4] + y * gt[5], gt[4], gt[5]];
