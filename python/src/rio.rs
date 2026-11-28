@@ -635,11 +635,12 @@ fn resampled_read<'py>(
     use numpy::PyUntypedArrayMethods;
     let bands = data.shape().first().copied().unwrap_or(0);
     let src = crate::raster::from_numpy(data)?;
-    let n = region.2 * region.3;
+    let n = region.2.checked_mul(region.3).ok_or_else(|| invalid("the region dimensions overflow"))?;
     let masks: Vec<Option<Vec<u8>>> = match masks {
         Some(m) => {
             let all: Vec<u8> = m.as_array().iter().copied().collect();
-            if all.len() != bands * n {
+            let expected = bands.checked_mul(n).ok_or_else(|| invalid("the mask dimensions overflow"))?;
+            if all.len() != expected {
                 return Err(invalid("the masks do not match the region"));
             }
             if n == 0 { vec![Some(Vec::new()); bands] } else { all.chunks(n).map(|c| Some(c.to_vec())).collect() }

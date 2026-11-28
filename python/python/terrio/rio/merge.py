@@ -215,11 +215,9 @@ def merge(
             first_nodata = first.nodatavals[0]
             nodataval = first_nodata
             dt = first.dtypes[0]
-            src_count = (
-                first.count
-                if indexes is None
-                else (indexes if isinstance(indexes, int) else len(indexes))
-            )
+            if isinstance(indexes, numbers.Integral):
+                indexes = [int(indexes)]
+            src_count = first.count if indexes is None else len(indexes)
             try:
                 first_colormap = first.colormap(1)
             except ValueError:
@@ -382,7 +380,11 @@ def merge(
                 dst.write(dest, window=dw)
         if dst is None:
             if masked:
-                dest = np.ma.masked_equal(dest, nodataval, copy=False)
+                if nodataval is not None and cmath.isnan(nodataval):
+                    dest = np.ma.masked_where(np.isnan(dest), dest, copy=False)
+                    dest.set_fill_value(nodataval)
+                else:
+                    dest = np.ma.masked_equal(dest, nodataval, copy=False)
             return dest, out_t
         if first_colormap:
             dst.write_colormap(1, first_colormap)

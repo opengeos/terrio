@@ -19,7 +19,9 @@ from typing import Any
 
 import numpy as np
 import xarray
+from affine import Affine
 
+from terrio.rio import windows
 from terrio.rio.merge import merge as _rio_merge
 from terrio.xarray._spatial import get_nonspatial_coords, index_variable, make_coords
 
@@ -84,17 +86,23 @@ class RasterioDatasetDuck:
         Returns:
             numpy.ma.MaskedArray: The pixels.
         """
-        data_window = self._xds.terrio.isel_window(window)
-        if out_shape is not None and data_window.shape != tuple(out_shape):
+        data_window = self._xds if window is None else self._xds.terrio.isel_window(window)
+        if out_shape is not None:
             if len(out_shape) == 3:
                 _, out_height, out_width = out_shape
             else:
                 out_height, out_width = out_shape
-            data_window = self._xds.terrio.reproject(
-                self._xds.terrio.crs,
-                transform=self.transform,
-                shape=(out_height, out_width),
-            )
+            if data_window.shape[-2:] != (out_height, out_width):
+                source_width = self._xds.terrio.width if window is None else window.width
+                source_height = self._xds.terrio.height if window is None else window.height
+                target_transform = (
+                    self.transform if window is None else windows.transform(window, self.transform)
+                ) * Affine.scale(source_width / out_width, source_height / out_height)
+                data_window = self._xds.terrio.reproject(
+                    self._xds.terrio.crs,
+                    transform=target_transform,
+                    shape=(out_height, out_width),
+                )
         values = np.asarray(data_window.values)
         nodata = self.nodatavals[0]
         mask: Any = False
@@ -180,7 +188,7 @@ def merge_arrays(
     else:
         coords = dict(get_nonspatial_coords(representative))
     if merged_data.ndim == 3 and representative.ndim == 2:
-        merged_data = merged_data.squeeze()
+        merged_data = merged_data.squeeze(axis=0)
     xda = xarray.DataArray(
         name=representative.name,
         data=merged_data,

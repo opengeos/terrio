@@ -139,8 +139,8 @@ class _Grid:
         fx = float(self.width) / width
         fy = float(self.height) / height
         g[1] *= fx
-        g[2] *= fx
-        g[4] *= fy
+        g[2] *= fy
+        g[4] *= fx
         g[5] *= fy
         return _Grid(self.level, tuple(g), width, height, scale=self.scale)
 
