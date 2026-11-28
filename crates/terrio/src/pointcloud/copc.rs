@@ -108,13 +108,15 @@ impl VoxelKey {
     /// The root node.
     pub const ROOT: VoxelKey = VoxelKey { level: 0, x: 0, y: 0, z: 0 };
 
-    /// The eight children.
+    /// The eight children, or none when child coordinates would overflow `i32`.
     pub fn children(self) -> impl Iterator<Item = VoxelKey> {
-        (0..8).map(move |i| VoxelKey {
-            level: self.level + 1,
-            x: 2 * self.x + (i & 1),
-            y: 2 * self.y + ((i >> 1) & 1),
-            z: 2 * self.z + (i >> 2),
+        (0..8).filter_map(move |i| {
+            Some(VoxelKey {
+                level: self.level.checked_add(1)?,
+                x: self.x.checked_mul(2)?.checked_add(i & 1)?,
+                y: self.y.checked_mul(2)?.checked_add((i >> 1) & 1)?,
+                z: self.z.checked_mul(2)?.checked_add(i >> 2)?,
+            })
         })
     }
 }
@@ -228,6 +230,9 @@ impl Copc {
                 continue;
             }
             let Some(node) = self.node(source, key)? else { continue };
+            if key.level >= 31 {
+                return Err(Error::InvalidData(format!("COPC: octree depth {} exceeds maximum supported depth", key.level)));
+            }
             if let Some(q) = bounds {
                 let b = self.info.node_bounds(key);
                 if b[0] > q[3] || b[3] < q[0] || b[1] > q[4] || b[4] < q[1] || b[2] > q[5] || b[5] < q[2] {
@@ -1027,4 +1032,41 @@ pub(crate) fn scramble(mut x: u64) -> u64 {
     x ^= x >> 33;
     x = x.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
     x ^ (x >> 33)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn voxel_key_children_checked_and_walk_caps_depth() {
+        assert_eq!(VoxelKey { level: i32::MAX, x: 0, y: 0, z: 0 }.children().count(), 0);
+        assert_eq!(VoxelKey { level: 30, x: i32::MAX / 2 + 1, y: 0, z: 0 }.children().count(), 0);
+        assert_eq!(VoxelKey::ROOT.children().count(), 8);
+
+        // An octree chain reaching level 31 is rejected cleanly during walk.
+        let mut nodes = HashMap::new();
+        for level in 0..=31 {
+            let key = VoxelKey { level, x: 0, y: 0, z: 0 };
+            nodes.insert(key, CopcNode { key, offset: 0, byte_size: 0, point_count: 1 });
+        }
+        let mut copc = Copc {
+            info: CopcInfo {
+                center: [0.0; 3],
+                halfsize: 1.0,
+                spacing: 1.0,
+                root_hier_offset: 0,
+                root_hier_size: 0,
+                gpstime_minimum: 0.0,
+                gpstime_maximum: 0.0,
+            },
+            items: Vec::new(),
+            nodes,
+            loaded_pages: HashSet::new(),
+            evlr_start: 0,
+        };
+        let mut source = Source::Memory(Cursor::new(Vec::new()));
+        let err = copc.walk(&mut source, None, i32::MAX).unwrap_err();
+        assert!(matches!(err, Error::InvalidData(_)), "expected InvalidData for depth >= 31, got: {err:?}");
+    }
 }

@@ -1573,28 +1573,46 @@ fn decode_chunk(
         let Some((o, l)) = *entry else { continue };
         let iorigin: Vec<usize> = unravel(j, &inner_grid).iter().zip(&shard.chunks).zip(&origin).map(|((i, c), o)| o + i * c).collect();
         if wanted(&iorigin, &shard.chunks) && !place_cached(&shard.inner, j, &iorigin, &shard.chunks) {
+            if !allow_big && l > MAX_CHUNK_BYTES as u64 {
+                return Err(limited(format!("Zarr shard inner chunk of {l} bytes exceeds {MAX_CHUNK_BYTES} byte limit")));
+            }
+            crate::dataset::fallible::check_usable(usize::try_from(l).ok(), || format!("cannot fetch Zarr shard inner chunk of {l} bytes"))
+                .map_err(limited)?;
             let end = o.checked_add(l).ok_or_else(|| err(bad("shard index out of range")))?;
             chosen.push((o, end, iorigin, j));
         }
     }
     chosen.sort_by_key(|w| w.0);
-    // Runs of nearby inner chunks, each fetched in one request.
-    let mut runs: Vec<(usize, usize)> = Vec::new();
+    // Runs of nearby inner chunks, each fetched in one request: `(start_idx, end_idx, max_byte_end)`.
+    let mut runs: Vec<(usize, usize, u64)> = Vec::new();
     let mut max_run = if a.node.is_remote() { MAX_RUN } else { MAX_LOCAL_RUN };
     if let Some(slots) = slots {
-        let bytes: u64 = chosen.iter().map(|w| w.1 - w.0).sum();
+        let bytes: u64 = chosen.iter().fold(0u64, |acc, w| acc.saturating_add(w.1 - w.0));
         max_run = max_run.min(usize::try_from(bytes.div_ceil(slots.max(1) as u64)).unwrap_or(usize::MAX));
     }
     for (k, w) in chosen.iter().enumerate() {
         match runs.last_mut() {
-            Some((s, e)) if w.0 <= chosen[*e - 1].1.saturating_add(MERGE_GAP as u64) && w.1 - chosen[*s].0 <= max_run as u64 => *e = k + 1,
-            _ => runs.push((k, k + 1)),
+            Some((s, e, run_end))
+                if w.0 <= run_end.saturating_add(MERGE_GAP as u64) && (*run_end).max(w.1) - chosen[*s].0 <= max_run as u64 =>
+            {
+                *e = k + 1;
+                *run_end = (*run_end).max(w.1);
+            }
+            _ => runs.push((k, k + 1, w.1)),
         }
     }
+    let run_limit = (MAX_CHUNK_BYTES as u64).max(max_run as u64);
+    for &(s, _, to) in &runs {
+        let span = to - chosen[s].0;
+        if !allow_big && span > run_limit {
+            return Err(limited(format!("Zarr shard range of {span} bytes exceeds {run_limit} byte limit")));
+        }
+        crate::dataset::fallible::check_usable(usize::try_from(span).ok(), || format!("cannot fetch Zarr shard range of {span} bytes"))
+            .map_err(limited)?;
+    }
     let fetch = |r: usize| -> Result<()> {
-        let (s, e) = runs[r];
+        let (s, e, to) = runs[r];
         let from = chosen[s].0;
-        let to = chosen[s..e].iter().map(|w| w.1).max().unwrap_or(from);
         let Some(bytes) = a.node.get(&key, Range::At(from, to - from))? else { return Ok(()) };
         for (o, end, iorigin, j) in &chosen[s..e] {
             let part = copied(
@@ -4271,6 +4289,111 @@ mod tests {
         ];
         for (t, name) in names {
             assert_eq!(t.as_str(), name);
+        }
+    }
+
+    #[test]
+    fn sharded_v3_inner_chunk_size_limit_and_overlapping_run_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("sharded_limit.zarr");
+        std::fs::create_dir_all(store.join("c/0")).unwrap();
+        let meta = r#"{
+            "zarr_format": 3,
+            "node_type": "array",
+            "shape": [4, 4],
+            "data_type": "uint8",
+            "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [4, 4]}},
+            "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
+            "fill_value": 0,
+            "codecs": [{
+                "name": "sharding_indexed",
+                "configuration": {
+                    "chunk_shape": [2, 2],
+                    "codecs": [
+                        {"name": "bytes", "configuration": {"endian": "little"}},
+                        {"name": "gzip", "configuration": {"level": 1}}
+                    ],
+                    "index_codecs": [{"name": "bytes", "configuration": {"endian": "little"}}],
+                    "index_location": "end"
+                }
+            }]
+        }"#;
+        std::fs::write(store.join("zarr.json"), meta).unwrap();
+
+        // A shard index claiming an inner chunk larger than MAX_CHUNK_BYTES is refused before fetching.
+        let mut bad_shard = Vec::new();
+        bad_shard.extend_from_slice(&0u64.to_le_bytes());
+        bad_shard.extend_from_slice(&((MAX_CHUNK_BYTES as u64) + 1).to_le_bytes());
+        for _ in 1..4 {
+            bad_shard.extend_from_slice(&u64::MAX.to_le_bytes());
+            bad_shard.extend_from_slice(&u64::MAX.to_le_bytes());
+        }
+        std::fs::write(store.join("c/0/0"), &bad_shard).unwrap();
+        let err = read(&store).unwrap_err();
+        assert!(matches!(err, Error::ResourceLimit(_)), "expected ResourceLimit, got: {err:?}");
+
+        // Nested/overlapping inner-chunk entries within one span merge into a single range request.
+        {
+            use crate::sparse::{ObjectRange, SparseObjects};
+            use std::io::Write as _;
+            use std::sync::Arc;
+            let gzip_bytes = |payload: &[u8]| {
+                let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+                enc.write_all(payload).unwrap();
+                enc.finish().unwrap()
+            };
+            let inner1 = gzip_bytes(&[11, 12, 13, 14]);
+            let inner2 = gzip_bytes(&[21, 22, 23, 24]);
+            let inner0_plain = gzip_bytes(&[1, 2, 3, 4]);
+            // Embed inner1 (at offset 32) and inner2 (at offset 8500, past MERGE_GAP from inner1)
+            // inside a valid gzip FEXTRA header of inner0 (spanning 0..~9000).
+            let extra_len: usize = 9000;
+            let mut extra = vec![0u8; extra_len];
+            extra[20..20 + inner1.len()].copy_from_slice(&inner1);
+            extra[8500..8500 + inner2.len()].copy_from_slice(&inner2);
+            let mut inner0 = Vec::with_capacity(inner0_plain.len() + extra_len + 2);
+            inner0.extend_from_slice(&inner0_plain[..10]);
+            inner0[3] |= 0x04; // FEXTRA flag
+            inner0.extend_from_slice(&(extra_len as u16).to_le_bytes());
+            inner0.extend_from_slice(&extra);
+            inner0.extend_from_slice(&inner0_plain[10..]);
+
+            let mut index_bytes = Vec::with_capacity(64);
+            let entries: [(u64, u64); 4] =
+                [(0, inner0.len() as u64), (12 + 20, inner1.len() as u64), (12 + 8500, inner2.len() as u64), (u64::MAX, u64::MAX)];
+            for (o, l) in entries {
+                index_bytes.extend_from_slice(&o.to_le_bytes());
+                index_bytes.extend_from_slice(&l.to_le_bytes());
+            }
+
+            let objects = Arc::new(SparseObjects::new());
+            let mut array = loop {
+                match ZarrArray::open_objects(objects.clone(), "store.zarr", "") {
+                    Ok(a) => break a,
+                    Err(_) if objects.has_missing() => {
+                        for (key, range) in objects.missing() {
+                            let data =
+                                if key == "zarr.json" && range == ObjectRange::Whole { Some(meta.as_bytes().to_vec()) } else { None };
+                            objects.insert(&key, range, data);
+                        }
+                    }
+                    Err(e) => panic!("unexpected open_objects error: {e}"),
+                }
+            };
+            objects.insert("c/0/0", ObjectRange::Suffix(64), Some(index_bytes));
+            let _ = array.read(crate::Window::new(0, 0, 4, 4), &[1]);
+            let shard_ranges: Vec<ObjectRange> = objects.missing().into_iter().filter(|(k, _)| k == "c/0/0").map(|(_, r)| r).collect();
+            assert_eq!(
+                shard_ranges,
+                vec![ObjectRange::At(0, inner0.len() as u64)],
+                "overlapping inner chunks should merge into one range request"
+            );
+            objects.insert("c/0/0", ObjectRange::At(0, inner0.len() as u64), Some(inner0));
+            let ds = array.read(crate::Window::new(0, 0, 4, 4), &[1]).unwrap();
+            let vals = ds.to_f64_vec();
+            assert_eq!(vals[0], 1.0);
+            assert_eq!(vals[2], 11.0);
+            assert_eq!(vals[8], 21.0);
         }
     }
 }

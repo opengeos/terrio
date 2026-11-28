@@ -459,7 +459,9 @@ pub(crate) fn decode_file(b: &[u8]) -> Result<Image> {
         // `jpeg-decoder` allocates infallibly, about four bytes a sample (coefficients, planes,
         // the image): within this decoder's limit, and only once that much could be reserved.
         let info = d.info().ok_or("no JPEG header")?;
-        let samples = (info.width as usize) * (info.height as usize) * info.pixel_format.pixel_bytes();
+        let samples =
+            crate::dataset::fallible::len(&[info.width as usize, info.height as usize, info.pixel_format.pixel_bytes()], "a JPEG image")
+                .map_err(|e| DecodeError::Resource(e.to_string()))?;
         if samples > 1 << 31 {
             return Err(DecodeError::Resource(format!("JPEG image too large ({} x {})", info.width, info.height)));
         }
@@ -1221,6 +1223,13 @@ mod resource_tests {
     #[test]
     fn oversized_frame_is_a_typed_resource_refusal() {
         let header = [0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0xff, 0xff, 0xff, 0xff, 1, 1, 0x11, 0, 0xff, 0xd9];
+        assert!(matches!(super::decode_file(&header), Err(super::DecodeError::Resource(_))));
+    }
+
+    #[test]
+    fn progressive_oversized_frame_is_a_typed_resource_refusal() {
+        // SOF2 (0xc2) progressive 65535 x 65535 3-component frame falls through to jpeg-decoder.
+        let header = [0xff, 0xd8, 0xff, 0xc2, 0, 17, 8, 0xff, 0xff, 0xff, 0xff, 3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0, 0xff, 0xd9];
         assert!(matches!(super::decode_file(&header), Err(super::DecodeError::Resource(_))));
     }
 

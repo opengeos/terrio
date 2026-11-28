@@ -276,7 +276,14 @@ pub(crate) fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<Raste
         .max_by_key(|r| i(&tm, r, "zoom_level").unwrap_or(-1))
         .ok_or_else(|| bad(path, "no tile matrix"))?;
     let zoom = i(&tm, level, "zoom_level").unwrap_or(0);
-    let (tw, th) = (i(&tm, level, "tile_width").unwrap_or(256) as usize, i(&tm, level, "tile_height").unwrap_or(256) as usize);
+    let tw = usize::try_from(i(&tm, level, "tile_width").unwrap_or(256))
+        .ok()
+        .filter(|&v| v > 0)
+        .ok_or_else(|| bad(path, "invalid tile width"))?;
+    let th = usize::try_from(i(&tm, level, "tile_height").unwrap_or(256))
+        .ok()
+        .filter(|&v| v > 0)
+        .ok_or_else(|| bad(path, "invalid tile height"))?;
     let (rx, ry) = (f(&tm, level, "pixel_x_size").ok_or_else(|| bad(path, "no pixel size"))?, f(&tm, level, "pixel_y_size").unwrap_or(0.0));
     let cols = ((maxx - minx) / rx + 0.5) as usize;
     let rows = ((maxy - miny) / ry + 0.5) as usize;
@@ -394,14 +401,31 @@ pub(crate) fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<Raste
         }
         let (nb, out) = grid.as_mut().unwrap();
         let nb = *nb;
-        for y in 0..h.min(th) {
-            let gy = tr * th as i64 + y as i64 - yoff;
-            if gy < 0 || gy >= rows as i64 {
+        let rows_i128 = i128::try_from(rows).unwrap_or(i128::MAX);
+        let cols_i128 = i128::try_from(cols).unwrap_or(i128::MAX);
+        let th_lim = h.min(th);
+        let tw_lim = w.min(tw);
+        let (Some(y_base), Some(x_base)) = (
+            i128::from(tr).checked_mul(i128::from(th as u64)).and_then(|v| v.checked_sub(i128::from(yoff))),
+            i128::from(tc).checked_mul(i128::from(tw as u64)).and_then(|v| v.checked_sub(i128::from(xoff))),
+        ) else {
+            continue;
+        };
+        if y_base.saturating_add(i128::from(th_lim as u64)) <= 0
+            || y_base >= rows_i128
+            || x_base.saturating_add(i128::from(tw_lim as u64)) <= 0
+            || x_base >= cols_i128
+        {
+            continue;
+        }
+        for y in 0..th_lim {
+            let gy = y_base + i128::from(y as u64);
+            if gy < 0 || gy >= rows_i128 {
                 continue;
             }
-            for x in 0..w.min(tw) {
-                let gx = tc * tw as i64 + x as i64 - xoff;
-                if gx < 0 || gx >= cols as i64 {
+            for x in 0..tw_lim {
+                let gx = x_base + i128::from(x as u64);
+                if gx < 0 || gx >= cols_i128 {
                     continue;
                 }
                 for b in 0..nb.min(bands) {
@@ -1134,5 +1158,45 @@ mod tests {
             }
         }
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn out_of_range_tile_coordinates_and_invalid_tile_sizes() {
+        let valid_raster =
+            common::make_raster(1, 1, 1, RasterData::F32(vec![7.]), common::NO_GEOTRANSFORM, Default::default(), None).unwrap();
+        let valid_tile = super::super::gtiff_write::encode(&valid_raster, &Default::default()).unwrap();
+        let far_raster =
+            common::make_raster(1, 1, 1, RasterData::F32(vec![99.]), common::NO_GEOTRANSFORM, Default::default(), None).unwrap();
+        let far_tile = super::super::gtiff_write::encode(&far_raster, &Default::default()).unwrap();
+
+        // A tile whose column * tile_width overflows i64 is skipped cleanly instead of panicking or wrapping.
+        let mut builder = super::super::vector::geopackage::Builder::new();
+        let extent = [0., 0., 1., 1.];
+        let tiles = vec![(0, 0, 0, valid_tile.clone()), (0, (i64::MAX / 256) + 1, 0, far_tile)];
+        let ids = builder.add_tiles("grid", "2d-gridded-coverage", 0, extent, extent, &[(0, 1, 1, 256, 256, 1., 1.)], tiles).unwrap();
+        builder.add_coverage("grid", ("float", 1., 0., None), ids.into_iter().map(|id| (id, 1., 0., [None; 4])).collect());
+        let db = Db::new(builder.finish().unwrap()).unwrap();
+        let ds = read_db(&db, Some("grid"), Path::new("overflow.gpkg")).unwrap();
+        assert_eq!(ds.raster.data.to_f64_vec(), vec![7.0]);
+
+        // Zero or negative tile dimensions in gpkg_tile_matrix are rejected.
+        for (tw, th) in [(0, 256), (256, -1)] {
+            let mut builder = super::super::vector::geopackage::Builder::new();
+            let ids = builder
+                .add_tiles(
+                    "grid",
+                    "2d-gridded-coverage",
+                    0,
+                    extent,
+                    extent,
+                    &[(0, 1, 1, tw, th, 1., 1.)],
+                    vec![(0, 0, 0, valid_tile.clone())],
+                )
+                .unwrap();
+            builder.add_coverage("grid", ("float", 1., 0., None), ids.into_iter().map(|id| (id, 1., 0., [None; 4])).collect());
+            let db = Db::new(builder.finish().unwrap()).unwrap();
+            let err = read_db(&db, Some("grid"), Path::new("bad_tile_size.gpkg")).unwrap_err();
+            assert!(matches!(err, Error::InvalidData(_)), "({tw}, {th}): expected InvalidData, got: {err:?}");
+        }
     }
 }
