@@ -184,6 +184,9 @@ def hasenv() -> bool:
 def setenv(**options: Any) -> None:
     """Sets options in the active environment (or the process environment).
 
+    A value of `None` unsets the option (in the active `Env` scope, or in `os.environ` when no
+    `Env` is active).
+
     Args:
         **options: GDAL configuration options.
     """

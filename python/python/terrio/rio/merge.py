@@ -215,8 +215,8 @@ def merge(
             first_nodata = first.nodatavals[0]
             nodataval = first_nodata
             dt = first.dtypes[0]
-            if isinstance(indexes, int):
-                indexes = [indexes]
+            if isinstance(indexes, numbers.Integral):
+                indexes = [int(indexes)]
             src_count = first.count if indexes is None else len(indexes)
             try:
                 first_colormap = first.colormap(1)

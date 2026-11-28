@@ -126,10 +126,7 @@ def _pixel_geometry(geom: dict[str, Any], inv: Affine) -> dict[str, Any]:
             "type": "GeometryCollection",
             "geometries": [_pixel_geometry(g, inv) for g in geom["geometries"]],
         }
-    out = {"type": geom["type"], "coordinates": tr(geom["coordinates"])}
-    if out["type"] == "LinearRing":
-        out["type"] = "LineString"
-    return out
+    return {"type": geom["type"], "coordinates": tr(geom["coordinates"])}
 
 
 def _geojson_geometry(geom: dict[str, Any]) -> dict[str, Any]:
@@ -174,11 +171,12 @@ def _burn(
         numpy.ndarray: The burnt values, float64 (for `add`) or of type `ot`.
     """
     h, w = shape
+    geoms = [_geojson_geometry(g) for g in geoms]
     if _north_up(transform):
         # Map coordinates on the exact grid of the transform.
         grid = transform.to_gdal()
         feats = [
-            {"type": "Feature", "properties": {"v": v}, "geometry": _geojson_geometry(g)}
+            {"type": "Feature", "properties": {"v": v}, "geometry": g}
             for g, v in zip(geoms, values, strict=False)
         ]
     else:
