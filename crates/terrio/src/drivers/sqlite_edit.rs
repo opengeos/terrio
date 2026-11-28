@@ -1235,25 +1235,55 @@ pub(crate) fn journal_pages(journal: &[u8]) -> Option<JournalPages<'_>> {
     Some((original, page_size, pages))
 }
 
+/// Parses a rollback journal, distinguishing cold/torn headers (`Ok(None)`) from corrupt
+/// non-zero page sizes (`Err(Error::InvalidData)`).
+fn parse_journal<'a>(journal: &'a [u8], journal_path: &Path) -> Result<Option<JournalPages<'a>>> {
+    if journal.len() < 28 || journal[..8] != JOURNAL_MAGIC {
+        return Ok(None);
+    }
+    let page_size = u32::from_be_bytes([journal[24], journal[25], journal[26], journal[27]]) as usize;
+    if page_size == 0 {
+        // SQLite syncs the journal header before modifying the database, so a zero page size
+        // reflects a torn/uninitialized header rather than committed rollback pages.
+        return Ok(None);
+    }
+    if !(512..=65536).contains(&page_size) || !page_size.is_power_of_two() {
+        return Err(bad(format!(
+            "{}: invalid SQLite journal page size {page_size}; inspect or remove the journal before retrying",
+            journal_path.display()
+        )));
+    }
+    Ok(journal_pages(journal))
+}
+
 /// Cap hot-journal image expansion so a small journal cannot claim gigabytes of zero-filled pages.
 const MAX_JOURNAL_REPLAY_BYTES: u64 = 512 << 20;
+
+fn max_journal_replay_bytes(db_len: u64) -> u64 {
+    db_len.saturating_add(MAX_JOURNAL_REPLAY_BYTES)
+}
 
 /// A database file's bytes as they were before a transaction a hot journal says was
 /// interrupted (or is under way), without changing the file: what SQLite readers see.
 pub(crate) fn read_consistent(path: &Path) -> Result<Vec<u8>> {
     let mut data = crate::par::read_file(path)?;
+    let journal_path = with_suffix(path, "-journal");
     if let Some(journal) = read_journal(path)?
-        && let Some((original, page_size, pages)) = journal_pages(&journal)
+        && let Some((original, page_size, pages)) = parse_journal(&journal, &journal_path)?
     {
         // Pages are restored in reverse, so that the first image of a page journaled twice wins.
         // `journal_pages` already filters entries to `1..=original`, so `end <= orig_bytes`.
-        let orig_bytes = (original as usize)
-            .checked_mul(page_size)
+        let orig_bytes_u64 = u64::from(original)
+            .checked_mul(page_size as u64)
             .ok_or_else(|| Error::InvalidData("SQLite journal original size overflows".into()))?;
-        let max_replay = data.len().max(usize::try_from(MAX_JOURNAL_REPLAY_BYTES).unwrap_or(usize::MAX));
-        if orig_bytes > max_replay {
-            return Err(Error::ResourceLimit(format!("SQLite journal declared size {orig_bytes} exceeds {max_replay} byte replay limit")));
+        let max_replay = max_journal_replay_bytes(data.len() as u64);
+        if orig_bytes_u64 > max_replay {
+            return Err(Error::ResourceLimit(format!(
+                "SQLite journal declared size {orig_bytes_u64} exceeds {max_replay} byte replay limit"
+            )));
         }
+        let orig_bytes = usize::try_from(orig_bytes_u64)
+            .map_err(|_| Error::ResourceLimit(format!("SQLite journal declared size {orig_bytes_u64} exceeds addressable memory")))?;
         for (pgno, page) in pages.iter().rev() {
             let start = (*pgno as usize).checked_sub(1).and_then(|p| p.checked_mul(page_size));
             let end = start.and_then(|s| s.checked_add(page_size));
@@ -1299,7 +1329,11 @@ pub(crate) fn ensure_no_wal(path: &Path) -> Result<()> {
 
 /// Whether a hot journal (one an interrupted transaction left) goes with the database file.
 pub(crate) fn has_hot_journal(path: &Path) -> Result<bool> {
-    Ok(read_journal(path)?.is_some_and(|j| journal_pages(&j).is_some()))
+    let journal_path = with_suffix(path, "-journal");
+    match read_journal(path)? {
+        Some(j) => Ok(parse_journal(&j, &journal_path)?.is_some()),
+        None => Ok(false),
+    }
 }
 
 /// Opens a database as SQLite readers see it: mapped in place, or, when a hot journal goes with
@@ -1317,11 +1351,8 @@ fn recover(file: &mut File, path: &Path) -> Result<()> {
 fn recover_with_sync(file: &mut File, path: &Path, mut sync_directory: impl FnMut(&Path) -> std::io::Result<()>) -> Result<()> {
     let journal_path = with_suffix(path, "-journal");
     let Some(journal) = read_journal(path)? else { return Ok(()) };
-    let Some((original, page_size, pages)) = journal_pages(&journal) else {
-        if journal.len() >= 28 && journal[..8] == JOURNAL_MAGIC {
-            return Err(bad("invalid SQLite journal header"));
-        }
-        // An empty or zeroed journal is not hot.
+    let Some((original, page_size, pages)) = parse_journal(&journal, &journal_path)? else {
+        // An empty, zeroed, or torn-header journal is not hot.
         let _ = std::fs::remove_file(&journal_path);
         return Ok(());
     };
@@ -1331,7 +1362,7 @@ fn recover_with_sync(file: &mut File, path: &Path, mut sync_directory: impl FnMu
         .ok_or_else(|| Error::InvalidData("SQLite journal original size overflows".into()))?;
     // Allow databases of any size to roll back a shrinking transaction by up to
     // MAX_JOURNAL_REPLAY_BYTES while preventing small files from expanding by gigabytes.
-    let max_replay = db_len.saturating_add(MAX_JOURNAL_REPLAY_BYTES);
+    let max_replay = max_journal_replay_bytes(db_len);
     if orig_bytes > max_replay {
         return Err(Error::ResourceLimit(format!("SQLite journal declared size {orig_bytes} exceeds {max_replay} byte replay limit")));
     }
@@ -2035,15 +2066,32 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), original);
         assert!(!journal_path.exists());
 
-        // A journal with valid magic but non-power-of-two page size is refused without deleting it.
+        // A torn/uninitialized journal header (page_size == 0) is not hot: reads ignore it and
+        // write recovery cleans it up.
+        std::fs::write(&journal_path, make_header(1, 0)).unwrap();
+        assert!(!has_hot_journal(&path).unwrap());
+        assert_eq!(read_consistent(&path).unwrap(), original);
+        recover_with_sync(&mut file, &path, |_| Ok(())).unwrap();
+        assert!(!journal_path.exists());
+
+        // A journal with valid magic and a malformed non-zero page size is refused by both
+        // read-only and write recovery without deleting the journal file.
         std::fs::write(&journal_path, make_header(1, 1000)).unwrap();
+        let read_err = read_consistent(&path).unwrap_err();
+        assert!(matches!(read_err, Error::InvalidData(_)), "{read_err:?}");
+        let open_err = open_consistent(&path).err().expect("malformed journal must fail open_consistent");
+        assert!(matches!(open_err, Error::InvalidData(_)), "{open_err:?}");
         let err = recover_with_sync(&mut file, &path, |_| Ok(())).unwrap_err();
         assert!(matches!(err, Error::InvalidData(_)), "{err:?}");
+        assert!(err.to_string().contains("-journal"), "{err}");
         assert!(journal_path.exists());
 
-        // A journal declaring an original size above db_len + 512 MiB is refused before set_len.
+        // A journal declaring an original size above db_len + 512 MiB is refused by both read and
+        // write paths before set_len / allocation.
         let huge_pages = ((original.len() as u64 + MAX_JOURNAL_REPLAY_BYTES) / u64::from(db_page_size) + 10) as u32;
         std::fs::write(&journal_path, make_header(huge_pages, db_page_size)).unwrap();
+        let read_limit_err = read_consistent(&path).unwrap_err();
+        assert!(matches!(read_limit_err, Error::ResourceLimit(_)), "{read_limit_err:?}");
         let err = recover_with_sync(&mut file, &path, |_| Ok(())).unwrap_err();
         assert!(matches!(err, Error::ResourceLimit(_)), "{err:?}");
         assert_eq!(std::fs::metadata(&path).unwrap().len(), original.len() as u64);

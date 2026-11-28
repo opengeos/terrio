@@ -25,7 +25,7 @@ pub fn read(path: &str) -> Result<Vec<Layer>> {
     parse(&std::fs::read(path)?)
 }
 
-/// Maximum bytes of emitted coordinates per TopoJSON parse (also bounded by half of usable memory).
+/// Maximum bytes of emitted coordinates per TopoJSON parse (a fixed cap, independent of host memory).
 const MAX_COORD_BYTES: usize = 256 * 1024 * 1024;
 
 struct Topology {

@@ -401,20 +401,14 @@ pub(crate) fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<Raste
         }
         let (nb, out) = grid.as_mut().unwrap();
         let nb = *nb;
-        let rows_i128 = i128::try_from(rows).unwrap_or(i128::MAX);
-        let cols_i128 = i128::try_from(cols).unwrap_or(i128::MAX);
+        let rows_i128 = i128::from(rows as u64);
+        let cols_i128 = i128::from(cols as u64);
         let th_lim = h.min(th);
         let tw_lim = w.min(tw);
-        let (Some(y_base), Some(x_base)) = (
-            i128::from(tr).checked_mul(i128::from(th as u64)).and_then(|v| v.checked_sub(i128::from(yoff))),
-            i128::from(tc).checked_mul(i128::from(tw as u64)).and_then(|v| v.checked_sub(i128::from(xoff))),
-        ) else {
-            continue;
-        };
-        if y_base.saturating_add(i128::from(th_lim as u64)) <= 0
-            || y_base >= rows_i128
-            || x_base.saturating_add(i128::from(tw_lim as u64)) <= 0
-            || x_base >= cols_i128
+        // `tw` and `th` are validated positive `i64` values, so `i128` arithmetic cannot overflow.
+        let y_base = i128::from(tr) * i128::from(th as u64) - i128::from(yoff);
+        let x_base = i128::from(tc) * i128::from(tw as u64) - i128::from(xoff);
+        if y_base + i128::from(th_lim as u64) <= 0 || y_base >= rows_i128 || x_base + i128::from(tw_lim as u64) <= 0 || x_base >= cols_i128
         {
             continue;
         }
@@ -1169,7 +1163,8 @@ mod tests {
             common::make_raster(1, 1, 1, RasterData::F32(vec![99.]), common::NO_GEOTRANSFORM, Default::default(), None).unwrap();
         let far_tile = super::super::gtiff_write::encode(&far_raster, &Default::default()).unwrap();
 
-        // A tile whose column * tile_width overflows i64 is skipped cleanly instead of panicking or wrapping.
+        // A tile whose column * tile_width would overflow i64 is computed in i128 and skipped by
+        // the output bounds check instead of panicking or wrapping.
         let mut builder = super::super::vector::geopackage::Builder::new();
         let extent = [0., 0., 1., 1.];
         let tiles = vec![(0, 0, 0, valid_tile.clone()), (0, (i64::MAX / 256) + 1, 0, far_tile)];
