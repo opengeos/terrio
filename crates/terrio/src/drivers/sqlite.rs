@@ -197,18 +197,32 @@ pub(crate) fn varint(b: &[u8], i: usize) -> Option<(i64, usize)> {
     None
 }
 
-/// The pages of a database a b-tree walk has reached: one bit per page of the file, so that a
-/// walk of a large file costs an eighth of a byte per page, and a page reached twice (a cycle, or
-/// interior pages sharing children) is found.
+/// Up to this many pages, [`PageSet`] uses a dense bitset (8 KiB); larger databases allocate
+/// 64-page bitmap words on demand so huge sparse or remote files do not allocate up front.
+const DENSE_PAGE_LIMIT: u64 = 65_536;
+
+enum PageBits {
+    Dense(Vec<u64>),
+    Sparse(std::collections::HashMap<u32, u64>),
+}
+
+enum SharedPageBits {
+    Dense(Vec<std::sync::atomic::AtomicU64>),
+    Sparse(std::sync::Mutex<std::collections::HashMap<u32, u64>>),
+}
+
+/// The pages of a database a b-tree walk has reached: a dense bitset for small databases and
+/// demand-allocated 64-page bitmap words for larger ones, so a page reached twice (a cycle, or
+/// interior pages sharing children) is found without up-front allocation proportional to file size.
 pub(crate) struct PageSet {
-    bits: Vec<u64>,
+    bits: PageBits,
     pages: u64,
 }
 
-/// A [`PageSet`] that parallel leaf decoders share: each insert is one atomic `fetch_or`, so
-/// claiming overflow pages from many threads neither locks nor serializes the decoders.
+/// A [`PageSet`] that parallel leaf decoders share: dense sets use lock-free atomic `fetch_or`,
+/// while large sparse sets synchronize on-demand word allocation.
 pub(crate) struct SharedPageSet {
-    bits: Vec<std::sync::atomic::AtomicU64>,
+    bits: SharedPageBits,
     pages: u64,
 }
 
@@ -218,11 +232,24 @@ impl SharedPageSet {
         if n == 0 || u64::from(n) > self.pages {
             return Err(bad("page out of range"));
         }
-        let i = n as usize - 1;
-        let word = self.bits.get(i / 64).ok_or_else(|| bad("page out of range"))?;
+        let i = n - 1;
+        let word_idx = i / 64;
         let bit = 1u64 << (i % 64);
-        if word.fetch_or(bit, std::sync::atomic::Ordering::Relaxed) & bit != 0 {
-            return Err(bad("overflow page reached twice"));
+        match &self.bits {
+            SharedPageBits::Dense(bits) => {
+                let word = bits.get(word_idx as usize).ok_or_else(|| bad("page out of range"))?;
+                if word.fetch_or(bit, std::sync::atomic::Ordering::Relaxed) & bit != 0 {
+                    return Err(bad("overflow page reached twice"));
+                }
+            }
+            SharedPageBits::Sparse(words) => {
+                let mut words = words.lock().map_err(|_| bad("page set lock"))?;
+                let word = words.entry(word_idx).or_insert(0);
+                if *word & bit != 0 {
+                    return Err(bad("overflow page reached twice"));
+                }
+                *word |= bit;
+            }
         }
         Ok(())
     }
@@ -231,13 +258,22 @@ impl SharedPageSet {
 impl PageSet {
     /// The set as one that parallel decoders can add to.
     pub(crate) fn into_shared(self) -> SharedPageSet {
-        SharedPageSet { bits: self.bits.into_iter().map(std::sync::atomic::AtomicU64::new).collect(), pages: self.pages }
+        let bits = match self.bits {
+            PageBits::Dense(bits) => SharedPageBits::Dense(bits.into_iter().map(std::sync::atomic::AtomicU64::new).collect()),
+            PageBits::Sparse(words) => SharedPageBits::Sparse(std::sync::Mutex::new(words)),
+        };
+        SharedPageSet { bits, pages: self.pages }
     }
 
-    /// An empty set for a file of `pages` pages.
+    /// An empty set for a file of `pages` pages (capped at SQLite's 32-bit page number limit).
     pub(crate) fn new(pages: u64) -> Self {
-        // `pages` is bounded by a file's length or a `u32`, so its words fit in memory.
-        PageSet { bits: vec![0; usize::try_from(pages.div_ceil(64)).expect("page count fits in memory")], pages }
+        let pages = pages.min(u64::from(u32::MAX));
+        let bits = if pages <= DENSE_PAGE_LIMIT {
+            PageBits::Dense(vec![0; (pages as usize).div_ceil(64)])
+        } else {
+            PageBits::Sparse(std::collections::HashMap::new())
+        };
+        PageSet { bits, pages }
     }
 
     /// Adds page `n` (1-based). An error when it was there already, or is not a page of the file.
@@ -245,13 +281,25 @@ impl PageSet {
         if n == 0 || u64::from(n) > self.pages {
             return Err(bad("page out of range"));
         }
-        let i = n as usize - 1;
-        let word = self.bits.get_mut(i / 64).ok_or_else(|| bad("page out of range"))?;
+        let i = n - 1;
+        let word_idx = i / 64;
         let bit = 1u64 << (i % 64);
-        if *word & bit != 0 {
-            return Err(bad("b-tree page reached twice"));
+        match &mut self.bits {
+            PageBits::Dense(bits) => {
+                let word = bits.get_mut(word_idx as usize).ok_or_else(|| bad("page out of range"))?;
+                if *word & bit != 0 {
+                    return Err(bad("b-tree page reached twice"));
+                }
+                *word |= bit;
+            }
+            PageBits::Sparse(words) => {
+                let word = words.entry(word_idx).or_insert(0);
+                if *word & bit != 0 {
+                    return Err(bad("b-tree page reached twice"));
+                }
+                *word |= bit;
+            }
         }
-        *word |= bit;
         Ok(())
     }
 }
@@ -2083,5 +2131,39 @@ mod tests {
             vec!["id", "zoom_level", "tile_data"]
         );
         assert_eq!(varint(&[0x81, 0x00], 0), Some((128, 2)));
+    }
+
+    #[test]
+    fn page_set_handles_large_page_counts_on_demand() {
+        // Dense path: boundary checks and duplicate detection across mutable and shared sets.
+        let mut dense = PageSet::new(100);
+        assert!(dense.insert(0).is_err());
+        assert!(dense.insert(101).is_err());
+        dense.insert(1).unwrap();
+        assert!(dense.insert(1).unwrap_err().to_string().contains("b-tree page reached twice"));
+        dense.insert(100).unwrap();
+        let shared = dense.into_shared();
+        assert!(shared.insert(0).is_err());
+        assert!(shared.insert(101).is_err());
+        assert!(shared.insert(1).unwrap_err().to_string().contains("overflow page reached twice"));
+        shared.insert(2).unwrap();
+        assert!(shared.insert(2).unwrap_err().to_string().contains("overflow page reached twice"));
+
+        // Large page counts are capped to SQLite's 32-bit page range and allocated on demand.
+        let mut large = PageSet::new(u64::from(u32::MAX) + 1024);
+        assert_eq!(large.pages, u64::from(u32::MAX));
+        large.insert(1).unwrap();
+        large.insert(u32::MAX).unwrap();
+        assert!(large.insert(u32::MAX).unwrap_err().to_string().contains("b-tree page reached twice"));
+        let shared = large.into_shared();
+        assert!(shared.insert(0).is_err());
+        assert!(shared.insert(u32::MAX).unwrap_err().to_string().contains("overflow page reached twice"));
+        shared.insert(u32::MAX - 1).unwrap();
+        assert!(shared.insert(u32::MAX - 1).unwrap_err().to_string().contains("overflow page reached twice"));
+
+        // Even u64::MAX does not allocate up front.
+        let mut max_set = PageSet::new(u64::MAX);
+        assert_eq!(max_set.pages, u64::from(u32::MAX));
+        max_set.insert(u32::MAX).unwrap();
     }
 }

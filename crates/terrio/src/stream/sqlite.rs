@@ -90,7 +90,7 @@ impl FileDb {
             file: Mutex::new(file),
             page_size,
             usable,
-            pages: len / page_size as u64,
+            pages: (len / page_size as u64).min(u64::from(u32::MAX)),
             encoding: sqlite::text_encoding(u32::from_be_bytes([h[56], h[57], h[58], h[59]])),
             schema: Vec::new(),
             lookup_path: Mutex::default(),
@@ -832,5 +832,21 @@ mod tests {
             lookup_path: Mutex::default(),
             reads: Mutex::default(),
         }
+    }
+
+    #[test]
+    fn file_db_caps_page_count_at_u32_max() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.gpkg");
+        let mut bytes = crate::drivers::sqlite::fixtures::database(1);
+        bytes[100] = 0x0d; // empty schema leaf on page 1
+        std::fs::write(&path, bytes).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let db = FileDb::read(Pages::File(file), (u64::from(u32::MAX) + 100) * 512).unwrap();
+        assert_eq!(db.pages, u64::from(u32::MAX));
+
+        let file = std::fs::File::open(&path).unwrap();
+        let db = FileDb::read(Pages::File(file), u64::MAX).unwrap();
+        assert_eq!(db.pages, u64::from(u32::MAX));
     }
 }

@@ -229,7 +229,7 @@ pub(crate) fn serialize_directory(entries: &[Entry]) -> Vec<u8> {
 /// Parses an uncompressed directory.
 pub(crate) fn parse_directory(bytes: &[u8]) -> Result<Vec<Entry>> {
     let mut pos = 0usize;
-    let n = read_uvarint(bytes, &mut pos)? as usize;
+    let n = usize::try_from(read_uvarint(bytes, &mut pos)?).map_err(|_| bad("directory entry count overflow"))?;
     if n > bytes.len() {
         return Err(bad(format!("a directory claims {n} entries in {} bytes", bytes.len())));
     }
@@ -536,9 +536,19 @@ impl Reader {
                 continue;
             }
             let end = e.tile_id.checked_add(e.run_length as u64).ok_or_else(|| bad("tile run overflow"))?;
-            for id in e.tile_id.max(lo)..end.min(hi) {
-                let (_, x, y) = tile_id_to_zxy(id);
-                out.push((x, y));
+            let start = e.tile_id.max(lo);
+            let stop = end.min(hi);
+            if start < stop {
+                const MAX_TILES_PER_ZOOM: usize = 16_777_216;
+                let count = stop - start;
+                let remaining = MAX_TILES_PER_ZOOM.saturating_sub(out.len()) as u64;
+                if count > remaining {
+                    return Err(Error::ResourceLimit(format!("PMTiles: zoom level lists more than {MAX_TILES_PER_ZOOM} tiles")));
+                }
+                for id in start..stop {
+                    let (_, x, y) = tile_id_to_zxy(id);
+                    out.push((x, y));
+                }
             }
         }
         Ok(())
@@ -958,5 +968,26 @@ mod tests {
         assert_eq!(r.tile(9, 201, 45).unwrap(), None);
         assert_eq!(r.tiles_at_zoom(9).unwrap().len(), 40_000);
         assert!(r.tiles_at_zoom(8).unwrap().is_empty());
+    }
+
+    #[test]
+    fn tiles_at_zoom_caps_large_run_length() {
+        let mut reader = Reader {
+            source: ByteSource::Memory(Vec::new()),
+            limits: Default::default(),
+            header: Default::default(),
+            root: vec![Entry { tile_id: zoom_base(15), offset: 0, length: 1, run_length: 20_000_000 }],
+            leaves: HashMap::new(),
+            metadata: serde_json::json!({}),
+        };
+        let Err(err) = reader.tiles_at_zoom(15) else {
+            panic!("expected ResourceLimit, got Ok");
+        };
+        assert!(matches!(err, Error::ResourceLimit(_)), "expected ResourceLimit, got: {err:?}");
+
+        // Huge varint entry counts are rejected cleanly.
+        let mut raw = Vec::new();
+        write_uvarint(&mut raw, u64::MAX);
+        assert!(matches!(parse_directory(&raw), Err(Error::InvalidData(_))));
     }
 }

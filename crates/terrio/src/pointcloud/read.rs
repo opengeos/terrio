@@ -61,10 +61,28 @@ impl Source {
         Ok(())
     }
 
+    /// The total byte length of the source.
+    fn source_len(&self) -> Result<u64> {
+        match self {
+            Source::File(f) => Ok(f.get_ref().metadata()?.len()),
+            Source::Memory(c) => Ok(c.get_ref().len() as u64),
+            #[cfg(remote)]
+            Source::Http(h) => Ok(h.len()),
+            Source::Sparse(s) => Ok(s.len()),
+        }
+    }
+
     /// The bytes at `offset`.
     pub(crate) fn read_at(&mut self, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let total = self.source_len()?;
+        let end = offset.checked_add(len as u64).ok_or_else(|| Error::InvalidData("point cloud block offset overflows".into()))?;
+        if end > total {
+            return Err(Error::InvalidData(format!("point cloud block ({offset}..{end}) exceeds source length ({total} bytes)")));
+        }
+        crate::dataset::fallible::check_usable(Some(len), || format!("a point cloud block of {len} bytes"))
+            .map_err(Error::ResourceLimit)?;
         self.seek(SeekFrom::Start(offset))?;
-        let mut b = vec![0u8; len];
+        let mut b = crate::dataset::fallible::filled(len, 0u8, "a point cloud block")?;
         self.read_exact(&mut b)?;
         Ok(b)
     }
@@ -880,5 +898,17 @@ mod tests {
         let missing = temp.path().join("missing.las");
         let error = open_points(missing.to_str().unwrap()).unwrap_err();
         assert!(matches!(error, crate::Error::Io(ref e) if e.kind() == std::io::ErrorKind::NotFound), "{error:?}");
+    }
+
+    #[test]
+    fn source_read_at_rejects_ranges_past_source_length_before_allocating() {
+        let mut source = super::Source::Memory(std::io::Cursor::new(vec![10, 20, 30, 40]));
+        assert_eq!(source.read_at(1, 2).unwrap(), vec![20, 30]);
+        // Requesting 64 MiB from a 4-byte source fails as InvalidData before allocation.
+        let err = source.read_at(0, 64 << 20).unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidData(_)), "expected InvalidData, got: {err:?}");
+        // Offset + len overflow is rejected as InvalidData.
+        let err = source.read_at(u64::MAX - 2, 10).unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidData(_)), "expected InvalidData on overflow, got: {err:?}");
     }
 }

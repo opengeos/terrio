@@ -25,69 +25,153 @@ pub fn read(path: &str) -> Result<Vec<Layer>> {
     parse(&std::fs::read(path)?)
 }
 
+/// Maximum bytes of emitted coordinates per TopoJSON parse (a fixed cap, independent of host memory).
+const MAX_COORD_BYTES: usize = 256 * 1024 * 1024;
+
+#[cfg(test)]
+#[test]
+fn atlas_fixtures_remain_below_the_expansion_limit() {
+    let Ok(dir) = std::env::var("TERRIO_TEST_DATA") else { return };
+    for (name, features) in [("world-110m.topojson", 178), ("us-states-10m.topojson", 57)] {
+        let path = std::path::Path::new(&dir).join(name);
+        let layers = read(path.to_str().unwrap()).unwrap();
+        assert_eq!(layers.iter().map(Layer::len).sum::<usize>(), features, "{name}");
+        let coords: usize = layers
+            .iter()
+            .flat_map(|layer| &layer.features)
+            .filter_map(|feature| feature.geometry.as_ref())
+            .map(crate::vector::coord_count)
+            .sum();
+        eprintln!("{name}: {coords} expanded coordinates");
+        assert!(coords > 0 && coords <= MAX_COORD_BYTES / std::mem::size_of::<Coord>());
+    }
+}
+
 struct Topology {
     arcs: Vec<Vec<Coord>>,
     transform: Option<([f64; 2], [f64; 2])>,
+    coords: usize,
+    max_coords: usize,
 }
 
 impl Topology {
-    fn position(&self, v: &Value) -> Option<Coord> {
-        let a = v.as_array()?;
-        let (x, y) = (a.first()?.as_f64()?, a.get(1)?.as_f64()?);
+    fn charge_coords(&mut self, n: usize) -> Result<()> {
+        let next = self.coords.saturating_add(n);
+        if next > self.max_coords {
+            return Err(Error::ResourceLimit(format!("TopoJSON: expanded coordinates exceed the {} coordinate limit", self.max_coords)));
+        }
+        self.coords = next;
+        Ok(())
+    }
+
+    fn position(&mut self, v: &Value) -> Result<Option<Coord>> {
+        let Some(a) = v.as_array() else { return Ok(None) };
+        let (Some(x), Some(y)) = (a.first().and_then(Value::as_f64), a.get(1).and_then(Value::as_f64)) else {
+            return Ok(None);
+        };
+        self.charge_coords(1)?;
         let (x, y) = match self.transform {
             Some((s, t)) => (x * s[0] + t[0], y * s[1] + t[1]),
             None => (x, y),
         };
-        Some(Coord { x, y, z: a.get(2).and_then(Value::as_f64), m: None })
+        Ok(Some(Coord { x, y, z: a.get(2).and_then(Value::as_f64), m: None }))
     }
 
     /// The coordinates of a line made of arcs (a negative index `~i` is arc `i` reversed).
-    fn line(&self, arcs: &Value) -> Vec<Coord> {
+    fn line(&mut self, arcs: &Value) -> Result<Vec<Coord>> {
         let mut out: Vec<Coord> = Vec::new();
         for i in arcs.as_array().into_iter().flatten().filter_map(Value::as_i64) {
             let (idx, reversed) = if i < 0 { ((!i) as usize, true) } else { (i as usize, false) };
-            let Some(arc) = self.arcs.get(idx) else { continue };
-            let mut pts = arc.clone();
-            if reversed {
-                pts.reverse();
-            }
+            let Some(arc_len) = self.arcs.get(idx).map(Vec::len) else { continue };
             // Consecutive arcs share their end and start points.
             let skip = usize::from(!out.is_empty());
-            out.extend(pts.into_iter().skip(skip));
+            let added = arc_len.saturating_sub(skip);
+            self.charge_coords(added)?;
+            let arc = &self.arcs[idx];
+            if reversed {
+                out.extend(arc.iter().rev().skip(skip).cloned());
+            } else {
+                out.extend(arc.iter().skip(skip).cloned());
+            }
         }
-        out
+        Ok(out)
     }
 
-    fn ring(&self, arcs: &Value) -> Ring {
-        let mut cs = self.line(arcs);
+    fn ring(&mut self, arcs: &Value) -> Result<Ring> {
+        let mut cs = self.line(arcs)?;
         if cs.len() > 1 && cs.first().map(|c| (c.x, c.y)) == cs.last().map(|c| (c.x, c.y)) {
             cs.pop();
         }
-        Ring::new(cs)
+        Ok(Ring::new(cs))
     }
 
     /// A polygon's rings, without degenerate rings of fewer than three points (dropped by GDAL).
-    fn polygon(&self, rings: &Value) -> Option<(Ring, Vec<Ring>)> {
-        let mut rs = rings.as_array()?.iter().map(|r| self.ring(r)).filter(|r| r.len() >= 3);
-        let exterior = rs.next()?;
-        Some((exterior, rs.collect()))
+    fn polygon(&mut self, rings: &Value) -> Result<Option<(Ring, Vec<Ring>)>> {
+        let Some(items) = rings.as_array() else { return Ok(None) };
+        let mut exterior = None;
+        let mut interiors = Vec::new();
+        for r in items {
+            let ring = self.ring(r)?;
+            if ring.len() < 3 {
+                continue;
+            }
+            if exterior.is_none() {
+                exterior = Some(ring);
+            } else {
+                interiors.push(ring);
+            }
+        }
+        Ok(exterior.map(|ext| (ext, interiors)))
     }
 
-    fn geometry(&self, g: &Value) -> Option<Geometry> {
-        let list = |k: &str| g[k].as_array().cloned().unwrap_or_default();
-        Some(match g["type"].as_str()? {
-            "Point" => Geometry::Point(self.position(&g["coordinates"])?),
-            "MultiPoint" => Geometry::MultiPoint(list("coordinates").iter().filter_map(|p| self.position(p)).collect()),
-            "LineString" => Geometry::LineString(self.line(&g["arcs"])),
-            "MultiLineString" => Geometry::MultiLineString(list("arcs").iter().map(|a| self.line(a)).collect()),
+    fn geometry(&mut self, g: &Value) -> Result<Option<Geometry>> {
+        let Some(kind) = g["type"].as_str() else { return Ok(None) };
+        Ok(Some(match kind {
+            "Point" => {
+                let Some(p) = self.position(&g["coordinates"])? else { return Ok(None) };
+                Geometry::Point(p)
+            }
+            "MultiPoint" => {
+                let mut pts = Vec::new();
+                for p in g["coordinates"].as_array().into_iter().flatten() {
+                    if let Some(c) = self.position(p)? {
+                        pts.push(c);
+                    }
+                }
+                Geometry::MultiPoint(pts)
+            }
+            "LineString" => Geometry::LineString(self.line(&g["arcs"])?),
+            "MultiLineString" => {
+                let mut lines = Vec::new();
+                for a in g["arcs"].as_array().into_iter().flatten() {
+                    lines.push(self.line(a)?);
+                }
+                Geometry::MultiLineString(lines)
+            }
             "Polygon" => {
-                let (exterior, interiors) = self.polygon(&g["arcs"])?;
+                let Some((exterior, interiors)) = self.polygon(&g["arcs"])? else { return Ok(None) };
                 Geometry::Polygon { exterior, interiors }
             }
-            "MultiPolygon" => Geometry::MultiPolygon(list("arcs").iter().filter_map(|p| self.polygon(p)).collect()),
-            "GeometryCollection" => Geometry::GeometryCollection(list("geometries").iter().filter_map(|p| self.geometry(p)).collect()),
-            _ => return None,
-        })
+            "MultiPolygon" => {
+                let mut polys = Vec::new();
+                for p in g["arcs"].as_array().into_iter().flatten() {
+                    if let Some(poly) = self.polygon(p)? {
+                        polys.push(poly);
+                    }
+                }
+                Geometry::MultiPolygon(polys)
+            }
+            "GeometryCollection" => {
+                let mut geoms = Vec::new();
+                for p in g["geometries"].as_array().into_iter().flatten() {
+                    if let Some(geom) = self.geometry(p)? {
+                        geoms.push(geom);
+                    }
+                }
+                Geometry::GeometryCollection(geoms)
+            }
+            _ => return Ok(None),
+        }))
     }
 }
 
@@ -105,7 +189,8 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
         Some((pair("scale")?, pair("translate")?))
     });
     let crs = super::geojson::read_crs_member(doc.get("crs"), "TopoJSON")?;
-    let mut topo = Topology { arcs: Vec::new(), transform };
+    let max_coords = (MAX_COORD_BYTES / std::mem::size_of::<Coord>()).max(1);
+    let mut topo = Topology { arcs: Vec::new(), transform, coords: 0, max_coords };
     // Quantized arcs are delta-encoded.
     for arc in doc["arcs"].as_array().into_iter().flatten() {
         let mut pts = Vec::new();
@@ -176,7 +261,7 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
                     attrs[i] = value(v, layer.schema.fields()[i].field_type);
                 }
             }
-            let geometry = topo.geometry(g);
+            let geometry = topo.geometry(g)?;
             if let Some(b) = geometry.as_ref().and_then(|g| g.bbox()) {
                 lonlat &= b.min_x >= -180.0 && b.max_x <= 180.0 && b.min_y >= -90.0 && b.max_y <= 90.0;
             }
@@ -399,5 +484,27 @@ mod tests {
         second.set_crs_epsg(None);
         assert!(to_string(&[first, second.clone()]).is_err());
         assert!(to_string(&[Layer::new("unknown"), second]).is_ok());
+    }
+
+    #[test]
+    fn multiplicative_arc_expansion_hits_coordinate_limit() {
+        // 1 arc of 4,000 coords referenced 2,000 times = ~8M coords (~384 MiB > 256 MiB limit).
+        let arc: Vec<[f64; 2]> = (0..4000).map(|i| [i as f64 * 0.001, 0.0]).collect();
+        let refs = vec![0i64; 2000];
+        let doc = json!({
+            "type": "Topology",
+            "arcs": [arc],
+            "objects": {
+                "expanded": {
+                    "type": "LineString",
+                    "arcs": refs
+                }
+            }
+        });
+        let bytes = serde_json::to_vec(&doc).unwrap();
+        let Err(err) = parse(&bytes) else {
+            panic!("expected ResourceLimit, got Ok");
+        };
+        assert!(matches!(err, Error::ResourceLimit(_)), "expected ResourceLimit, got: {err:?}");
     }
 }

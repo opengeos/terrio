@@ -20,6 +20,31 @@ fn ascii_and_unicode_case_profiles_are_explicit() {
     assert_eq!(Expression::parse("lower('ÄA')").unwrap().evaluate(&ctx).unwrap(), Value::Text("äa".into()));
     assert_eq!(Expression::parse("'Ä' LIKE 'ä'").unwrap().evaluate(&ctx).unwrap(), Value::Int(1));
 }
+
+#[test]
+fn string_expansion_functions_and_concat_respect_size_limit() {
+    let schema = Schema::parse("CREATE TABLE t(s TEXT)").unwrap();
+    let big = Value::Text("a".repeat(16 << 20));
+    let ctx = Context {
+        columns: &schema.columns,
+        row: &[big],
+        rowid: None,
+        table: None,
+        encoding: 1,
+        strict: false,
+        logical: false,
+        unicode_case: false,
+    };
+    for sql in ["s || 'x'", "replace(s, 'a', 'aa')", "hex(s)", "quote(s)"] {
+        let Err(err) = Expression::parse(sql).unwrap().evaluate(&ctx) else {
+            panic!("{sql}: expected ResourceLimit, got Ok");
+        };
+        assert!(matches!(err, Error::ResourceLimit(_)), "{sql}: expected ResourceLimit, got: {err:?}");
+    }
+    // Smaller results remain allowed.
+    assert_eq!(Expression::parse("replace('aba', 'a', 'xx')").unwrap().evaluate(&ctx).unwrap(), Value::Text("xxbxx".into()));
+    assert_eq!(Expression::parse("'ab' || 'cd'").unwrap().evaluate(&ctx).unwrap(), Value::Text("abcd".into()));
+}
 fn decode(value: &serde_json::Value) -> Value {
     match value[0].as_str().unwrap() {
         "null" => Value::Null,

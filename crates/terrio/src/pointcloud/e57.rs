@@ -299,15 +299,17 @@ impl FormatReader for E57File {
         }
         let scan = self.scans[c.scan].clone();
         let plan = plan(&scan, &self.dims);
-        let m = scan.records as usize;
-        let mut cols: Vec<Vec<f64>> = vec![Vec::with_capacity(m); self.dims.len()];
+        let initial_cap = usize::try_from(scan.records).unwrap_or(usize::MAX).min(4096);
+        let mut cols: Vec<Vec<f64>> = (0..self.dims.len()).map(|_| Vec::with_capacity(initial_cap)).collect();
         let col = |name: &str| self.dims.iter().position(|(d, _)| d == name);
         let (cx, cy, cz) = (col("x"), col("y"), col("z"));
         let (cr, ca, ce) = (col("spherical_range"), col("spherical_azimuth"), col("spherical_elevation"));
         let mut row = vec![0.0; self.dims.len()];
         let raw = self.reader.pointcloud_raw(&scan).map_err(|e| Error::InvalidData(format!("E57: {e}")))?;
+        let mut read = 0_u64;
         for values in raw {
             let values = values.map_err(|e| Error::InvalidData(format!("E57: {e}")))?;
+            read += 1;
             row.iter_mut().for_each(|v| *v = 0.0);
             for ((v, r), target) in values.iter().zip(&scan.prototype).zip(&plan.targets) {
                 if let Some((k, factor)) = target {
@@ -358,7 +360,7 @@ impl FormatReader for E57File {
             })
             .collect();
         let first = c.done;
-        c.done += m as u64;
+        c.done += read;
         c.scan += 1;
         let out = apply_options(dims, &c.filter, c.stride, first);
         self.cursor = Some(c);
@@ -564,5 +566,67 @@ impl Drop for E57StreamWriter {
     fn drop(&mut self) {
         self.aborted.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = self.join();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scan_cursor_counts_records_without_selected_dimensions() {
+        let cloud = PointCloud::new(
+            vec![
+                Dimension::new("x", Values::F64(vec![1.0, 2.0])),
+                Dimension::new("y", Values::F64(vec![3.0, 4.0])),
+                Dimension::new("z", Values::F64(vec![5.0, 6.0])),
+            ],
+            crate::crs::SpatialRef::default(),
+        );
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        write_e57(&cloud, &mut bytes, &PointWriteOptions::default()).unwrap();
+        let mut file = E57File::new(Source::Memory(std::io::Cursor::new(bytes.into_inner())), None).unwrap();
+        // A scan containing only unrecognized fields has no output columns, but still has rows.
+        file.dims.clear();
+        file.start(&PointReadOptions::default(), 1024).unwrap();
+        assert!(file.next_chunk().unwrap().unwrap().is_empty());
+        assert_eq!(file.cursor.as_ref().unwrap().done, 2);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn e57_truncated_scan_does_not_preallocate_declared_records() {
+        crate::par::alone(30, || {
+            let status = std::fs::read_to_string("/proc/self/status").unwrap();
+            let vm_kb = status
+                .lines()
+                .find_map(|l| l.strip_prefix("VmSize:"))
+                .and_then(|v| v.split_whitespace().next())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            // SAFETY: valid pointers; constrains only this isolated child process's virtual address space.
+            unsafe {
+                assert_eq!(libc::getrlimit(libc::RLIMIT_AS, &mut limit), 0);
+                let cap = vm_kb.saturating_mul(1024).saturating_add(512 << 20);
+                limit.rlim_cur = limit.rlim_max.min(cap);
+                assert_eq!(libc::setrlimit(libc::RLIMIT_AS, &limit), 0);
+            }
+            let cloud = PointCloud::new(
+                vec![
+                    Dimension::new("x", Values::F64(vec![1.0])),
+                    Dimension::new("y", Values::F64(vec![2.0])),
+                    Dimension::new("z", Values::F64(vec![3.0])),
+                ],
+                crate::crs::SpatialRef::default(),
+            );
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            write_e57(&cloud, &mut bytes, &PointWriteOptions::default()).unwrap();
+            let mut file = E57File::new(Source::Memory(std::io::Cursor::new(bytes.into_inner())), None).unwrap();
+            // Simulate a header declaring 1 billion records (~8 GiB per f64 column if preallocated).
+            file.scans[0].records = 1_000_000_000;
+            assert!(file.read(&PointReadOptions::default()).is_err());
+            true
+        });
     }
 }

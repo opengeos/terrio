@@ -181,13 +181,27 @@ impl From<PipelineData> for PipelineInput {
         Self { data }
     }
 }
+/// The largest remote GDALG definition retained in memory.
+const MAX_REMOTE_GDALG_BYTES: usize = 16 << 20;
+
 /// A validated reusable pipeline. Input files are not opened while parsing.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Pipeline {
     kind: InputKind,
     blocks: Vec<Block>,
     base: Option<String>,
     relative: bool,
+    asset_policy: Option<crate::stac::AssetReadPolicy>,
+}
+impl std::fmt::Debug for Pipeline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pipeline")
+            .field("kind", &self.kind)
+            .field("blocks", &self.blocks)
+            .field("base", &self.base)
+            .field("relative", &self.relative)
+            .finish()
+    }
 }
 impl Pipeline {
     /// Parses a command string with POSIX quoting; no shell expansion is performed.
@@ -203,7 +217,7 @@ impl Pipeline {
             return Err(invalid("NUL is not allowed in pipeline arguments"));
         }
         let (kind, blocks) = parse::parse(tokens)?;
-        Ok(Self { kind, blocks, base: None, relative: false })
+        Ok(Self { kind, blocks, base: None, relative: false, asset_policy: None })
     }
     /// The requested dataset family, including a raster/vector command prefix.
     pub fn input_kind(&self) -> InputKind {
@@ -248,6 +262,15 @@ impl Pipeline {
     /// Parses a GDALG definition with an explicit policy for its saved output destinations.
     /// Allowing saved outputs also trusts their overwrite and append options.
     pub fn from_gdalg_with_output_policy(text: &str, base_file: Option<&str>, outputs: SavedOutputPolicy) -> Result<Self> {
+        let policy = base_file.map(crate::stac::AssetReadPolicy::for_document).transpose()?.flatten();
+        Self::from_gdalg_with_policy(text, base_file, outputs, policy)
+    }
+    fn from_gdalg_with_policy(
+        text: &str,
+        base_file: Option<&str>,
+        outputs: SavedOutputPolicy,
+        asset_policy: Option<crate::stac::AssetReadPolicy>,
+    ) -> Result<Self> {
         let doc: serde_json::Value = serde_json::from_str(text).map_err(|e| invalid(&format!("invalid GDALG JSON: {e}")))?;
         if doc.get("type").and_then(|v| v.as_str()) != Some("gdal_streamed_alg") {
             return Err(invalid("GDALG type must be gdal_streamed_alg"));
@@ -259,6 +282,7 @@ impl Pipeline {
             Some(v) => v.as_bool().ok_or_else(|| invalid("relative_paths_relative_to_this_file must be boolean"))?,
         };
         plan.base = base_file.map(str::to_string);
+        plan.asset_policy = asset_policy;
         if outputs == SavedOutputPolicy::Discard {
             plan.blocks.retain(|block| !matches!(block.step, Step::Write(_)));
             for block in &mut plan.blocks {
@@ -276,10 +300,14 @@ impl Pipeline {
         Self::open_with_output_policy(path, SavedOutputPolicy::Discard)
     }
     /// Loads a saved definition with an explicit policy for its output destinations.
+    /// Remote definitions are capped at 16 MiB and inherit remote asset read restrictions.
     pub fn open_with_output_policy(path: &str, outputs: SavedOutputPolicy) -> Result<Self> {
-        let bytes = crate::vsi::read(path)?;
+        let _inherited = crate::stac::AssetReadPolicy::enter_nested(path)?;
+        let policy = crate::stac::AssetReadPolicy::for_document(path)?;
+        let (bytes, base) =
+            if let Some(policy) = &policy { read_remote_gdalg(path, policy)? } else { (crate::vsi::read(path)?, path.to_string()) };
         let text = std::str::from_utf8(&bytes).map_err(|_| invalid("GDALG must be UTF-8"))?;
-        Self::from_gdalg_with_output_policy(text, Some(path), outputs)
+        Self::from_gdalg_with_policy(text, Some(&base), outputs, policy)
     }
     /// Serializes a GDAL-readable definition, omitting a final write step.
     /// With no saved-file base, relative tokens retain current-directory semantics.
@@ -313,6 +341,7 @@ impl Pipeline {
     /// Evaluates with caller-provided inputs, keeping all outputs in memory until requested.
     /// Named materialize checkpoints are snapshots; no implicit temporary files are created.
     pub fn evaluate_with(&self, mut load: impl FnMut(&ReadRequest) -> Result<PipelineInput>) -> Result<PipelineResult> {
+        let _scope = self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
         if let Some(Block { step: Step::Write(spec), .. }) = self.blocks.last()
             && spec.definition()
         {
@@ -366,6 +395,7 @@ impl Pipeline {
     /// Evaluates native paths and explicitly writes the final output/checkpoints.
     /// Every destination is checked before any write; input/output aliases are snapshotted.
     pub fn run(&self) -> Result<PipelineResult> {
+        let _scope = self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
         let mut plan = self.clone();
         // Native exports resolve input paths before saving so definitions remain
         // usable when moved or opened from another working directory.
@@ -546,11 +576,30 @@ fn vector_options(spec: &WriteSpec) -> Result<crate::VectorWriteOptions> {
     }
     Ok(crate::VectorWriteOptions { driver, ..Default::default() })
 }
+/// Reads a bounded remote GDALG definition and preserves the effective base after redirects.
+fn read_remote_gdalg(path: &str, policy: &crate::stac::AssetReadPolicy) -> Result<(Vec<u8>, String)> {
+    let _observer = policy.observe_transport();
+    #[cfg(remote)]
+    let location = crate::vfs::Location::parse(path);
+    #[cfg(remote)]
+    if let Some(remote) = location.remote() {
+        let response =
+            crate::http::get_file_response_checked(&remote, MAX_REMOTE_GDALG_BYTES as u64, crate::http::Redirects::for_reads(), None)?;
+        let base = if matches!(location, crate::vfs::Location::S3 { .. }) {
+            path.to_string()
+        } else {
+            crate::stac::azure_document_location(path, &remote, &response.url).unwrap_or(response.url)
+        };
+        return Ok((response.body, base));
+    }
+    Ok((crate::vsi::read_limited(path, MAX_REMOTE_GDALG_BYTES)?, path.to_string()))
+}
 fn load_path(request: &ReadRequest, depth: usize) -> Result<PipelineInput> {
     if depth >= 16 {
         return Err(invalid("cyclic or excessively nested saved pipelines"));
     }
     let path = &request.resolved;
+    let _scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     if path.to_ascii_lowercase().ends_with(".gdalg.json") {
         let plan = Pipeline::open(path)?;
         let mut result = plan.evaluate_with(|r| load_path(r, depth + 1))?;
@@ -1260,5 +1309,54 @@ mod tests {
         assert!(matches!(&output.raster.data,wbraster::raster::RasterData::U64(v) if v==&values));
         output = crate::open_raster(path.to_str().unwrap()).unwrap();
         assert!(matches!(&output.raster.data,wbraster::raster::RasterData::U64(v) if v==&values));
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn remote_gdalg_enforces_size_limit_and_isolates_local_inputs() {
+        let _stats = crate::http::stats_test_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let local_input = dir.path().join("local.geojson");
+        std::fs::write(
+            &local_input,
+            r#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[0,0]},"properties":{}}]}"#,
+        )
+        .unwrap();
+        let doc = serde_json::json!({
+            "type": "gdal_streamed_alg",
+            "command_line": format!("gdal vector pipeline read {}", local_input.display()),
+            "relative_paths_relative_to_this_file": false
+        });
+        let body = doc.to_string().into_bytes();
+        let expected_bytes = body.len() as u64;
+        let (base, requests) = crate::http::test_server(body);
+        let url = format!("{base}/remote.gdalg.json");
+        let plan = Pipeline::open(&url).unwrap();
+        assert!(plan.run().is_err(), "remote GDALG must not read local files via run()");
+        assert!(plan.evaluate_with(PipelineInput::open).is_err(), "remote GDALG must not read local files via evaluate_with()");
+        let stats_for = |base: &str| {
+            crate::http::fetch_stats_by_host()
+                .into_iter()
+                .find(|(host, _)| Some(host.as_str()) == base.strip_prefix("http://"))
+                .map(|(_, stats)| stats)
+                .unwrap_or_default()
+        };
+        let valid_stats = stats_for(&base);
+        assert_eq!(requests.lock().unwrap().len(), 1, "running the refused plan must not refetch its definition");
+        assert_eq!((valid_stats.requests, valid_stats.bytes), (1, expected_bytes));
+        eprintln!("remote GDALG definition: 1 request, {} recorded body bytes", valid_stats.bytes);
+
+        // Remote GDALG definitions larger than 16 MiB are rejected before parsing.
+        let prefix = br#"{"type":"gdal_streamed_alg","command_line":"gdal vector pipeline read a.geojson"}"#;
+        let mut oversized = Vec::with_capacity((16 << 20) + 128);
+        oversized.extend_from_slice(prefix);
+        oversized.resize((16 << 20) + 64, b' ');
+        let (big_base, big_requests) = crate::http::test_server(oversized);
+        let big_url = format!("{big_base}/oversized.gdalg.json");
+        assert!(Pipeline::open(&big_url).is_err(), "oversized remote GDALG must be rejected");
+        assert_eq!(big_requests.lock().unwrap().len(), 1);
+        let oversized_stats = stats_for(&big_base);
+        assert_eq!(oversized_stats.bytes, 0, "the Content-Length refusal must precede body reading");
+        eprintln!("oversized remote GDALG: 1 request, {} recorded body bytes", oversized_stats.bytes);
     }
 }
