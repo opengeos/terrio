@@ -234,7 +234,7 @@ pub(crate) fn read_world_file(path: &Path) -> Option<[f64; 6]> {
     if crate::config::sidecars_disabled() {
         return None;
     }
-    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     let mut candidates = vec!["wld".to_string()];
     if let (Some(first), Some(last)) = (ext.chars().next(), ext.chars().last()) {
         candidates.push(format!("{first}{last}w"));

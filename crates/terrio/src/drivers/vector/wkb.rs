@@ -169,13 +169,18 @@ mod tests {
             for cut in 0..wkb.len() {
                 assert_eq!(from_wkb(&wkb[..cut]), Geometry::from_wkb(&wkb[..cut]).ok(), "{g:?} cut at {cut}");
             }
+            let is_collection = matches!(
+                g,
+                Geometry::MultiPoint(_) | Geometry::MultiLineString(_) | Geometry::MultiPolygon(_) | Geometry::GeometryCollection(_)
+            );
             for at in 0..wkb.len().min(16) {
                 let mut bad = wkb.clone();
                 bad[at] ^= 0xff;
                 // Flipping bytes 3..=4 (outer type high bits) or 12..=13 (first member type high
                 // bits in a Multi*/Collection) sets reserved EWKB bits (0x1FFF_0000) or the SRID
                 // flag (0x2000_0000), which this parser rejects more strictly than wbvector 0.1.6.
-                if matches!(at, 3 | 4 | 12 | 13) && from_wkb(&bad).is_none() {
+                if (matches!(at, 3 | 4) || (is_collection && matches!(at, 12 | 13))) && Geometry::from_wkb(&bad).is_ok() {
+                    assert_eq!(from_wkb(&bad), None, "{g:?} with reserved EWKB bits at {at}");
                     continue;
                 }
                 assert_eq!(from_wkb(&bad), Geometry::from_wkb(&bad).ok(), "{g:?} corrupted at {at}");
