@@ -167,7 +167,8 @@ impl GcpTransformer {
 
     /// The residuals of `gcps` under this transformer: for each GCP, as `(dx, dy)`, the
     /// georeferenced position its pixel/line maps to minus the GCP's own `(x, y)`, model minus
-    /// observed, in the GCPs' georeferenced units. This is a fit check: for methods that
+    /// observed, in the GCPs' georeferenced units. This checks the forward (pixel/line to geo)
+    /// model only. This is a fit check: for methods that
     /// interpolate their GCPs exactly (TPS, a homography fitted to 4 GCPs, a polynomial with as
     /// many coefficients as GCPs), every residual is zero by construction; only an
     /// over-determined fit (a higher-order polynomial, a 5+-GCP homography) gives a meaningful
@@ -190,12 +191,14 @@ impl GcpTransformer {
         if r.is_empty() || r.iter().any(|(dx, dy)| !dx.is_finite() || !dy.is_finite()) {
             return None;
         }
+        // Scaling protects large and tiny residuals from intermediate square overflow or underflow.
         let scale = r.iter().fold(0.0_f64, |scale, (dx, dy)| scale.max(dx.abs()).max(dy.abs()));
         if scale == 0.0 {
             return Some(0.0);
         }
         let sum: f64 = r.iter().map(|(dx, dy)| (dx / scale).powi(2) + (dy / scale).powi(2)).sum();
-        Some(scale * (sum / r.len() as f64).sqrt()).filter(|rms| rms.is_finite())
+        let rms = scale * (sum / r.len() as f64).sqrt();
+        rms.is_finite().then_some(rms)
     }
 }
 
