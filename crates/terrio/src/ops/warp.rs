@@ -350,7 +350,7 @@ pub struct WarpOptions {
 }
 
 /// A warp progress callback, for [`WarpOptions::progress`]: called with the fraction of the
-/// work done, which never decreases and stays within [0, 1] — the output rows warped for a
+/// work done, which never decreases and stays within [0, 1]: the output pixels warped for a
 /// windowed warp, the sources warped for one read whole into memory. Returning `false` cancels
 /// the warp with [`Error::Cancelled`], as
 /// [`crate::ops::overview::add_overviews_with_progress`]'s callback does; returning `false` at
@@ -2176,9 +2176,9 @@ fn warp_reader_selected(
     if let Some(p) = &progress {
         p.report(0.0)?;
     }
-    // The chunks partition the output rows: the fraction done is the rows warped so far.
-    let total_rows = grid.height.max(1) as f64;
-    let mut done_rows = 0usize;
+    // Chunks partition both columns and rows, so progress counts their complete pixel areas.
+    let total_pixels = grid.width.max(1) as f64 * grid.height.max(1) as f64;
+    let mut done_pixels = 0usize;
     for c in &chunks {
         let strip = ctx.sum_strip_rows(c);
         if strip < c.sh {
@@ -2196,9 +2196,9 @@ fn warp_reader_selected(
             }
             let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: true };
             warp_chunks(std::slice::from_ref(c), bands, &storage, target, |c, sink, rows| ctx.store_sum_strips(c, &sums, sink, rows));
-            done_rows += c.dh;
+            done_pixels += c.dw * c.dh;
             if let Some(p) = &progress {
-                p.report(done_rows as f64 / total_rows)?;
+                p.report(done_pixels as f64 / total_pixels)?;
             }
             continue;
         }
@@ -2224,9 +2224,9 @@ fn warp_reader_selected(
                 None => break,
             }
         }
-        done_rows += c.dh;
+        done_pixels += c.dw * c.dh;
         if let Some(p) = &progress {
-            p.report(done_rows as f64 / total_rows)?;
+            p.report(done_pixels as f64 / total_pixels)?;
         }
     }
     if let Some(p) = &progress {
@@ -2514,8 +2514,8 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
         Ok((src.read_window(window, &options)?, source_mask(&mut *src, window, overview)?))
     };
     // The output rows warped so far, across the pipelined chunks.
-    let done_rows = std::sync::atomic::AtomicU64::new(0);
-    let total_rows = grid.height.max(1) as f64;
+    let done_pixels = std::sync::atomic::AtomicU64::new(0);
+    let total_pixels = grid.width.max(1) as f64 * grid.height.max(1) as f64;
     super::strips::pipelined(
         chunks.len(),
         |i| {
@@ -2582,9 +2582,10 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
                     }
                 }
             });
-            let done = done_rows.fetch_add(c.dh as u64, std::sync::atomic::Ordering::Relaxed) + c.dh as u64;
+            let pixels = c.dw as u64 * c.dh as u64;
+            let done = done_pixels.fetch_add(pixels, std::sync::atomic::Ordering::Relaxed) + pixels;
             if let Some(p) = &progress {
-                p.report(done as f64 / total_rows)?;
+                p.report(done as f64 / total_pixels)?;
             }
             let upto = first_row(base, i);
             write_done(&mut rows, &mut base, upto)
@@ -11409,7 +11410,7 @@ mod tests {
         assert!(seen.iter().all(|f| (0.0..=1.0).contains(f)), "{seen:?}");
         drop(seen);
 
-        // The windowed (lazy) warp reports the output rows warped per chunk.
+        // The windowed (lazy) warp reports the output pixels warped per chunk.
         let dir = tempfile::tempdir().unwrap();
         let input = dir.path().join("in.tif");
         crate::write_raster_dataset(&src, input.to_str().unwrap(), &Default::default()).unwrap();
@@ -11469,6 +11470,49 @@ mod tests {
         assert_eq!(seen.first(), Some(&0.0), "{seen:?}");
         assert_eq!(seen.last(), Some(&1.0), "{seen:?}");
         assert!(seen.windows(2).all(|w| w[0] <= w[1]), "never decreases: {seen:?}");
+    }
+
+    #[test]
+    fn wide_warps_report_partial_work_and_remove_cancelled_outputs() {
+        use std::sync::{Arc, Mutex};
+        let src = raster(256, 16, [10.0, 0.01, 0.0, 50.0, 0.0, -0.01], 4326, |c, r| (c + 256 * r) as f64);
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("wide.tif");
+        crate::write_raster_dataset(&src, input.to_str().unwrap(), &Default::default()).unwrap();
+        let paths = vec![input.to_str().unwrap().to_string()];
+        let options = WarpOptions { size: Some((256, 16)), memory_limit: 2000.0, error_threshold: 0.0, ..Default::default() };
+        for streamed in [false, true] {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink = seen.clone();
+            let mut options = options.clone();
+            options.progress = Some(ProgressCallback::from(move |fraction| {
+                sink.lock().unwrap().push(fraction);
+                true
+            }));
+            if streamed {
+                warp_to_path(&paths, &options, dir.path().join("complete.tif").to_str().unwrap(), &Default::default()).unwrap();
+            } else {
+                warp_paths(&paths, &options).unwrap();
+            }
+            let seen = seen.lock().unwrap();
+            assert!(seen.iter().find(|fraction| **fraction > 0.0).unwrap() < &1.0, "{seen:?}");
+            assert!(seen.windows(2).all(|pair| pair[0] <= pair[1]), "{seen:?}");
+            assert_eq!(seen.last(), Some(&1.0));
+        }
+        for stop in [0.5, 1.0] {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink = seen.clone();
+            let mut options = options.clone();
+            options.progress = Some(ProgressCallback::from(move |fraction| {
+                sink.lock().unwrap().push(fraction);
+                fraction < stop
+            }));
+            let output = dir.path().join(format!("cancelled-{stop}.tif"));
+            let result = warp_to_path(&paths, &options, output.to_str().unwrap(), &Default::default());
+            assert!(matches!(result, Err(Error::Cancelled)), "{result:?}");
+            assert!(seen.lock().unwrap().iter().any(|fraction| *fraction >= stop));
+            assert!(!output.exists(), "late cancellation must remove the partial output");
+        }
     }
 }
 
