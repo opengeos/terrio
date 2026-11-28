@@ -18,9 +18,6 @@ from terrio.rio.merge import merge as rio_merge
 from terrio.rio.stack import stack as rio_stack
 from terrio.rio.vrt import _Grid
 
-xarray = pytest.importorskip("xarray")
-shapely_geometry = pytest.importorskip("shapely.geometry")
-
 
 def _write_gtiff(path, data: np.ndarray, transform: Affine, *, crs="EPSG:4326", nodata=None):
     if data.ndim == 2:
@@ -43,6 +40,7 @@ def _write_gtiff(path, data: np.ndarray, transform: Affine, *, crs="EPSG:4326", 
 
 def test_xarray_merge_arrays_2d_windowed_preserves_window_origin():
     """Clipping the top/left of a 2-D DataArray in merge_arrays must not sample from (0, 0)."""
+    xarray = pytest.importorskip("xarray")
     import terrio.xarray as txr
 
     # 4x4 grid covering x=[0, 4], y=[0, 4] with distinct pixel values 0..15.
@@ -63,6 +61,7 @@ def test_xarray_merge_arrays_2d_windowed_preserves_window_origin():
 
 def test_xarray_merge_arrays_2d_single_row_and_col():
     """Merging 2-D DataArrays resulting in 1-row or 1-col output must preserve 2-D dims."""
+    xarray = pytest.importorskip("xarray")
     import terrio.xarray as txr
 
     arr = np.array([[10.0, 20.0, 30.0]], dtype=np.float32)
@@ -82,6 +81,7 @@ def test_xarray_merge_arrays_2d_single_row_and_col():
 
 def test_xarray_band_as_variable_preserves_single_row_dim(tmp_path):
     """open_rasterio(..., band_as_variable=True) must not drop length-1 y/x dims."""
+    pytest.importorskip("xarray")
     import terrio.xarray as txr
 
     path = tmp_path / "one_row.tif"
@@ -121,6 +121,8 @@ def test_rio_merge_integer_indexes_and_nan_nodata(tmp_path):
     assert out.shape == (1, 2, 2)
     assert bool(out.mask[0, 0, 1]) is True
     assert bool(out.mask[0, 0, 0]) is False
+    assert np.isnan(out.fill_value)
+    assert np.isnan(out.filled()[0, 0, 1])
     assert float(out.data[0, 0, 0]) == 10.0
     assert float(out.data[0, 1, 1]) == 40.0
 
@@ -135,6 +137,8 @@ def test_rio_stack_keeps_caller_writer_open_and_masks_nan(tmp_path):
     stacked, _ = rio_stack([p1], masked=True)
     assert bool(stacked.mask[0, 0, 1]) is True
     assert bool(stacked.mask[0, 0, 0]) is False
+    assert np.isnan(stacked.fill_value)
+    assert np.isnan(stacked.filled()[0, 0, 1])
 
     dst_path = tmp_path / "out.tif"
     with rio.open(
@@ -188,7 +192,8 @@ def test_rio_features_rasterize_accepts_linear_ring_north_up():
 
 def test_pyogrio_write_linear_ring_and_multipoint_with_empty_member():
     """pyogrio._write serializes LinearRing as LineString and skips empty points in MultiPoint."""
-    import shapely
+    shapely = pytest.importorskip("shapely")
+    shapely_geometry = pytest.importorskip("shapely.geometry")
 
     from terrio.pyogrio._write import _geometry
 

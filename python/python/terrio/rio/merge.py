@@ -382,6 +382,7 @@ def merge(
             if masked:
                 if nodataval is not None and cmath.isnan(nodataval):
                     dest = np.ma.masked_where(np.isnan(dest), dest, copy=False)
+                    dest.set_fill_value(nodataval)
                 else:
                     dest = np.ma.masked_equal(dest, nodataval, copy=False)
             return dest, out_t
