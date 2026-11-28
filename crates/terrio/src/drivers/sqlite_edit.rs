@@ -1235,21 +1235,18 @@ pub(crate) fn journal_pages(journal: &[u8]) -> Option<JournalPages<'_>> {
     Some((original, page_size, pages))
 }
 
-/// Parses a rollback journal, distinguishing cold/torn headers (`Ok(None)`) from corrupt
-/// non-zero page sizes (`Err(Error::InvalidData)`).
+/// Parses a rollback journal, distinguishing absent magic (`Ok(None)`) from unsupported or
+/// corrupt page sizes (`Err(Error::InvalidData)`).
 fn parse_journal<'a>(journal: &'a [u8], journal_path: &Path) -> Result<Option<JournalPages<'a>>> {
     if journal.len() < 28 || journal[..8] != JOURNAL_MAGIC {
         return Ok(None);
     }
     let page_size = u32::from_be_bytes([journal[24], journal[25], journal[26], journal[27]]) as usize;
-    if page_size == 0 {
-        // SQLite syncs the journal header before modifying the database, so a zero page size
-        // reflects a torn/uninitialized header rather than committed rollback pages.
-        return Ok(None);
-    }
+    // SQLite before 3.5.8 used zero for valid journals. Without a trusted page size, preserve
+    // these journals for external recovery instead of treating them as cold and deleting them.
     if !(512..=65536).contains(&page_size) || !page_size.is_power_of_two() {
         return Err(bad(format!(
-            "{}: invalid SQLite journal page size {page_size}; inspect or remove the journal before retrying",
+            "{}: unsupported or invalid SQLite journal page size {page_size}; preserve the database and journal for trusted recovery",
             journal_path.display()
         )));
     }
@@ -2066,25 +2063,23 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), original);
         assert!(!journal_path.exists());
 
-        // A torn/uninitialized journal header (page_size == 0) is not hot: reads ignore it and
-        // write recovery cleans it up.
-        std::fs::write(&journal_path, make_header(1, 0)).unwrap();
-        assert!(!has_hot_journal(&path).unwrap());
-        assert_eq!(read_consistent(&path).unwrap(), original);
-        recover_with_sync(&mut file, &path, |_| Ok(())).unwrap();
-        assert!(!journal_path.exists());
-
-        // A journal with valid magic and a malformed non-zero page size is refused by both
-        // read-only and write recovery without deleting the journal file.
-        std::fs::write(&journal_path, make_header(1, 1000)).unwrap();
-        let read_err = read_consistent(&path).unwrap_err();
-        assert!(matches!(read_err, Error::InvalidData(_)), "{read_err:?}");
-        let open_err = open_consistent(&path).err().expect("malformed journal must fail open_consistent");
-        assert!(matches!(open_err, Error::InvalidData(_)), "{open_err:?}");
-        let err = recover_with_sync(&mut file, &path, |_| Ok(())).unwrap_err();
-        assert!(matches!(err, Error::InvalidData(_)), "{err:?}");
-        assert!(err.to_string().contains("-journal"), "{err}");
-        assert!(journal_path.exists());
+        // Valid-magic legacy journals with a zero page-size field can contain rollback pages.
+        // Preserve them, and malformed non-zero sizes, rather than silently ignoring/deleting.
+        for page_size in [0u32, 1000] {
+            let mut journal = torn_journal.clone();
+            journal[24..28].copy_from_slice(&page_size.to_be_bytes());
+            std::fs::write(&journal_path, &journal).unwrap();
+            assert!(matches!(has_hot_journal(&path), Err(Error::InvalidData(_))));
+            let read_err = read_consistent(&path).unwrap_err();
+            assert!(matches!(read_err, Error::InvalidData(_)), "{read_err:?}");
+            let open_err = open_consistent(&path).err().expect("unsupported journal must fail open_consistent");
+            assert!(matches!(open_err, Error::InvalidData(_)), "{open_err:?}");
+            let err = recover_with_sync(&mut file, &path, |_| Ok(())).unwrap_err();
+            assert!(matches!(err, Error::InvalidData(_)), "{err:?}");
+            assert!(err.to_string().contains("-journal"), "{err}");
+            assert_eq!(std::fs::read(&journal_path).unwrap(), journal);
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
 
         // A journal declaring an original size above db_len + 512 MiB is refused by both read and
         // write paths before set_len / allocation.
