@@ -6180,9 +6180,9 @@ mod tests {
     }
 
     /// An uncompressed GeoTIFF reports no `COMPRESSION` item (as GDAL does), and 8-bit signed
-    /// samples report `PIXELTYPE=SIGNEDBYTE` without `NBITS`.
+    /// samples report neither `PIXELTYPE` nor `NBITS`, since Int8 is already explicit.
     #[test]
-    fn tiff_image_structure_omits_compression_and_marks_signed_byte() {
+    fn tiff_image_structure_omits_compression_and_redundant_signed_byte_metadata() {
         let dir = tempfile::tempdir().unwrap();
         let write = |data_type: DataType| {
             let ds = RasterDataset::new(
