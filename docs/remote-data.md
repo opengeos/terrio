@@ -301,6 +301,7 @@ The GDAL variable is read when the terrio one is not set.
 | `TERRIO_HTTP_CACHE_SIZE` (bytes): the block cache of each open file, and the process-wide cache | `CPL_VSIL_CURL_CACHE_SIZE` | 67108864 |
 | `TERRIO_HTTP_USERAGENT` | `GDAL_HTTP_USERAGENT` | `terrio/VERSION` |
 | `TERRIO_HTTP_CAINFO` (additional PEM CA bundle) | `GDAL_HTTP_CAINFO` | none |
+| `TERRIO_HTTP_UNSAFESSL=YES` (do not verify TLS certificates or hostnames; takes precedence over a CA bundle, and its connections and cached bytes never mix with verified ones) | `GDAL_HTTP_UNSAFESSL` | off |
 | `TERRIO_HTTP_MULTIRANGE`: `PARALLEL` requests the byte runs of one read up to 8 at once; `SERIAL` one after another; `SINGLE_GET` (one multipart request in GDAL, not supported) as `SERIAL`; any other value is `PARALLEL` | `GDAL_HTTP_MULTIRANGE` | `PARALLEL` |
 | `TERRIO_HTTP_LOG=YES` (log each request) | `CPL_CURL_VERBOSE` | off |
 | `TERRIO_JSON_MAX_SIZE` (bytes; `K`, `M`, `G` suffixes): the largest JSON document fetched whole | `CPL_JSON_MAX_SIZE` | 100 MB |
@@ -324,8 +325,9 @@ with rio.Env(TERRIO_HTTP_CAINFO="/absolute/path/to/organization-ca.pem"):
 ```
 
 `GDAL_HTTP_CAINFO` is an alias with the usual scoped-option precedence. Rust
-callers can set `http::HttpOptions::ca_bundle` for an explicit client. Missing,
-empty or malformed explicit bundle files refuse HTTPS rather than falling back to
+callers can set `http::HttpOptions::ca_bundle` for an explicit client.
+
+Missing, empty or malformed explicit bundle files refuse HTTPS rather than falling back to
 default trust; plain HTTP is unaffected. Blank option values are treated as unset,
 while an existing empty file is an error. Bundle paths must be absolute; a relative
 path refuses HTTPS rather than depending on a mutable working directory. Bundles are read
@@ -337,6 +339,15 @@ does not reload existing pools, including a pool retaining a failed bundle load.
 This option does not read `SSL_CERT_FILE`,
 `SSL_CERT_DIR` or the system trust store. Browser/WebAssembly reads continue to
 use the browser's TLS and trust configuration.
+
+For servers with a certificate that cannot be verified (a self-signed test
+server, say), `TERRIO_HTTP_UNSAFESSL=YES` disables certificate-chain and hostname
+verification for terrio's HTTPS reads. Its alias is `GDAL_HTTP_UNSAFESSL`, which
+GDAL maps to curl's `CURLOPT_SSL_VERIFYPEER=0` and `CURLOPT_SSL_VERIFYHOST=0`.
+Handshake signatures are still validated. The option is off by default, takes
+precedence over `TERRIO_HTTP_CAINFO`, and connections and cached bytes made under
+it never mix with verified ones. **Warning:** with it set, any server can
+impersonate any host, so only use it against servers you control.
 
 Redirects are followed, up to 10 of them. `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO` keeps the
 requests of a read on the origin of its URL (scheme, host and port): a redirect to another origin

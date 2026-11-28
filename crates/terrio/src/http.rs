@@ -32,6 +32,7 @@
 //! | `TERRIO_HTTP_CACHE_SIZE` (bytes): the block cache of each open file, and the process-wide cache | `CPL_VSIL_CURL_CACHE_SIZE` | 67108864 |
 //! | `TERRIO_HTTP_USERAGENT` | `GDAL_HTTP_USERAGENT` | `terrio/VERSION` |
 //! | `TERRIO_HTTP_CAINFO` (PEM bundle added to Mozilla roots) | `GDAL_HTTP_CAINFO` | none |
+//! | `TERRIO_HTTP_UNSAFESSL=YES`: do not verify TLS certificates or hostnames (curl's `CURLOPT_SSL_VERIFYPEER=0` and `CURLOPT_SSL_VERIFYHOST=0`, which GDAL sets for it); takes precedence over a CA bundle, and its connections and cached bytes never share a pool or cache entry with verified ones | `GDAL_HTTP_UNSAFESSL` | off |
 //! | `TERRIO_HTTP_MULTIRANGE`: `PARALLEL` requests the byte runs of one read up to 8 at once; `SERIAL` one after another; `SINGLE_GET` (one multipart request in GDAL, not supported) as `SERIAL`; any other value is `PARALLEL` | `GDAL_HTTP_MULTIRANGE` | `PARALLEL` |
 //! | `TERRIO_HTTP_LOG=YES`: print each request, and each new process-wide connection pool, to standard error | `CPL_CURL_VERBOSE` | off |
 //! | `TERRIO_JSON_MAX_SIZE` (bytes, `K`, `M` or `G` suffixes): the largest JSON document fetched whole | `CPL_JSON_MAX_SIZE` | 100 MB |
@@ -151,6 +152,11 @@ pub struct HttpOptions {
     /// An additional PEM CA bundle, supplementing the compiled Mozilla roots.
     /// Loaded when a connection pool is built; a changed path creates a new pool.
     pub ca_bundle: Option<std::path::PathBuf>,
+    /// Do not verify TLS certificates or hostnames (`TERRIO_HTTP_UNSAFESSL=YES` /
+    /// `GDAL_HTTP_UNSAFESSL`, which GDAL 3.13.3 turns into curl's `CURLOPT_SSL_VERIFYPEER=0` and
+    /// `CURLOPT_SSL_VERIFYHOST=0`). Takes precedence over [`Self::ca_bundle`]; its connections
+    /// and cached bytes never share a pool or cache entry with verified ones.
+    pub unsafe_ssl: bool,
     /// Print each request to standard error.
     pub log: bool,
     /// The bytes a remote file's first request fetches (`GDAL_INGESTED_BYTES_AT_OPEN`), when more
@@ -173,6 +179,7 @@ impl Default for HttpOptions {
             cache_size: 64 * 1024 * 1024,
             user_agent: format!("terrio/{}", crate::VERSION),
             ca_bundle: None,
+            unsafe_ssl: false,
             log: false,
             ingested_bytes_at_open: None,
             parallel_ranges: true,
@@ -204,6 +211,8 @@ impl HttpOptions {
             cache_size: var("TERRIO_HTTP_CACHE_SIZE", "CPL_VSIL_CURL_CACHE_SIZE").and_then(|v| v.parse().ok()).unwrap_or(d.cache_size),
             user_agent: var("TERRIO_HTTP_USERAGENT", "GDAL_HTTP_USERAGENT").unwrap_or(d.user_agent),
             ca_bundle: crate::config::get_any(&["TERRIO_HTTP_CAINFO", "GDAL_HTTP_CAINFO"]).map(Into::into),
+            unsafe_ssl: var("TERRIO_HTTP_UNSAFESSL", "GDAL_HTTP_UNSAFESSL")
+                .is_some_and(|v| matches!(v.to_ascii_uppercase().as_str(), "YES" | "ON" | "TRUE" | "1")),
             log: var("TERRIO_HTTP_LOG", "CPL_CURL_VERBOSE")
                 .is_some_and(|v| matches!(v.to_ascii_uppercase().as_str(), "YES" | "ON" | "TRUE" | "1")),
             // At most 64 MiB: a header, not a download.
@@ -779,14 +788,18 @@ impl Client {
 
     /// The file's key in the process-wide cache ([`FILE_CACHE`]): its URL, and a digest of the
     /// headers and credentials its requests carry (resolved when the client was created, as every
-    /// request sends them) and of where its redirects may lead, so that bytes fetched with a
-    /// credential are returned only to opens that would send the same one (GDAL keys its cache by
-    /// name alone), and bytes a redirect brought from another origin only to opens that would
-    /// follow it.
+    /// request sends them), of where its redirects may lead and of its TLS settings, so that bytes
+    /// fetched with a credential are returned only to opens that would send the same one (GDAL
+    /// keys its cache by name alone), bytes a redirect brought from another origin only to opens
+    /// that would follow it, and bytes fetched without certificate verification only to opens
+    /// that would not verify either.
     fn cache_key(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
-        h.update(format!("{:?}\n{}\n{:?}\n{:?}\n", self.remote, self.azure, self.redirects, self.options.ca_bundle).as_bytes());
+        h.update(
+            format!("{:?}\n{}\n{:?}\n{:?}\n{}\n", self.remote, self.azure, self.redirects, self.options.ca_bundle, self.options.unsafe_ssl)
+                .as_bytes(),
+        );
         for (k, v) in &self.headers {
             h.update(format!("{}: {v}\n", k.to_ascii_lowercase()).as_bytes());
         }
@@ -1154,11 +1167,12 @@ thread_local! {
     static SHARED_AGENT: std::cell::RefCell<(u32, Option<ScopeAgent>)> = const { std::cell::RefCell::new((0, None)) };
 }
 
-/// The settings an agent is built with.
-type AgentSettings = (Option<Duration>, Duration, String, Option<std::path::PathBuf>);
+/// The settings an agent is built with. `unsafe_ssl` is part of them, so a pool of unverified
+/// connections is never shared with a verified one.
+type AgentSettings = (Option<Duration>, Duration, String, Option<std::path::PathBuf>, bool);
 
 fn agent_settings(options: &HttpOptions) -> AgentSettings {
-    (options.timeout, options.connect_timeout, options.user_agent.clone(), options.ca_bundle.clone())
+    (options.timeout, options.connect_timeout, options.user_agent.clone(), options.ca_bundle.clone(), options.unsafe_ssl)
 }
 
 /// An [`AgentScope`]'s agent, its settings and the id of the process it was built in.
@@ -1313,6 +1327,14 @@ fn new_agent_with(options: &HttpOptions, provider: tls::Provider) -> ureq::Agent
         .max_idle_connections(64)
         .max_idle_connections_per_host(64)
         .build();
+    if options.unsafe_ssl {
+        // Warn once per process: the switch is easy to leave on by accident.
+        static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        WARNED.get_or_init(|| {
+            eprintln!("terrio: TERRIO_HTTP_UNSAFESSL is set: HTTPS certificates and hostnames are NOT verified");
+        });
+        return tls::without_verification(config, provider);
+    }
     if let Some(path) = &options.ca_bundle {
         return tls::with_bundle(config, path, provider);
     }
@@ -5905,7 +5927,7 @@ mod tests {
         let builds = std::cell::Cell::new(0);
         let options = HttpOptions::default();
         let settings =
-            |timeout: Option<Duration>| -> AgentSettings { (timeout, options.connect_timeout, options.user_agent.clone(), None) };
+            |timeout: Option<Duration>| -> AgentSettings { (timeout, options.connect_timeout, options.user_agent.clone(), None, false) };
         let get = |pid: u32, proxy: Option<&str>, timeout: Option<Duration>| {
             let proxy = vec![proxy.map(std::ffi::OsString::from)];
             cached_agent(&slot, pid, proxy, settings(timeout), || {
@@ -7353,7 +7375,9 @@ mod tests {
     /// A self-signed certificate for `localhost`/`127.0.0.1` (openssl req -x509, 100-year,
     /// RSA-2048, no passphrase), embedded so the test needs no key generation. It is not a trust
     /// anchor anywhere, which is the point.
+    // gitleaks:allow -- test-only throwaway key for a localhost test server, not a credential.
     const SELF_SIGNED_CERT: &str = "-----BEGIN CERTIFICATE-----\nMIIDJzCCAg+gAwIBAgIUW+E7bqN6MDhOcuCum/n0CRWi9BIwDQYJKoZIhvcNAQEL\nBQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTEyNzE0MTIxOFoYDzIxMjYx\nMTAzMTQxMjE4WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEB\nAQUAA4IBDwAwggEKAoIBAQDPeor+RXgraMj7+yhn4sC+PJn/pt7OEo11aTUgSMj4\nQMgowj0/KSEx5MxEGOvvEiSPjcZ4DAXMi3y3WNLArSiKKjBguyI5Ui6NUgLlG9Dg\nYDf3Voo99IGYf5MAZ7T9LEVmn/d9Hnc9t3gqnoPBDYM0YiZBQCliHSRXA4Zxq+nj\nytIdKJVQNPunP83XaqHE6BiJ6QUrrX3Z7/i+SVTGWlvuMTMQMiR23+vhg/VLlwRS\nnuNptjpZJ3MYzWwfMN/1IzWyNR6MbQMplFecAWdOwTrqG640dRITzA2ek2ujS1hi\n9EMc4V/JaBNKDy60T6LuZgLCXB32xX4Ts48Btm5VkdrzAgMBAAGjbzBtMB0GA1Ud\nDgQWBBQsZu8FLTmhN3RZ0wLO6389WYdGLzAfBgNVHSMEGDAWgBQsZu8FLTmhN3RZ\n0wLO6389WYdGLzAPBgNVHRMBAf8EBTADAQH/MBoGA1UdEQQTMBGCCWxvY2FsaG9z\ndIcEfwAAATANBgkqhkiG9w0BAQsFAAOCAQEAg6MK+WDWN9MOuhlL8n1BW1gqgBwU\nJ7cvfCQ09uSA0IqPVF14kcxhJ3ro1YPIQCDvM/GCaDR4L77AtS+SqixXdSHuTcjm\nIjxe68kDuluoJ4TOBfZEdLvy/w1eJ5q8DxQeYXeysAuLJTOVY+jlEc/6Tfp8NEah\noEeXMq6GGAJYpwQEWbRQ8/4r/yYOYJCy9WBYScsg4/rS2edtcgePSJxenVMiVAPv\n/55oPdweHB/iq0GZ5nI5G7QE7j1K6cAeNDDXPP/5n8MYRiraAG/wqHpTGlOGoR0f\ngPkQWlPfG1y3c8OuCT/Y8Pnq88hYL6N5eNYhkqu8EhkFg7x7mk3lwlzdZA==\n-----END CERTIFICATE-----\n";
+    // gitleaks:allow -- test-only throwaway key for a localhost test server, not a credential.
     const SELF_SIGNED_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDPeor+RXgraMj7\n+yhn4sC+PJn/pt7OEo11aTUgSMj4QMgowj0/KSEx5MxEGOvvEiSPjcZ4DAXMi3y3\nWNLArSiKKjBguyI5Ui6NUgLlG9DgYDf3Voo99IGYf5MAZ7T9LEVmn/d9Hnc9t3gq\nnoPBDYM0YiZBQCliHSRXA4Zxq+njytIdKJVQNPunP83XaqHE6BiJ6QUrrX3Z7/i+\nSVTGWlvuMTMQMiR23+vhg/VLlwRSnuNptjpZJ3MYzWwfMN/1IzWyNR6MbQMplFec\nAWdOwTrqG640dRITzA2ek2ujS1hi9EMc4V/JaBNKDy60T6LuZgLCXB32xX4Ts48B\ntm5VkdrzAgMBAAECggEAUgzeudbEQrqCPTBils7UNYdmyXT3CNzKZ4PPODDAlXid\nD41dRkSgNYiLhWSrrVRp9AF32xK6Gl2RWTq9wefYr+cmUaK/0pZfBZFIxs08yfcT\nOvPU4NJ4i9Pr0Q2yRCsFWSPq7maldlk/ou8kIK0U1Zr5EPXsR7pJnEWvHfYEHYpq\nQrKaxxb8VDXRrfDZgSwG6NKl2VnvdEQbBOzxHX5TbNeFZL4EooIoo4lAesc+wBv3\nKuz7OQTe0yVwrK0BKw34zwWdD3eqkNAX71FO1jC3SjWIKk01yqP119giostYoYa4\nNjvoBLEeVpeQbqHZfDKaIqva85HRO5EJ73859yy/wQKBgQDrCrXJVf0LLXO9DReM\nwfjpNba3uKV+UN5Cc1YB3M9yASRPzlbCO4UUvgW1PSaZIkfw65Aau7WwO3QWBA5I\nfXjw1UnPQwjryjmKe0o35wTuPIjc20pUu5FNDhdqZUqQegAKYVjY3VaOC4BxVZ4X\neSKPnqVMbnGZTODvKhKgH+21QQKBgQDh+qZh20teg5qhOzgWYRiew2qh17l9I/9D\nVpJdsHOHlDuAktLcU8s3F3ak9vA36UdfZKsfXPaSExhBW2+UEu2XJcL0UvM9lrYn\n4hM1FHFrHcOMtM/EWCXi2yYKjCiuiTP5OwfmWQBE5niVkk9/5Budj4bvpRLRVsFD\nwQxmD+v/MwKBgQCjduhk5Qu+mVbUFWXafBDryHKSJbXbOszI9EPNuc8AX7DsW/nU\nzeZJPbrkiGnuuHvGH14yaXf73+1lXl68pZ7WB9B0eA+dRSBtoj9Ez8OLGMiqqUxx\nz51HNNSuJ1ILVv3uOjO7Z3xJ/8/NgpkXhCS4M8KMfIc+8cvCKcWYXXxJwQKBgD7x\nH5K2EAIdSd6Krg6dsMvXxkWZ3pJaimjpHg92bFdhFEm1m4G+3SVVJbjBBxuroDOT\nyI4NyKfbJbBelW967i5hWDHRQOrwpX/qWks4jHa3bZYtbolTvAm53JinfVVP5egP\nZx3jwE1wnDmc7QPEN2Tla0IoiltAfMgwZxGucZ89AoGAAuZ/3UbUdJB7fyG99zC2\ncNHgDCzc1/5o8S6BoXL5BsccFUucd1Qc7a8ASzEGbtT3IDLxKiAZft/Ppbg/0Wkk\nNX23GfPshEi7ipDp72UT+Aa5QRcZTf/tjei6BLEYa37q3+W1hn9bdV4E/5/ZXBTx\nhCHOW9TxjMniEPuPLdb1IRI=\n-----END PRIVATE KEY-----\n";
 
     /// Serves `body` over TLS on a local port with the embedded self-signed certificate.
@@ -7415,6 +7439,53 @@ mod tests {
             }
         });
         url
+    }
+
+    /// `TERRIO_HTTP_UNSAFESSL=YES` (or GDAL's `GDAL_HTTP_UNSAFESSL`) makes HTTPS accept a
+    /// self-signed certificate, on its own connection pool; the default refuses it. As GDAL
+    /// 3.13.3's `GDAL_HTTP_UNSAFESSL` (curl's `CURLOPT_SSL_VERIFYPEER=0`).
+    #[test]
+    fn unsafessl_skips_tls_verification_on_its_own_pool() {
+        if tls::crypto_provider().is_err() {
+            eprintln!("TLS verification integration check skipped: no TLS cryptography on this CPU");
+            return;
+        }
+        let url = serve_tls_self_signed(b"secure-body".to_vec());
+        // The default agent refuses the self-signed certificate.
+        assert!(request("GET", &url, None, &[], 1024, Redirects::SameOrigin).is_err());
+        // The option, read from the environment under either name, accepts it.
+        for name in ["TERRIO_HTTP_UNSAFESSL", "GDAL_HTTP_UNSAFESSL"] {
+            crate::config::push_scope(HashMap::from([(name.to_string(), Some("YES".to_string()))]));
+            let options = HttpOptions::from_env();
+            assert!(options.unsafe_ssl, "{name}");
+            assert_eq!(request("GET", &url, None, &[], 1024, Redirects::SameOrigin).unwrap(), b"secure-body");
+            crate::config::pop_scope();
+        }
+        assert!(!HttpOptions::from_env().unsafe_ssl, "unset again");
+        // Verified and unverified clients never share a connection pool.
+        let verified = agent_settings(&HttpOptions::default());
+        let unverified = agent_settings(&HttpOptions { unsafe_ssl: true, ..Default::default() });
+        assert_ne!(verified, unverified);
+    }
+
+    /// Bytes fetched without certificate verification never reach a verified open of the same URL:
+    /// `cache_key` includes `unsafe_ssl`, so the verified open misses the cache and makes a real
+    /// TLS connection, which the self-signed certificate fails.
+    #[test]
+    fn unsafe_ssl_never_shares_cached_bytes_with_a_verified_open() {
+        if tls::crypto_provider().is_err() {
+            eprintln!("TLS cache isolation integration check skipped: no TLS cryptography on this CPU");
+            return;
+        }
+        let _serial = cache_test_guard();
+        let url = serve_tls_self_signed(b"cached-body".to_vec());
+        let remote = Remote::Url(url.clone());
+        crate::config::push_scope(HashMap::from([("TERRIO_HTTP_UNSAFESSL".to_string(), Some("YES".to_string()))]));
+        let body = get(&remote);
+        crate::config::pop_scope();
+        assert_eq!(body.unwrap(), b"cached-body");
+        let err = get(&remote).unwrap_err();
+        assert!(matches!(err, Error::Tls(_)), "the verified open made a real TLS connection and failed: {err}");
     }
 
     /// A real certificate failure from ureq 3.5.2 (the version in Cargo.lock) surfaces as
