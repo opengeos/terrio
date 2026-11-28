@@ -1624,16 +1624,16 @@ fn retry_warning(code: u16, url: &str, delay: Duration, attempt: u32) {
 
 /// Whether a request error is worth retrying.
 fn transient(e: &ureq::Error) -> bool {
-    matches!(e, ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed | ureq::Error::Protocol(_))
+    !is_tls_error(e) && matches!(e, ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed | ureq::Error::Protocol(_))
 }
 
 /// Whether a ureq error is a TLS failure: `ureq::Error::Tls` itself, or an I/O error whose source
-/// chain holds a `rustls::Error` — ureq 3.5.2 wraps handshake and TLS alert failures that way
+/// chain holds a `rustls::Error`. ureq 3.5.2 wraps handshake and TLS alert failures that way
 /// (observed: a refused self-signed certificate arrives as `Error::Io` carrying
 /// `rustls::Error::InvalidCertificate`).
 fn is_tls_error(e: &ureq::Error) -> bool {
     match e {
-        ureq::Error::Tls(_) => true,
+        ureq::Error::Tls(_) | ureq::Error::Rustls(_) => true,
         ureq::Error::Io(io) => {
             // ureq 3.5.2 wraps the rustls failure as the io error's payload (its `source()` is
             // None), so check `get_ref` first, then the source chain for deeper wrapping.
@@ -3542,6 +3542,14 @@ mod tests {
         );
         assert!(matches!(http_error("https://example.test/x", ureq::Error::Io(std::io::Error::other("reset"))), crate::Error::Http(_)));
         assert!(matches!(http_error("https://example.test/x", ureq::Error::StatusCode(500)), crate::Error::Http(_)));
+        for error in [
+            ureq::Error::Rustls(rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer)),
+            ureq::Error::Io(std::io::Error::other(rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer))),
+        ] {
+            assert!(!transient(&error), "deterministic TLS errors must not retry: {error}");
+            assert!(matches!(http_error("https://example.test/x", error), Error::Tls(_)));
+        }
+        assert!(transient(&ureq::Error::Io(std::io::Error::other("connection reset"))));
     }
 
     #[test]
@@ -7364,7 +7372,8 @@ mod tests {
     #[test]
     fn a_real_certificate_failure_is_error_tls() {
         if tls::crypto_provider().is_err() {
-            return; // no TLS cryptography on this CPU: nothing to fail either way
+            eprintln!("TLS certificate integration check skipped: no TLS cryptography on this CPU");
+            return;
         }
         let url = serve_tls_self_signed(b"x".to_vec());
         let err = get(&Remote::Url(url)).unwrap_err();

@@ -1835,7 +1835,7 @@ impl Mosaic {
                 match read(job, item, r) {
                     // A signed URL whose token expired since the file was opened: open it again,
                     // signed anew, and read once more.
-                    Err(Error::Http(_) | Error::Tls(_)) if item.sign => {
+                    Err(Error::Http(_)) if item.sign => {
                         *r = item.open()?;
                         read(job, item, r)
                     }
