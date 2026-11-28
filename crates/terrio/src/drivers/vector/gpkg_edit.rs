@@ -624,7 +624,11 @@ pub(crate) fn update_features(d: &mut Database, name: &str, src: &Layer, keys: &
             .iter()
             .position(|f| eq(&f.name, k))
             .ok_or_else(|| Error::InvalidArgument(format!("cannot find field '{k}' in input layer")))?;
-        let st = fields[si].field_type;
+        let st = match fields[si].field_type {
+            // The GeoPackage JSON subtype uses a string key, just as its TEXT storage does.
+            wbvector::FieldType::Json => wbvector::FieldType::Text,
+            t => t,
+        };
         if !matches!(st, wbvector::FieldType::Integer | wbvector::FieldType::Float | wbvector::FieldType::Text) {
             return Err(Error::Unsupported(format!(
                 "type of field '{k}' is not one of those supported for a key field: String, Integer, Integer64, Real"

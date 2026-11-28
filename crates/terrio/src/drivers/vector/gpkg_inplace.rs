@@ -26,7 +26,7 @@ use crate::{Error, Result};
 use wbvector::Layer;
 
 /// The tables describing layers, read whole and rewritten when they change.
-const SMALL_TABLES: [&str; 8] = [
+const SMALL_TABLES: [&str; 9] = [
     "gpkg_spatial_ref_sys",
     "gpkg_contents",
     "gpkg_geometry_columns",
@@ -34,6 +34,7 @@ const SMALL_TABLES: [&str; 8] = [
     "gpkg_extensions",
     "gpkg_metadata_reference",
     "gpkg_data_columns",
+    "gpkg_data_column_constraints",
     "sqlite_sequence",
 ];
 

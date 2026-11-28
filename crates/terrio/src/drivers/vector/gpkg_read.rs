@@ -8,13 +8,16 @@
 //!
 //! Layers are the tables `gpkg_contents` lists as `features` (in `gpkg_geometry_columns` order),
 //! then those it lists as `attributes`. Fields have the declared column types, as GDAL maps them
-//! (`MEDIUMINT`, `INTEGER`, `BOOLEAN`, `REAL`, `TEXT(n)`, `DATE`, `DATETIME`, `BLOB`); the
+//! (`MEDIUMINT`, `INTEGER`, `BOOLEAN`, `REAL`, `TEXT(n)`, `DATE`, `DATETIME`, `BLOB`), with the
+//! JSON subtype for text declared as `application/json` in `gpkg_data_columns`. The
 //! `INTEGER PRIMARY KEY` column gives the feature ids. CRSs come from `gpkg_spatial_ref_sys`:
 //! EPSG codes when the organization is EPSG, otherwise the stored definition. The database is
 //! backed by a consistent mapped file when possible, or by an owned byte input. Feature
 //! ranges bound record decoding; spatially filtered ranges count matching features.
 
-use super::wkb::from_wkb;
+use std::collections::{HashMap, HashSet};
+
+use super::{geopackage::JSON_MIME_TYPE, wkb::from_wkb};
 use crate::drivers::sqlite::{self, Db, Value};
 use crate::ops::sql::BoundExpression;
 use crate::{Error, Result};
@@ -143,7 +146,39 @@ pub(crate) fn read_db_named(db: &Db, options: &crate::VectorOpenOptions, path: O
     let (layers, _) = contents(db)?;
     let names: Vec<&str> = layers.iter().map(|c| c.name.as_str()).collect();
     let selected = crate::dataset::layer_selection(&options.layers, &names, path, true)?;
-    layers.iter().zip(selected).filter_map(|(c, keep)| keep.then_some(c)).map(|c| read_layer(db, c, options)).collect()
+    let json_columns = JsonColumns::read(db)?;
+    layers.iter().zip(selected).filter_map(|(c, keep)| keep.then_some(c)).map(|c| read_layer(db, c, options, &json_columns)).collect()
+}
+
+/// JSON column declarations from the optional GeoPackage schema extension.
+#[derive(Default)]
+pub(crate) struct JsonColumns(HashMap<String, HashSet<String>>);
+
+impl JsonColumns {
+    /// GDAL 3.13.3 matches the table name in SQL and the MIME type and column name case-insensitively.
+    pub(crate) fn read(db: &impl Tables) -> Result<Self> {
+        let mut columns = HashMap::<String, HashSet<String>>::new();
+        if let Some(metadata) = db.optional_table("gpkg_data_columns")? {
+            for row in &metadata.rows {
+                let text = |name| metadata.get(row, name).and_then(Value::as_str);
+                if let (Some(table), Some(column), Some(mime_type)) = (text("table_name"), text("column_name"), text("mime_type"))
+                    && mime_type.eq_ignore_ascii_case(JSON_MIME_TYPE)
+                {
+                    columns.entry(table.into()).or_default().insert(column.to_ascii_lowercase());
+                }
+            }
+        }
+        Ok(Self(columns))
+    }
+
+    fn field_type(&self, table: &str, column: &str, decl: &str) -> (FieldType, usize) {
+        let (t, width) = field_type(decl);
+        if t == FieldType::Text && self.0.get(table).is_some_and(|columns| columns.contains(&column.to_ascii_lowercase())) {
+            (FieldType::Json, width)
+        } else {
+            (t, width)
+        }
+    }
 }
 
 /// The terrio field type of a declared column type.
@@ -207,6 +242,7 @@ pub(crate) fn declared_layers(path: &str, wanted: &[String]) -> Result<Vec<Decla
     let (layers, _) = contents(&db)?;
     let names: Vec<&str> = layers.iter().map(|c| c.name.as_str()).collect();
     let selected = crate::dataset::layer_selection(wanted, &names, Some(path), true)?;
+    let json_columns = JsonColumns::read(&db)?;
     let mut out = Vec::new();
     for c in layers.iter().zip(selected).filter_map(|(c, keep)| keep.then_some(c)) {
         let sql = db.table_sql(&c.name).ok_or_else(|| bad(format!("no table '{}'", c.name)))?;
@@ -244,7 +280,7 @@ pub(crate) fn declared_layers(path: &str, wanted: &[String]) -> Result<Vec<Decla
                 Value::Real(f) => Some(f.to_string()),
                 _ => None,
             });
-            let (t, width) = field_type(decl);
+            let (t, width) = json_columns.field_type(&c.name, name, decl);
             let mut f = FieldDef::new(name.clone(), t);
             f.width = width;
             f.nullable = !not_null;
@@ -426,7 +462,7 @@ pub(crate) struct LayerDef {
 }
 
 /// How the rows of the table `c` make the features of a layer.
-pub(crate) fn layer_def(db: &impl Tables, c: &Content) -> Result<LayerDef> {
+pub(crate) fn layer_def(db: &impl Tables, c: &Content, json_columns: &JsonColumns) -> Result<LayerDef> {
     let sql = db.table_sql(&c.name).ok_or_else(|| bad(format!("no table '{}'", c.name)))?;
     let columns = sqlite::column_types(&sql);
 
@@ -451,7 +487,7 @@ pub(crate) fn layer_def(db: &impl Tables, c: &Content) -> Result<LayerDef> {
         if Some(i) == geom_col || Some(i) == fid_col {
             continue;
         }
-        let (t, width) = field_type(decl);
+        let (t, width) = json_columns.field_type(&c.name, name, decl);
         let mut f = FieldDef::new(name.clone(), t);
         f.width = width;
         layer.add_field(f);
@@ -515,8 +551,8 @@ impl LayerDef {
     }
 }
 
-fn read_layer(db: &Db, c: &Content, options: &crate::VectorOpenOptions) -> Result<Layer> {
-    let def = layer_def(db, c)?;
+fn read_layer(db: &Db, c: &Content, options: &crate::VectorOpenOptions, json_columns: &JsonColumns) -> Result<Layer> {
+    let def = layer_def(db, c, json_columns)?;
     let bbox = options.spatial_filter;
     // The rows: with a filter on a spatial table, those its R-tree finds (by lookups of their
     // feature ids, the rowid alias), otherwise all of them.
@@ -584,7 +620,8 @@ pub(crate) fn summarize(path: &str) -> Result<Option<(Vec<LayerSummary>, Vec<Con
     if layers.is_empty() {
         return Ok(None);
     }
-    let layers = layers.iter().map(|c| summarize_layer(&db, c, path)).collect::<Result<Vec<_>>>()?;
+    let json_columns = JsonColumns::read(&db)?;
+    let layers = layers.iter().map(|c| summarize_layer(&db, c, path, &json_columns)).collect::<Result<Vec<_>>>()?;
     Ok(Some((layers, rasters)))
 }
 
@@ -611,7 +648,7 @@ fn stored_extent(db: &Db, table: &str) -> Result<Option<(f64, f64, f64, f64)>> {
 /// What a layer summary needs of a geometry: its type, whether it has Z coordinates, its bounds.
 type GeometrySummary = (GeometryType, bool, Option<(f64, f64, f64, f64)>);
 
-fn summarize_layer(db: &Db, c: &Content, path: &str) -> Result<LayerSummary> {
+fn summarize_layer(db: &Db, c: &Content, path: &str, json_columns: &JsonColumns) -> Result<LayerSummary> {
     let sql = db.table_sql(&c.name).ok_or_else(|| bad(format!("no table '{}'", c.name)))?;
     let columns = sqlite::column_types(&sql);
 
@@ -637,7 +674,7 @@ fn summarize_layer(db: &Db, c: &Content, path: &str) -> Result<LayerSummary> {
         if Some(i) == geom_col || Some(i) == fid_col {
             continue;
         }
-        let (t, width) = field_type(decl);
+        let (t, width) = json_columns.field_type(&c.name, name, decl);
         let mut f = FieldDef::new(name.clone(), t);
         f.width = width;
         layer.add_field(f);
@@ -696,7 +733,7 @@ impl IndexedLayer {
             .ok_or_else(|| bad("index table is missing"))?;
         let root = entry.3;
         let columns = sqlite::column_types(&entry.4).len();
-        let def = layer_def(&db, content)?;
+        let def = layer_def(&db, content, &JsonColumns::read(&db)?)?;
         let rtree = def.geom_name.as_ref().map(|g| format!("rtree_{}_{g}", content.name));
         Ok(Self { db, schema, def, root, columns, rtree })
     }
@@ -1100,8 +1137,8 @@ mod tests {
                     for error in [
                         contents(&db).err().unwrap(),
                         declared_layers(path, &[]).err().unwrap(),
-                        layer_def(&db, &content).err().unwrap(),
-                        summarize_layer(&db, &content, path).err().unwrap(),
+                        layer_def(&db, &content, &JsonColumns::default()).err().unwrap(),
+                        summarize_layer(&db, &content, path, &JsonColumns::default()).err().unwrap(),
                     ] {
                         assert!(error.to_string().contains("truncated record"), "{error}");
                     }

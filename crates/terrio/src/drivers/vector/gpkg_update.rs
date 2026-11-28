@@ -375,6 +375,20 @@ impl Database {
         add_rows(self, "gpkg_geometry_columns", gw::GEOMETRY_COLUMNS_SQL, parts.geometry_columns);
         add_rows(self, "gpkg_ogr_contents", gw::OGR_CONTENTS_SQL, parts.ogr_contents);
         add_rows(self, "gpkg_extensions", gw::EXTENSIONS_SQL, parts.extensions);
+        if !parts.data_columns.is_empty() {
+            let constraints_sql = if self.application_id == 0x4750_3130 {
+                // GeoPackage 1.0 uses camel case for these two columns.
+                std::borrow::Cow::Owned(
+                    gw::DATA_COLUMN_CONSTRAINTS_SQL
+                        .replace("min_is_inclusive", "minIsInclusive")
+                        .replace("max_is_inclusive", "maxIsInclusive"),
+                )
+            } else {
+                std::borrow::Cow::Borrowed(gw::DATA_COLUMN_CONSTRAINTS_SQL)
+            };
+            self.ensure("gpkg_data_column_constraints", &constraints_sql);
+            add_rows(self, "gpkg_data_columns", gw::DATA_COLUMNS_SQL, parts.data_columns);
+        }
         for (name, seq) in parts.sequence {
             self.set_sequence(&name, seq);
         }
