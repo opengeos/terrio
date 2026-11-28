@@ -558,7 +558,7 @@ fn write_request_with(
                 attempt += 1;
                 continue;
             }
-            Err(e) => return Err(Error::Http(format!("{}: {e}", redact(&url)))),
+            Err(e) => return Err(super::http_error(&url, e)),
         };
         let status = response.status().as_u16();
         let header = |n: &str| response.headers().get(n).and_then(|v| v.to_str().ok()).map(str::to_string);

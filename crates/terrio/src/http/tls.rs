@@ -224,7 +224,7 @@ pub(super) fn without_verification(config: ureq::config::Config, provider: Provi
     agent_with_tls(config, tls, error)
 }
 
-/// Accepts any server certificate and any handshake signature: `NoVerify` is only installed by
+/// Skips certificate-chain and hostname verification while validating handshake signatures: `NoVerify` is only installed by
 /// [`without_verification`], for `TERRIO_HTTP_UNSAFESSL=YES`.
 #[derive(Debug)]
 struct NoVerify {
@@ -318,10 +318,16 @@ impl<In: Transport> Connector<In> for CustomTlsConnector {
         if !details.needs_tls() || transport.is_tls() {
             return Ok(Some(transport.boxed()));
         }
-        let config = self.0.as_ref().ok_or(ureq::Error::Tls("custom TLS configuration is unavailable"))?;
-        let host = details.uri.host().ok_or(ureq::Error::Tls("missing TLS hostname"))?;
+        let config =
+            self.0.as_ref().ok_or_else(|| ureq::Error::Other(Box::new(io::Error::other("custom TLS configuration is unavailable"))))?;
+        // A missing or malformed host is a URL problem, not a TLS one: it stays an HTTP-class error.
+        let host = details
+            .uri
+            .host()
+            .ok_or_else(|| ureq::Error::Other(Box::new(io::Error::new(io::ErrorKind::InvalidInput, "missing TLS hostname"))))?;
         let host = host.strip_prefix('[').and_then(|host| host.strip_suffix(']')).unwrap_or(host);
-        let name = ServerName::try_from(host.to_owned()).map_err(|_| ureq::Error::Tls("invalid TLS hostname"))?;
+        let name = ServerName::try_from(host.to_owned())
+            .map_err(|_| ureq::Error::Other(Box::new(io::Error::new(io::ErrorKind::InvalidInput, "invalid TLS hostname"))))?;
         let mut connection = ClientConnection::new(config.clone(), name)?;
         let mut socket = TransportAdapter::new(transport.boxed(), details.current_time.clone());
         // TransportAdapter's public setter starts its clock now. Subtract time

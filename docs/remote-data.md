@@ -327,17 +327,7 @@ with rio.Env(TERRIO_HTTP_CAINFO="/absolute/path/to/organization-ca.pem"):
 `GDAL_HTTP_CAINFO` is an alias with the usual scoped-option precedence. Rust
 callers can set `http::HttpOptions::ca_bundle` for an explicit client.
 
-For servers with a certificate that cannot be verified (a self-signed test
-server, say), `TERRIO_HTTP_UNSAFESSL=YES` — GDAL's `GDAL_HTTP_UNSAFESSL`, which
-GDAL turns into curl's `CURLOPT_SSL_VERIFYPEER=0` and `CURLOPT_SSL_VERIFYHOST=0`
-— disables certificate and hostname verification for terrio's HTTPS reads. It
-is off by default, takes precedence over `TERRIO_HTTP_CAINFO`, and connections
-and cached bytes made under it never mix with verified ones. **Warning:** with
-it set, any server can impersonate any host, so only use it against servers you
-control.
-
-Missing,
-empty or malformed explicit bundle files refuse HTTPS rather than falling back to
+Missing, empty or malformed explicit bundle files refuse HTTPS rather than falling back to
 default trust; plain HTTP is unaffected. Blank option values are treated as unset,
 while an existing empty file is an error. Bundle paths must be absolute; a relative
 path refuses HTTPS rather than depending on a mutable working directory. Bundles are read
@@ -349,6 +339,15 @@ does not reload existing pools, including a pool retaining a failed bundle load.
 This option does not read `SSL_CERT_FILE`,
 `SSL_CERT_DIR` or the system trust store. Browser/WebAssembly reads continue to
 use the browser's TLS and trust configuration.
+
+For servers with a certificate that cannot be verified (a self-signed test
+server, say), `TERRIO_HTTP_UNSAFESSL=YES` disables certificate-chain and hostname
+verification for terrio's HTTPS reads. Its alias is `GDAL_HTTP_UNSAFESSL`, which
+GDAL maps to curl's `CURLOPT_SSL_VERIFYPEER=0` and `CURLOPT_SSL_VERIFYHOST=0`.
+Handshake signatures are still validated. The option is off by default, takes
+precedence over `TERRIO_HTTP_CAINFO`, and connections and cached bytes made under
+it never mix with verified ones. **Warning:** with it set, any server can
+impersonate any host, so only use it against servers you control.
 
 Redirects are followed, up to 10 of them. `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO` keeps the
 requests of a read on the origin of its URL (scheme, host and port): a redirect to another origin

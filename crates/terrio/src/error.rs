@@ -2,7 +2,7 @@
 
 /// Whether an I/O adapter retained a failed Terrio HTTP request as its cause.
 pub(crate) fn is_http_io(error: &std::io::Error) -> bool {
-    matches!(error.get_ref().and_then(|source| source.downcast_ref::<Error>()), Some(Error::Http(_)))
+    matches!(error.get_ref().and_then(|source| source.downcast_ref::<Error>()), Some(Error::Http(_) | Error::Tls(_)))
 }
 
 /// A terrio error.
@@ -26,6 +26,11 @@ pub enum Error {
     /// An HTTP request failed.
     #[error("HTTP: {0}")]
     Http(String),
+    /// A TLS failure on an HTTPS request: a handshake or certificate verification failure (the
+    /// `ureq::Error::Tls` cases and direct or I/O-wrapped rustls errors). Hostname problems and
+    /// TLS configuration errors, such as an unreadable CA bundle, are `Error::Http`.
+    #[error("TLS: {0}")]
+    Tls(String),
     /// The dataset's format is not recognized, or the operation is not supported for it.
     #[error("{0}")]
     Unsupported(String),
@@ -135,6 +140,17 @@ pub type Result<T> = std::result::Result<T, Error>;
 mod tests {
     use super::Error;
     use std::io::ErrorKind;
+
+    /// A TLS or HTTP failure wrapped in an `io::Error` (a body stream's error) is still an HTTP
+    /// I/O error, so it is not turned into `InvalidData` by the TIFF readers.
+    #[test]
+    fn tls_and_http_failures_wrapped_in_io_errors_are_http_io() {
+        for inner in [Error::Http("status 503".into()), Error::Tls("certificate expired".into())] {
+            let wrapped = std::io::Error::other(inner);
+            assert!(super::is_http_io(&wrapped), "{wrapped:?}");
+        }
+        assert!(!super::is_http_io(&std::io::Error::other(Error::InvalidData("x".into()))));
+    }
 
     /// An I/O error about an existing file that is not a directory (it cannot be read), or about a
     /// URL, which may hold a signature, keeps its message. The errors named, and those named

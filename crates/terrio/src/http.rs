@@ -872,7 +872,7 @@ impl Client {
                     self.backoff(&mut attempt)?;
                     continue;
                 }
-                Err(e) => return Err(Error::Http(format!("{}: {e}", redact(&url)))),
+                Err(e) => return Err(http_error(&url, e)),
             };
             let status = status.unwrap_or_default();
             let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
@@ -1646,7 +1646,40 @@ fn retry_warning(code: u16, url: &str, delay: Duration, attempt: u32) {
 
 /// Whether a request error is worth retrying.
 fn transient(e: &ureq::Error) -> bool {
-    matches!(e, ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed | ureq::Error::Protocol(_))
+    !is_tls_error(e) && matches!(e, ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed | ureq::Error::Protocol(_))
+}
+
+/// Whether a ureq error is a TLS failure: `ureq::Error::Tls` itself, or an I/O error whose source
+/// chain holds a `rustls::Error`. ureq 3.5.2 wraps handshake and TLS alert failures that way
+/// (observed: a refused self-signed certificate arrives as `Error::Io` carrying
+/// `rustls::Error::InvalidCertificate`).
+fn is_tls_error(e: &ureq::Error) -> bool {
+    match e {
+        ureq::Error::Tls(_) | ureq::Error::Rustls(_) => true,
+        ureq::Error::Io(io) => {
+            // ureq 3.5.2 wraps the rustls failure as the io error's payload (its `source()` is
+            // None), so check `get_ref` first, then the source chain for deeper wrapping.
+            if io.get_ref().is_some_and(|inner| inner.is::<rustls::Error>()) {
+                return true;
+            }
+            let mut source: Option<&dyn std::error::Error> = Some(io);
+            while let Some(err) = source {
+                if err.is::<rustls::Error>() {
+                    return true;
+                }
+                source = err.source();
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// A ureq request error as a terrio error: a TLS failure keeps its own [`Error::Tls`] variant, so
+/// callers can tell a certificate or handshake failure from another HTTP failure.
+pub(crate) fn http_error(url: &str, e: ureq::Error) -> Error {
+    let message = format!("{}: {e}", redact(url));
+    if is_tls_error(&e) { Error::Tls(message) } else { Error::Http(message) }
 }
 
 /// The absolute URL a `Location` header points to.
@@ -2011,7 +2044,7 @@ pub(crate) fn request_response(
                 backoff(&mut attempt);
                 continue;
             }
-            Err(e) => return Err(Error::Http(format!("{}: {e}", redact(&url)))),
+            Err(e) => return Err(http_error(&url, e)),
         };
         let status = response.status().as_u16();
         // A POST follows only 307 and 308, which keep the method and body.
@@ -3521,6 +3554,25 @@ pub(crate) fn test_routes_with(make_routes: impl FnOnce(&str) -> Vec<TestRoute>)
 mod tests {
     use super::*;
     use crate::vsi::listing::{xml_elements, xml_unescape};
+
+    #[test]
+    fn tls_failures_keep_their_own_error_variant() {
+        let e = http_error("https://example.test/x", ureq::Error::Tls("certificate verify failed"));
+        assert!(
+            matches!(&e, crate::Error::Tls(m) if m.contains("certificate verify failed") && m.contains("https://example.test/x")),
+            "{e}"
+        );
+        assert!(matches!(http_error("https://example.test/x", ureq::Error::Io(std::io::Error::other("reset"))), crate::Error::Http(_)));
+        assert!(matches!(http_error("https://example.test/x", ureq::Error::StatusCode(500)), crate::Error::Http(_)));
+        for error in [
+            ureq::Error::Rustls(rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer)),
+            ureq::Error::Io(std::io::Error::other(rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer))),
+        ] {
+            assert!(!transient(&error), "deterministic TLS errors must not retry: {error}");
+            assert!(matches!(http_error("https://example.test/x", error), Error::Tls(_)));
+        }
+        assert!(transient(&ureq::Error::Io(std::io::Error::other("connection reset"))));
+    }
 
     #[test]
     fn object_fetcher_uses_creation_options_without_inheriting_another_scope() {
@@ -7366,7 +7418,7 @@ mod tests {
 
     /// Bytes fetched without certificate verification never reach a verified open of the same URL:
     /// `cache_key` includes `unsafe_ssl`, so the verified open misses the cache and makes a real
-    /// TLS connection — which the self-signed certificate fails.
+    /// TLS connection, which the self-signed certificate fails.
     #[test]
     fn unsafe_ssl_never_shares_cached_bytes_with_a_verified_open() {
         if tls::crypto_provider().is_err() {
@@ -7380,6 +7432,20 @@ mod tests {
         crate::config::pop_scope();
         assert_eq!(body.unwrap(), b"cached-body");
         let err = get(&remote).unwrap_err();
-        assert!(matches!(err, Error::Http(_)), "the verified open made a real TLS connection and failed: {err}");
+        assert!(matches!(err, Error::Tls(_)), "the verified open made a real TLS connection and failed: {err}");
+    }
+
+    /// A real certificate failure from ureq 3.5.2 (the version in Cargo.lock) surfaces as
+    /// `Error::Tls`, not `Error::Http`: the default agent refuses the self-signed server's
+    /// certificate during the handshake.
+    #[test]
+    fn a_real_certificate_failure_is_error_tls() {
+        if tls::crypto_provider().is_err() {
+            eprintln!("TLS certificate integration check skipped: no TLS cryptography on this CPU");
+            return;
+        }
+        let url = serve_tls_self_signed(b"x".to_vec());
+        let err = get(&Remote::Url(url)).unwrap_err();
+        assert!(matches!(err, Error::Tls(_)), "{err}");
     }
 }
