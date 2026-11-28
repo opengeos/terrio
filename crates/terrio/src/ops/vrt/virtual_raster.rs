@@ -1499,19 +1499,6 @@ fn clamp_band_range(value: f64, band_type: DataType) -> f64 {
     value.clamp(lo, hi)
 }
 
-/// GDAL 3.13.2 keeps physical kernel precision separate from the requested buffer type.
-fn kernel_working_type(source: DataType, buffer: DataType, resampling: Resampling) -> Option<DataType> {
-    if !matches!(buffer, DataType::F32 | DataType::F64) || matches!(resampling, Resampling::Nearest | Resampling::Mode) {
-        return None;
-    }
-    match source {
-        DataType::F32 | DataType::F64 => None,
-        DataType::U8 | DataType::U16 if matches!(resampling, Resampling::Average | Resampling::Rms) => None,
-        DataType::U8 | DataType::I8 | DataType::U16 | DataType::I16 => Some(DataType::F32),
-        DataType::I32 | DataType::U32 | DataType::I64 | DataType::U64 => Some(DataType::F64),
-    }
-}
-
 fn source_transform(src: &VrtSource, v: f64, source_type: DataType, output_type: DataType) -> f64 {
     let value = if let Some((offset, ratio)) = src.scale {
         let value = v * ratio + offset;
@@ -1646,7 +1633,7 @@ impl Reader {
             let working_type = if source.driver() == crate::formats::RasterDriver::VRT {
                 matches!(buffer_type, DataType::F32 | DataType::F64).then_some(buffer_type)
             } else {
-                kernel_working_type(source_type, buffer_type, resampling)
+                crate::resampled_read::kernel_working_type(source_type, buffer_type, resampling)
             }
             .filter(|&dtype| dtype != source_type);
             let data = if mask_band {
@@ -3114,6 +3101,38 @@ mod tests {
             let options = ResampledReadOptions { size: (1, 1), resampling: Resampling::Average, ..Default::default() };
             assert_eq!(vrt.read_resampled(&options).unwrap().raster.data.to_f64_vec(), [expected], "{tag}, {source_type:?}, {extra}");
         }
+    }
+
+    /// Reference: GDAL 3.13.2 resamples a derived Float32 band at its native precision before
+    /// supplying a Float64 buffer to an outer ComplexSource.
+    #[test]
+    fn resampled_derived_source_preserves_native_float_kernel_precision() {
+        let grid = Grid { width: 2, height: 2, geo_transform: [0., 1., 0., 2., 0., -1.] };
+        let raster = crate::ops::build_raster(
+            grid,
+            vec![vec![16777216., 16777218., 16777216., 16777218.]],
+            DataType::F32,
+            None,
+            &Default::default(),
+            crate::ops::convert_value,
+        )
+        .unwrap();
+        let xml = format!(
+            "<VRTDataset rasterXSize=\"2\" rasterYSize=\"2\"><VRTRasterBand dataType=\"Float32\" subClass=\"VRTDerivedRasterBand\"><PixelFunctionType>sum</PixelFunctionType>{}</VRTRasterBand></VRTDataset>",
+            source("SimpleSource", "")
+        );
+        let inner = VirtualRaster::from_xml(&xml)
+            .unwrap()
+            .into_lazy(Path::new(""), HashMap::from([("source.tif".into(), LazyRaster::from(raster))]))
+            .unwrap();
+        let xml = format!(
+            "<VRTDataset rasterXSize=\"2\" rasterYSize=\"2\"><VRTRasterBand dataType=\"Float64\">{}</VRTRasterBand></VRTDataset>",
+            source("ComplexSource", "<ScaleOffset>-16777216</ScaleOffset>").replace("source.tif", "inner.vrt")
+        );
+        let mut outer =
+            VirtualRaster::from_xml(&xml).unwrap().into_lazy(Path::new(""), HashMap::from([("inner.vrt".into(), inner)])).unwrap();
+        let options = ResampledReadOptions { size: (1, 1), resampling: Resampling::Average, ..Default::default() };
+        assert_eq!(outer.read_resampled(&options).unwrap().raster.data.to_f64_vec(), [0.]);
     }
 
     /// A VRT that maps a source one for one has the source's overviews, and reads each from the

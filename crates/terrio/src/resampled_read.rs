@@ -38,6 +38,19 @@ use std::ops::Range;
 use wbraster::DataType;
 use wbraster::raster::RasterData;
 
+/// GDAL 3.13.2 keeps physical kernel precision separate from the requested buffer type.
+pub(crate) fn kernel_working_type(source: DataType, buffer: DataType, resampling: Resampling) -> Option<DataType> {
+    if !matches!(buffer, DataType::F32 | DataType::F64) || matches!(resampling, Resampling::Nearest | Resampling::Mode) {
+        return None;
+    }
+    match source {
+        DataType::F32 | DataType::F64 => None,
+        DataType::U8 | DataType::U16 if matches!(resampling, Resampling::Average | Resampling::Rms) => None,
+        DataType::U8 | DataType::I8 | DataType::U16 | DataType::I16 => Some(DataType::F32),
+        DataType::I32 | DataType::U32 | DataType::I64 | DataType::U64 => Some(DataType::F64),
+    }
+}
+
 /// What [`LazyRaster::read_resampled`] reads: bands of a source window, into an output of a given
 /// size, as GDAL's `RasterIO` reads them, which `gdal_translate -outsize` and rasterio's
 /// `read(window=..., out_shape=..., resampling=...)` do. Use
@@ -628,6 +641,13 @@ impl LazyRaster {
     }
 
     fn read_resampled_parts(&mut self, read: &Read, kinds: &[MaskKind]) -> Result<RasterData> {
+        // Derived and composited VRTs may decline typed forwarding. Their native samples still
+        // use native kernel precision before the caller converts the resulting buffer.
+        let adjusted = read.working_type.and_then(|buffer| {
+            let working_type = kernel_working_type(self.band_data_type(read.bands[0]), buffer, read.resampling);
+            (working_type != read.working_type).then(|| Read { working_type, ..read.clone() })
+        });
+        let read = adjusted.as_ref().unwrap_or(read);
         let parts = self.plan(read, kinds);
         let n = read.buf.0 * read.buf.1;
         let mut out: Option<RasterData> = None;
