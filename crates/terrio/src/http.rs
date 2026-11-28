@@ -1665,7 +1665,16 @@ fn http_io_error(url: &str, error: io::Error) -> Error {
 /// callers can tell a certificate or handshake failure from another HTTP failure.
 pub(crate) fn http_error(url: &str, e: ureq::Error) -> Error {
     let message = format!("{}: {e}", redact(url));
-    if is_tls_error(&e) { Error::Tls(message) } else { Error::Http(message) }
+    if is_tls_error(&e) && valid_tls_hostname(url) { Error::Tls(message) } else { Error::Http(message) }
+}
+
+/// Checks URL host syntax, independently of certificate name verification.
+fn valid_tls_hostname(url: &str) -> bool {
+    url.parse::<ureq::http::Uri>().is_ok_and(|uri| {
+        let Some(host) = uri.host() else { return false };
+        let host = host.strip_prefix('[').and_then(|value| value.strip_suffix(']')).unwrap_or(host);
+        rustls::pki_types::ServerName::try_from(host.to_owned()).is_ok()
+    })
 }
 
 /// The absolute URL a `Location` header points to.
@@ -3564,6 +3573,14 @@ mod tests {
             assert!(matches!(&error, Error::Tls(message) if message.contains("https://example.test/data") && !message.contains("secret")));
         }
         assert!(matches!(http_io_error("https://example.test/data", io::Error::other("connection reset")), Error::Http(_)));
+    }
+
+    #[test]
+    fn malformed_url_hosts_are_http_errors_even_from_the_default_tls_connector() {
+        assert!(matches!(http_error("https://bad..example/data", ureq::Error::Tls("invalid dns name")), Error::Http(_)));
+        for url in ["https://example.test/data", "https://127.0.0.1/data", "https://[::1]/data"] {
+            assert!(matches!(http_error(url, ureq::Error::Tls("certificate refused")), Error::Tls(_)), "{url}");
+        }
     }
 
     #[test]
