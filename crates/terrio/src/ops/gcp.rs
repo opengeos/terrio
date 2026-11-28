@@ -166,12 +166,13 @@ impl GcpTransformer {
     }
 
     /// The residuals of `gcps` under this transformer: for each GCP, as `(dx, dy)`, the
-    /// georeferenced position its pixel/line maps to minus the GCP's own `(x, y)` — model minus
+    /// georeferenced position its pixel/line maps to minus the GCP's own `(x, y)`, model minus
     /// observed, in the GCPs' georeferenced units. This is a fit check: for methods that
     /// interpolate their GCPs exactly (TPS, a homography fitted to 4 GCPs, a polynomial with as
     /// many coefficients as GCPs), every residual is zero by construction; only an
     /// over-determined fit (a higher-order polynomial, a 5+-GCP homography) gives a meaningful
-    /// error.
+    /// error. The underlying transformer behavior is referenced to GDAL 3.12.2; this helper
+    /// computes residuals in georeferenced units, not a GDAL-reported pixel-space fit statistic.
     pub fn residuals(&self, gcps: &[Gcp]) -> Vec<(f64, f64)> {
         gcps.iter()
             .map(|g| {
@@ -182,15 +183,19 @@ impl GcpTransformer {
     }
 
     /// The RMS of [`Self::residuals`]: `sqrt(mean(dx² + dy²))` over `gcps`, in georeferenced
-    /// units. `None` when `gcps` is empty or any residual is non-finite (a homography is
-    /// undefined where its denominator vanishes).
+    /// units. `None` when `gcps` is empty, any residual is non-finite (a homography is
+    /// undefined where its denominator vanishes), or the RMS is not representable as `f64`.
     pub fn rms(&self, gcps: &[Gcp]) -> Option<f64> {
         let r = self.residuals(gcps);
         if r.is_empty() || r.iter().any(|(dx, dy)| !dx.is_finite() || !dy.is_finite()) {
             return None;
         }
-        let sum: f64 = r.iter().map(|(dx, dy)| dx * dx + dy * dy).sum();
-        Some((sum / r.len() as f64).sqrt())
+        let scale = r.iter().fold(0.0_f64, |scale, (dx, dy)| scale.max(dx.abs()).max(dy.abs()));
+        if scale == 0.0 {
+            return Some(0.0);
+        }
+        let sum: f64 = r.iter().map(|(dx, dy)| (dx / scale).powi(2) + (dy / scale).powi(2)).sum();
+        Some(scale * (sum / r.len() as f64).sqrt()).filter(|rms| rms.is_finite())
     }
 }
 
@@ -752,5 +757,17 @@ mod tests {
         let r = t.residuals(&gcps);
         assert!(r[0].0.is_nan() && r[0].1.is_nan(), "{r:?}");
         assert_eq!(t.rms(&gcps), None);
+    }
+
+    #[test]
+    fn rms_preserves_representable_extreme_residuals() {
+        let identity = [0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0];
+        let t = GcpTransformer::Homography(Box::new((identity, identity)));
+        for scale in [1e155, 1e-300] {
+            let gcps = [gcp(0.0, 0.0, -scale, 0.0), gcp(0.0, 0.0, 0.0, -scale)];
+            let rms = t.rms(&gcps).unwrap();
+            assert!((rms / scale - 1.0).abs() < 1e-14, "{rms} != {scale}");
+        }
+        assert!(t.rms(&[gcp(0.0, 0.0, -f64::MAX, -f64::MAX)]).is_none());
     }
 }
